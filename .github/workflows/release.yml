@@ -17,8 +17,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    outputs:
-      commit: ${{ steps.source.outputs.commit }}
     env:
       LIDZA_DEPLOY_VERSION: ${{ inputs.version || github.ref_name }}
     steps:
@@ -31,12 +29,10 @@ jobs:
           go-version: '1.27.1'
           cache: true
       - name: Validate version and source
-        id: source
         shell: bash
         run: |
           set -euo pipefail
           [[ "$LIDZA_DEPLOY_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           go test -race ./...
           go vet ./...
       - name: Build and verify both architectures
@@ -55,12 +51,14 @@ jobs:
             fi
             rm -rf "$bundle"
           done
+          git rev-parse HEAD > dist/SOURCE_COMMIT
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-bundles
           path: |
             dist/lidza-agent-linux-*.tar.gz
             dist/lidza-agent-linux-*.tar.gz.sha256
+            dist/SOURCE_COMMIT
           if-no-files-found: error
           retention-days: 14
   publish:
@@ -72,7 +70,6 @@ jobs:
     env:
       VERSION: ${{ inputs.version || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
-      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -84,6 +81,9 @@ jobs:
           set -euo pipefail
           trap 'rc=$?; echo "::error::Release command failed (exit $rc) at shell line $LINENO: $BASH_COMMAND"; exit "$rc"' ERR
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          export RELEASE_COMMIT=$(cat dist/SOURCE_COMMIT)
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          rm dist/SOURCE_COMMIT
           if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft > release-state.json; then
             python3 -c 'import json; assert json.load(open("release-state.json"))["isDraft"], "Refusing to overwrite a published release"'
           else
@@ -96,10 +96,11 @@ jobs:
           release_id=$(python3 -c 'import json,os; matches=[r for page in json.load(open("releases.json")) for r in page if r["tag_name"]==os.environ["VERSION"]]; assert len(matches)==1; print(matches[0]["id"])')
           gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > release.json
           python3 - <<'PY'
-          import hashlib, json
+          import hashlib, json, os
           from pathlib import Path
           release = json.load(open('release.json'))
           assert release['draft'], 'Release must remain a draft until verified'
+          assert release['target_commitish'] == os.environ['RELEASE_COMMIT'], 'Release source commit differs from build'
           expected = {p.name: p for p in Path('dist').iterdir() if p.is_file()}
           assert len(expected) == 4
           assets = {a['name']: a for a in release['assets']}
