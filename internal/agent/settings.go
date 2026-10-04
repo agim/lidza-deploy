@@ -84,5 +84,6 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		m.data.Apps[id] = old
 		return err
 	}
+	m.wakeDomains()
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 // Adapted from monolithcms-app/agent/config.go. Configuration remains private
 // and atomically replaced; registration is explicit rather than trust-on-first-use.
 type Config struct {
+	TLSListen   string `json:"tls_listen"`
 	Listen      string `json:"listen"`
 	ProxyListen string `json:"proxy_listen"`
 	DataDir     string `json:"data_dir"`
@@ -17,7 +18,7 @@ type Config struct {
 }
 
 func LoadConfig(path string) (Config, error) {
-	c := Config{Listen: "127.0.0.1:9090", ProxyListen: "127.0.0.1:8081", DataDir: "/var/lib/lidza-agent"}
+	c := Config{TLSListen: "127.0.0.1:443", Listen: "127.0.0.1:9090", ProxyListen: "127.0.0.1:8081", DataDir: "/var/lib/lidza-agent"}
 	if err := state.Load(path, &c); err != nil {
 		return c, err
 	}

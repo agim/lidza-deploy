@@ -295,8 +295,9 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	type view struct {
 		Application
-		Current    *agent.Release `json:"current,omitempty"`
-		AgentError string         `json:"agent_error,omitempty"`
+		DomainStatus *agent.DomainStatus `json:"domain_status,omitempty"`
+		Current      *agent.Release      `json:"current,omitempty"`
+		AgentError   string              `json:"agent_error,omitempty"`
 	}
 	c.mu.Lock()
 	out := make([]view, 0, len(c.data.Apps))
@@ -323,6 +324,7 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 			for _, a := range remote {
 				if a.ID == out[i].ID {
 					out[i].Current = a.Current
+					out[i].DomainStatus = a.DomainStatus
 					break
 				}
 			}

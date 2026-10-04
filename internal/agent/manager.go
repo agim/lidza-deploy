@@ -29,6 +29,8 @@ type job struct {
 	token      string
 }
 type Manager struct {
+	domainWake    chan struct{}
+	domains       map[string]DomainStatus
 	databaseSlots chan struct{}
 	mu            sync.Mutex
 	removing      map[string]bool
@@ -44,7 +46,7 @@ type Manager struct {
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
 	ctx, cancel := context.WithCancel(parent)
-	m := &Manager{databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
+	m := &Manager{domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		cancel()
 		return nil, err
@@ -107,6 +109,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	}
 	m.wg.Add(1)
 	go m.work()
+	if cfg.TLSListen != "" {
+		m.wg.Add(1)
+		go m.domainLoop()
+	}
 	return m, nil
 }
 func (m *Manager) path() string { return filepath.Join(m.cfg.DataDir, "state.json") }
@@ -124,6 +130,14 @@ func (m *Manager) Apps() []App {
 	out := make([]App, 0, len(m.data.Apps))
 	for _, a := range m.data.Apps {
 		a.Env = nil
+		a.DomainStatus = nil
+		if m.cfg.TLSListen != "" {
+			status, ok := m.domains[a.ID]
+			if !ok || status.Domain != a.Domain {
+				status = DomainStatus{Domain: a.Domain, State: "waiting_dns"}
+			}
+			a.DomainStatus = &status
+		}
 		out = append(out, a)
 	}
 	return out
@@ -163,6 +177,7 @@ func (m *Manager) Upsert(a App) error {
 			return errors.New("domain already assigned")
 		}
 	}
+	a.DomainStatus = nil
 	a.Bindings = old.Bindings
 	if exists {
 		a.BackupBeforeDeploy = old.BackupBeforeDeploy
@@ -344,6 +359,9 @@ func (m *Manager) work() {
 				_ = m.update(j.deployment, "failed", nil, err)
 			}
 			m.mu.Unlock()
+			if err == nil {
+				m.wakeDomains()
+			}
 			cancel()
 			cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
 			if err != nil && release != nil {
