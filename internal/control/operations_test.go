@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/agim/lidza"
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza/packs/audit"
 	"github.com/agim/lidza/packs/auth"
 	"github.com/agim/lidza/packs/db"
 	"github.com/agim/lidza/packs/jobs"
@@ -75,7 +76,7 @@ func TestScheduledBackupsAndDurableAlerts(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.data.Apps["ops-fixture"] = Application{ID: "ops-fixture", ServerID: "ops-host"}
-	boot, err := lidza.Boot(context.Background(), lidza.App{Name: "ops-test", Packs: []lidza.Pack{db.Pack(), auth.Pack(), jobs.Pack(), mail.Pack()}, OnStart: c.Start})
+	boot, err := lidza.Boot(context.Background(), lidza.App{Name: "ops-test", Packs: []lidza.Pack{db.Pack(), auth.Pack(), audit.Pack(), jobs.Pack(), mail.Pack()}, OnStart: c.Start})
 	if err != nil {
 		t.Fatal(err)
 	}

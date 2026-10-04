@@ -44,6 +44,20 @@ The agent queues a validated stable version. The helper accepts only `vMAJOR.MIN
 
 Upgrades replace binaries; they do not change Docker/Caddy packages or migrate hand-maintained Caddy configuration. Use the installer when a release requires host/configuration changes. Binary rollback is not a database-schema rollback; release migrations must remain backward compatible. Test production upgrades on a spare host before upgrading a fleet.
 
-## Team access and audit logging: framework release pending
+## Team access and audit logging
 
-This feature is intentionally pending [agim/lidza#28](https://github.com/agim/lidza/issues/28), requesting reusable application roles/permissions and durable audit APIs. The released framework is v0.1.71. The current control panel continues to require its configured operator. Per [AGENTS.md](../AGENTS.md): “Pause dependent application work until the framework change is deployed/released.” No local role/audit substitute is implemented. Once released, upgrade and verify it before wiring administrator/deployer/viewer permissions and audit views.
+Līdza v0.1.72 supplies `auth.Roles` and `packs/audit` ([framework #28](https://github.com/agim/lidza/issues/28)). Tables are bootstrapped from the pack's exported DDL at startup; existing installations retain their configured owner and gain its administrator membership automatically. No manual schema migration is required.
+
+This control panel has one fleet workspace. Its members share its apps and hosting servers; it does not offer multiple isolated tenants.
+
+| Role | Access |
+| --- | --- |
+| Viewer | Read app/deployment status, host health, logs and connection metadata. Cannot mutate or download database backups. |
+| Deployer | Viewer access, plus deploy/reload/rollback, existing app settings/environment, maintenance, workers/schedules, and auto-deploy webhooks. Cannot provision/remove apps, manage previews or databases, download backups, manage servers/integrations/upgrades, or administer members/audit. |
+| Administrator | Manage all fleet resources, integrations, team access and audit. |
+
+Open **Team** as an administrator to add a member by email and select their role. A new account requires a password of at least 16 characters; share it privately. Existing accounts can be granted or changed without supplying a password. Role changes never reset a password. **Remove access** revokes fleet membership, not the framework account. Changes take effect at the next request even with an existing session. The configured installation owner cannot be demoted or removed and remains administrator after restart. Only that owner authorizes the shared GitHub connection; other administrators can configure the connector but cannot connect a replacement identity.
+
+**Audit log** provides 50-record pages of persisted authenticated mutation requests and immediate results, with member/role changes and signed webhook or scheduled-task dispatch attributed to named system actors. Metadata includes only fixed route names, safe identifiers and HTTP status; request bodies, environment values, passwords and provider/agent credentials are excluded. An `ok` request/202 response means accepted dispatch, not successful app deployment; use **Deployments** for build/readiness results. `AUDIT_RETENTION` uses the framework default of one year (`8760h`); `0` retains all events.
+
+If the initial audit write fails, the mutation does not run. A remote agent operation cannot share a PostgreSQL transaction with its audit result: if the result write fails after a side effect, the GUI receives an explicit error saying the action may have applied. Inspect app state/history before retrying. Requested events remain durable. Framework role writes are idempotent; a reported incomplete role change requires inspection of membership before retrying.
