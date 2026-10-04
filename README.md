@@ -1,15 +1,15 @@
 # Līdza Deploy
 
-A deployment agent and a separate web control panel built with Līdza v0.1.71. One agent hosts multiple Līdza apps, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
+A deployment agent and a separate web control panel built with Līdza v0.1.72. One agent hosts multiple Līdza apps, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
 
 The MonolithCMS agent was copied/adapted into this repository; the original repository was not changed. See [provenance](docs/provenance.md).
 
-The GUI now includes database restore into a new connection, host health and alerts, deployment build history, maintenance mode, PR previews, workers/scheduled jobs, and managed agent upgrades. See [Operations and recovery](docs/operations.md). Team permissions and audit logging are pending the released framework APIs requested in [Līdza #28](https://github.com/agim/lidza/issues/28).
+The GUI now includes database restore into a new connection, host health and alerts, deployment build history, maintenance mode, PR previews, workers/scheduled jobs, and managed agent upgrades. See [Operations and recovery](docs/operations.md). Administrator/deployer/viewer team access and durable audit logging use the framework APIs released in [Līdza v0.1.72 (#28)](https://github.com/agim/lidza/issues/28).
 
 ## Working features
 
 - GitHub public and private repositories, selected branches, manual deploy and redeploy.
-- Līdza-managed operator sessions and GitHub OAuth connections. No provider or agent credentials in the browser.
+- Līdza-managed team sessions and GitHub OAuth connections. No provider or agent credentials in the browser.
 - GitHub webhook creation/update, signed payload verification, repository/branch filtering, duplicate-delivery protection, and persistent dispatch retries through Līdza jobs.
 - Docker release builds, non-root application containers, CPU/memory/process limits, loopback-only application ports, and `/readyz` checks before traffic switches.
 - Separate host routing per app; DNS verification and proactive Caddy certificate issuance on deployment and FQDN edits, with periodic retries. See [Domains and automatic HTTPS](docs/domains-ssl.md).
@@ -17,7 +17,7 @@ The GUI now includes database restore into a new connection, host health and ale
 - The selected **Signal** interface uses Līdza’s released dark brand palette. Standalone HTML previews remain available.
 - GUI server inventory, branch/domain settings, write-only environment edits, and retryable app removal.
 
-This is a single-operator initial implementation, with one active control-panel process and one agent process per deployment host. Server inventory is managed in the GUI and stored encrypted; a private JSON file can seed initial setup. It is not yet full Hatchbox feature parity: team roles, cloud-server provisioning, scheduled jobs for hosted apps, scaling, and zero-downtime database migrations are future product work.
+This supports one fleet team with admin, deployer and viewer roles, with one active control-panel process and one agent process per deployment host. Server inventory is managed in the GUI and stored encrypted; a private JSON file can seed initial setup. It is not yet full Hatchbox feature parity: cloud-server provisioning, scaling, and zero-downtime database migrations are future product work.
 
 ## Installation and first startup
 
@@ -168,6 +168,7 @@ npm ci --prefix tests/browser
 npm test --prefix tests/browser
 node tests/browser/databases.cjs
 node tests/browser/features.cjs
+node tests/browser/teams.cjs
 ```
 
 Browser checks need Chromium (`CHROMIUM_BIN`, defaults to `/usr/bin/chromium`). They cover all designs, demo create/deploy/logs, mobile overflow, real login, partial fleet history, and real app create/edit/remove through the local agent. Screenshots are saved under `.local/screenshots/`.

@@ -1,4 +1,4 @@
-// Package control is the single-operator Līdza application control plane.
+// Package control is the team-enabled Līdza application control plane.
 // Agents are independently deployed; the browser never receives their keys.
 package control
 
@@ -14,6 +14,7 @@ import (
 	"github.com/agim/lidza-deploy/internal/agent"
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	gh "github.com/agim/lidza-deploy/internal/providers/github"
+	"github.com/agim/lidza/packs/audit"
 	"github.com/agim/lidza/packs/auth"
 	"github.com/agim/lidza/packs/db"
 	"github.com/agim/lidza/packs/jobs"
@@ -76,6 +77,7 @@ type Control struct {
 	data       saved
 	client     *http.Client
 	operatorID string
+	teamMu     sync.Mutex
 }
 
 func New(cfg Config) (*Control, error) {
@@ -138,12 +140,12 @@ func random() string {
 	return hex.EncodeToString(b)
 }
 
-// Protect uses Līdza sessions and then limits fleet access to the configured operator.
+// Protect authenticates the fleet workspace and enforces mutation origin checks.
 func (c *Control) Protect(next http.Handler) http.Handler {
 	return auth.Require()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		if auth.CurrentUser(r.Context()).ID != c.operatorID {
-			http.Error(w, "operator access required", 403)
+		if err := fleetRoles.Check(r.Context(), fleetScope, "fleet.read"); err != nil {
+			permissionError(w, err)
 			return
 		}
 		if r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("Origin") != strings.TrimSuffix(c.cfg.PublicURL, "/") {
@@ -165,10 +167,15 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(71924161)"); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable); err != nil {
+	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	// On an installation's first audit-enabled boot, the pack starts before
+	// application bootstrap creates its table. Apply startup retention now too.
+	if _, err = audit.From(ctx).Prune(ctx); err != nil {
 		return err
 	}
 	a := auth.From(ctx)
@@ -183,10 +190,13 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 		return err
 	}
 	c.operatorID = profile.Subject
-	jobs.FromServices(s).Handle("deploy.push", c.dispatchPush, jobs.Concurrency(2))
+	if err := fleetRoles.Grant(ctx, c.operatorID, fleetScope, "admin"); err != nil {
+		return err
+	}
+	jobs.FromServices(s).Handle("deploy.push", c.auditedJob("deploy.push", c.dispatchPush), jobs.Concurrency(2))
 	q := jobs.FromServices(s)
-	q.Handle("deploy.preview", c.dispatchPreview, jobs.Concurrency(2))
-	q.Handle("deploy.task", c.dispatchTask, jobs.Concurrency(4))
+	q.Handle("deploy.preview", c.auditedJob("deploy.preview", c.dispatchPreview), jobs.Concurrency(2))
+	q.Handle("deploy.task", c.auditedJob("deploy.task", c.dispatchTask), jobs.Concurrency(4))
 	q.Handle("ops.tick", c.operationsTick, jobs.Concurrency(1))
 	return q.Schedule("ops.tick", jobs.Every(time.Minute), nil)
 }
@@ -249,53 +259,58 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	private := http.NewServeMux()
-	private.HandleFunc("GET /api/control/servers/{server}/upgrade", c.upgradeServer)
-	private.HandleFunc("POST /api/control/servers/{server}/upgrade", c.upgradeServer)
-	private.HandleFunc("PUT /api/control/apps/{id}/previews", c.previewConfig)
-	private.HandleFunc("GET /api/control/tasks", c.tasks)
-	private.HandleFunc("PUT /api/control/apps/{id}/tasks/{task}", c.taskAction)
-	private.HandleFunc("POST /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
-	private.HandleFunc("GET /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
-	private.HandleFunc("GET /api/control/server-health", c.serverHealth)
-	private.HandleFunc("PUT /api/control/apps/{id}/{feature}", c.appFeature)
-	private.HandleFunc("POST /api/control/apps/{id}/restore", func(w http.ResponseWriter, r *http.Request) { r.SetPathValue("feature", "restore"); c.appFeature(w, r) })
-	private.HandleFunc("GET /api/control/status", c.status)
-	private.HandleFunc("GET /api/control/servers", func(w http.ResponseWriter, r *http.Request) {
+	handle := func(pattern string, fn http.HandlerFunc) { private.HandleFunc(pattern, c.protectedRoute(pattern, fn)) }
+	handle("GET /api/control/team", c.team)
+	handle("POST /api/control/team", c.team)
+	handle("DELETE /api/control/team/{subject}", c.team)
+	handle("GET /api/control/audit", c.auditLog)
+	handle("GET /api/control/servers/{server}/upgrade", c.upgradeServer)
+	handle("POST /api/control/servers/{server}/upgrade", c.upgradeServer)
+	handle("PUT /api/control/apps/{id}/previews", c.previewConfig)
+	handle("GET /api/control/tasks", c.tasks)
+	handle("PUT /api/control/apps/{id}/tasks/{task}", c.taskAction)
+	handle("POST /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
+	handle("GET /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
+	handle("GET /api/control/server-health", c.serverHealth)
+	handle("PUT /api/control/apps/{id}/{feature}", c.appFeature)
+	handle("POST /api/control/apps/{id}/restore", func(w http.ResponseWriter, r *http.Request) { r.SetPathValue("feature", "restore"); c.appFeature(w, r) })
+	handle("GET /api/control/status", c.status)
+	handle("GET /api/control/servers", func(w http.ResponseWriter, r *http.Request) {
 		out := c.servers()
 		for i := range out {
 			out[i].Token = ""
 		}
 		agent.JSON(w, 200, out)
 	})
-	private.HandleFunc("POST /api/control/servers", c.addServer)
-	private.HandleFunc("PUT /api/control/servers/{id}", c.editServer)
-	private.HandleFunc("DELETE /api/control/servers/{id}", c.removeServer)
-	private.HandleFunc("GET /api/control/databases", c.databases)
-	private.HandleFunc("POST /api/control/apps/{id}/database", c.configureDatabase)
-	private.HandleFunc("POST /api/control/apps/{id}/database/{action}", c.databaseAction)
-	private.HandleFunc("PATCH /api/control/apps/{id}/backups", c.backupPolicy)
-	private.HandleFunc("GET /api/control/servers/{server}/databases/{id}/backups/{backup}", c.downloadBackup)
-	private.HandleFunc("GET /api/control/infrastructure", c.infrastructure)
-	private.HandleFunc("PUT /api/control/storage", c.configureStorage)
-	private.HandleFunc("PUT /api/control/mail", c.configureMail)
-	private.HandleFunc("POST /api/control/mail/test", c.testMail)
-	private.HandleFunc("GET /api/control/apps/{id}/settings", c.settings)
-	private.HandleFunc("PATCH /api/control/apps/{id}/settings", c.updateSettings)
-	private.HandleFunc("DELETE /api/control/apps/{id}/webhook", c.disableHook)
-	private.HandleFunc("GET /api/control/apps", c.apps)
-	private.HandleFunc("POST /api/control/apps", c.create)
-	private.HandleFunc("DELETE /api/control/apps/{id}", c.retire)
-	private.HandleFunc("POST /api/control/apps/{id}/reload", c.reloadApp)
-	private.HandleFunc("POST /api/control/servers/{server}/databases/{id}/{action}", c.databaseResourceAction)
-	private.HandleFunc("PATCH /api/control/servers/{server}/databases/{id}/backups", c.databaseResourcePolicy)
-	private.HandleFunc("POST /api/control/apps/{id}/deploy", c.deploy)
-	private.HandleFunc("POST /api/control/apps/{id}/rollback", c.rollback)
-	private.HandleFunc("POST /api/control/apps/{id}/webhook", c.hook)
-	private.HandleFunc("GET /api/control/apps/{id}/logs", c.logs)
-	private.HandleFunc("GET /api/control/deployments", c.deployments)
-	private.HandleFunc("GET /api/control/deliveries", c.deliveries)
-	private.HandleFunc("GET /api/control/github/repos", c.repos)
-	private.HandleFunc("POST /api/control/github/config", c.configureGitHub)
+	handle("POST /api/control/servers", c.addServer)
+	handle("PUT /api/control/servers/{id}", c.editServer)
+	handle("DELETE /api/control/servers/{id}", c.removeServer)
+	handle("GET /api/control/databases", c.databases)
+	handle("POST /api/control/apps/{id}/database", c.configureDatabase)
+	handle("POST /api/control/apps/{id}/database/{action}", c.databaseAction)
+	handle("PATCH /api/control/apps/{id}/backups", c.backupPolicy)
+	handle("GET /api/control/servers/{server}/databases/{id}/backups/{backup}", c.downloadBackup)
+	handle("GET /api/control/infrastructure", c.infrastructure)
+	handle("PUT /api/control/storage", c.configureStorage)
+	handle("PUT /api/control/mail", c.configureMail)
+	handle("POST /api/control/mail/test", c.testMail)
+	handle("GET /api/control/apps/{id}/settings", c.settings)
+	handle("PATCH /api/control/apps/{id}/settings", c.updateSettings)
+	handle("DELETE /api/control/apps/{id}/webhook", c.disableHook)
+	handle("GET /api/control/apps", c.apps)
+	handle("POST /api/control/apps", c.create)
+	handle("DELETE /api/control/apps/{id}", c.retire)
+	handle("POST /api/control/apps/{id}/reload", c.reloadApp)
+	handle("POST /api/control/servers/{server}/databases/{id}/{action}", c.databaseResourceAction)
+	handle("PATCH /api/control/servers/{server}/databases/{id}/backups", c.databaseResourcePolicy)
+	handle("POST /api/control/apps/{id}/deploy", c.deploy)
+	handle("POST /api/control/apps/{id}/rollback", c.rollback)
+	handle("POST /api/control/apps/{id}/webhook", c.hook)
+	handle("GET /api/control/apps/{id}/logs", c.logs)
+	handle("GET /api/control/deployments", c.deployments)
+	handle("GET /api/control/deliveries", c.deliveries)
+	handle("GET /api/control/github/repos", c.repos)
+	handle("POST /api/control/github/config", c.configureGitHub)
 
 	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
 	mux.Handle("/api/control/", c.Protect(private))
@@ -304,7 +319,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 }
 func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 	token, err := c.token(r.Context())
-	agent.JSON(w, 200, map[string]any{"github_connected": err == nil && token != "", "github_configured": githubConfigured(), "server_count": len(c.servers())})
+	agent.JSON(w, 200, map[string]any{"github_connected": err == nil && token != "", "github_configured": githubConfigured(), "server_count": len(c.servers()), "roles": heldRoles(r.Context()), "github_owner": auth.CurrentUser(r.Context()).ID == c.operatorID})
 }
 func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	type view struct {

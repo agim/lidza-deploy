@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/agim/lidza"
+	"github.com/agim/lidza/packs/audit"
 	"github.com/agim/lidza/packs/auth"
 	"github.com/agim/lidza/packs/db"
 	"github.com/agim/lidza/packs/jobs"
@@ -61,7 +62,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := c.Handler(http.NotFoundHandler())
-	app := lidza.App{Name: "test", Packs: []lidza.Pack{db.Pack(), auth.Pack(), jobs.Pack()}, OnStart: c.Start, Frontend: handler, Routes: func(r *router.Router) {
+	app := lidza.App{Name: "test", Packs: []lidza.Pack{db.Pack(), auth.Pack(), audit.Pack(), jobs.Pack()}, OnStart: c.Start, Frontend: handler, Routes: func(r *router.Router) {
 		auth.Mount(r, auth.Options{NoRegister: true, Connectors: []auth.Connector{auth.GitHubConnect("test", "test")}})
 		r.Handle("/api/control/", handler)
 	}}
@@ -138,6 +139,123 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	}
 	if w := call("GET", "/api/control/apps", "", auth.From(ctx).Cookies(tokens), ""); w.Code != 403 {
 		t.Fatal("nonoperator accessed fleet", w.Code)
+	}
+	// Team permissions come from the released framework and are read on every
+	// request. Changing/removing a role affects an already issued session.
+	memberCookies := auth.From(ctx).Cookies(tokens)
+	setRole := func(role string) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"email": other.Email, "role": role, "password": "never-store-this-member-password"})
+		if w := call("POST", "/api/control/team", string(body), cookies, cfg.PublicURL); w.Code != 200 {
+			t.Fatal("assign role", role, w.Code, w.Body.String())
+		}
+	}
+	setRole("viewer")
+	if w := call("GET", "/api/control/apps", "", memberCookies, ""); w.Code != 200 {
+		t.Fatal("viewer cannot read fleet", w.Code)
+	}
+	for _, route := range []struct{ method, path string }{
+		{"POST", "/api/control/apps/portal/deploy"}, {"PATCH", "/api/control/apps/portal/settings"},
+		{"POST", "/api/control/team"}, {"PUT", "/api/control/mail"},
+		{"GET", "/api/control/audit"}, {"GET", "/api/control/team"},
+		{"GET", "/api/control/servers/one/databases/portal/backups/snapshot"},
+	} {
+		before := agentCalls
+		if w := call(route.method, route.path, "{}", memberCookies, cfg.PublicURL); w.Code != 403 {
+			t.Fatal("viewer authorization", route.path, w.Code, w.Body.String())
+		}
+		if agentCalls != before {
+			t.Fatal("denied route contacted agent", route.path)
+		}
+	}
+	for i := 0; i < 20; i++ {
+		if w := call("POST", "/api/control/apps/portal/deploy", "{}", memberCookies, cfg.PublicURL); w.Code != 403 {
+			t.Fatal("viewer denial", w.Code)
+		}
+	}
+	setRole("deployer")
+	if w := call("POST", "/api/control/apps/portal/deploy", "{}", memberCookies, cfg.PublicURL); w.Code != 202 {
+		t.Fatal("deployer cannot deploy", w.Code, w.Body.String())
+	}
+	for _, route := range []struct{ method, path string }{
+		{"POST", "/api/control/team"}, {"DELETE", "/api/control/team/" + other.Subject},
+		{"POST", "/api/control/servers"}, {"POST", "/api/control/apps"},
+		{"PUT", "/api/control/apps/portal/previews"}, {"PUT", "/api/control/apps/portal/restore"},
+		{"POST", "/api/control/apps/portal/restore"}, {"POST", "/api/control/apps/portal/database"},
+	} {
+		if w := call(route.method, route.path, "{}", memberCookies, cfg.PublicURL); w.Code != 403 {
+			t.Fatal("deployer reached admin operation", route.path, w.Code)
+		}
+	}
+	setRole("viewer")
+	if w := call("POST", "/api/control/apps/portal/deploy", "{}", memberCookies, cfg.PublicURL); w.Code != 403 {
+		t.Fatal("role downgrade did not affect active session", w.Code)
+	}
+	if w := call("DELETE", "/api/control/team/"+other.Subject, "{}", cookies, cfg.PublicURL); w.Code != 200 {
+		t.Fatal("remove member", w.Code, w.Body.String())
+	}
+	if w := call("GET", "/api/control/apps", "", memberCookies, ""); w.Code != 403 {
+		t.Fatal("revoked membership still has access", w.Code)
+	}
+	if w := call("DELETE", "/api/control/team/"+c.operatorID, "{}", cookies, cfg.PublicURL); w.Code != 409 {
+		t.Fatal("owner removal allowed", w.Code)
+	}
+	ownerDemotion, _ := json.Marshal(map[string]string{"email": cfg.User, "role": "viewer"})
+	if w := call("POST", "/api/control/team", string(ownerDemotion), cookies, cfg.PublicURL); w.Code != 409 {
+		t.Fatal("owner demotion allowed", w.Code)
+	}
+	// Database write failure must stop a deployment before the agent is called.
+	if _, err := db.From(ctx).Exec(ctx, `CREATE OR REPLACE FUNCTION deploy_test_audit_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='control.post.requested' AND NEW.resource='/api/control/apps/{id}/deploy' THEN RAISE EXCEPTION 'fixture audit failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER deploy_test_audit_failure BEFORE INSERT ON audit_event FOR EACH ROW EXECUTE FUNCTION deploy_test_audit_failure()`); err != nil {
+		t.Fatal(err)
+	}
+	before := agentCalls
+	failedAudit := call("POST", "/api/control/apps/portal/deploy", "{}", cookies, cfg.PublicURL)
+	_, cleanupErr := db.From(ctx).Exec(ctx, `DROP TRIGGER deploy_test_audit_failure ON audit_event; DROP FUNCTION deploy_test_audit_failure()`)
+	if cleanupErr != nil {
+		t.Fatal(cleanupErr)
+	}
+	if failedAudit.Code != 503 || agentCalls != before {
+		t.Fatal("audit failure permitted side effects", failedAudit.Code, agentCalls, before)
+	}
+	// If only the result write fails, the remote operation may already be
+	// accepted. Surface that ambiguity explicitly instead of reporting success.
+	if _, err := db.From(ctx).Exec(ctx, `CREATE OR REPLACE FUNCTION deploy_test_audit_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='control.post' AND NEW.resource='/api/control/apps/{id}/deploy' THEN RAISE EXCEPTION 'fixture audit result failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER deploy_test_audit_failure BEFORE INSERT ON audit_event FOR EACH ROW EXECUTE FUNCTION deploy_test_audit_failure()`); err != nil {
+		t.Fatal(err)
+	}
+	before = agentCalls
+	failedResult := call("POST", "/api/control/apps/portal/deploy", "{}", cookies, cfg.PublicURL)
+	_, cleanupErr = db.From(ctx).Exec(ctx, `DROP TRIGGER deploy_test_audit_failure ON audit_event; DROP FUNCTION deploy_test_audit_failure()`)
+	if cleanupErr != nil {
+		t.Fatal(cleanupErr)
+	}
+	if failedResult.Code != 503 || agentCalls != before+1 || !strings.Contains(failedResult.Body.String(), "may have applied") {
+		t.Fatal("post-action audit failure misreported", failedResult.Code)
+	}
+	page := call("GET", "/api/control/audit", "", cookies, "")
+	if page.Code != 200 || strings.Contains(page.Body.String(), "never-store-this-member-password") || strings.Contains(page.Body.String(), cfg.Password) {
+		t.Fatal("audit unavailable or leaked a secret", page.Code)
+	}
+	var auditPage audit.Page
+	if err := json.Unmarshal(page.Body.Bytes(), &auditPage); err != nil {
+		t.Fatal(err)
+	}
+	foundDenied, foundMember := false, false
+	for _, record := range auditPage.Records {
+		if record.Actor == other.Subject && record.Outcome == audit.Denied {
+			foundDenied = true
+		}
+		if record.Actor == c.operatorID && record.Action == "team.member.set" && record.Resource == "member/"+other.Subject && record.Meta["role"] != "" {
+			foundMember = true
+		}
+	}
+	if !foundDenied || !foundMember {
+		t.Fatal("missing authenticated actor, denial, or membership audit event")
+	}
+	if auditPage.Next == "" {
+		t.Fatal("audit pagination fixture did not exercise next cursor")
+	}
+	if w := call("GET", "/api/control/audit?cursor="+auditPage.Next, "", cookies, ""); w.Code != 200 {
+		t.Fatal("audit cursor failed", w.Code)
 	}
 	// Signed matching push dispatches; wrong branch and forged signatures do not.
 	c.mu.Lock()

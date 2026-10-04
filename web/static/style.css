@@ -58,3 +58,8 @@ body[data-design=terminal] input,body[data-design=terminal] textarea,body[data-d
 .env-row{display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:12px;margin-bottom:12px}.env-row input,.env-row select{min-width:0;width:100%}details{margin:16px 0}summary{cursor:pointer;color:var(--muted)}@media(max-width:600px){.env-row{grid-template-columns:1fr}}
 
 .check-label{display:flex;align-items:center;gap:10px;margin:16px 0}.check-label input{width:auto}.card-actions{flex-wrap:wrap}#database-dialog{width:min(850px,94vw)}#database-dialog .table-wrap{margin-top:20px}#create-database{border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:16px 0;margin:18px 0}#database-content code{overflow-wrap:anywhere}
+
+/* Backend permissions apply on every request; these keep team controls honest. */
+body[data-role]:not([data-role="admin"]) :is(#storage-form,#mail-form,#attach-database-form,#bind-database-form,#backup-form,#database-connection-form) button,
+body[data-role]:not([data-role="admin"]) :is(#database-run,[data-restore],a[download],#managed-database),
+body[data-role="viewer"] #settings-form button[type="submit"] { display:none; }
