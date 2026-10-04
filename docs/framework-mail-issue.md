@@ -1,6 +1,8 @@
-# Framework mail reload blocker
+# Framework mail reload fix verification
 
-Tracked in [agim/lidza#27](https://github.com/agim/lidza/issues/27), opened against latest v0.1.70. Do not substitute a local mail implementation; upgrade only after a tagged fix and rerun the reproduction plus the database-backed operational tests.
+Resolved in **v0.1.71**, now pinned by this application. [agim/lidza#27](https://github.com/agim/lidza/issues/27) is closed. The reproduction below and upstream `TestReconfigureConcurrent`, `TestReconfigureFailureKeepsPrevious` and `TestReconfigureDuringQueuedDelivery` pass with `-race`, including database-backed queued delivery. The original report is retained below as context; it is no longer a release blocker.
+
+## Original report (v0.1.70)
 
 Changing SMTP settings in a running app can race with mail.Send or a jobs worker delivering an outbox message. This blocks safe GUI mail configuration in agim/lidza-deploy. Our framework-first rule requires a released framework fix rather than an application substitute.
 

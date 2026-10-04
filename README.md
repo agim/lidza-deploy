@@ -1,6 +1,6 @@
 # Līdza Deploy
 
-A deployment agent and a separate web control panel built with Līdza v0.1.70. One agent hosts multiple Līdza apps, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
+A deployment agent and a separate web control panel built with Līdza v0.1.71. One agent hosts multiple Līdza apps, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
 
 The MonolithCMS agent was copied/adapted into this repository; the original repository was not changed. See [provenance](docs/provenance.md).
 
@@ -112,9 +112,9 @@ This installs the hosting agent with an authenticated HTTPS management endpoint.
 
 ### Application databases, backups and alerts
 
-The prepared New application flow lets you create local PostgreSQL, attach an existing managed PostgreSQL database, or choose no database. It attaches `DATABASE_URL` automatically, offers backup frequency and local retention, and supports S3-compatible off-site copies. **Databases & backups** provides manual backups, downloads and retained data after app removal. **Integrations** contains storage and SMTP settings.
+The New application flow lets you create local PostgreSQL, attach an existing managed PostgreSQL database, or choose no database. It attaches `DATABASE_URL` automatically, offers backup frequency and local retention, and supports S3-compatible off-site copies. **Databases & backups** provides manual backups, downloads and retained data after app removal. **Integrations** contains storage and SMTP settings.
 
-**These additions are in review, not ready to deploy:** live email reconfiguration is blocked by [Līdza #27](https://github.com/agim/lidza/issues/27). Per the framework-first rule, it must receive a released fix before the email integration is completed. Database provisioning, backup/restore, S3 streaming and the GUI database flow have been tested independently. See [database and backup instructions](docs/databases-backups.md) for limits, retention, recovery, and alert behavior.
+Database provisioning, backup/restore, S3 streaming, alert queueing and the GUI database flow are tested. Līdza v0.1.71 fixes concurrent mail reconfiguration ([#27](https://github.com/agim/lidza/issues/27)); the original race reproduction and queued-delivery regression now pass. See [database and backup instructions](docs/databases-backups.md) for limits, retention, recovery, and alert behavior.
 
 ### Checks, backups and current limitation
 
@@ -127,7 +127,7 @@ sudo journalctl -u lidza-control -n 50 --no-pager
 
 Back up PostgreSQL, `/var/lib/lidza-control`, `/var/lib/lidza-agent` including their encryption keys, and Caddy's certificate storage. Staged installer checks and browser/database/deployment tests pass; live installation on a fresh supported VM and real GitHub/public ACME remain external acceptance checks.
 
-**Known framework limitation:** configuring GitHub after a startup without connectors currently needs a control-panel restart to activate authorization routes. Configure GitHub during first setup. [Līdza #26](https://github.com/agim/lidza/issues/26) tracks the pending framework fix; its regression test remains failing until the fix is released.
+GitHub credentials can be configured during first setup or later in Integrations without restarting the control panel. Līdza v0.1.71 fixes [#26](https://github.com/agim/lidza/issues/26), and the onboarding regression now passes.
 
 See the [deployment runbook](docs/deployment.md) for security boundaries, recovery, rollback and removal semantics. [Līdza #24](https://github.com/agim/lidza/issues/24) confirms the wizard uses existing framework APIs; [#25](https://github.com/agim/lidza/issues/25) shipped deployment generation improvements in v0.1.70.
 

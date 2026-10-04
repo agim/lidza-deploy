@@ -1,6 +1,6 @@
 # Application databases and backups
 
-**This feature is in review. Do not deploy this branch yet:** live email configuration depends on the released fix for [Līdza #27](https://github.com/agim/lidza/issues/27), which reproduces a mail reload/send data race in v0.1.70. The independent database and backup flows have passed real Docker and browser tests. See [implementation status](implementation-status.md).
+Requires matching current agent and control-panel builds. Līdza v0.1.71 resolves the mail reload/send race reported in [#27](https://github.com/agim/lidza/issues/27); its concurrency and queued-delivery tests pass. See [implementation status](implementation-status.md) for validation and remaining external acceptance checks.
 
 ## Add an application
 
@@ -46,10 +46,10 @@ Validate application-specific records and queries. Stop writes and plan a contro
 
 Back up the **control panel's own PostgreSQL**, `/var/lib/lidza-control`, `/var/lib/lidza-agent` including their master keys, and Caddy certificate storage separately. Per-app backups do not cover the control panel, arbitrary app files, or external object storage. Protect master keys separately from untrusted readers; losing them prevents recovery of encrypted configuration.
 
-## Email alerts (blocked on framework release)
+## Email alerts
 
-The prepared **Integrations → Email** form accepts SMTP host, port, TLS/STARTTLS, sender, and authentication. Alerts go to the operator account. Credentials are stored with Līdza credentials; service-environment overrides must be removed before editing those keys in the GUI. Blank username/password fields preserve the saved login. **Send test email** queues a message; Recent mail shows its delivery status and attempts. Saving SMTP settings validates configuration but does not claim successful delivery.
+The **Integrations → Email** form accepts SMTP host, port, TLS/STARTTLS, sender, and authentication. Alerts go to the operator account. Credentials are stored with Līdza credentials; service-environment overrides must be removed before editing those keys in the GUI. Blank username/password fields preserve the saved login. **Send test email** queues a message; Recent mail shows its delivery status and attempts. Saving SMTP settings validates configuration but does not claim successful delivery.
 
 Deployment and database/backup errors generate alerts; unavailable hosting agents and failed readiness probes require three failed checks. Active incidents are deduplicated across control-panel restarts, followed by recovery notices when resolved. Līdza's durable mail outbox retries delivery. Queueing plus incident persistence is at-least-once: a crash in the narrow interval between them may duplicate a notice. Unknown readiness results do not count as failures. Use an independent uptime monitor for control-panel outages; this panel cannot send alerts when it is down itself.
 
-The mail integration must remain in draft until #27 is fixed in a tagged Līdza release and the concurrency regression passes. No application-local mail implementation is substituted.
+Email delivery uses the released Līdza mail pack and durable jobs outbox. Send a test email after configuring your actual SMTP provider and confirm delivery before relying on alerts.

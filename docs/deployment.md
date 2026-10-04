@@ -73,7 +73,7 @@ For explicit `--fqdn localhost`, the GUI has no public Caddy route. Use `http://
 
 Settings are encrypted through Līdza credentials in the control data directory. Back up that directory (including its master key), PostgreSQL, and agent state securely. Completion is durable before the setup key is removed; restart boots the configured application and never reopens setup. Failed setup can be retried and reuses its managed database.
 
-**Known framework blocker:** adding GitHub after a boot without connectors currently saves credentials but cannot activate authorization routes until restart. [Līdza #26](https://github.com/agim/lidza/issues/26) tracks the fix; the integration test deliberately remains failing pending release. Configure GitHub during first setup for initial testing. This is not a claim of production readiness.
+GitHub can be configured after boot without restarting: [Līdza #26](https://github.com/agim/lidza/issues/26) is fixed in the pinned v0.1.71 release and verified by the onboarding integration test. Real GitHub OAuth and public ACME still require acceptance checks with your own host and credentials.
 
 The existing environment-configured development path remains supported by `scripts/dev-prepare.sh` and `scripts/dev-web.sh`. Process environment overrides take precedence; GUI configuration rejects overridden GitHub keys rather than silently ignoring edits.
 
@@ -139,4 +139,4 @@ If the agent is unavailable or Docker cleanup fails, the application remains mar
 
 The live workspace opens directly at the root and uses the approved Līdza-branded Signal design. If one server is unavailable, deployment history from healthy servers remains visible with an explicit warning naming unavailable servers.
 
-Application database provisioning, local/S3 backup policies and SMTP alert setup are documented in [Databases and backups](databases-backups.md). These additions remain in draft pending the released mail concurrency fix in [Līdza #27](https://github.com/agim/lidza/issues/27).
+Application database provisioning, local/S3 backup policies and SMTP alert setup are documented in [Databases and backups](databases-backups.md). Līdza v0.1.71 resolves [#27](https://github.com/agim/lidza/issues/27); concurrent mail reload and queued-delivery regressions pass. Upgrade both the control panel and hosting agents to use the database APIs.
