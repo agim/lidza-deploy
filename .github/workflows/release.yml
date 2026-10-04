@@ -2,30 +2,41 @@ name: Publish release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing stable version tag to retry
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.version || github.ref_name }}
   cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
     env:
-      LIDZA_DEPLOY_VERSION: ${{ github.ref_name }}
+      LIDZA_DEPLOY_VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          ref: ${{ inputs.version || github.ref }}
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.27.1'
           cache: true
       - name: Validate version and source
+        id: source
         shell: bash
         run: |
           set -euo pipefail
           [[ "$LIDZA_DEPLOY_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           go test -race ./...
           go vet ./...
       - name: Build and verify both architectures
@@ -59,8 +70,9 @@ jobs:
     permissions:
       contents: write
     env:
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ inputs.version || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -74,12 +86,14 @@ jobs:
           if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft > release-state.json; then
             python3 -c 'import json; assert json.load(open("release-state.json"))["isDraft"], "Refusing to overwrite a published release"'
           else
-            gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --generate-notes
+            gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_COMMIT" --draft --generate-notes
           fi
-          gh release edit "$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
+          gh release edit "$VERSION" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_COMMIT"
           (cd dist && sha256sum -c lidza-agent-linux-amd64.tar.gz.sha256 && sha256sum -c lidza-agent-linux-arm64.tar.gz.sha256)
           gh release upload "$VERSION" --repo "$GITHUB_REPOSITORY" dist/lidza-agent-linux-amd64.tar.gz dist/lidza-agent-linux-amd64.tar.gz.sha256 dist/lidza-agent-linux-arm64.tar.gz dist/lidza-agent-linux-arm64.tar.gz.sha256 --clobber
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" > release.json
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > releases.json
+          release_id=$(python3 -c 'import json,os; matches=[r for page in json.load(open("releases.json")) for r in page if r["tag_name"]==os.environ["VERSION"]]; assert len(matches)==1; print(matches[0]["id"])')
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > release.json
           python3 - <<'PY'
           import hashlib, json
           from pathlib import Path
