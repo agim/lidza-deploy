@@ -84,15 +84,41 @@ jobs:
           export RELEASE_COMMIT=$(cat dist/SOURCE_COMMIT)
           [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           rm dist/SOURCE_COMMIT
-          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft > release-state.json; then
-            python3 -c 'import json; assert json.load(open("release-state.json"))["isDraft"], "Refusing to overwrite a published release"'
-          else
-            gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_COMMIT" --draft --generate-notes
-          fi
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > releases.json
-          release_id=$(python3 -c 'import json,os; matches=[r for page in json.load(open("releases.json")) for r in page if r["tag_name"]==os.environ["VERSION"]]; assert len(matches)==1; print(matches[0]["id"])')
+          python3 - <<'PYCODE'
+          import json, os
+          matches = [r for page in json.load(open('releases.json')) for r in page if r['tag_name'] == os.environ['VERSION']]
+          assert len(matches) <= 1
+          if matches:
+              assert matches[0]['draft'], 'Refusing to overwrite a published release'
+          json.dump(matches[0] if matches else {}, open('release-state.json', 'w'))
+          PYCODE
+          release_id=$(python3 -c 'import json; print(json.load(open("release-state.json")).get("id", ""))')
+          if [ -z "$release_id" ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$VERSION" -f target_commitish="$RELEASE_COMMIT" -F draft=true -F generate_release_notes=true > release-state.json
+            release_id=$(python3 -c 'import json; print(json.load(open("release-state.json"))["id"])')
+          fi
           (cd dist && sha256sum -c lidza-agent-linux-amd64.tar.gz.sha256 && sha256sum -c lidza-agent-linux-arm64.tar.gz.sha256)
-          gh release upload "$VERSION" --repo "$GITHUB_REPOSITORY" dist/lidza-agent-linux-amd64.tar.gz dist/lidza-agent-linux-amd64.tar.gz.sha256 dist/lidza-agent-linux-arm64.tar.gz dist/lidza-agent-linux-arm64.tar.gz.sha256 --clobber
+          python3 - <<'PYCODE'
+          import json, os, subprocess, urllib.request, urllib.parse
+          from pathlib import Path
+          release = json.load(open('release-state.json'))
+          repository = os.environ['GITHUB_REPOSITORY']
+          upload = release['upload_url'].split('{', 1)[0]
+          assert upload == f"https://uploads.github.com/repos/{repository}/releases/{release['id']}/assets"
+          files = {p.name: p for p in Path('dist').iterdir() if p.is_file()}
+          assert len(files) == 4
+          for asset in release['assets']:
+              if asset['name'] in files:
+                  subprocess.run(['gh', 'api', '--method', 'DELETE', f"repos/{repository}/releases/assets/{asset['id']}", '--silent'], check=True)
+          for name, path in files.items():
+              body = path.read_bytes()
+              request = urllib.request.Request(upload + '?' + urllib.parse.urlencode({'name': name}), data=body, method='POST', headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Content-Type': 'application/octet-stream', 'Content-Length': str(len(body)), 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  asset = json.load(response)
+              assert asset['state'] == 'uploaded' and asset['size'] == len(body)
+              print('Uploaded:', name)
+          PYCODE
           gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > release.json
           python3 - <<'PY'
           import hashlib, json, os
