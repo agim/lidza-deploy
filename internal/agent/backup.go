@@ -27,7 +27,7 @@ func (w *backupWriter) Write(p []byte) (int, error) {
 	w.n += int64(n)
 	return n, e
 }
-func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.Config) (BackupRecord, error) {
+func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.Config, kind ...string) (BackupRecord, error) {
 	var record BackupRecord
 	dir := m.backupDir(d.AppID)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -81,11 +81,14 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 		return record, errors.New("backup directory sync failed")
 	}
 	record = BackupRecord{ID: id, Created: time.Now().UTC(), Size: writer.n, SHA256: hex.EncodeToString(hash.Sum(nil))}
+	if len(kind) > 0 {
+		record.Kind = kind[0]
+	}
 	if d.Backup.Offsite {
 		if target == nil {
 			return record, errors.New("local backup saved; S3 destination is not configured")
 		}
-		key := "databases/" + d.AppID + "/" + id + ".dump"
+		key := backupObjectKey(d.AppID, record)
 		if err = uploadBackup(ctx, *target, path, key, writer.n); err != nil {
 			return record, errors.New("local backup saved; off-site upload failed")
 		}
@@ -132,27 +135,57 @@ func uploadBackup(ctx context.Context, cfg storage.Config, path, key string, siz
 	}
 	return nil
 }
-func (m *Manager) pruneBackupsLocked(id string) {
-	d := m.data.Databases[id]
-	if len(d.Backups) <= d.Backup.Keep {
-		return
+
+const predeploymentBackup = "predeployment"
+
+func backupObjectKey(id string, record BackupRecord) string {
+	name := record.ID
+	if record.Kind == predeploymentBackup {
+		name = "predeployment"
 	}
+	return "databases/" + id + "/" + name + ".dump"
+}
+
+func (m *Manager) pruneBackupsLocked(id string) error {
+	d := m.data.Databases[id]
 	old := d
-	remove := append([]BackupRecord{}, d.Backups[:len(d.Backups)-d.Backup.Keep]...)
-	keep := append([]BackupRecord{}, d.Backups[len(d.Backups)-d.Backup.Keep:]...)
-	var failed []BackupRecord
-	for _, b := range remove {
-		if err := os.Remove(filepath.Join(m.backupDir(id), b.ID+".dump")); err != nil && !os.IsNotExist(err) {
-			failed = append(failed, b)
+	// Walk newest first: scheduled/manual retention is independent of the rolling copy.
+	keepIDs := make(map[string]bool)
+	regular, pre := 0, 0
+	for i := len(d.Backups) - 1; i >= 0; i-- {
+		b := d.Backups[i]
+		if b.Kind == predeploymentBackup {
+			pre++
+			keepIDs[b.ID] = pre == 1
+		} else {
+			regular++
+			keepIDs[b.ID] = regular <= d.Backup.Keep
 		}
 	}
-	d.Backups = append(failed, keep...)
-	if len(failed) > 0 {
-		d.Error = "backup saved; could not prune old local files; check permissions and disk space"
+	var retained []BackupRecord
+	var pruneErr error
+	for _, b := range d.Backups {
+		if !keepIDs[b.ID] {
+			if err := os.Remove(filepath.Join(m.backupDir(id), b.ID+".dump")); err != nil && !os.IsNotExist(err) {
+				pruneErr = errors.New("backup saved; could not prune old local files; check permissions and disk space")
+			} else {
+				continue
+			}
+		}
+		retained = append(retained, b)
+	}
+	if len(retained) == len(d.Backups) && pruneErr == nil {
+		return nil
+	}
+	d.Backups = retained
+	if pruneErr != nil {
+		d.Error = pruneErr.Error()
 	}
 	m.data.Databases[id] = d
 	if err := m.save(); err != nil {
 		m.data.Databases[id] = old
+		return err
 	}
-	// Off-site retention is managed by the bucket's lifecycle policy, independently.
+	// Normal off-site history uses bucket lifecycle; predeployment overwrites one key.
+	return pruneErr
 }
