@@ -202,3 +202,28 @@ func TestFirstRunBootAndRestart(t *testing.T) {
 		t.Fatal("restarted app not ready", w.Code, w.Body)
 	}
 }
+
+func TestInstallerOriginControlsBootstrap(t *testing.T) {
+	cleanSetupEnv(t)
+	s, err := New(Options{Dir: t.TempDir(), Origin: "https://deploy.example.com", Frontend: web.Handler(), Boot: func(context.Context) (*lidza.Booted, error) { t.Fatal("unexpected boot"); return nil, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := setupRequest(s, "POST", "/api/setup/check", "{}", s.token, "https://deploy.example.com")
+	if w.Code != 200 {
+		t.Fatal("public setup origin rejected", w.Code)
+	}
+	var result struct {
+		PublicURL string `json:"public_url"`
+	}
+	if err = json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.PublicURL != "https://deploy.example.com" {
+		t.Fatal("installer hostname not supplied to wizard")
+	}
+	if w = setupRequest(s, "POST", "/api/setup/check", "{}", s.token, "http://127.0.0.1:3000"); w.Code != 403 {
+		t.Fatal("public install accepted localhost origin")
+	}
+	w = setupRequest(s, "POST", "/api/setup/complete", `{"public_url":"https://other.example.com"}`, s.token, "https://deploy.example.com")
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "hostname chosen during installation") {
+		t.Fatal("wizard changed installer hostname", w.Code)
+	}
+}

@@ -1,13 +1,14 @@
 #!/bin/sh
 # Līdza Deploy host installer.
-# curl -fsSL https://raw.githubusercontent.com/agim/lidza-deploy/main/install.sh | sudo sh
-# sh install.sh [--agent-only] [--hostname agent.example.com] [--email ops@example.com]
+# curl -fsSL https://raw.githubusercontent.com/agim/lidza-deploy/main/install.sh | sudo sh -s -- --fqdn deploy.example.com
+# sh install.sh --fqdn deploy.example.com|localhost [--agent-only] [--hostname agent.example.com] [--email ops@example.com]
 # Defaults to installing the agent and browser-configured control panel.
 set -eu
 umask 077
 version=main
 version_given=0
 with_control=1
+fqdn=''
 hostname=''
 email=''
 stage=''
@@ -17,7 +18,8 @@ plan=0
 usage() {
  cat <<'TXT'
 Līdza Deploy installer
-Usage: sh install.sh [options]
+Usage: sh install.sh --fqdn deploy.example.com|localhost [options]
+  --fqdn HOST         Required: GUI hostname, or explicit localhost for local setup
   --agent-only         Install only the hosting agent on a remote app server
   --with-control       Install agent + web control panel (default)
   --hostname FQDN      Expose the agent API over HTTPS for a remote control panel
@@ -31,6 +33,7 @@ Usage: sh install.sh [options]
   --help, -h           Show help
 Requires a dedicated Debian 12/13 or Ubuntu 22.04/24.04 systemd host.
 Installs Git, Docker, Caddy and services; first-run settings are entered in the GUI.
+Public DNS must point to this host and ports 80/443 must be reachable.
 Go is reused when suitable or downloaded temporarily with a pinned checksum.
 TXT
 }
@@ -39,10 +42,10 @@ while [ "$#" -gt 0 ]; do
  case "$1" in
   --agent-only) with_control=0; shift;;
   --with-control) with_control=1; shift;;
-  --hostname|--email|--version|--bundle|--stage)
+  --fqdn|--hostname|--email|--version|--bundle|--stage)
    [ "$#" -ge 2 ] || die "$1 requires a value"
    case "$1" in
-    --hostname) hostname=$2;; --email) email=$2;;
+    --fqdn) fqdn=$2;; --hostname) hostname=$2;; --email) email=$2;;
     --version) version=$2;version_given=1;; --bundle) bundle=$2;; --stage) stage=$2;;
    esac
    shift 2;;
@@ -51,6 +54,16 @@ while [ "$#" -gt 0 ]; do
   *) die "unknown option: $1";;
  esac
 done
+if [ "$check" -eq 0 ]; then
+ [ -n "$fqdn" ] || die 'Missing --fqdn. Run: sudo sh install.sh --fqdn deploy.example.com (public HTTPS), or sudo sh install.sh --fqdn localhost (local/tunnel setup). No installation changes were made.'
+fi
+if [ -n "$fqdn" ] && [ "$fqdn" != localhost ]; then
+ case "$fqdn" in *[!a-z0-9.-]*) die 'invalid --fqdn: use a DNS hostname or localhost';; esac
+ printf '%s\n' "$fqdn" | awk '
+  length($0)>253 || $0 ~ /^[0-9.]+$/ {exit 1}
+  {n=split($0,a,".");if(n<2)exit 1;for(i=1;i<=n;i++)if(length(a[i])>63 || a[i]!~/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/)exit 1}
+ ' || die '--fqdn must be a DNS hostname without a scheme, port or path, or exactly localhost'
+fi
 case "$version" in ''|*[!a-zA-Z0-9._-]*|.*|-*) die 'version must be a simple GitHub branch, tag or commit';; esac
 case "$stage" in '') ;; /*) [ "$stage" != / ] || die 'stage must not be /'; case "$stage" in *..*) die 'stage must not contain ..';; esac;; *) die 'stage must be absolute';; esac
 [ "$(uname -s)" = Linux ] || die 'only Linux hosting servers are supported'
@@ -60,7 +73,7 @@ if [ "$plan" -eq 1 ]; then
   '1. Check the dedicated Debian/Ubuntu systemd host.' \
   '2. Verify a local bundle, or build the source with verified Go.' \
   '3. Install Git, Docker Engine, Caddy and the hosting agent.'
- if [ "$with_control" -eq 1 ]; then printf '%s\n' '4. Install and start the control panel, paired with the local agent.' '5. Open the SSH tunnel and finish account/PostgreSQL/DNS/GitHub setup in the browser.';fi
+ if [ "$with_control" -eq 1 ]; then printf '%s\n' '4. Install and start the control panel, paired with the local agent.' "5. Open the chosen GUI address ($fqdn) and complete browser setup.";fi
  exit 0
 fi
 if [ "$check" -eq 1 ]; then
@@ -146,7 +159,7 @@ else
  printf '%s\n' "$arch" > "$prepared/ARCH"
  (cd "$prepared";sha256sum ARCH bin/lidza-agent bin/lidza-control install-agent.sh deploy/lidza-agent.service deploy/lidza-control.service deploy/agent.example.json > SHA256SUMS)
 fi
-set --
+set -- --fqdn "$fqdn"
 if [ "$with_control" -eq 1 ];then set -- "$@" --with-control;fi
 if [ -n "$hostname" ];then set -- "$@" --hostname "$hostname";fi
 if [ -n "$email" ];then set -- "$@" --email "$email";fi

@@ -182,7 +182,7 @@ func (s *Setup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == "POST" && r.URL.Path == "/api/setup/check":
-		agent.JSON(w, 200, map[string]any{"status": "claimed", "managed_database": dockerAvailable()})
+		agent.JSON(w, 200, map[string]any{"status": "claimed", "managed_database": dockerAvailable(), "public_url": s.opts.Origin})
 		return
 	case r.Method == "POST" && r.URL.Path == "/api/setup/complete":
 		s.finish(w, r)
@@ -229,6 +229,10 @@ func (s *Setup) finish(w http.ResponseWriter, r *http.Request) {
 	var input Input
 	if err := agent.Decode(w, r, &input); err != nil {
 		agent.Fail(w, 400, err)
+		return
+	}
+	if s.opts.Origin != "" && input.PublicURL != s.opts.Origin {
+		agent.Fail(w, 400, errors.New("control-panel address must match the hostname chosen during installation"))
 		return
 	}
 	if err := validate(input); err != nil {
@@ -285,6 +289,12 @@ func (s *Setup) finish(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.opts.network != nil {
 		err = s.opts.network(ctx, input)
+	} else if s.opts.Origin != "" {
+		// The installer already configured the hostname and Caddy route.
+		// Verify its public TLS endpoint before persisting the canonical origin.
+		if strings.HasPrefix(s.opts.Origin, "https://") {
+			err = verifyHTTPS(ctx, s.opts.Origin)
+		}
 	} else {
 		err = configureNetwork(ctx, input)
 	}

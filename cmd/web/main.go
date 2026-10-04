@@ -68,7 +68,10 @@ func run() error {
 		handler = setup
 		closeApp = setup.Close
 		if _, err = os.Stat(filepath.Join(dir, "setup-token")); err == nil {
-			log.Printf("First-run setup ready; one-time credential is in %s (use a local SSH tunnel)", filepath.Join(dir, "setup-token"))
+			log.Printf("First-run setup ready; one-time credential is in %s", filepath.Join(dir, "setup-token"))
+			if values["CONTROL_SETUP_ORIGIN"] != "" {
+				log.Printf("Setup address: %s", values["CONTROL_SETUP_ORIGIN"])
+			}
 		}
 	}
 	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 3 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}

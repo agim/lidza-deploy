@@ -23,66 +23,68 @@ Use a dedicated **Debian 12/13 or Ubuntu 22.04/24.04** server with systemd, sudo
 
 ### 1. Run the installer
 
-From a checkout on your hosting server:
+First point `deploy.example.com` at your server’s public IP and allow ports 80/443. From a checkout on that server:
 
 ```sh
-sudo sh install.sh
+sudo sh install.sh --fqdn deploy.example.com
 ```
 
 Or install the published `main` directly:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agim/lidza-deploy/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/agim/lidza-deploy/main/install.sh | sudo sh -s -- --fqdn deploy.example.com
 ```
 
-The root installer builds the agent and control panel, installs their prerequisites, pairs the local agent, and starts the services. It reuses Go 1.27+ or downloads temporary Go 1.27.1 with a pinned, verified SHA-256 checksum. You do not need to build or transfer a bundle manually. Docker, Caddy, Git and systemd services are installed by the bundled host installer. The default includes the control panel; PostgreSQL and other settings are configured in the browser.
+The root installer builds the agent and control panel, installs their prerequisites, pairs the local agent, and starts the services. It reuses Go 1.27+ or downloads temporary Go 1.27.1 with a pinned, verified SHA-256 checksum. You do not need to build or transfer a bundle manually. Docker, Caddy, Git and systemd services are installed by the bundled host installer. The default includes the control panel; PostgreSQL and other settings are configured in the browser. **`--fqdn` is required.** Omitting it stops before downloads, builds or host changes. Use `--fqdn localhost` explicitly for a local/tunnel installation; localhost is never selected implicitly. With `--agent-only`, the FQDN names the agent API instead.
 
 To inspect the host or planned actions:
 
 ```sh
 sh install.sh --check
-sh install.sh --plan
+sh install.sh --fqdn deploy.example.com --plan
 ```
 
 To install only the agent on a separate hosting server:
 
 ```sh
-sudo sh install.sh --agent-only --hostname agent.example.com --email ops@example.com
+sudo sh install.sh --agent-only --fqdn agent.example.com --email ops@example.com
 ```
 
-The downloaded equivalent is `curl -fsSL https://raw.githubusercontent.com/agim/lidza-deploy/main/install.sh | sudo sh -s -- --agent-only --hostname agent.example.com --email ops@example.com`.
+The downloaded equivalent is `curl -fsSL https://raw.githubusercontent.com/agim/lidza-deploy/main/install.sh | sudo sh -s -- --agent-only --fqdn agent.example.com --email ops@example.com`.
 
 ### 2. Installer options and repeat runs
 
 `--version REF` selects a branch, tag or commit. `--stage /absolute/path` produces an inspectable installation tree without changing packages or services. `--bundle /path/to/lidza-agent-linux-amd64.tar.gz` uses a prebuilt archive and verifies its adjacent `.sha256` file. Both amd64 and arm64 hosts are detected automatically.
 
-Re-running preserves existing credentials and configuration. The control panel starts in setup mode on loopback port 3000. An existing unmanaged Caddy configuration is rejected; use a dedicated host. The full option list is `sh install.sh --help`.
+Re-running preserves existing credentials and configuration. The control panel listens internally on loopback port 3000. Caddy exposes the chosen public GUI FQDN over HTTPS immediately, including the setup wizard. Reinstall with the same FQDN; changing an existing installation’s canonical hostname requires an explicit migration. An existing unmanaged Caddy configuration is rejected; use a dedicated host. The full option list is `sh install.sh --help`.
 
 For offline transfer or building on another machine, `./scripts/package-agent.sh amd64` (or `arm64`) still creates a bundle in `dist/`; see the [deployment runbook](docs/deployment.md).
 
 ### 3. Complete the browser setup wizard
 
-From your computer, keep an SSH tunnel open:
+For a public FQDN, open **`https://deploy.example.com`** directly. Caddy obtains the certificate automatically when DNS and ports 80/443 are ready. No SSH tunnel is needed.
 
-```sh
-ssh -N -L 3000:127.0.0.1:3000 user@control-host
-```
-
-Open `http://127.0.0.1:3000` in your browser. In another SSH terminal on the server, read the one-time ownership key:
+Read the one-time ownership key in an SSH session or your cloud provider's server console:
 
 ```sh
 sudo cat /var/lib/lidza-control/setup-token
+```
+
+For an explicitly local installation (`sudo sh install.sh --fqdn localhost`), open `http://localhost:3000`. To access that local installation remotely, keep this tunnel open from your computer:
+
+```sh
+ssh -N -L 3000:127.0.0.1:3000 user@control-host
 ```
 
 Paste it into **Unlock setup**. Keep this key private. The wizard configures:
 
 1. Your operator email and password.
 2. Managed PostgreSQL on this host, or an existing PostgreSQL database.
-3. The public control-panel URL, DNS verification or an authorized Cloudflare DNS change, and automatic Caddy HTTPS or an existing reverse proxy.
+3. The GUI address supplied to the installer, prefilled and locked. Setup verifies public HTTPS; DNS and Caddy routing are already configured before you reach the wizard.
 4. GitHub OAuth client credentials. The wizard links to GitHub registration and supplies the callback URL. Configure these now if you need private repositories or automatic deployments.
 5. Agent pairing. The local agent is already paired; remote agents can be imported using their private connection file.
 
-Choose **Validate and finish setup**, then sign in at your public control-panel URL. Setup checks the database, agent, DNS and HTTPS before completion; failed attempts can be retried. Settings are encrypted, and completed setup stays closed after restart. No database or OAuth environment-file editing is required for this installation path.
+Choose **Validate and finish setup**, then sign in at your public control-panel URL. Setup checks the database, agent and public HTTPS before completion; failed attempts can be retried. Settings are encrypted, and completed setup stays closed after restart. No database or OAuth environment-file editing is required for this installation path.
 
 [View the setup wizard](design-previews/setup-wizard.png).
 
@@ -103,7 +105,7 @@ Each Līdza project must contain `lidza.json`. An absent root Dockerfile is gene
 Run the root installer on each hosting server. Configure the agent hostname's DNS first, then install:
 
 ```sh
-sudo sh install.sh --agent-only --hostname agent.example.com --email ops@example.com
+sudo sh install.sh --agent-only --fqdn agent.example.com --email ops@example.com
 ```
 
 This installs the hosting agent with an authenticated HTTPS management endpoint. Import `/etc/lidza-agent/connection.json` through the control panel's wizard or **Servers → Connect server**; retrieve it privately over SSH. The file contains the agent token. Ports 9090 and 8081 remain internal. You can connect multiple servers and deploy multiple apps on each.

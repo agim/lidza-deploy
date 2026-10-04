@@ -3,16 +3,18 @@
 set -euo pipefail
 umask 077
 bundle=$(cd "$(dirname "$0")" && pwd)
-stage='' hostname='' email='' plan=false with_control=false
+stage='' fqdn='' hostname='' email='' plan=false with_control=false
 usage() {
  cat <<'TXT'
-Usage: sudo ./install-agent.sh [--with-control] [--hostname agent.example.com] [--email ops@example.com]
-       ./install-agent.sh --plan
-       ./install-agent.sh --stage /absolute/staging-directory [options]
+Usage: sudo ./install-agent.sh --fqdn deploy.example.com|localhost [--with-control] [--hostname agent.example.com] [--email ops@example.com]
+       ./install-agent.sh --fqdn localhost --plan
+       ./install-agent.sh --fqdn deploy.example.com --stage /absolute/staging-directory [options]
 
 Installs Docker Engine, Caddy, Git, the bundled agent and systemd services.
 --with-control also installs the browser-configured control panel on this host.
-Without --hostname, the agent API stays accessible only on loopback.
+--fqdn is required: the GUI hostname with --with-control, otherwise the agent hostname.
+Use --fqdn localhost explicitly for loopback access. Public DNS must point here.
+With --with-control, the agent API stays on loopback unless --hostname is supplied.
 --hostname exposes the authenticated API over automatic HTTPS for a remote GUI.
 --stage writes an inspectable filesystem tree without installing packages or services.
 Requires a dedicated Debian 12/13 or Ubuntu 22.04/24.04 server for live installation.
@@ -20,13 +22,37 @@ TXT
 }
 while (($#)); do
  case "$1" in
-  --hostname|--email|--stage|--bundle) (($#>=2)) || { usage; exit 2; }; case "$1" in --hostname) hostname=$2;; --email) email=$2;; --stage) stage=$2;; --bundle) bundle=$2;; esac;shift 2;;
+  --fqdn|--hostname|--email|--stage|--bundle) (($#>=2)) || { usage; exit 2; }; case "$1" in --fqdn) fqdn=$2;; --hostname) hostname=$2;; --email) email=$2;; --stage) stage=$2;; --bundle) bundle=$2;; esac;shift 2;;
   --plan) plan=true;shift;;
   --with-control) with_control=true;shift;;
   --help|-h) usage;exit 0;;
   *) usage;exit 2;;
  esac
 done
+[[ -n "$fqdn" ]] || { echo 'Missing --fqdn. Add --fqdn deploy.example.com for public HTTPS or --fqdn localhost for local/tunnel setup. No installation changes were made.' >&2;exit 2; }
+if [[ "$fqdn" != localhost ]]; then
+ [[ "$fqdn" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && "$fqdn" == *.* && "$fqdn" != *..* && ${#fqdn} -le 253 && ! "$fqdn" =~ ^[0-9.]+$ ]] || { echo 'Invalid --fqdn: supply a DNS hostname or localhost, without scheme, port or path.' >&2;exit 2; }
+ IFS=. read -ra labels <<< "$fqdn"
+ for label in "${labels[@]}";do [[ -n "$label" && ${#label} -le 63 && "$label" != -* && "$label" != *- ]] || { echo 'Invalid FQDN label' >&2;exit 2; };done
+fi
+if ! $with_control;then
+ [[ -z "$hostname" || "$hostname" == "$fqdn" ]] || { echo 'Agent-only installation uses --fqdn; remove the conflicting --hostname.' >&2;exit 2; }
+ [[ "$fqdn" == localhost ]] || hostname=$fqdn
+elif [[ "$fqdn" != localhost && "$hostname" == "$fqdn" ]];then
+ echo 'The GUI --fqdn and agent --hostname must be different hostnames.' >&2;exit 2
+fi
+setup_origin=http://localhost:3000
+[[ "$fqdn" == localhost ]] || setup_origin="https://$fqdn"
+# Refuse an implicit hostname migration before any installation side effects.
+if $with_control && [[ -f "$stage/etc/lidza-control/control.env" ]];then
+ existing_origin=$(sed -n 's/^CONTROL_SETUP_ORIGIN=//p' "$stage/etc/lidza-control/control.env")
+ if [[ -n "$existing_origin" && "$existing_origin" != "$setup_origin" ]];then
+  echo "This control panel was installed at $existing_origin. Use the same --fqdn when reinstalling; changing its canonical hostname requires a migration." >&2;exit 2
+ fi
+ if [[ -z "$existing_origin" && -f "$stage/var/lib/lidza-control/setup-complete.json" ]];then
+  echo 'Existing completed setup predates installer FQDN configuration. Migrate its canonical hostname explicitly before rerunning this installer.' >&2;exit 2
+ fi
+fi
 if [[ -n "$hostname" ]]; then
  [[ "$hostname" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && "$hostname" == *.* && "$hostname" != *..* && ${#hostname} -le 253 && ! "$hostname" =~ ^[0-9.]+$ ]] || { echo 'Invalid agent FQDN' >&2;exit 2; }
  IFS=. read -ra labels <<< "$hostname"
@@ -43,6 +69,7 @@ if $plan; then
 5. Validate Caddy routing for application FQDNs and the optional agent hostname.
 6. Start services; check the authenticated agent API and Caddy configuration.
 7. Save private GUI connection details in /etc/lidza-agent/connection.json.
+GUI setup address: $setup_origin
 Agent API hostname: ${hostname:-loopback only}
 TXT
  exit 0
@@ -127,6 +154,10 @@ if $with_control; then
  if [[ ! -f "$root/etc/lidza-control/control.env" ]]; then
   printf '%s\n' 'CONTROL_DATA_DIR=/var/lib/lidza-control' 'LIDZA_ADDR=127.0.0.1:3000' 'DOCKER_CONFIG=/var/lib/lidza-control/docker' > "$root/etc/lidza-control/control.env"
  fi
+ if ! grep -q '^CONTROL_SETUP_ORIGIN=.' "$root/etc/lidza-control/control.env";then
+  sed -i '/^CONTROL_SETUP_ORIGIN=/d' "$root/etc/lidza-control/control.env"
+  printf 'CONTROL_SETUP_ORIGIN=%s\n' "$setup_origin" >> "$root/etc/lidza-control/control.env"
+ fi
  if [[ ! -f "$root/var/lib/lidza-control/servers.json" ]]; then
   printf '[{"id":"local","name":"This server","url":"http://127.0.0.1:9090","token":"%s"}]\n' "$token" > "$root/var/lib/lidza-control/servers.json"
  fi
@@ -140,6 +171,9 @@ config=$(mktemp "$root/etc/caddy/.lidza-config.XXXXXX")
  printf 'https:// {\n tls {\n  on_demand\n }\n reverse_proxy 127.0.0.1:8081\n}\n'
  if [[ -n "$hostname" ]]; then
   printf '%s {\n handle /v1/* {\n  reverse_proxy 127.0.0.1:9090\n }\n handle {\n  respond 404\n }\n}\n' "$hostname"
+ fi
+ if $with_control && [[ "$fqdn" != localhost ]];then
+  printf '%s {\n @private path /metrics /readyz /healthz\n respond @private 404\n reverse_proxy 127.0.0.1:3000\n}\n' "$fqdn"
  fi
 } > "$config"
 chmod 0644 "$config"
@@ -160,6 +194,8 @@ runuser -u lidza-agent -- docker info >/dev/null
 systemctl enable lidza-agent caddy
 systemctl restart lidza-agent
 systemctl restart caddy
+# Apply the installer routing even if Caddy has an older autosave (including its apt default).
+caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 for attempt in {1..30}; do
  if curl -fsS http://127.0.0.1:9090/health >/dev/null; then break;fi
  [[ "$attempt" != 30 ]] || { echo 'Agent failed readiness; inspect journalctl -u lidza-agent.' >&2;exit 1; }
@@ -178,5 +214,7 @@ if $with_control; then
   [[ "$attempt" != 30 ]] || { echo 'Control-panel startup failed; inspect journalctl -u lidza-control.' >&2;exit 1; }
   sleep 1
  done
- printf '%s\n' 'Control panel installed. Open it through an SSH tunnel to port 3000 to finish setup.' 'One-time setup credential: /var/lib/lidza-control/setup-token (read locally on the server).' 'Database, domain/DNS, GitHub and operator account are configured in the browser.'
+ printf 'Control panel installed. Finish setup at %s\n' "$setup_origin"
+ if [[ "$fqdn" == localhost ]];then printf '%s\n' 'Use an SSH tunnel to port 3000 for remote local-mode setup.';else printf '%s\n' 'DNS must point to this server and ports 80/443 must be reachable. Caddy obtains HTTPS automatically.';fi
+ printf '%s\n' 'One-time setup credential: /var/lib/lidza-control/setup-token (read locally on the server).' 'Database, GitHub and operator account are configured in the browser.'
 fi
