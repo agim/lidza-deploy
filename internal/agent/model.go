@@ -11,6 +11,7 @@ import (
 )
 
 type App struct {
+	DomainStatus       *DomainStatus     `json:"domain_status,omitempty"`
 	Bindings           map[string]string `json:"database_bindings,omitempty"`
 	BackupBeforeDeploy *bool             `json:"backup_before_deploy,omitempty"`
 	Networks           []string          `json:"-"`

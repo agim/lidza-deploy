@@ -47,11 +47,9 @@ func Handler(m *Manager) http.Handler {
 			return
 		}
 		domain := strings.ToLower(r.URL.Query().Get("domain"))
-		for _, a := range m.Apps() {
-			if a.Domain == domain && !a.Retiring {
-				w.WriteHeader(200)
-				return
-			}
+		if m.domainAllowed(r.Context(), domain) {
+			w.WriteHeader(200)
+			return
 		}
 		w.WriteHeader(403)
 	})
@@ -152,6 +150,10 @@ func Proxy(m *Manager) http.Handler {
 		host := strings.ToLower(r.Host)
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
+		}
+		if r.URL.Path == domainProbePath {
+			m.serveDomainProof(w, r, host)
+			return
 		}
 		if r.URL.Path == "/metrics" || r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
 			http.NotFound(w, r)

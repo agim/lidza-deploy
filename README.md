@@ -10,7 +10,7 @@ The MonolithCMS agent was copied/adapted into this repository; the original repo
 - Līdza-managed operator sessions and GitHub OAuth connections. No provider or agent credentials in the browser.
 - GitHub webhook creation/update, signed payload verification, repository/branch filtering, duplicate-delivery protection, and persistent dispatch retries through Līdza jobs.
 - Docker release builds, non-root application containers, CPU/memory/process limits, loopback-only application ports, and `/readyz` checks before traffic switches.
-- Separate host routing per app; Caddy issues and renews certificates only for registered domains.
+- Separate host routing per app; DNS verification and proactive Caddy certificate issuance on deployment and FQDN edits, with periodic retries. See [Domains and automatic HTTPS](docs/domains-ssl.md).
 - Deployment history, runtime logs, and rollback to the previous healthy release.
 - The selected **Signal** interface uses Līdza’s released dark brand palette. Standalone HTML previews remain available.
 - GUI server inventory, branch/domain settings, write-only environment edits, and retryable app removal.

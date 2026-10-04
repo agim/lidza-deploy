@@ -168,6 +168,7 @@ config=$(mktemp "$root/etc/caddy/.lidza-config.XXXXXX")
  echo '{'
  [[ -z "$email" ]] || printf ' email %s\n' "$email"
  printf ' on_demand_tls {\n  ask http://127.0.0.1:9090/tls/allow\n }\n}\n'
+ printf 'http:// {\n handle /.well-known/lidza-deploy-host {\n  reverse_proxy 127.0.0.1:8081\n }\n handle {\n  redir https://{host}{uri} permanent\n }\n}\n'
  printf 'https:// {\n tls {\n  on_demand\n }\n reverse_proxy 127.0.0.1:8081\n}\n'
  if [[ -n "$hostname" ]]; then
   printf '%s {\n handle /v1/* {\n  reverse_proxy 127.0.0.1:9090\n }\n handle {\n  respond 404\n }\n}\n' "$hostname"

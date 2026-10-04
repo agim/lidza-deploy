@@ -30,6 +30,8 @@ assert paired[0]['token']==connection['token']
 assert '--resume' in (root/'etc/systemd/system/caddy.service.d/10-lidza-resume.conf').read_text()
 config=(root/'etc/caddy/Caddyfile').read_text()
 assert 'ask http://127.0.0.1:9090/tls/allow' in config
+assert 'handle /.well-known/lidza-deploy-host' in config
+assert 'redir https://{host}{uri} permanent' in config
 assert 'handle /v1/*' in config and 'agent.example.com' in config
 assert connection['token'] not in config
 assert 'deploy.example.com' in config and 'reverse_proxy 127.0.0.1:3000' in config

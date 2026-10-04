@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,7 +51,10 @@ func TestCaddyDomainCertificates(t *testing.T) {
 		return out
 	}
 	// A local CA tests issuance and hostname verification without consuming public ACME limits.
+	proofProxy := httptest.NewServer(Proxy(m))
+	defer proofProxy.Close()
 	config := fmt.Sprintf("{\n admin off\n https_port %d\n http_port %d\n on_demand_tls {\n ask %s/tls/allow\n }\n}\nhttps:// {\n tls internal {\n on_demand\n }\n respond \"certificate works\" 200\n}\n", port, httpPort, api.URL)
+	config += fmt.Sprintf("http:// {\n handle /.well-known/lidza-deploy-host {\n reverse_proxy %s\n }\n handle {\n redir https://{host}{uri} permanent\n }\n}\n", strings.TrimPrefix(proofProxy.URL, "http://"))
 	dir := t.TempDir()
 	file := filepath.Join(dir, "Caddyfile")
 	if err := os.WriteFile(file, []byte(config), 0600); err != nil {
@@ -91,6 +95,15 @@ func TestCaddyDomainCertificates(t *testing.T) {
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
 	for _, host := range []string{"cert-one.example.com", "cert-two.example.com"} {
+		lookup := func(context.Context, string, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		}
+		if err := checkDomainRoute(ctx, host, m.domainProof(host), lookup, fmt.Sprint(httpPort)); err != nil {
+			t.Fatal("Caddy HTTP verification route", err)
+		}
+		if err := verifyDomainCertificate(ctx, host, fmt.Sprintf("127.0.0.1:%d", port), &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			t.Fatal("proactive certificate request", err)
+		}
 		res, err := client.Get(fmt.Sprintf("https://%s:%d/", host, port))
 		if err != nil {
 			t.Fatal(err)
