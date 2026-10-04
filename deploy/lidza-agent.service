@@ -1,0 +1,21 @@
+[Unit]
+Description=Lidza deployment agent
+After=network-online.target docker.service
+Requires=docker.service
+[Service]
+User=lidza-agent
+Group=lidza-agent
+SupplementaryGroups=docker
+EnvironmentFile=/etc/lidza-agent/agent.env
+ExecStart=/usr/local/bin/lidza-agent -config /etc/lidza-agent/config.json
+Restart=on-failure
+RestartSec=5
+StateDirectory=lidza-agent
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/lidza-agent
+[Install]
+WantedBy=multi-user.target

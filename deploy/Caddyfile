@@ -1,0 +1,33 @@
+{
+	email {$ACME_EMAIL}
+	on_demand_tls {
+		ask http://127.0.0.1:9090/tls/allow
+	}
+}
+
+# Every configured application FQDN gets its own automatically renewed cert.
+# DNS A/AAAA records must point here; ports 80 and 443 must be reachable.
+https:// {
+	tls {
+		on_demand
+	}
+	reverse_proxy 127.0.0.1:8081
+}
+
+# Optional: expose the authenticated agent API for a remote control panel.
+# Set an explicit management hostname; do not forward /tls/allow publicly.
+# agent.example.com {
+#  handle /v1/* {
+#   reverse_proxy 127.0.0.1:9090
+#  }
+#  handle {
+#   respond 404
+#  }
+# }
+
+# Optional on the control-panel host (or this host when colocated):
+# deploy.example.com {
+#  @internal path /metrics /readyz /healthz
+#  respond @internal 404
+#  reverse_proxy 127.0.0.1:3000
+# }

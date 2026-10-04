@@ -1,0 +1,2 @@
+'use strict';
+document.querySelector('#login').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;try{const response=await fetch('/api/v1/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});const data=await response.json();if(!response.ok)throw Error(data.error?.message||data.error||'Sign-in failed');location.href='/console.html'}catch(err){document.querySelector('#login-error').textContent=err.message}finally{button.disabled=false}};

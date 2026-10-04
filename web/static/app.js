@@ -1,0 +1,143 @@
+'use strict';
+const $=s=>document.querySelector(s), params=new URLSearchParams(location.search), demo=params.get('demo')==='1';
+let design=demo?(params.get('design')||'terminal'):'terminal', tab='apps';
+let apps=[],servers=[],deployments=[],deliveries=[],status={},filter='',poll,unavailableServers=[],refreshing=false;
+const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function theme(){document.body.dataset.design=design;$('#design').value=design;$('#design').hidden=!demo;$('#design-link').hidden=!demo}
+function notice(s){$('#toast').textContent=s;$('#toast').hidden=false;clearTimeout(notice.timer);notice.timer=setTimeout(()=>$('#toast').hidden=true,5000)}
+function fail(e){$('#error').textContent=e.message||String(e);$('#error').hidden=false}
+async function api(path,method='GET',body){const res=await fetch('/api/'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(res.status===401){location.href='/login.html';throw Error('Please sign in.')}let data;try{data=await res.json()}catch{data={}}if(!res.ok)throw Error(data.error?.message||data.error||'Request failed ('+res.status+')');return data}
+function initDemo(){servers=[{id:'eu-1',name:'Frankfurt · production',url:'https://agent-eu.example.com'},{id:'us-1',name:'Virginia · staging',url:'https://agent-us.example.com'}];apps=[{id:'customer-portal',repository:'acme/customer-portal',domain:'portal.example.com',branch:'main',server_id:'eu-1',auto_deploy:true},{id:'content-studio',repository:'acme/content-studio',domain:'studio.example.com',branch:'main',server_id:'eu-1',auto_deploy:true},{id:'documentation',repository:'acme/docs',domain:'docs.example.com',branch:'main',server_id:'us-1',auto_deploy:false}];deployments=apps.map((a,i)=>({id:'demo-'+i,app_id:a.id,status:'live',commit:['a6b92fe','8f129bc','319fa27'][i],created:new Date(Date.now()-(i+1)*3600000).toISOString()}));apps.forEach(a=>a.current={commit:latest(a.id).commit});status={github_connected:true,github_configured:true};$('#demo-banner').hidden=false;$('#mode').textContent='Interactive preview'}
+async function refresh() {
+ if(refreshing)return;
+ refreshing=true;
+ try {
+ if (!demo) {
+  const results = await Promise.allSettled(['apps','servers','deployments','status','deliveries'].map(name=>api('control/'+name)));
+  const current=[apps,servers,deployments,status,deliveries];
+  [apps,servers,deployments,status,deliveries]=results.map((result,i)=>result.status==='fulfilled'?result.value:current[i]);
+  if(results[2].status==='fulfilled'){unavailableServers=deployments.unavailable_servers||[];deployments=deployments.deployments||[];}
+  const failures=results.filter(result=>result.status==='rejected');
+  if(failures.length)fail(Error('Some data could not be refreshed: '+failures.map(result=>result.reason.message).join('; ')));
+  else if(unavailableServers.length)fail(Error('Deployment history unavailable for: '+unavailableServers.join(', ')+'. Other servers remain available.'));
+  else $('#error').hidden=true;
+ }
+ render();
+ }finally{refreshing=false}
+}
+function latest(id){return deployments.filter(d=>d.app_id===id).sort((a,b)=>new Date(b.created)-new Date(a.created))[0]}
+function pill(s){return `<span class="pill ${s==='failed'?'failed':s==='live'?'':'neutral'}">${escape(s||'not deployed')}</span>`}
+function card(a){let d=latest(a.id),server=servers.find(s=>s.id===a.server_id);return `<article class="app-card"><div class="card-body"><div class="card-head"><span class="app-icon">${escape(a.id.slice(0,2).toUpperCase())}</span><div><h3>${escape(a.id)}</h3><span class="domain">${escape(a.domain)}</span></div>${pill(a.retiring?'removal pending':a.agent_error||(['building','queued'].includes(d?.status)?d.status:a.current?'live':d?.status))}</div><div class="repo"><span>⑂</span>${escape(a.repository)} <b>· ${escape(a.branch)}</b> <code>${escape(a.current?.commit?.slice(0,7)||'')}</code></div><div class="meta-row"><span>${escape(server?.name||a.server_id)}</span><span>${a.auto_deploy?'↻ Auto-deploy enabled':'Manual deploys'} · ${demo?'TLS demo':'Auto TLS configured'}</span></div></div><div class="card-actions">${a.retiring?`<button data-action="remove" data-id="${escape(a.id)}">Retry removal</button>`:`<button data-action="remove" data-id="${escape(a.id)}">Remove</button><button data-action="settings" data-id="${escape(a.id)}">Settings</button><button data-action="logs" data-id="${escape(a.id)}">Logs</button><button data-action="rollback" data-id="${escape(a.id)}">Rollback</button><button data-action="${a.auto_deploy?'disable-webhook':'webhook'}" data-id="${escape(a.id)}">${a.auto_deploy?'Disable auto-deploy':'Auto-deploy'}</button><button class="deploy" data-action="deploy" data-id="${escape(a.id)}">Deploy ↗</button>`}</div></article>`}
+function render(){
+ for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b.dataset.tab===tab);
+ const labels={apps:['Applications','A clear view of everything you’re building.'],deployments:['Deployments','Every release, from queued to live.'],servers:['Servers','A home for each app. A view across every host.'],settings:['Integrations','Connect your repositories and automate your releases.']};
+ $('#title').textContent=labels[tab][0]+'.';$('#crumb').textContent=labels[tab][0];$('#subtitle').textContent=labels[tab][1];$('#app-count').textContent=apps.length;$('#stat-apps').textContent=apps.length;$('#stat-releases').textContent=deployments.filter(d=>d.status==='live').length;$('#stat-servers').textContent=servers.length;
+ const content=$('#content');
+ if(tab==='apps'){content.innerHTML=`<div class="toolbar"><h2>Your applications <span class="badge">${apps.length}</span></h2><label class="sr-only" for="search">Search applications</label><input id="search" class="search" placeholder="Search applications…" value="${escape(filter)}"></div><div class="cards">${apps.filter(a=>(a.id+' '+a.domain).includes(filter.toLowerCase())).map(card).join('')||'<div class="empty"><h3>Your next application belongs here.</h3><p>Connect a server, then add a GitHub repository to begin.</p></div>'}</div>`;$('#search').addEventListener('input',e=>{filter=e.target.value;const start=e.target.selectionStart;render();$('#search').focus();$('#search').setSelectionRange(start,start)})}
+ if(tab==='deployments'){content.innerHTML=`<div class="toolbar"><h2>Release history</h2><span class="badge">Latest ${deployments.length} releases</span></div><div class="table-wrap"><table><thead><tr><th>Application</th><th>Status</th><th>Commit</th><th>Started</th><th>Result</th></tr></thead><tbody>${[...deployments].sort((a,b)=>new Date(b.created)-new Date(a.created)).map(d=>`<tr><td><strong>${escape(d.app_id)}</strong></td><td>${pill(d.status)}</td><td><code>${escape(d.commit?.slice(0,8)||'pending')}</code></td><td>${escape(new Date(d.created).toLocaleString())}</td><td>${escape(d.error||'—')}</td></tr>`).join('')||'<tr><td colspan="5">No deployments yet. Deploy an application to see its release history.</td></tr>'}</tbody></table></div>`}
+ if(tab==='deployments'&&deliveries.length){content.insertAdjacentHTML('beforeend',`<div class="panel"><h2>Push delivery queue</h2><p>Durable dispatch retries when a remote agent is unavailable.</p><div class="table-wrap"><table><thead><tr><th>Job</th><th>State</th><th>Attempts</th><th>Last error</th></tr></thead><tbody>${deliveries.map(d=>`<tr><td><code>${escape(d.ID.slice(0,12))}</code></td><td>${escape(d.State)}</td><td>${d.Attempts} / ${d.MaxAttempts}</td><td>${escape(d.LastError||'—')}</td></tr>`).join('')}</tbody></table></div></div>`)}
+ if(tab==='servers'){content.innerHTML=`<div class="toolbar"><h2>Connected hosts</h2><button data-manage-server="">＋ Connect server</button><span class="badge">${servers.length} configured</span></div><div class="server-grid">${servers.map(s=>`<article class="panel"><span class="server-icon">▤</span><h2>${escape(s.name)}</h2><p>${escape(s.url)}</p><div class="server-apps">${apps.filter(a=>a.server_id===s.id).length} applications · dedicated agent</div><p>${apps.filter(a=>a.server_id===s.id).map(a=>escape(a.domain)).join('<br>')||'Ready for its first application.'}</p><button data-server="${escape(s.id)}">Add application →</button> <button data-manage-server="${escape(s.id)}">Edit</button> <button data-remove-server="${escape(s.id)}" ${apps.some(a=>a.server_id===s.id)?'disabled':''}>Remove</button></article>`).join('')||'<div class="empty">No servers connected. Install an agent, then choose Connect server.</div>'}</div><div class="panel"><h2>One server, many domains</h2><p>Each application has a separate container and FQDN. Point DNS at the server; Caddy issues and renews HTTPS certificates for registered domains. Certificate issuance requires reachable ports 80 and 443.</p></div>`}
+ if(tab==='settings'){content.innerHTML=`<article class="panel"><span class="eyebrow">SOURCE CONTROL</span><h2>GitHub</h2><p>${status.github_connected?'Your GitHub connection is available. Choose public or private repositories and enable push-triggered deployment per application.':'Connect GitHub to browse private repositories and create automatic deployment webhooks.'}</p><form id="github-config"><div class="form-row"><label>OAuth client ID<input name="client_id" autocomplete="off" required></label><label>OAuth client secret<input name="client_secret" type="password" autocomplete="off" required></label></div><p class="hint">Callback: <code>${escape(location.origin+'/api/v1/auth/connect/github/callback')}</code>. Register an OAuth app in your GitHub account, then save its credentials here.</p><button type="submit">Save GitHub configuration</button></form><a class="button primary" id="connect" href="/api/v1/auth/connect/github/start?redirect=/console.html">${status.github_connected?'Reconnect GitHub':'Authorize GitHub'} ↗</a>${status.github_connected?'<button id="disconnect">Disconnect</button>':''}<p class="hint">${demo?'Preview only. No account is connected.':!status.github_configured?'Save your GitHub OAuth app credentials above, then authorize your account.':'Authorization is handled by Līdza. Tokens stay on the server.'}</p></article><article class="panel"><h2>Deploy on your terms</h2><p>Manual deploys and push-triggered redeploys use the same readiness gate. A failed candidate leaves the previous release serving traffic. Rollback switches to the previous healthy release.</p></article><button id="logout">Sign out</button>`;$('#github-config').onsubmit=async e=>{e.preventDefault();try{if(!demo)await api('control/github/config','POST',Object.fromEntries(new FormData(e.target)));e.target.reset();await refresh();notice('GitHub configured. Authorize your account next.')}catch(err){fail(err)}};$('#connect').onclick=e=>{if(demo){e.preventDefault();notice('Demo: GitHub authorization would open here.')}else if(!status.github_configured){e.preventDefault();notice('Save the GitHub OAuth app credentials above first.')}};if($('#disconnect'))$('#disconnect').onclick=async()=>{try{if(!demo)await api('v1/auth/connections/github','DELETE');status.github_connected=false;render();notice('GitHub disconnected')}catch(e){fail(e)}};$('#logout').onclick=async()=>{if(demo){location.href='/';return}await api('v1/auth/logout','POST',{});location.href='/login.html'}}
+}
+function openForm(serverID){$('#app-form').reset();$('#app-form').querySelectorAll('details').forEach(d=>d.open=false);envEditor('#create-env-editor',[]);$('#server-select').innerHTML=servers.map(s=>`<option value="${escape(s.id)}">${escape(s.name)}</option>`).join('');if(serverID)$('#server-select').value=serverID;$('#form-error').hidden=true;$('#app-dialog').showModal()}
+$('#new-app').onclick=()=>openForm();$('#design').onchange=e=>{design=e.target.value;theme();render()};for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>{tab=b.dataset.tab;filter='';render()};for(const b of document.querySelectorAll('[data-close]'))b.onclick=()=>b.closest('dialog').close();
+$('#load-repos').onclick=async()=>{try{const repos=demo?[{full_name:'acme/private-portal'},{full_name:'acme/public-site'}]:await api('control/github/repos');$('#repo-options').innerHTML=repos.map(r=>`<option value="${escape(r.full_name)}"></option>`).join('');notice(`${repos.length} repositories loaded. Type in the repository field to choose.`)}catch(e){$('#form-error').textContent=e.message;$('#form-error').hidden=false}};
+$('#app-form').onsubmit=async e=>{e.preventDefault();const b=e.submitter;b.disabled=true;try{let value=Object.fromEntries(new FormData(e.target));value.env=value.env.trim()?JSON.parse(value.env):{};value.env=readEnv('#create-env-editor',value.env,false);if(demo){if(apps.some(a=>a.id===value.id||a.domain===value.domain))throw Error('Application ID or domain already exists.');apps.push({...value,env:undefined,env_keys:Object.keys(value.env).sort(),auto_deploy:false})}else await api('control/apps','POST',value);$('#app-dialog').close();tab='apps';await refresh();notice('Application created. Deploy it when you’re ready.')}catch(err){$('#form-error').textContent=err.message;$('#form-error').hidden=false}finally{b.disabled=false}};
+$('#content').onclick=async e=>{if(await serverAction(e))return;const s=e.target.closest('[data-server]');if(s){openForm(s.dataset.server);return}const b=e.target.closest('[data-action]');if(!b)return;const {action,id}=b.dataset;b.disabled=true;try{if(action==='remove'){if(prompt('This removes '+id+' and its containers, environment, and domain routing. External databases are untouched. Type the application ID to confirm:')!==id)return;if(demo){apps=apps.filter(a=>a.id!==id)}else await api('control/apps/'+id,'DELETE',{confirm:id});await refresh();notice('Application removed. Remove its unused webhook in GitHub.');return}if(action==='settings'){await openSettings(id);return}if(action==='logs'){const data=demo?{logs:'[demo] Application started\n[demo] GET /readyz 200\n[demo] Release is serving requests'}:await api(`control/apps/${id}/logs`);$('#logs').textContent=data.logs;$('#log-title').textContent=id+' · logs';$('#log-dialog').showModal();return}if(action==='rollback'&&!confirm('Switch '+id+' to its previous healthy release?'))return;if(demo){if(action==='deploy'){const d={id:'demo-'+Date.now(),app_id:id,status:'building',created:new Date().toISOString()};deployments.push(d);setTimeout(()=>{d.status='live';d.commit='d3e091a';const app=apps.find(a=>a.id===id);app.previous=app.current;app.current={commit:d.commit};render();notice('Demo deployment is live.')},1200)}if(action==='rollback'){const app=apps.find(a=>a.id===id);if(!app.previous)throw Error('No previous demo release. Deploy this app first.');[app.current,app.previous]=[app.previous,app.current]}if(action==='webhook'||action==='disable-webhook')apps.find(a=>a.id===id).auto_deploy=action==='webhook';notice('Demo: '+action+' accepted.')}else{await api(`control/apps/${id}/${action==='disable-webhook'?'webhook':action}`,action==='disable-webhook'?'DELETE':'POST',{});notice(action==='deploy'?'Deployment queued.':action+' complete.')}await refresh()}catch(err){fail(err)}finally{b.disabled=false}};
+
+let editingServer = null, editingApp = null;
+function dialogError(id, error) { $(id).textContent = error.message; $(id).hidden = false; }
+function openServer(id) {
+ const server = servers.find(s => s.id === id);
+ editingServer = server?.id || null;
+ const form = $('#server-form'); form.reset();
+ for (const name of ['id', 'name', 'url']) form.elements[name].value = server?.[name] || '';
+ form.elements.id.readOnly = !!server;
+ form.elements.token.required = !server;
+ $('#server-title').textContent = server ? 'Edit server' : 'Connect server';
+ $('#server-error').hidden = true; $('#server-dialog').showModal();
+}
+async function serverAction(event) {
+ const edit = event.target.closest('[data-manage-server]');
+ if (edit) { openServer(edit.dataset.manageServer); return true; }
+ const remove = event.target.closest('[data-remove-server]');
+ if (!remove) return false;
+ const id = remove.dataset.removeServer;
+ if (!confirm('Remove '+id+' from the control panel? This does not uninstall its agent.')) return true;
+ try {
+  if (demo) servers = servers.filter(s => s.id !== id);
+  else await api('control/servers/'+id, 'DELETE');
+  await refresh(); notice('Server removed.');
+ } catch (error) { fail(error); }
+ return true;
+}
+$('#server-form').onsubmit = async event => {
+ event.preventDefault(); const button=event.submitter; button.disabled=true;
+ try {
+  const value=Object.fromEntries(new FormData(event.target));
+  if (demo) {
+   if (servers.some(s=>s.id!==editingServer && (s.id===value.id||s.url===value.url))) throw Error('Server ID or URL already exists.');
+   delete value.token;
+   if (editingServer) servers[servers.findIndex(s=>s.id===editingServer)]=value;
+   else servers.push(value);
+  } else await api('control/servers'+(editingServer?'/'+editingServer:''),editingServer?'PUT':'POST',value);
+  event.target.reset(); $('#server-dialog').close(); await refresh(); notice('Server saved.');
+ } catch(error) { dialogError('#server-error',error); }
+ finally { button.disabled=false; }
+};
+async function openSettings(id) {
+ const app=apps.find(a=>a.id===id);
+ const value=demo?{...app,env_keys:app.env_keys||[]}:await api('control/apps/'+id+'/settings');
+ editingApp=id; const form=$('#settings-form'); form.reset();form.querySelectorAll('details').forEach(d=>d.open=false);
+ form.elements.branch.value=value.branch; form.elements.domain.value=value.domain;
+ $('#env-keys').textContent=value.env_keys?.join(', ')||'No variables saved';envEditor('#settings-env-editor',value.env_keys||[]);
+ $('#settings-title').textContent=id+' · settings'; $('#settings-error').hidden=true;
+ $('#settings-dialog').showModal();
+}
+$('#settings-form').onsubmit = async event => {
+ event.preventDefault(); const button=event.submitter;button.disabled=true;
+ try {
+  const value=Object.fromEntries(new FormData(event.target));
+  value.env_changes=value.env_changes.trim()?JSON.parse(value.env_changes):{};
+  if (!value.env_changes || Array.isArray(value.env_changes) || typeof value.env_changes!=='object' || Object.values(value.env_changes).some(v=>v!==null&&typeof v!=='string')) throw Error('Environment changes must be a JSON object containing strings or null.');
+  value.env_changes=readEnv('#settings-env-editor',value.env_changes,true);
+  if (demo) {
+   if(apps.some(a=>a.id!==editingApp&&a.domain===value.domain))throw Error('Domain already registered.');
+   const app=apps.find(a=>a.id===editingApp),keys=new Set(app.env_keys||[]);
+   for(const [key,v] of Object.entries(value.env_changes)) { if(v===null)keys.delete(key);else keys.add(key); }
+   Object.assign(app,{branch:value.branch,domain:value.domain,env_keys:[...keys].sort()});
+  } else await api('control/apps/'+editingApp+'/settings','PATCH',value);
+  event.target.reset();$('#settings-dialog').close();await refresh();notice('Settings saved. Deploy to apply branch and environment changes.');
+ } catch(error) { dialogError('#settings-error',error); }
+ finally {button.disabled=false;}
+};
+for(const id of ['server-dialog','settings-dialog','app-dialog'])$("#"+id).addEventListener('close',()=>$("#"+id+' form').reset());
+function envEditor(selector,keys) {
+ const host=$(selector);host.replaceChildren();
+ const rows=document.createElement('div');host.append(rows);
+ function add(key='') {
+  const row=document.createElement('div');row.className='env-row';row.dataset.saved=key?'1':'0';
+  const nameLabel=document.createElement('label');nameLabel.textContent='Name';const name=document.createElement('input');name.className='env-name';name.value=key;name.readOnly=!!key;name.autocomplete='off';name.spellcheck=false;name.placeholder='DATABASE_URL';nameLabel.append(name);
+  const valueLabel=document.createElement('label');valueLabel.textContent='Value';const value=document.createElement('input');value.className='env-value';value.type='password';value.autocomplete='new-password';value.spellcheck=false;value.placeholder=key?'Saved value stays unchanged':'Enter value';valueLabel.append(value);
+  const actionLabel=document.createElement('label');actionLabel.textContent='Action';const action=document.createElement('select');action.className='env-action';
+  for(const [v,text] of (key?[['keep','Keep saved value'],['set','Replace value'],['delete','Delete variable']]:[['set','Set value'],['discard','Discard row']])){const o=document.createElement('option');o.value=v;o.textContent=text;action.append(o)}
+  value.oninput=()=>{action.value='set'};action.onchange=()=>{value.disabled=action.value!=='set';if(value.disabled)value.value=''};actionLabel.append(action);row.append(nameLabel,valueLabel,actionLabel);rows.append(row);
+ }
+ keys.forEach(add);const button=document.createElement('button');button.type='button';button.textContent='＋ Add variable';button.onclick=()=>add();host.append(button);
+}
+function readEnv(selector,base,allowDelete) {
+ if(!base||Array.isArray(base)||typeof base!=='object'||Object.values(base).some(v=>typeof v!=='string'&&!(allowDelete&&v===null)))throw Error('Environment must contain string values'+(allowDelete?' or null to delete.':'.'));
+ const changes=Object.assign(Object.create(null),base),seen=new Set();
+ for(const row of $(selector).querySelectorAll('.env-row')){
+  const action=row.querySelector('.env-action').value,key=row.querySelector('.env-name').value;
+  if(action==='discard')continue;
+  if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))throw Error('Enter a valid variable name.');
+  if(seen.has(key))throw Error('Each variable name must be unique.');seen.add(key);
+  if(action==='keep')continue;
+  if(Object.hasOwn(changes,key))throw Error('Variable '+key+' also appears in the JSON changes.');
+  changes[key]=action==='delete'?null:row.querySelector('.env-value').value;
+ }
+ return changes;
+}
+for(const id of ['app-dialog','settings-dialog'])$('#'+id).addEventListener('close',()=>{const editor=$(id==='app-dialog'?'#create-env-editor':'#settings-env-editor');editor.replaceChildren()});
+theme();if(demo)initDemo();refresh().catch(fail);if(!demo)poll=setInterval(()=>{if(!document.querySelector('dialog[open]')&&document.activeElement?.id!=='search')refresh().catch(fail)},5000);window.addEventListener('pagehide',()=>clearInterval(poll));

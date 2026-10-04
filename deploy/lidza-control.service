@@ -1,0 +1,21 @@
+[Unit]
+Description=Lidza deployment control panel
+After=network-online.target
+[Service]
+User=lidza-control
+Group=lidza-control
+SupplementaryGroups=docker
+WorkingDirectory=/var/lib/lidza-control
+EnvironmentFile=/etc/lidza-control/control.env
+ExecStart=/usr/local/bin/lidza-control
+Restart=on-failure
+RestartSec=5
+StateDirectory=lidza-control
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/lidza-control
+[Install]
+WantedBy=multi-user.target

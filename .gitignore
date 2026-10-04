@@ -31,3 +31,13 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local development state and build outputs
+.local/
+bin/
+node_modules/
+
+dist/
+.lidza-deploy/
+config/master.key
+config/credentials.yml.enc

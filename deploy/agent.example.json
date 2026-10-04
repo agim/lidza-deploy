@@ -1,0 +1,5 @@
+{
+  "listen": "127.0.0.1:9090",
+  "proxy_listen": "127.0.0.1:8081",
+  "data_dir": "/var/lib/lidza-agent"
+}
