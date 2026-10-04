@@ -63,6 +63,7 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next.Secret = ""
+	next.Previews.Env = nil
 	agent.JSON(w, 200, next)
 }
 
@@ -85,5 +86,6 @@ func (c *Control) disableHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next.Secret = ""
+	next.Previews.Env = nil
 	agent.JSON(w, 200, next)
 }

@@ -14,7 +14,7 @@ The existing durable email alert/recovery system checks each minute. It alerts a
 
 ## Deployment history
 
-**Deployments → Details & build logs** shows the commit subject, branch, domain, elapsed time, failure, changed setting/environment key names and bounded build output. Environment values and Git credentials are not recorded as change metadata; known environment values/tokens are masked in captured output. Repository-controlled output may contain independently supplied secrets: avoid committing credentials or printing them in build scripts. Output is capped at 64 KiB per retained deployment; old deployments without captured output say so. Deployment history is retained for the latest 500 records per agent in encrypted state.
+**Deployments → Details & build logs** shows the commit subject, branch, domain, elapsed time, failure, changed setting/environment key names and bounded build output. Environment values and Git credentials are not recorded as change metadata; known environment values/tokens are masked in captured output. Repository-controlled output may contain independently supplied secrets: avoid committing credentials or printing them in build scripts. The app runtime log endpoint also masks currently configured environment values and database URL passwords; this cannot identify arbitrary, encoded or previously configured secrets. Output is capped at 64 KiB per retained deployment; old deployments without captured output say so. Deployment history is retained for the latest 500 records per agent in encrypted state.
 
 ## Maintenance mode
 

@@ -14,13 +14,13 @@ func main() {
 			for _, key := range []string{"DATABASE_URL", "ANALYTICS_DATABASE_URL"} {
 				pool, err := db.Open(r.Context(), db.Config{URL: os.Getenv(key)})
 				if err != nil {
-					http.Error(w, "database unavailable", 503)
+					http.Error(w, "database unavailable", http.StatusServiceUnavailable)
 					return
 				}
 				err = pool.Ping(r.Context())
 				pool.Close()
 				if err != nil {
-					http.Error(w, "database unavailable", 503)
+					http.Error(w, "database unavailable", http.StatusServiceUnavailable)
 					return
 				}
 			}

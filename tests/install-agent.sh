@@ -41,14 +41,9 @@ assert 'deploy.example.com' in config and 'reverse_proxy 127.0.0.1:3000' in conf
 assert 'respond @private 404' in config
 assert 'CONTROL_SETUP_ORIGIN=https://deploy.example.com' in (root/'etc/lidza-control/control.env').read_text()
 PY
-if "$installer" --fqdn localhost --stage "$scratch/bad" --hostname 'bad.example.com;id' > /dev/null 2>&1; then echo 'Invalid hostname accepted' >&2;exit 1; docker run --rm -v "$scratch/stage/etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.10.2-alpine caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile > "$scratch/caddy.json" 2> "$scratch/adapt.log"
- python3 - "$scratch/caddy.json" <<'PYJSON'
-import json,sys
-config=json.load(open(sys.argv[1]))
-policies=config['apps']['tls']['automation']['policies']
-assert any('deploy.example.com' in p.get('subjects',[]) and not p.get('on_demand',False) for p in policies)
-assert any(p.get('on_demand',False) for p in policies)
-PYJSON
+if "$installer" --fqdn localhost --stage "$scratch/bad" --hostname 'bad.example.com;id' > /dev/null 2>&1; then
+ echo 'Invalid hostname accepted' >&2
+ exit 1
 fi
 printf 'tampered\n' >> "$scratch/bundle/deploy/agent.example.json"
 if "$installer" --fqdn localhost --stage "$scratch/bad" > /dev/null 2>&1; then echo 'Tampered bundle accepted' >&2;exit 1;fi

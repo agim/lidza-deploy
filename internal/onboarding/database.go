@@ -29,7 +29,7 @@ func docker(ctx context.Context, args ...string) (string, error) {
 	cmd.WaitDelay = 3 * time.Second
 	data, err := cmd.Output()
 	if err != nil {
-		return "", errors.New("Docker operation failed; check the service and control-panel user's Docker access")
+		return "", errors.New("the Docker operation failed; check the service and control-panel user's Docker access")
 	}
 	return strings.TrimSpace(string(data)), nil
 }

@@ -54,7 +54,11 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 	if w := call(c.removeServer, "DELETE", "one", ""); w.Code != 409 {
 		t.Fatal("removed occupied server")
 	}
-	if w := call(c.updateSettings, "PATCH", "portal", `{"branch":"release","domain":"new.example.com","env_changes":{"NEW":"new-secret","OLD":null}}`); w.Code != 200 {
+	previewSecret := "private-preview-environment"
+	app, _ := c.app("portal")
+	app.Previews = PreviewConfig{Enabled: true, BaseDomain: "preview.example.com", Env: map[string]string{"API_TOKEN": previewSecret}}
+	c.data.Apps[app.ID] = app
+	if w := call(c.updateSettings, "PATCH", "portal", `{"branch":"release","domain":"new.example.com","env_changes":{"NEW":"new-secret","OLD":null}}`); w.Code != 200 || strings.Contains(w.Body.String(), previewSecret) {
 		t.Fatal(w.Code, w.Body)
 	}
 	w := call(c.settings, "GET", "portal", "")
@@ -73,6 +77,9 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 	if a.Branch != "release" || a.Domain != "new.example.com" {
 		t.Fatal("settings not persisted")
 	}
+	if a.Previews.Env["API_TOKEN"] != previewSecret {
+		t.Fatal("response filtering removed stored preview secret")
+	}
 	data, err := os.ReadFile(c.path())
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +87,10 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 	if strings.Contains(string(data), key) || strings.Contains(string(data), "portal") {
 		t.Fatal("control state is not encrypted")
 	}
-	c.data.Apps["portal"] = Application{ID: "portal", ServerID: "one", AutoDeploy: true, Secret: "webhook-secret"}
-	if w := call(c.disableHook, "DELETE", "portal", ""); w.Code != 200 || strings.Contains(w.Body.String(), "webhook-secret") {
+	a.AutoDeploy = true
+	a.Secret = "webhook-secret"
+	c.data.Apps["portal"] = a
+	if w := call(c.disableHook, "DELETE", "portal", ""); w.Code != 200 || strings.Contains(w.Body.String(), "webhook-secret") || strings.Contains(w.Body.String(), previewSecret) {
 		t.Fatal("disable", w.Code, w.Body)
 	}
 	// Disabling also cancels pending dispatch, even with no auth services in the context.
@@ -95,6 +104,9 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 	a, _ = c2.app("portal")
 	if a.AutoDeploy {
 		t.Fatal("disabled flag not persisted")
+	}
+	if a.Previews.Env["API_TOKEN"] != previewSecret {
+		t.Fatal("disabling webhook removed stored preview secret")
 	}
 	if w := call(c.retire, "DELETE", "portal", `{"confirm":"wrong"}`); w.Code != 400 {
 		t.Fatal("confirmation ignored")

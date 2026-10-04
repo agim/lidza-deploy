@@ -149,7 +149,7 @@ func (c *Control) Protect(next http.Handler) http.Handler {
 			return
 		}
 		if r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("Origin") != strings.TrimSuffix(c.cfg.PublicURL, "/") {
-			http.Error(w, "origin rejected", 403)
+			http.Error(w, "origin rejected", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

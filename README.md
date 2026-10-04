@@ -6,6 +6,8 @@ The MonolithCMS agent was copied/adapted into this repository; the original repo
 
 The GUI now includes database restore into a new connection, host health and alerts, deployment build history, maintenance mode, PR previews, workers/scheduled jobs, and managed agent upgrades. See [Operations and recovery](docs/operations.md). Administrator/deployer/viewer team access and durable audit logging use the framework APIs released in [Līdza v0.1.72 (#28)](https://github.com/agim/lidza/issues/28).
 
+See the [deployment readiness review](docs/deployment-readiness.md) for the latest test evidence, fixed findings and production acceptance checklist.
+
 ## Working features
 
 - GitHub public and private repositories, selected branches, manual deploy and redeploy.

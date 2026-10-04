@@ -86,7 +86,7 @@ func TestDomainProofRejectsWrongHostRedirectAndMixedAddresses(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if mode == "redirect" {
-					http.Redirect(w, r, "https://elsewhere.example", 302)
+					http.Redirect(w, r, "https://elsewhere.example", http.StatusFound)
 					return
 				}
 				if mode == "mixed" {

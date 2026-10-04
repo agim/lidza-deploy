@@ -68,7 +68,7 @@ func (c *Control) webhook(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
-		http.Error(w, "payload too large", 413)
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	signature := r.Header.Get("X-Hub-Signature-256")
@@ -76,7 +76,7 @@ func (c *Control) webhook(w http.ResponseWriter, r *http.Request) {
 	mac := hmac.New(sha256.New, []byte(a.Secret))
 	_, _ = mac.Write(body)
 	if err != nil || !strings.HasPrefix(signature, "sha256=") || !hmac.Equal(raw, mac.Sum(nil)) {
-		http.Error(w, "invalid signature", 401)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 	event := r.Header.Get("X-GitHub-Event")

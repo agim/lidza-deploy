@@ -128,7 +128,7 @@ func (s *Setup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == "/setup.html" {
-			http.Redirect(w, r, "/login.html", 303)
+			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
 			return
 		}
 		active.Handler.ServeHTTP(w, r)
@@ -147,7 +147,7 @@ func (s *Setup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		agent.JSON(w, 503, map[string]string{"status": "setup_required"})
 		return
 	case "/", "/console.html", "/login.html":
-		http.Redirect(w, r, "/setup.html", 303)
+		http.Redirect(w, r, "/setup.html", http.StatusSeeOther)
 		return
 	case "/setup.html", "/setup.js", "/style.css":
 		s.opts.Frontend.ServeHTTP(w, r)
@@ -165,19 +165,19 @@ func (s *Setup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			host = r.Host
 		}
 		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
-			http.Error(w, "use the local setup tunnel", 403)
+			http.Error(w, "use the local setup tunnel", http.StatusForbidden)
 			return
 		}
 		origin = "http://" + r.Host
 	}
 	if r.Header.Get("Origin") != origin {
-		http.Error(w, "origin rejected", 403)
+		http.Error(w, "origin rejected", http.StatusForbidden)
 		return
 	}
 	want := sha256.Sum256([]byte(s.token))
 	got := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 	if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
-		http.Error(w, "invalid setup credential", 401)
+		http.Error(w, "invalid setup credential", http.StatusUnauthorized)
 		return
 	}
 	switch {

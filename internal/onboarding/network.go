@@ -63,7 +63,7 @@ func configureNetwork(ctx context.Context, input Input) error {
 			}
 			select {
 			case <-deadline.Done():
-				return errors.New("Caddy is configured but public HTTPS is not ready; check ports 80/443 and retry")
+				return errors.New("the Caddy server is configured but public HTTPS is not ready; check ports 80/443 and retry")
 			case <-time.After(2 * time.Second):
 			}
 		}
@@ -88,18 +88,18 @@ func configureCloudflare(ctx context.Context, domain string, ip net.IP, zone, to
 		req.Header.Set("Content-Type", "application/json")
 		res, err := client.Do(req)
 		if err != nil {
-			return errors.New("Cloudflare request failed")
+			return errors.New("the Cloudflare request failed")
 		}
 		defer res.Body.Close()
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			return errors.New("Cloudflare rejected the request; check zone permissions")
+			return errors.New("the Cloudflare rejected the request; check zone permissions")
 		}
 		var envelope struct {
 			Success bool
 			Result  json.RawMessage
 		}
 		if err = json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&envelope); err != nil || !envelope.Success {
-			return errors.New("Cloudflare DNS operation failed")
+			return errors.New("the Cloudflare DNS operation failed")
 		}
 		if out != nil {
 			return json.Unmarshal(envelope.Result, out)
@@ -175,7 +175,7 @@ func configureCaddy(ctx context.Context, domain, email string) error {
 		}
 	}
 	if target == nil {
-		return errors.New("Caddy has no managed HTTPS listener")
+		return errors.New("the Caddy server has no managed HTTPS listener")
 	}
 	routeID := "lidza-control-panel"
 	routes, _ := target["routes"].([]any)
@@ -219,11 +219,11 @@ func configureCaddy(ctx context.Context, domain, email string) error {
 	req.Header.Set("Content-Type", "application/json")
 	result, err := client.Do(req)
 	if err != nil {
-		return errors.New("Caddy configuration could not be applied")
+		return errors.New("the Caddy configuration could not be applied")
 	}
 	defer result.Body.Close()
 	if result.StatusCode != 200 {
-		return errors.New("Caddy rejected control-panel HTTPS configuration")
+		return errors.New("the Caddy server rejected control-panel HTTPS configuration")
 	}
 	return nil
 }

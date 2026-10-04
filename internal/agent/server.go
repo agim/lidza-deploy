@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -143,12 +144,20 @@ func Handler(m *Manager) http.Handler {
 		JSON(w, 200, map[string]string{"status": "rolled_back"})
 	})
 	private.HandleFunc("GET /v1/apps/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
-		s, err := m.runtime.Logs(r.Context(), m.Current(r.PathValue("id")))
+		m.mu.Lock()
+		a, ok := m.data.Apps[r.PathValue("id")]
+		env := maps.Clone(a.Env)
+		m.mu.Unlock()
+		if !ok || a.Retiring || a.Current == nil {
+			Fail(w, 409, errors.New("no running release"))
+			return
+		}
+		s, err := m.runtime.Logs(r.Context(), a.Current)
 		if err != nil {
 			Fail(w, 409, err)
 			return
 		}
-		JSON(w, 200, map[string]string{"logs": s})
+		JSON(w, 200, map[string]string{"logs": scrubOutput(s, outputSecrets(env))})
 	})
 	mux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		want := sha256.Sum256([]byte(m.cfg.APIKey))
@@ -181,13 +190,15 @@ func Proxy(m *Manager) http.Handler {
 		}
 		release := m.Target(host)
 		if release == nil {
-			http.Error(w, "application unavailable", 503)
+			http.Error(w, "application unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		target := &url.URL{Scheme: "http", Host: "127.0.0.1:" + release.Port}
 		p := httputil.NewSingleHostReverseProxy(target)
 		p.Transport = transport
-		p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) { http.Error(w, "upstream unavailable", 502) }
+		p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		}
 		// Only the local TLS terminator supplies trusted forwarding headers.
 		remote, _, _ := net.SplitHostPort(r.RemoteAddr)
 		if ip := net.ParseIP(remote); ip == nil || !ip.IsLoopback() {
