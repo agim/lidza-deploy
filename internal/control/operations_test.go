@@ -57,6 +57,10 @@ func TestScheduledBackupsAndDurableAlerts(t *testing.T) {
 				state = "unhealthy"
 			}
 			json.NewEncoder(w).Encode([]agent.AppHealth{{AppID: "ops-fixture", State: state}})
+		case "/v1/server-health":
+			json.NewEncoder(w).Encode(agent.ServerHealth{CPUs: 4, MemoryTotal: 8 << 30, MemoryAvailable: 4 << 30, Disks: []agent.DiskHealth{{Path: "/data", Available: 10 << 30}}})
+		case "/v1/tasks":
+			io.WriteString(w, `[]`)
 		case "/v1/deployments":
 			io.WriteString(w, `[]`)
 		default:

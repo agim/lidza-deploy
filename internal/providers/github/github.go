@@ -73,7 +73,7 @@ func (c *Client) Repositories(ctx context.Context, token string, page int) ([]Re
 	return repos, err
 }
 func (c *Client) Hook(ctx context.Context, token, repo, callback, secret string, existing int64) (int64, error) {
-	body := map[string]any{"name": "web", "active": true, "events": []string{"push"}, "config": map[string]string{"url": callback, "content_type": "json", "secret": secret, "insecure_ssl": "0"}}
+	body := map[string]any{"name": "web", "active": true, "events": []string{"push", "pull_request"}, "config": map[string]string{"url": callback, "content_type": "json", "secret": secret, "insecure_ssl": "0"}}
 	path := "/repos/" + repo + "/hooks"
 	method := "POST"
 	if existing != 0 {

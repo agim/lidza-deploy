@@ -49,16 +49,18 @@ type Config struct {
 	Connectors []auth.Connector
 }
 type Application struct {
-	Generation string `json:"generation,omitempty"`
-	Retiring   bool   `json:"retiring,omitempty"`
-	ID         string `json:"id"`
-	ServerID   string `json:"server_id"`
-	Repository string `json:"repository"`
-	Branch     string `json:"branch"`
-	Domain     string `json:"domain"`
-	AutoDeploy bool   `json:"auto_deploy"`
-	HookID     int64  `json:"hook_id,omitempty"`
-	Secret     string `json:"secret,omitempty"`
+	Previews      PreviewConfig `json:"previews,omitempty"`
+	PreviewParent string        `json:"preview_parent,omitempty"`
+	Generation    string        `json:"generation,omitempty"`
+	Retiring      bool          `json:"retiring,omitempty"`
+	ID            string        `json:"id"`
+	ServerID      string        `json:"server_id"`
+	Repository    string        `json:"repository"`
+	Branch        string        `json:"branch"`
+	Domain        string        `json:"domain"`
+	AutoDeploy    bool          `json:"auto_deploy"`
+	HookID        int64         `json:"hook_id,omitempty"`
+	Secret        string        `json:"secret,omitempty"`
 }
 type saved struct {
 	BackupStorage *storage.Config        `json:"backup_storage,omitempty"`
@@ -183,6 +185,8 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	c.operatorID = profile.Subject
 	jobs.FromServices(s).Handle("deploy.push", c.dispatchPush, jobs.Concurrency(2))
 	q := jobs.FromServices(s)
+	q.Handle("deploy.preview", c.dispatchPreview, jobs.Concurrency(2))
+	q.Handle("deploy.task", c.dispatchTask, jobs.Concurrency(4))
 	q.Handle("ops.tick", c.operationsTick, jobs.Concurrency(1))
 	return q.Schedule("ops.tick", jobs.Every(time.Minute), nil)
 }
@@ -245,6 +249,16 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	private := http.NewServeMux()
+	private.HandleFunc("GET /api/control/servers/{server}/upgrade", c.upgradeServer)
+	private.HandleFunc("POST /api/control/servers/{server}/upgrade", c.upgradeServer)
+	private.HandleFunc("PUT /api/control/apps/{id}/previews", c.previewConfig)
+	private.HandleFunc("GET /api/control/tasks", c.tasks)
+	private.HandleFunc("PUT /api/control/apps/{id}/tasks/{task}", c.taskAction)
+	private.HandleFunc("POST /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
+	private.HandleFunc("GET /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
+	private.HandleFunc("GET /api/control/server-health", c.serverHealth)
+	private.HandleFunc("PUT /api/control/apps/{id}/{feature}", c.appFeature)
+	private.HandleFunc("POST /api/control/apps/{id}/restore", func(w http.ResponseWriter, r *http.Request) { r.SetPathValue("feature", "restore"); c.appFeature(w, r) })
 	private.HandleFunc("GET /api/control/status", c.status)
 	private.HandleFunc("GET /api/control/servers", func(w http.ResponseWriter, r *http.Request) {
 		out := c.servers()
@@ -295,6 +309,8 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	type view struct {
 		Application
+		Maintenance  agent.Maintenance   `json:"maintenance"`
+		Restoring    bool                `json:"restoring,omitempty"`
 		DomainStatus *agent.DomainStatus `json:"domain_status,omitempty"`
 		Current      *agent.Release      `json:"current,omitempty"`
 		AgentError   string              `json:"agent_error,omitempty"`
@@ -303,6 +319,7 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	out := make([]view, 0, len(c.data.Apps))
 	for _, a := range c.data.Apps {
 		a.Secret = ""
+		a.Previews.Env = nil
 		out = append(out, view{Application: a})
 	}
 	c.mu.Unlock()
@@ -325,6 +342,8 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 				if a.ID == out[i].ID {
 					out[i].Current = a.Current
 					out[i].DomainStatus = a.DomainStatus
+					out[i].Maintenance = a.Maintenance
+					out[i].Restoring = a.Restoring
 					break
 				}
 			}

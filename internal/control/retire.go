@@ -37,7 +37,20 @@ func (c *Control) retire(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := c.agentCall(r, a.ServerID, "DELETE", "/v1/apps/"+id, nil, nil); err != nil {
+	for _, child := range c.data.Apps {
+		if child.PreviewParent == id {
+			if err := c.agentCall(r, child.ServerID, "DELETE", "/v1/previews/"+child.ID, nil, nil); err != nil {
+				agent.Fail(w, 502, err)
+				return
+			}
+			delete(c.data.Apps, child.ID)
+		}
+	}
+	path := "/v1/apps/" + id
+	if a.PreviewParent != "" {
+		path = "/v1/previews/" + id
+	}
+	if err := c.agentCall(r, a.ServerID, "DELETE", path, nil, nil); err != nil {
 		agent.Fail(w, 502, err)
 		return
 	}

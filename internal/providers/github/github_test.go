@@ -29,7 +29,7 @@ func TestRepositoryAndWebhookAPI(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			if body.Config["insecure_ssl"] != "0" || body.Config["secret"] != "secret" || len(body.Events) != 1 || body.Events[0] != "push" {
+			if body.Config["insecure_ssl"] != "0" || body.Config["secret"] != "secret" || len(body.Events) != 2 || body.Events[0] != "push" || body.Events[1] != "pull_request" {
 				t.Error("invalid hook configuration")
 			}
 			if r.URL.Path == "/repos/acme/private/hooks/42" && r.Method != "PATCH" {

@@ -150,14 +150,15 @@ else
  mkdir -p "$prepared/bin" "$prepared/deploy"
  printf '%s\n' 'Building agent and control panel…'
  (cd "$source_dir"
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" "$go_cmd" build -buildvcs=false -trimpath -o "$prepared/bin/lidza-agent" ./cmd/agent
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" "$go_cmd" build -buildvcs=false -trimpath -o "$prepared/bin/lidza-control" ./cmd/web
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" "$go_cmd" build -buildvcs=false -trimpath -ldflags "-X github.com/agim/lidza-deploy/internal/buildinfo.Version=$version" -o "$prepared/bin/lidza-agent" ./cmd/agent
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" "$go_cmd" build -buildvcs=false -trimpath -ldflags "-X github.com/agim/lidza-deploy/internal/buildinfo.Version=$version" -o "$prepared/bin/lidza-control" ./cmd/web
  )
  cp "$source_dir/scripts/install-agent.sh" "$prepared/install-agent.sh"
- cp "$source_dir/deploy/lidza-agent.service" "$source_dir/deploy/lidza-control.service" "$source_dir/deploy/agent.example.json" "$prepared/deploy/"
+ cp "$source_dir/scripts/upgrade-agent.sh" "$prepared/deploy/upgrade-agent.sh"
+ cp "$source_dir/deploy/lidza-agent.service" "$source_dir/deploy/lidza-control.service" "$source_dir/deploy/agent.example.json" "$source_dir/deploy/lidza-agent-upgrade.path" "$source_dir/deploy/lidza-agent-upgrade.service" "$prepared/deploy/"
  chmod 0755 "$prepared/install-agent.sh" "$prepared/bin/"*
  printf '%s\n' "$arch" > "$prepared/ARCH"
- (cd "$prepared";sha256sum ARCH bin/lidza-agent bin/lidza-control install-agent.sh deploy/lidza-agent.service deploy/lidza-control.service deploy/agent.example.json > SHA256SUMS)
+ (cd "$prepared";sha256sum ARCH bin/lidza-agent bin/lidza-control install-agent.sh deploy/lidza-agent.service deploy/lidza-control.service deploy/agent.example.json deploy/upgrade-agent.sh deploy/lidza-agent-upgrade.path deploy/lidza-agent-upgrade.service > SHA256SUMS)
 fi
 set -- --fqdn "$fqdn"
 if [ "$with_control" -eq 1 ];then set -- "$@" --with-control;fi

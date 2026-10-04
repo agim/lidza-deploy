@@ -37,6 +37,8 @@ type BackupRecord struct {
 	ObjectKey string    `json:"object_key,omitempty"`
 }
 type Database struct {
+	Ephemeral     bool           `json:"ephemeral,omitempty"`
+	PreviewID     string         `json:"preview_id,omitempty"`
 	AppID         string         `json:"app_id"`
 	Mode          string         `json:"mode"`
 	URL           string         `json:"url"`
@@ -130,6 +132,9 @@ func (m *Manager) databaseViews() []DatabaseView {
 	return out
 }
 func (m *Manager) configureDatabase(appID string, input DatabaseRequest) error {
+	if m.upgradePending() {
+		return errors.New("agent upgrade in progress")
+	}
 	if err := input.Validate(); err != nil {
 		return err
 	}
@@ -190,6 +195,10 @@ func (m *Manager) configureDatabase(appID string, input DatabaseRequest) error {
 		u := url.URL{Scheme: "postgres", User: url.UserPassword("app", newID()+newID()), Host: d.Network + ":5432", Path: "/app", RawQuery: "sslmode=disable"}
 		d.URL = u.String()
 	}
+	if a.Preview {
+		d.Ephemeral = true
+		d.PreviewID = a.ID
+	}
 	oldApp := a
 	a.Bindings = maps.Clone(a.Bindings)
 	if a.Bindings == nil {
@@ -215,6 +224,9 @@ func (m *Manager) databaseAction(id, action string) error {
 	return m.startDatabaseLocked(id, action)
 }
 func (m *Manager) startDatabaseLocked(id, action string) error {
+	if m.upgradePending() {
+		return errors.New("agent upgrade in progress")
+	}
 	d, ok := m.data.Databases[id]
 	if !ok {
 		return errors.New("no database configured")

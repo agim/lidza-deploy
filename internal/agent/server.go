@@ -54,7 +54,24 @@ func Handler(m *Manager) http.Handler {
 		w.WriteHeader(403)
 	})
 	private := http.NewServeMux()
+	private.HandleFunc("GET /v1/server-health", m.healthRoute)
+	private.HandleFunc("POST /v1/apps/{id}/restore", m.restoreRoute)
+	private.HandleFunc("PUT /v1/apps/{id}/maintenance", func(w http.ResponseWriter, r *http.Request) {
+		var in Maintenance
+		if err := Decode(w, r, &in); err != nil {
+			Fail(w, 400, err)
+			return
+		}
+		if err := m.setMaintenance(r.PathValue("id"), in); err != nil {
+			Fail(w, 409, err)
+			return
+		}
+		JSON(w, 200, in)
+	})
 	m.databaseRoutes(private)
+	m.taskRoutes(private)
+	m.upgradeRoutes(private)
+	private.HandleFunc("DELETE /v1/previews/{id}", m.previewRoute)
 	private.HandleFunc("GET /v1/apps", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.Apps()) })
 	private.HandleFunc("PUT /v1/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var a App
@@ -157,6 +174,9 @@ func Proxy(m *Manager) http.Handler {
 		}
 		if r.URL.Path == "/metrics" || r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
 			http.NotFound(w, r)
+			return
+		}
+		if m.maintenancePage(w, r, host) {
 			return
 		}
 		release := m.Target(host)

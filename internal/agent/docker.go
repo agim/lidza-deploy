@@ -48,7 +48,9 @@ func command(ctx context.Context, dir string, extra []string, name string, args 
 	var b limitedBuffer
 	c.Stdout = &b
 	c.Stderr = &b
-	if err := c.Run(); err != nil {
+	err := c.Run()
+	commandDiagnostic(ctx, name, b.String())
+	if err != nil {
 		return "", fmt.Errorf("%s failed: %w", name, err)
 	}
 	return strings.TrimSpace(b.String()), nil
@@ -77,6 +79,7 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 	if err != nil {
 		return nil, err
 	}
+	message, _ := command(ctx, source, nil, "git", "log", "-1", "--format=%s")
 	if err = prepareBuild(source); err != nil {
 		return nil, err
 	}
@@ -87,7 +90,11 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 	if _, err = command(ctx, source, nil, "docker", "build", "--tag", image, "."); err != nil {
 		return nil, fmt.Errorf("image build: %w", err)
 	}
-	return d.runImage(ctx, a, id, image, commit)
+	release, err = d.runImage(ctx, a, id, image, commit)
+	if release != nil {
+		release.CommitMessage = message
+	}
+	return release, err
 }
 func (d *Docker) Reload(ctx context.Context, a App, id string) (*Release, error) {
 	if a.Current == nil || a.Current.Image == "" {
@@ -97,7 +104,11 @@ func (d *Docker) Reload(ctx context.Context, a App, id string) (*Release, error)
 	if _, err := command(ctx, "", nil, "docker", "tag", a.Current.Image, image); err != nil {
 		return nil, err
 	}
-	return d.runImage(ctx, a, id, image, a.Current.Commit)
+	release, err := d.runImage(ctx, a, id, image, a.Current.Commit)
+	if release != nil {
+		release.CommitMessage = a.Current.CommitMessage
+	}
+	return release, err
 }
 func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) (release *Release, err error) {
 	if err = a.Validate(); err != nil {
@@ -241,6 +252,19 @@ func clone(ctx context.Context, a App, source, token string) error {
 		return err
 	}
 	env := []string{"GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=" + ask, "LIDZA_CLONE_TOKEN=" + token, "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=", "GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false"}
+	if a.PullRequest > 0 {
+		if _, err := command(ctx, dir, env, "git", "init", source); err != nil {
+			return err
+		}
+		if _, err := command(ctx, source, env, "git", "remote", "add", "origin", "https://github.com/"+a.Repository+".git"); err != nil {
+			return err
+		}
+		if _, err := command(ctx, source, env, "git", "fetch", "--depth=1", "origin", fmt.Sprintf("refs/pull/%d/head", a.PullRequest)); err != nil {
+			return err
+		}
+		_, err := command(ctx, source, env, "git", "checkout", "--detach", "FETCH_HEAD")
+		return err
+	}
 	_, err := command(ctx, dir, env, "git", "clone", "--depth=1", "--single-branch", "--branch", a.Branch, "--", "https://github.com/"+a.Repository+".git", source)
 	if err != nil {
 		return fmt.Errorf("clone: %w", err)

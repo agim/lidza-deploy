@@ -23,6 +23,8 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cryp
   await page.click('#database-run');
   for(let i=0;i<100;i++){if(await page.locator('#database-dialog a[download]').count())break;await page.click('#database-refresh');await page.waitForTimeout(300);}
   const downloadEvent=page.waitForEvent('download');await page.locator('#database-dialog a[download]').first().click();const download=await downloadEvent;const backupPath=await download.path();const bytes=fs.readFileSync(backupPath);if(bytes.subarray(0,5).toString()!=='PGDMP')throw Error('Not a PostgreSQL custom dump');
+  await page.locator('#database-dialog [data-restore]').first().click();await page.selectOption('#restore-form [name=app]',id);await page.fill('#restore-form [name=target]',id+'-restored');await page.fill('#restore-form [name=env_key]','ARCHIVE_DATABASE_URL');const restoration=page.waitForResponse(r=>r.url().endsWith('/apps/'+id+'/restore'));await page.click('#restore-form button[type=submit]');if(!(await restoration).ok())throw Error('GUI restore request failed');await page.locator('#feature-dialog').waitFor({state:'hidden'});
+  for(let i=0;i<100;i++){const v=await (await page.request.get(base+'/api/control/apps/'+id+'/settings')).json();if(v.database_bindings?.ARCHIVE_DATABASE_URL===id+'-restored')break;await page.waitForTimeout(300)}const restoredSettings=await (await page.request.get(base+'/api/control/apps/'+id+'/settings')).json();if(restoredSettings.database_bindings?.ARCHIVE_DATABASE_URL!==id+'-restored')throw Error('Restored database was not attached');
   await page.selectOption('#backup-form [name=backup_hours]','24');await page.click('#backup-form button[type=submit]');await page.waitForTimeout(300);await page.screenshot({path:path.join(root,'.local/screenshots/database-backups.png'),fullPage:true});
   const saved=await (await page.request.get(base+'/api/control/databases')).json();if(saved.databases.find(d=>d.app_id===id)?.backup.hours!==24)throw Error('Backup frequency not saved');
   await page.locator('#database-dialog summary').filter({hasText:'Create or connect another database'}).click();
@@ -34,11 +36,11 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cryp
   await page.locator('[data-tab=backups]').click();await page.getByText('Retained after app removal',{exact:false}).first().waitFor();
   await page.locator('[data-tab=settings]').click();await page.locator('#storage-form').waitFor();if(!await page.locator('#mail-form').count())throw Error('Missing infrastructure controls');
   if(errors.length)throw Error(errors.join('\n'));
-  console.log('PASS: GUI local database creation, masked external URL, backup/download, schedule editing, named attachments, primary switch, pre-deployment default, retained backups, integration controls');
+  console.log('PASS: GUI local database creation, masked external URL, backup/download/restore, schedule editing, named attachments, primary switch, pre-deployment default, retained backups, integration controls');
  }finally{
   if(page){await page.request.delete(base+'/api/control/apps/'+id,{headers:{Origin:base},data:{confirm:id}}).catch(()=>{});await page.request.delete(base+'/api/control/servers/'+host,{headers:{Origin:base}}).catch(()=>{});}
   if(browser)await browser.close();if(agent.exitCode===null){agent.kill('SIGTERM');await new Promise(r=>agent.once('exit',r));}
-  for(const dbID of [id,id+'-extra']){const name='lidza-db-'+dbID;for(const args of [['rm','-f',name],['volume','rm',name+'-data'],['network','rm',name]])try{execFileSync('docker',args,{stdio:'ignore'})}catch{}}
+  for(const dbID of [id,id+'-extra',id+'-restored']){const name='lidza-db-'+dbID;for(const args of [['rm','-f',name],['volume','rm',name+'-data'],['network','rm',name]])try{execFileSync('docker',args,{stdio:'ignore'})}catch{}}
   fs.rmSync(dir,{recursive:true,force:true});
  }
 })().catch(e=>{console.error(e.message);process.exitCode=1});

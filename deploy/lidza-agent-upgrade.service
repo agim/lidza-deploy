@@ -1,0 +1,9 @@
+[Unit]
+Description=Install a verified official Lidza Deploy release with rollback
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/lidza-agent-upgrade
+User=root
+UMask=0077
+TimeoutStartSec=15min

@@ -4,6 +4,8 @@ A deployment agent and a separate web control panel built with Līdza v0.1.71. O
 
 The MonolithCMS agent was copied/adapted into this repository; the original repository was not changed. See [provenance](docs/provenance.md).
 
+The GUI now includes database restore into a new connection, host health and alerts, deployment build history, maintenance mode, PR previews, workers/scheduled jobs, and managed agent upgrades. See [Operations and recovery](docs/operations.md). Team permissions and audit logging are pending the released framework APIs requested in [Līdza #28](https://github.com/agim/lidza/issues/28).
+
 ## Working features
 
 - GitHub public and private repositories, selected branches, manual deploy and redeploy.
@@ -164,6 +166,8 @@ With the development agent and web process running:
 ```sh
 npm ci --prefix tests/browser
 npm test --prefix tests/browser
+node tests/browser/databases.cjs
+node tests/browser/features.cjs
 ```
 
 Browser checks need Chromium (`CHROMIUM_BIN`, defaults to `/usr/bin/chromium`). They cover all designs, demo create/deploy/logs, mobile overflow, real login, partial fleet history, and real app create/edit/remove through the local agent. Screenshots are saved under `.local/screenshots/`.
