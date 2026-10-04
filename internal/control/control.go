@@ -17,6 +17,8 @@ import (
 	"github.com/agim/lidza/packs/auth"
 	"github.com/agim/lidza/packs/db"
 	"github.com/agim/lidza/packs/jobs"
+	"github.com/agim/lidza/packs/mail"
+	"github.com/agim/lidza/packs/storage"
 	"github.com/agim/lidza/pkg/credentials"
 	"github.com/agim/lidza/pkg/env"
 	"github.com/jackc/pgx/v5"
@@ -59,8 +61,10 @@ type Application struct {
 	Secret     string `json:"secret,omitempty"`
 }
 type saved struct {
-	Apps    map[string]Application `json:"apps"`
-	Servers []Server               `json:"servers"`
+	BackupStorage *storage.Config        `json:"backup_storage,omitempty"`
+	Incidents     map[string]Incident    `json:"incidents,omitempty"`
+	Apps          map[string]Application `json:"apps"`
+	Servers       []Server               `json:"servers"`
 }
 type Control struct {
 	cfg        Config
@@ -159,7 +163,7 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(71924161)"); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+jobs.JobTable+jobs.ScheduleTable); err != nil {
+	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -178,7 +182,9 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	}
 	c.operatorID = profile.Subject
 	jobs.FromServices(s).Handle("deploy.push", c.dispatchPush, jobs.Concurrency(2))
-	return nil
+	q := jobs.FromServices(s)
+	q.Handle("ops.tick", c.operationsTick, jobs.Concurrency(1))
+	return q.Schedule("ops.tick", jobs.Every(time.Minute), nil)
 }
 func (c *Control) token(ctx context.Context) (string, error) {
 	conn, err := auth.From(ctx).Connection(ctx, c.operatorID, "github")
@@ -250,6 +256,15 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	private.HandleFunc("POST /api/control/servers", c.addServer)
 	private.HandleFunc("PUT /api/control/servers/{id}", c.editServer)
 	private.HandleFunc("DELETE /api/control/servers/{id}", c.removeServer)
+	private.HandleFunc("GET /api/control/databases", c.databases)
+	private.HandleFunc("POST /api/control/apps/{id}/database", c.configureDatabase)
+	private.HandleFunc("POST /api/control/apps/{id}/database/{action}", c.databaseAction)
+	private.HandleFunc("PATCH /api/control/apps/{id}/backups", c.backupPolicy)
+	private.HandleFunc("GET /api/control/servers/{server}/databases/{id}/backups/{backup}", c.downloadBackup)
+	private.HandleFunc("GET /api/control/infrastructure", c.infrastructure)
+	private.HandleFunc("PUT /api/control/storage", c.configureStorage)
+	private.HandleFunc("PUT /api/control/mail", c.configureMail)
+	private.HandleFunc("POST /api/control/mail/test", c.testMail)
 	private.HandleFunc("GET /api/control/apps/{id}/settings", c.settings)
 	private.HandleFunc("PATCH /api/control/apps/{id}/settings", c.updateSettings)
 	private.HandleFunc("DELETE /api/control/apps/{id}/webhook", c.disableHook)
@@ -321,11 +336,24 @@ func (c *Control) AuthorizeConnect(ctx context.Context, u *auth.User, provider s
 func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Application
-		Env map[string]string `json:"env"`
+		Env      map[string]string      `json:"env"`
+		Database *agent.DatabaseRequest `json:"database,omitempty"`
 	}
 	if err := agent.Decode(w, r, &input); err != nil {
 		agent.Fail(w, 400, err)
 		return
+	}
+	if input.Database != nil {
+		if err := input.Database.Validate(); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		if input.Database.Mode != "none" && input.Database.Mode != "" {
+			if _, conflict := input.Env["DATABASE_URL"]; conflict {
+				agent.Fail(w, 400, errors.New("database settings supply DATABASE_URL automatically"))
+				return
+			}
+		}
 	}
 	a := input.Application
 	a.HookID = 0
@@ -364,7 +392,25 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 		agent.Fail(w, 500, err)
 		return
 	}
-	agent.JSON(w, 201, a)
+	warning := ""
+	if input.Database != nil && input.Database.Mode != "none" && input.Database.Mode != "" {
+		if input.Database.Backup.Offsite {
+			if c.data.BackupStorage == nil {
+				warning = "Configure S3 storage, then attach the database using Database & backups."
+			} else if err := c.agentCall(r, a.ServerID, "PUT", "/v1/backup-storage", c.data.BackupStorage, nil); err != nil {
+				warning = "Storage could not be sent to the agent. Attach the database using Database & backups."
+			}
+		}
+		if warning == "" {
+			if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/database", input.Database, nil); err != nil {
+				warning = "App created; database setup could not start. Retry in Database & backups."
+			}
+		}
+	}
+	agent.JSON(w, 201, struct {
+		Application
+		Warning string `json:"warning,omitempty"`
+	}{a, warning})
 }
 func (c *Control) app(id string) (Application, bool) {
 	c.mu.Lock()

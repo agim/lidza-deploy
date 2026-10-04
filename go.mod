@@ -5,7 +5,7 @@ go 1.27.0
 toolchain go1.27.1
 
 require (
-	github.com/agim/lidza v0.1.70
+	github.com/agim/lidza v0.1.71
 	github.com/jackc/pgx/v5 v5.11.0
 	golang.org/x/mod v0.41.0
 )

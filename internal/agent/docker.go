@@ -106,7 +106,12 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 	if err = os.WriteFile(envfile, []byte(content.String()), 0600); err != nil {
 		return nil, err
 	}
-	_, err = command(ctx, dir, nil, "docker", "run", "--detach", "--name", name, "--label", "io.lidza.managed=true", "--restart", "unless-stopped", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--memory", "512m", "--cpus", "1", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile, "--env", "LIDZA_ADDR=0.0.0.0:3000", "--env", "LIDZA_MODE=production", image)
+	runArgs := []string{"run", "--detach", "--name", name, "--label", "io.lidza.managed=true", "--restart", "unless-stopped", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--memory", "512m", "--cpus", "1", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile, "--env", "LIDZA_ADDR=0.0.0.0:3000", "--env", "LIDZA_MODE=production"}
+	if a.Network != "" {
+		runArgs = append(runArgs, "--network", a.Network)
+	}
+	runArgs = append(runArgs, image)
+	_, err = command(ctx, dir, nil, "docker", runArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("start container: %w", err)
 	}

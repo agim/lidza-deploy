@@ -56,6 +56,7 @@ func Handler(m *Manager) http.Handler {
 		w.WriteHeader(403)
 	})
 	private := http.NewServeMux()
+	m.databaseRoutes(private)
 	private.HandleFunc("GET /v1/apps", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.Apps()) })
 	private.HandleFunc("PUT /v1/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var a App

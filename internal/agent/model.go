@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"github.com/agim/lidza/packs/storage"
 	"net"
 	"regexp"
 	"strings"
@@ -10,6 +11,7 @@ import (
 )
 
 type App struct {
+	Network    string            `json:"-"`
 	Retiring   bool              `json:"retiring,omitempty"`
 	ID         string            `json:"id"`
 	Repository string            `json:"repository"` // github owner/name, never a credential-bearing URL
@@ -42,8 +44,10 @@ type DeployRequest struct {
 	Key   string `json:"key,omitempty"`
 }
 type diskState struct {
-	Apps        map[string]App `json:"apps"`
-	Deployments []Deployment   `json:"deployments"`
+	Databases     map[string]Database `json:"databases,omitempty"`
+	BackupStorage *storage.Config     `json:"backup_storage,omitempty"`
+	Apps          map[string]App      `json:"apps"`
+	Deployments   []Deployment        `json:"deployments"`
 }
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)

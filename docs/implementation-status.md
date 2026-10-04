@@ -1,6 +1,6 @@
 # Implementation status
 
-The framework-first gate is satisfied: agim/lidza#23 was closed after v0.1.61 was published. The application now pins v0.1.70 and uses `auth.Mount`, `auth.Require`, `auth.Connection`, framework encrypted credentials, and the durable jobs pack. The temporary local OAuth flow and duplicate encryption implementation were removed.
+The framework-first gate is satisfied: agim/lidza#23 was closed after v0.1.61 was published. The application now pins v0.1.71 and uses `auth.Mount`, `auth.Require`, `auth.Connection`, framework encrypted credentials, and the durable jobs pack. The temporary local OAuth flow and duplicate encryption implementation were removed.
 
 ## Implemented
 
@@ -20,7 +20,7 @@ The source agent is adapted inside this repository. Public/private GitHub clone 
 
 Real GitHub consent and private-repository deployment need the user's OAuth App configuration. Public ACME needs deployment hosts and DNS; local-CA testing is not a claim of public issuance or renewal. No production deployment or upstream code push was performed.
 
-The product currently has one operator and one active control process, GUI-managed encrypted server inventory, root-Dockerfile app builds, and fixed container resource limits. Detailed constraints and operational recovery are in deployment.md. Team roles, automated server/database provisioning, app backups, persistent app volumes, build secrets for private dependencies, and scaling are not implemented. The user selected Signal with the exact Līdza dark brand palette; it is the live default. Alternative designs are retained as previews only.
+The product currently has one operator and one active control process, GUI-managed encrypted server inventory, root-Dockerfile app builds, and fixed container resource limits. Detailed constraints and operational recovery are in deployment.md. Team roles, automated cloud-server provisioning, persistent app volumes, build secrets for private dependencies, and scaling are not implemented. The user selected Signal with the exact Līdza dark brand palette; it is the live default. Alternative designs are retained as previews only.
 
 
 Server inventory is now editable in the GUI, with credential checks and encrypted persistence. App settings support branch/FQDN changes and write-only environment patches. Auto-deploy can be disabled independently of GitHub connectivity. Regression coverage includes these management operations, secret omission, restart persistence, active-deployment rejection, session/origin guards, and all three browser design variants.
@@ -35,4 +35,12 @@ Application retirement is available end to end: typed ID confirmation, persisted
 - Automatic missing Dockerfile generation reuses released framework scaffold APIs in a temporary clone and pins the target app versions. Custom Dockerfiles are preserved. Framework `/readyz` is used directly.
 - Upstream #24 is closed: first-run onboarding belongs in this product and should use `lidza.Boot` and framework credential/auth APIs. The local wizard now exists; managed PostgreSQL, browser setup, login, and restart pass.
 - Upstream #25 is closed: v0.1.70 provides app-version pinning and Rust toolchains, now used directly by the agent. Manifest inference was declined; `lidza.json` remains required project metadata.
-- Current framework dependency: v0.1.70. One new integration check fails: enabling GitHub after boot without connectors does not register connection routes. Upstream #26 is open; wait for its released fix before completing that path.
+- Current framework dependency: v0.1.71. Upstream #26 and #27 are closed and released. GitHub configuration after boot and concurrent mail reload/send checks now pass.
+
+## Database, backup and alert validation — 2026-10-04
+
+The branch adds per-app PostgreSQL provisioning or external attachment, encrypted automatic DATABASE_URL delivery, selectable backup frequency and local retention, S3-compatible copies through framework signing, backup downloads, retained database data after app removal, and GUI storage/mail settings. Database creation, backup, restore of actual rows, retention and secret protection pass real Docker tests. S3 upload streaming passes a local protocol fixture. Browser tests pass local database creation, masked external connection entry, manual backup/download, policy changes, retained-data visibility and integration controls.
+
+Scheduled dispatch, persistent alert deduplication, recovery notifications and mail outbox queueing passed PostgreSQL integration checks with sending disabled. Concurrent reload/send testing found **Līdza #27**, which was fixed upstream in v0.1.71. After upgrading, the original reproduction and the framework tests for concurrent readers, failed reload preservation and reconfiguration during queued delivery all pass with the race detector. **#26** is also fixed and the full `scripts/test.sh` suite (including onboarding, real Docker and Caddy, and vet) now passes. No real-provider SMTP or S3 acceptance test is claimed.
+
+Both framework release gates are satisfied. Real-provider credentials, public ACME and fresh-VM installation still require acceptance checks in the deployment environment; passing local integration tests does not establish those external results.
