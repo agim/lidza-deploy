@@ -82,6 +82,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'rc=$?; echo "::error::Release command failed (exit $rc) at shell line $LINENO: $BASH_COMMAND"; exit "$rc"' ERR
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft > release-state.json; then
             python3 -c 'import json; assert json.load(open("release-state.json"))["isDraft"], "Refusing to overwrite a published release"'
