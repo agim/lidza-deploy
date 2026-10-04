@@ -19,6 +19,10 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		return errors.New("application cleanup is already running")
 	}
+	if d, ok := m.data.Databases[id]; ok && d.Operation != "" {
+		m.mu.Unlock()
+		return errors.New("wait for the database operation to finish")
+	}
 	if m.busy(id) {
 		m.mu.Unlock()
 		return errors.New("application has an active deployment; retry removal after it finishes")

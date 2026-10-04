@@ -42,6 +42,9 @@ func (c *Control) retire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(c.data.Apps, id)
+	for _, kind := range []string{"database:", "health:", "deploy:"} {
+		delete(c.data.Incidents, kind+a.ServerID+":"+id)
+	}
 	if err := c.save(); err != nil {
 		c.data.Apps[id] = a
 		agent.Fail(w, 500, errors.New("agent removed application; retry removal to finish saving control metadata"))

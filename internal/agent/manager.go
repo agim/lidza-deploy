@@ -25,21 +25,22 @@ type job struct {
 	token      string
 }
 type Manager struct {
-	mu       sync.Mutex
-	removing map[string]bool
-	key      []byte
-	cfg      Config
-	data     diskState
-	runtime  Runtime
-	queue    chan job
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	databaseSlots chan struct{}
+	mu            sync.Mutex
+	removing      map[string]bool
+	key           []byte
+	cfg           Config
+	data          diskState
+	runtime       Runtime
+	queue         chan job
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
 	ctx, cancel := context.WithCancel(parent)
-	m := &Manager{cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
+	m := &Manager{databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		cancel()
 		return nil, err
@@ -57,6 +58,17 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	if err := m.load(); err != nil {
 		cancel()
 		return nil, err
+	}
+	if m.data.Databases == nil {
+		m.data.Databases = map[string]Database{}
+	}
+	for id, d := range m.data.Databases {
+		if d.Operation != "" {
+			d.Operation = ""
+			d.Error = "agent restarted during database operation; retry"
+			d.Event = newID()
+			m.data.Databases[id] = d
+		}
 	}
 	if m.data.Apps == nil {
 		m.data.Apps = map[string]App{}
@@ -112,6 +124,14 @@ func (m *Manager) Upsert(a App) error {
 		return errors.New("application has an active deployment")
 	}
 	old, exists := m.data.Apps[a.ID]
+	if _, retained := m.data.Databases[a.ID]; retained && !exists {
+		return errors.New("application ID is reserved by a retained database")
+	}
+	if d, managed := m.data.Databases[a.ID]; managed && d.Ready {
+		if a.Env != nil && a.Env["DATABASE_URL"] != d.URL {
+			return errors.New("DATABASE_URL is managed by database settings")
+		}
+	}
 	if old.Retiring || a.Retiring {
 		return errors.New("application is being removed")
 	}
@@ -153,6 +173,12 @@ func (m *Manager) Enqueue(id string, req DeployRequest) (Deployment, error) {
 	a, ok := m.data.Apps[id]
 	if !ok || a.Retiring {
 		return Deployment{}, errors.New("unknown application or removal in progress")
+	}
+	if d, ok := m.data.Databases[id]; ok {
+		if !d.Ready {
+			return Deployment{}, errors.New("database provisioning must finish before deployment")
+		}
+		a.Network = d.Network
 	}
 	if len(req.Key) > 200 || len(req.Token) > 4096 {
 		return Deployment{}, errors.New("request exceeds limit")

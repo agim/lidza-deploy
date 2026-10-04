@@ -50,6 +50,11 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		a.Env = map[string]string{}
 	}
 	for k, v := range p.EnvChanges {
+		if k == "DATABASE_URL" {
+			if _, managed := m.data.Databases[id]; managed {
+				return errors.New("DATABASE_URL is managed by database settings")
+			}
+		}
 		if v == nil {
 			delete(a.Env, k)
 		} else {

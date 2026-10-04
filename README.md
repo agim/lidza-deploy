@@ -15,7 +15,7 @@ The MonolithCMS agent was copied/adapted into this repository; the original repo
 - The selected **Signal** interface uses Līdza’s released dark brand palette. Standalone HTML previews remain available.
 - GUI server inventory, branch/domain settings, write-only environment edits, and retryable app removal.
 
-This is a single-operator initial implementation, with one active control-panel process and one agent process per deployment host. Server inventory is managed in the GUI and stored encrypted; a private JSON file can seed initial setup. It is not yet full Hatchbox feature parity: team roles, cloud-server provisioning, hosted-app database provisioning/backups, scheduled jobs for hosted apps, scaling, and zero-downtime database migrations are future product work.
+This is a single-operator initial implementation, with one active control-panel process and one agent process per deployment host. Server inventory is managed in the GUI and stored encrypted; a private JSON file can seed initial setup. It is not yet full Hatchbox feature parity: team roles, cloud-server provisioning, scheduled jobs for hosted apps, scaling, and zero-downtime database migrations are future product work.
 
 ## Installation and first startup
 
@@ -110,6 +110,12 @@ sudo sh install.sh --agent-only --fqdn agent.example.com --email ops@example.com
 
 This installs the hosting agent with an authenticated HTTPS management endpoint. Import `/etc/lidza-agent/connection.json` through the control panel's wizard or **Servers → Connect server**; retrieve it privately over SSH. The file contains the agent token. Ports 9090 and 8081 remain internal. You can connect multiple servers and deploy multiple apps on each.
 
+### Application databases, backups and alerts
+
+The prepared New application flow lets you create local PostgreSQL, attach an existing managed PostgreSQL database, or choose no database. It attaches `DATABASE_URL` automatically, offers backup frequency and local retention, and supports S3-compatible off-site copies. **Databases & backups** provides manual backups, downloads and retained data after app removal. **Integrations** contains storage and SMTP settings.
+
+**These additions are in review, not ready to deploy:** live email reconfiguration is blocked by [Līdza #27](https://github.com/agim/lidza/issues/27). Per the framework-first rule, it must receive a released fix before the email integration is completed. Database provisioning, backup/restore, S3 streaming and the GUI database flow have been tested independently. See [database and backup instructions](docs/databases-backups.md) for limits, retention, recovery, and alert behavior.
+
 ### Checks, backups and current limitation
 
 Check service startup on the server with:
@@ -149,7 +155,7 @@ source scripts/env.sh  # activates the prepared cloud toolchain, when present
 ./scripts/test.sh
 ```
 
-This runs race-enabled Go tests, PostgreSQL auth/queue integration, real Docker deployments of two Līdza apps, local Caddy certificate issuance with full TLS verification, and `go vet`. The test database is separate from the development database.
+This runs race-enabled Go tests, PostgreSQL auth/queue integration, real Docker deployments of two Līdza apps, local Caddy certificate issuance with full TLS verification, database backup/restore, S3 streaming, alert queue persistence, and `go vet`. The test database is separate from the development database.
 
 With the development agent and web process running:
 
@@ -172,3 +178,5 @@ The Docker smoke test uses a local Git fixture, then real Docker build/run and r
 - `deploy`: example configuration, Caddyfile, and systemd units.
 
 [Framework-first rule](AGENTS.md): reuse Līdza; file reusable gaps upstream and wait for a released capability. [Issue #23](https://github.com/agim/lidza/issues/23) shipped in v0.1.61 and is integrated here.
+
+Database GUI check (with the development agent/control running): `node tests/browser/databases.cjs`. It creates and cleans up an isolated hosting agent and database.

@@ -20,7 +20,7 @@ The source agent is adapted inside this repository. Public/private GitHub clone 
 
 Real GitHub consent and private-repository deployment need the user's OAuth App configuration. Public ACME needs deployment hosts and DNS; local-CA testing is not a claim of public issuance or renewal. No production deployment or upstream code push was performed.
 
-The product currently has one operator and one active control process, GUI-managed encrypted server inventory, root-Dockerfile app builds, and fixed container resource limits. Detailed constraints and operational recovery are in deployment.md. Team roles, automated server/database provisioning, app backups, persistent app volumes, build secrets for private dependencies, and scaling are not implemented. The user selected Signal with the exact Līdza dark brand palette; it is the live default. Alternative designs are retained as previews only.
+The product currently has one operator and one active control process, GUI-managed encrypted server inventory, root-Dockerfile app builds, and fixed container resource limits. Detailed constraints and operational recovery are in deployment.md. Team roles, automated cloud-server provisioning, persistent app volumes, build secrets for private dependencies, and scaling are not implemented. The user selected Signal with the exact Līdza dark brand palette; it is the live default. Alternative designs are retained as previews only.
 
 
 Server inventory is now editable in the GUI, with credential checks and encrypted persistence. App settings support branch/FQDN changes and write-only environment patches. Auto-deploy can be disabled independently of GitHub connectivity. Regression coverage includes these management operations, secret omission, restart persistence, active-deployment rejection, session/origin guards, and all three browser design variants.
@@ -36,3 +36,11 @@ Application retirement is available end to end: typed ID confirmation, persisted
 - Upstream #24 is closed: first-run onboarding belongs in this product and should use `lidza.Boot` and framework credential/auth APIs. The local wizard now exists; managed PostgreSQL, browser setup, login, and restart pass.
 - Upstream #25 is closed: v0.1.70 provides app-version pinning and Rust toolchains, now used directly by the agent. Manifest inference was declined; `lidza.json` remains required project metadata.
 - Current framework dependency: v0.1.70. One new integration check fails: enabling GitHub after boot without connectors does not register connection routes. Upstream #26 is open; wait for its released fix before completing that path.
+
+## Database and backup work in review — 2026-10-04
+
+The branch adds per-app PostgreSQL provisioning or external attachment, encrypted automatic DATABASE_URL delivery, selectable backup frequency and local retention, S3-compatible copies through framework signing, backup downloads, retained database data after app removal, and GUI storage/mail settings. Database creation, backup, restore of actual rows, retention and secret protection pass real Docker tests. S3 upload streaming passes a local protocol fixture. Browser tests pass local database creation, masked external connection entry, manual backup/download, policy changes, retained-data visibility and integration controls.
+
+Scheduled dispatch, persistent alert deduplication, recovery notifications and mail outbox queueing passed PostgreSQL integration checks with sending disabled. Subsequent concurrent reload/send testing found **Līdza #27**, a framework data race in mail.Reconfigure. The email feature and publication to main are blocked until its tagged fix is released and verified. No real-provider SMTP or S3 acceptance test is claimed. Existing **#26** remains open and its onboarding regression still fails.
+
+The feature will be kept in a draft PR for review while waiting for those framework releases. A passing database restore test does not constitute full production acceptance.
