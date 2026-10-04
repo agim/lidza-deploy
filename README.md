@@ -114,6 +114,8 @@ This installs the hosting agent with an authenticated HTTPS management endpoint.
 
 The New application flow lets you create local PostgreSQL, attach an existing managed PostgreSQL database, or choose no database. It attaches `DATABASE_URL` automatically, offers backup frequency and local retention, and supports S3-compatible off-site copies. **Databases & backups** provides manual backups, downloads and retained data after app removal. **Integrations** contains storage and SMTP settings.
 
+Apps can attach multiple databases using named environment variables and switch `DATABASE_URL` to another database on the same server. Saving FQDN/environment settings or changing an attachment automatically reloads the deployed image after readiness checks. Pre-deployment backups are enabled by default, including before reloads; failures retain the current release. The option can be changed in app Settings. See [runtime and database switching](docs/databases-backups.md).
+
 Database provisioning, backup/restore, S3 streaming, alert queueing and the GUI database flow are tested. Līdza v0.1.71 fixes concurrent mail reconfiguration ([#27](https://github.com/agim/lidza/issues/27)); the original race reproduction and queued-delivery regression now pass. See [database and backup instructions](docs/databases-backups.md) for limits, retention, recovery, and alert behavior.
 
 ### Checks, backups and current limitation

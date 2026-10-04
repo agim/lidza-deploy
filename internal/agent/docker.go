@@ -87,6 +87,30 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 	if _, err = command(ctx, source, nil, "docker", "build", "--tag", image, "."); err != nil {
 		return nil, fmt.Errorf("image build: %w", err)
 	}
+	return d.runImage(ctx, a, id, image, commit)
+}
+func (d *Docker) Reload(ctx context.Context, a App, id string) (*Release, error) {
+	if a.Current == nil || a.Current.Image == "" {
+		return nil, errors.New("no deployed image to reload")
+	}
+	image := "lidza/" + a.ID + ":" + id
+	if _, err := command(ctx, "", nil, "docker", "tag", a.Current.Image, image); err != nil {
+		return nil, err
+	}
+	return d.runImage(ctx, a, id, image, a.Current.Commit)
+}
+func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) (release *Release, err error) {
+	if err = a.Validate(); err != nil {
+		return nil, err
+	}
+	if err = os.MkdirAll(d.Root, 0700); err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp(d.Root, "runtime-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
 	name := "lidza-" + a.ID + "-" + id
 	release = &Release{ID: id, Commit: commit, Container: name, Image: image, Created: time.Now().UTC()}
 	candidate := release
@@ -106,14 +130,31 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 	if err = os.WriteFile(envfile, []byte(content.String()), 0600); err != nil {
 		return nil, err
 	}
-	runArgs := []string{"run", "--detach", "--name", name, "--label", "io.lidza.managed=true", "--restart", "unless-stopped", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--memory", "512m", "--cpus", "1", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile, "--env", "LIDZA_ADDR=0.0.0.0:3000", "--env", "LIDZA_MODE=production"}
-	if a.Network != "" {
-		runArgs = append(runArgs, "--network", a.Network)
+	runArgs := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--restart", "unless-stopped", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--memory", "512m", "--cpus", "1", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile, "--env", "LIDZA_ADDR=0.0.0.0:3000", "--env", "LIDZA_MODE=production"}
+	networks := a.Networks
+	if len(networks) == 0 && a.Network != "" {
+		networks = []string{a.Network}
+	}
+	if len(networks) > 0 {
+		runArgs = append(runArgs, "--network", networks[0])
+	}
+	if a.Env["APP_URL"] == "" {
+		runArgs = append(runArgs, "--env", "APP_URL=https://"+a.Domain)
 	}
 	runArgs = append(runArgs, image)
 	_, err = command(ctx, dir, nil, "docker", runArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("start container: %w", err)
+	}
+	if len(networks) > 1 {
+		for _, network := range networks[1:] {
+			if _, err = command(ctx, dir, nil, "docker", "network", "connect", network, name); err != nil {
+				return nil, errors.New("could not attach database network")
+			}
+		}
+	}
+	if _, err = command(ctx, dir, nil, "docker", "start", name); err != nil {
+		return nil, err
 	}
 	port, err := command(ctx, dir, nil, "docker", "port", name, "3000/tcp")
 	if err != nil {

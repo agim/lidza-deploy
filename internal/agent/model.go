@@ -11,25 +11,30 @@ import (
 )
 
 type App struct {
-	Network    string            `json:"-"`
-	Retiring   bool              `json:"retiring,omitempty"`
-	ID         string            `json:"id"`
-	Repository string            `json:"repository"` // github owner/name, never a credential-bearing URL
-	Branch     string            `json:"branch"`
-	Domain     string            `json:"domain"`
-	Env        map[string]string `json:"env,omitempty"`
-	Current    *Release          `json:"current,omitempty"`
-	Previous   *Release          `json:"previous,omitempty"`
+	Bindings           map[string]string `json:"database_bindings,omitempty"`
+	BackupBeforeDeploy *bool             `json:"backup_before_deploy,omitempty"`
+	Networks           []string          `json:"-"`
+	Network            string            `json:"-"`
+	Retiring           bool              `json:"retiring,omitempty"`
+	ID                 string            `json:"id"`
+	Repository         string            `json:"repository"` // github owner/name, never a credential-bearing URL
+	Branch             string            `json:"branch"`
+	Domain             string            `json:"domain"`
+	Env                map[string]string `json:"env,omitempty"`
+	Current            *Release          `json:"current,omitempty"`
+	Previous           *Release          `json:"previous,omitempty"`
 }
 type Release struct {
-	Image     string    `json:"image,omitempty"`
-	ID        string    `json:"id"`
-	Commit    string    `json:"commit"`
-	Container string    `json:"container"`
-	Port      string    `json:"port"`
-	Created   time.Time `json:"created"`
+	DatabaseIDs []string  `json:"database_ids,omitempty"`
+	Image       string    `json:"image,omitempty"`
+	ID          string    `json:"id"`
+	Commit      string    `json:"commit"`
+	Container   string    `json:"container"`
+	Port        string    `json:"port"`
+	Created     time.Time `json:"created"`
 }
 type Deployment struct {
+	Kind     string     `json:"kind,omitempty"`
 	ID       string     `json:"id"`
 	AppID    string     `json:"app_id"`
 	Status   string     `json:"status"`
@@ -44,10 +49,11 @@ type DeployRequest struct {
 	Key   string `json:"key,omitempty"`
 }
 type diskState struct {
-	Databases     map[string]Database `json:"databases,omitempty"`
-	BackupStorage *storage.Config     `json:"backup_storage,omitempty"`
-	Apps          map[string]App      `json:"apps"`
-	Deployments   []Deployment        `json:"deployments"`
+	BindingsVersion int                 `json:"bindings_version"`
+	Databases       map[string]Database `json:"databases,omitempty"`
+	BackupStorage   *storage.Config     `json:"backup_storage,omitempty"`
+	Apps            map[string]App      `json:"apps"`
+	Deployments     []Deployment        `json:"deployments"`
 }
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)

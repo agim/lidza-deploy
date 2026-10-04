@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/agim/lidza/pkg/credentials"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 )
@@ -20,6 +22,8 @@ type Runtime interface {
 	Logs(context.Context, *Release) (string, error)
 }
 type job struct {
+	reload     bool
+	backupIDs  []string
 	app        App
 	deployment string
 	token      string
@@ -70,6 +74,21 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 			m.data.Databases[id] = d
 		}
 	}
+	for id, a := range m.data.Apps {
+		if a.Bindings == nil {
+			a.Bindings = map[string]string{}
+			if _, ok := m.data.Databases[id]; ok && m.data.BindingsVersion == 0 {
+				a.Bindings["DATABASE_URL"] = id
+			}
+			if a.Current != nil && a.Current.DatabaseIDs == nil {
+				copy := *a.Current
+				copy.DatabaseIDs = slices.Compact(slices.Sorted(maps.Values(a.Bindings)))
+				a.Current = &copy
+			}
+			m.data.Apps[id] = a
+		}
+	}
+	m.data.BindingsVersion = 1
 	if m.data.Apps == nil {
 		m.data.Apps = map[string]App{}
 	}
@@ -125,13 +144,14 @@ func (m *Manager) Upsert(a App) error {
 	}
 	old, exists := m.data.Apps[a.ID]
 	if _, retained := m.data.Databases[a.ID]; retained && !exists {
-		return errors.New("application ID is reserved by a retained database")
+		return errors.New("application ID is reserved by a database resource")
 	}
-	if d, managed := m.data.Databases[a.ID]; managed && d.Ready {
-		if a.Env != nil && a.Env["DATABASE_URL"] != d.URL {
-			return errors.New("DATABASE_URL is managed by database settings")
+	for key := range old.Bindings {
+		if a.Env != nil && a.Env[key] != old.Env[key] {
+			return errors.New("database variables are managed by database attachments")
 		}
 	}
+
 	if old.Retiring || a.Retiring {
 		return errors.New("application is being removed")
 	}
@@ -142,6 +162,10 @@ func (m *Manager) Upsert(a App) error {
 		if id != a.ID && other.Domain == a.Domain {
 			return errors.New("domain already assigned")
 		}
+	}
+	a.Bindings = old.Bindings
+	if exists {
+		a.BackupBeforeDeploy = old.BackupBeforeDeploy
 	}
 	a.Current = old.Current
 	a.Previous = old.Previous
@@ -172,29 +196,59 @@ func (m *Manager) Enqueue(id string, req DeployRequest) (Deployment, error) {
 	defer m.mu.Unlock()
 	a, ok := m.data.Apps[id]
 	if !ok || a.Retiring {
-		return Deployment{}, errors.New("unknown application or removal in progress")
+		return Deployment{}, errors.New("application unavailable")
 	}
-	if d, ok := m.data.Databases[id]; ok {
-		if !d.Ready {
-			return Deployment{}, errors.New("database provisioning must finish before deployment")
-		}
-		a.Network = d.Network
-	}
+	return m.queueLocked(a, req, false)
+}
+func (m *Manager) queueLocked(a App, req DeployRequest, reload bool) (Deployment, error) {
 	if len(req.Key) > 200 || len(req.Token) > 4096 {
 		return Deployment{}, errors.New("request exceeds limit")
 	}
 	if req.Key != "" {
 		for _, d := range m.data.Deployments {
-			if d.AppID == id && d.Key == req.Key {
+			if d.AppID == a.ID && d.Key == req.Key {
 				return d, nil
 			}
 		}
 	}
+	if reload && m.busy(a.ID) {
+		return Deployment{}, errors.New("application has an active deployment or reload")
+	}
+	if reload && a.Current == nil {
+		return Deployment{}, nil
+	}
+	if reload {
+		if _, ok := m.runtime.(interface {
+			Reload(context.Context, App, string) (*Release, error)
+		}); !ok {
+			return Deployment{}, errors.New("runtime does not support reload")
+		}
+	}
+	var ids []string
+	networks := map[string]bool{}
+	for _, id := range a.Bindings {
+		d, ok := m.data.Databases[id]
+		if !ok || !d.Ready || d.Operation != "" {
+			return Deployment{}, errors.New("attached database not ready or busy")
+		}
+		ids = append(ids, id)
+		if d.Network != "" {
+			networks[d.Network] = true
+		}
+	}
+	if a.Current != nil {
+		ids = append(ids, a.Current.DatabaseIDs...)
+	}
+	a.Networks = slices.Sorted(maps.Keys(networks))
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
 	if len(m.queue) == cap(m.queue) {
 		return Deployment{}, errors.New("deployment queue full; retry later")
 	}
-	d := Deployment{ID: newID(), AppID: id, Status: "queued", Created: time.Now().UTC(), Key: req.Key}
-	before := append([]Deployment{}, m.data.Deployments...)
+	d := Deployment{ID: newID(), AppID: a.ID, Status: "queued", Created: time.Now().UTC(), Key: req.Key, Kind: "deploy"}
+	if reload {
+		d.Kind = "reload"
+	}
+	before := slices.Clone(m.data.Deployments)
 	m.data.Deployments = append(m.data.Deployments, d)
 	if len(m.data.Deployments) > 500 {
 		m.data.Deployments = m.data.Deployments[1:]
@@ -203,8 +257,20 @@ func (m *Manager) Enqueue(id string, req DeployRequest) (Deployment, error) {
 		m.data.Deployments = before
 		return Deployment{}, err
 	}
-	m.queue <- job{app: a, deployment: d.ID, token: req.Token}
+	m.queue <- job{app: a, deployment: d.ID, token: req.Token, reload: reload, backupIDs: ids}
 	return d, nil
+}
+func (m *Manager) Reload(id string) (Deployment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.data.Apps[id]
+	if !ok || a.Retiring {
+		return Deployment{}, errors.New("application unavailable")
+	}
+	if a.Current == nil {
+		return Deployment{}, errors.New("deploy the application before reloading")
+	}
+	return m.queueLocked(a, DeployRequest{}, true)
 }
 func (m *Manager) update(id, status string, release *Release, err error) error {
 	for i := range m.data.Deployments {
@@ -240,8 +306,25 @@ func (m *Manager) work() {
 			if err != nil {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(m.ctx, 20*time.Minute)
-			release, err := m.runtime.Deploy(ctx, j.app, j.deployment, j.token)
+			ctx, cancel := context.WithTimeout(m.ctx, 2*time.Hour)
+			var release *Release
+			if j.app.BackupBeforeDeploy == nil || *j.app.BackupBeforeDeploy {
+				err = m.backupBeforeRelease(ctx, j.backupIDs)
+			}
+			if err == nil {
+				runCtx, stopRun := context.WithTimeout(ctx, 20*time.Minute)
+				if j.reload {
+					release, err = m.runtime.(interface {
+						Reload(context.Context, App, string) (*Release, error)
+					}).Reload(runCtx, j.app, j.deployment)
+				} else {
+					release, err = m.runtime.Deploy(runCtx, j.app, j.deployment, j.token)
+				}
+				stopRun()
+			}
+			if release != nil {
+				release.DatabaseIDs = slices.Compact(slices.Sorted(maps.Values(j.app.Bindings)))
+			}
 			j.token = ""
 			m.mu.Lock()
 			var retired *Release

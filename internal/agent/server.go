@@ -99,6 +99,14 @@ func Handler(m *Manager) http.Handler {
 		JSON(w, 200, map[string]string{"status": "removed"})
 	})
 	private.HandleFunc("GET /v1/deployments", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.Deployments()) })
+	private.HandleFunc("POST /v1/apps/{id}/reload", func(w http.ResponseWriter, r *http.Request) {
+		d, err := m.Reload(r.PathValue("id"))
+		if err != nil {
+			Fail(w, 409, err)
+			return
+		}
+		JSON(w, 202, d)
+	})
 	private.HandleFunc("POST /v1/apps/{id}/deploy", func(w http.ResponseWriter, r *http.Request) {
 		var req DeployRequest
 		if err := Decode(w, r, &req); err != nil {

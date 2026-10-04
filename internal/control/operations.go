@@ -103,7 +103,7 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 					}
 					record(c.observe(ctx, "storage:"+result.Server.ID, "Off-site storage configuration could not reach "+result.Server.Name, false, 1))
 				}
-				if err := c.agentCall(request, result.Server.ID, "POST", "/v1/apps/"+d.AppID+"/database/backup", nil, nil); err != nil {
+				if err := c.agentCall(request, result.Server.ID, "POST", "/v1/databases/"+d.AppID+"/backup", nil, nil); err != nil {
 					record(err)
 				}
 			}

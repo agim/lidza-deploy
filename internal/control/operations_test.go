@@ -48,7 +48,7 @@ func TestScheduledBackupsAndDurableAlerts(t *testing.T) {
 				failure = "fixture backup failed"
 			}
 			json.NewEncoder(w).Encode([]agent.DatabaseView{{AppID: "ops-fixture", Mode: "local", Ready: true, Error: failure, Backup: agent.BackupPolicy{Hours: 24, Keep: 7}, NextBackup: time.Now().Add(-time.Minute)}})
-		case "/v1/apps/ops-fixture/database/backup":
+		case "/v1/databases/ops-fixture/backup":
 			dispatched++
 			io.WriteString(w, `{"status":"queued"}`)
 		case "/v1/app-health":

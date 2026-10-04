@@ -161,3 +161,80 @@ func (c *Control) downloadBackup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.Copy(w, res.Body)
 }
+
+func (c *Control) reloadApp(w http.ResponseWriter, r *http.Request) {
+	a, ok := c.app(r.PathValue("id"))
+	if !ok || a.Retiring {
+		http.NotFound(w, r)
+		return
+	}
+	if err := c.syncStorageIfConfigured(r, a.ServerID); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	var out agent.Deployment
+	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/reload", nil, &out); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	agent.JSON(w, 202, out)
+}
+func (c *Control) databaseResourceAction(w http.ResponseWriter, r *http.Request) {
+	action := r.PathValue("action")
+	id := r.PathValue("id")
+	server := r.PathValue("server")
+	if (action != "backup" && action != "provision") || !regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`).MatchString(id) {
+		http.NotFound(w, r)
+		return
+	}
+	if action == "backup" {
+		c.mu.Lock()
+		configured := c.data.BackupStorage != nil
+		c.mu.Unlock()
+		if configured {
+			if err := c.syncBackupStorage(r, server); err != nil {
+				agent.Fail(w, 502, err)
+				return
+			}
+		}
+	}
+	if err := c.agentCall(r, server, "POST", "/v1/databases/"+id+"/"+action, nil, nil); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	agent.JSON(w, 202, map[string]string{"status": "queued"})
+}
+func (c *Control) databaseResourcePolicy(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	server := r.PathValue("server")
+	if !regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`).MatchString(id) {
+		http.NotFound(w, r)
+		return
+	}
+	var p agent.BackupPolicy
+	if err := agent.Decode(w, r, &p); err != nil {
+		agent.Fail(w, 400, err)
+		return
+	}
+	if p.Offsite {
+		if err := c.syncBackupStorage(r, server); err != nil {
+			agent.Fail(w, 409, err)
+			return
+		}
+	}
+	if err := c.agentCall(r, server, "PATCH", "/v1/databases/"+id+"/backups", p, nil); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	agent.JSON(w, 200, map[string]string{"status": "saved"})
+}
+
+func (c *Control) syncStorageIfConfigured(r *http.Request, server string) error {
+	c.mu.Lock()
+	configured := c.data.BackupStorage != nil
+	c.mu.Unlock()
+	if !configured {
+		return nil
+	}
+	return c.syncBackupStorage(r, server)
+}

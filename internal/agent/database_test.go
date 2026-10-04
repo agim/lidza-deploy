@@ -134,6 +134,14 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 	if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), raw) {
 		t.Fatal("backup download differs")
 	}
+	initial, err := m.Enqueue(id, DeployRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waitDeployment(t, m, initial.ID).Status != "live" {
+		t.Fatal("initial deployment failed")
+	}
+	originalRelease := m.Current(id).ID
 	store := storage.Config{Provider: "s3", Endpoint: "https://127.0.0.1:1", Bucket: "test", Region: "us-east-1", AccessKey: "test", SecretKey: "test"}
 	if err = m.setBackupStorage(&store); err != nil {
 		t.Fatal(err)
@@ -148,6 +156,14 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 	if !strings.Contains(d.Error, "local backup saved") || len(d.Backups) != 1 || d.Backups[0].Offsite {
 		t.Fatal("failed off-site backup lost the local copy")
 	}
+	blocked, err := m.Enqueue(id, DeployRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waitDeployment(t, m, blocked.ID).Status != "failed" || m.Current(id).ID != originalRelease {
+		t.Fatal("failed pre-deployment backup activated a release")
+	}
+	d = waitDatabase(t, m, id)
 	path = filepath.Join(m.backupDir(id), d.Backups[0].ID+".dump")
 	if err = m.Retire(ctx, id); err != nil {
 		t.Fatal(err)

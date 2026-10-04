@@ -12,6 +12,25 @@ import (
 )
 
 func (m *Manager) databaseRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /v1/databases/{id}/{action}", func(w http.ResponseWriter, r *http.Request) {
+		if err := m.databaseAction(r.PathValue("id"), r.PathValue("action")); err != nil {
+			Fail(w, 409, err)
+			return
+		}
+		JSON(w, 202, map[string]string{"status": "queued"})
+	})
+	mux.HandleFunc("PATCH /v1/databases/{id}/backups", func(w http.ResponseWriter, r *http.Request) {
+		var p BackupPolicy
+		if err := Decode(w, r, &p); err != nil {
+			Fail(w, 400, err)
+			return
+		}
+		if err := m.setBackupPolicy(r.PathValue("id"), p); err != nil {
+			Fail(w, 409, err)
+			return
+		}
+		JSON(w, 200, map[string]string{"status": "saved"})
+	})
 	mux.HandleFunc("GET /v1/databases", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.databaseViews()) })
 	mux.HandleFunc("POST /v1/apps/{id}/database", func(w http.ResponseWriter, r *http.Request) {
 		var in DatabaseRequest
@@ -26,7 +45,7 @@ func (m *Manager) databaseRoutes(mux *http.ServeMux) {
 		JSON(w, 202, map[string]string{"status": "provisioning"})
 	})
 	mux.HandleFunc("POST /v1/apps/{id}/database/{action}", func(w http.ResponseWriter, r *http.Request) {
-		if err := m.databaseAction(r.PathValue("id"), r.PathValue("action")); err != nil {
+		if err := m.databaseAction(m.primaryDatabaseID(r.PathValue("id")), r.PathValue("action")); err != nil {
 			Fail(w, 409, err)
 			return
 		}
@@ -38,7 +57,7 @@ func (m *Manager) databaseRoutes(mux *http.ServeMux) {
 			Fail(w, 400, err)
 			return
 		}
-		if err := m.setBackupPolicy(r.PathValue("id"), p); err != nil {
+		if err := m.setBackupPolicy(m.primaryDatabaseID(r.PathValue("id")), p); err != nil {
 			Fail(w, 409, err)
 			return
 		}
@@ -135,4 +154,13 @@ func (m *Manager) applicationHealth(parent context.Context) []AppHealth {
 	}
 	wg.Wait()
 	return out
+}
+
+func (m *Manager) primaryDatabaseID(id string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if db := m.data.Apps[id].Bindings["DATABASE_URL"]; db != "" {
+		return db
+	}
+	return id
 }
