@@ -91,7 +91,6 @@ jobs:
           fi
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > releases.json
           release_id=$(python3 -c 'import json,os; matches=[r for page in json.load(open("releases.json")) for r in page if r["tag_name"]==os.environ["VERSION"]]; assert len(matches)==1; print(matches[0]["id"])')
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -f target_commitish="$RELEASE_COMMIT" --silent
           (cd dist && sha256sum -c lidza-agent-linux-amd64.tar.gz.sha256 && sha256sum -c lidza-agent-linux-arm64.tar.gz.sha256)
           gh release upload "$VERSION" --repo "$GITHUB_REPOSITORY" dist/lidza-agent-linux-amd64.tar.gz dist/lidza-agent-linux-amd64.tar.gz.sha256 dist/lidza-agent-linux-arm64.tar.gz dist/lidza-agent-linux-arm64.tar.gz.sha256 --clobber
           gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > release.json
