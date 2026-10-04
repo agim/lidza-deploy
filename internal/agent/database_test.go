@@ -153,7 +153,7 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	d = waitDatabase(t, m, id)
-	if !strings.Contains(d.Error, "local backup saved") || len(d.Backups) != 1 || d.Backups[0].Offsite {
+	if !strings.Contains(d.Error, "local backup saved") || len(d.Backups) != 2 || d.Backups[len(d.Backups)-1].Offsite {
 		t.Fatal("failed off-site backup lost the local copy")
 	}
 	blocked, err := m.Enqueue(id, DeployRequest{})

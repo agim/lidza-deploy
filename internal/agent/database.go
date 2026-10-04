@@ -28,6 +28,7 @@ type DatabaseRequest struct {
 	Backup BackupPolicy `json:"backup"`
 }
 type BackupRecord struct {
+	Kind      string    `json:"kind,omitempty"`
 	ID        string    `json:"id"`
 	Created   time.Time `json:"created"`
 	Size      int64     `json:"size"`

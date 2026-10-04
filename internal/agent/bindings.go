@@ -6,7 +6,6 @@ import (
 	"github.com/agim/lidza/packs/storage"
 	"maps"
 	"strings"
-	"time"
 )
 
 type DatabaseAttachment struct {
@@ -92,7 +91,7 @@ func (m *Manager) backupBeforeRelease(ctx context.Context, ids []string) error {
 		var err error
 		select {
 		case m.databaseSlots <- struct{}{}:
-			record, err = m.dumpDatabase(ctx, d, target)
+			record, err = m.dumpDatabase(ctx, d, target, predeploymentBackup)
 			<-m.databaseSlots
 		case <-ctx.Done():
 			err = ctx.Err()
@@ -108,19 +107,18 @@ func (m *Manager) backupBeforeRelease(ctx context.Context, ids []string) error {
 			d.Error = "pre-deployment backup failed: " + err.Error()
 		} else {
 			d.Error = ""
-			d.NextBackup = time.Now().UTC().Add(time.Duration(d.Backup.Hours) * time.Hour)
 		}
 		m.data.Databases[id] = d
 		saveErr := m.save()
-		if record.ID != "" {
-			m.pruneBackupsLocked(id)
+		if record.ID != "" && saveErr == nil {
+			saveErr = m.pruneBackupsLocked(id)
 		}
 		m.mu.Unlock()
 		if err != nil {
 			return errors.New("pre-deployment backup failed; current release retained")
 		}
 		if saveErr != nil {
-			return errors.New("pre-deployment backup metadata could not be saved")
+			return errors.New("pre-deployment backup could not be finalized; current release retained")
 		}
 	}
 	return nil

@@ -211,6 +211,16 @@ func TestDockerTwoAppsRedeployRollback(t *testing.T) {
 		t.Fatal("database switch did not reload")
 	}
 	assertDatabases()
+	for _, id := range dbIDs {
+		d := waitDatabase(t, m, id)
+		if len(d.Backups) != 1 || d.Backups[0].Kind != predeploymentBackup {
+			t.Fatal("repeated deployments retained extra pre-deployment copies")
+		}
+		files, err := filepath.Glob(filepath.Join(m.backupDir(id), "*.dump"))
+		if err != nil || len(files) != 1 {
+			t.Fatal("extra pre-deployment files", files, err)
+		}
+	}
 	m.mu.Lock()
 	a := m.data.Apps[one.ID]
 	same := a.Env["DATABASE_URL"] == a.Env["ANALYTICS_DATABASE_URL"]
