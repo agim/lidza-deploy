@@ -43,6 +43,12 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if c.data.BackupStorage != nil {
+		if err := c.agentCall(r, old.ServerID, "PUT", "/v1/backup-storage", c.data.BackupStorage, nil); err != nil {
+			agent.Fail(w, 502, err)
+			return
+		}
+	}
 	if err := c.agentCall(r, old.ServerID, "PATCH", "/v1/apps/"+old.ID+"/settings", input, nil); err != nil {
 		agent.Fail(w, 502, err)
 		return

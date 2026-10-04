@@ -271,6 +271,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	private.HandleFunc("GET /api/control/apps", c.apps)
 	private.HandleFunc("POST /api/control/apps", c.create)
 	private.HandleFunc("DELETE /api/control/apps/{id}", c.retire)
+	private.HandleFunc("POST /api/control/apps/{id}/reload", c.reloadApp)
+	private.HandleFunc("POST /api/control/servers/{server}/databases/{id}/{action}", c.databaseResourceAction)
+	private.HandleFunc("PATCH /api/control/servers/{server}/databases/{id}/backups", c.databaseResourcePolicy)
 	private.HandleFunc("POST /api/control/apps/{id}/deploy", c.deploy)
 	private.HandleFunc("POST /api/control/apps/{id}/rollback", c.rollback)
 	private.HandleFunc("POST /api/control/apps/{id}/webhook", c.hook)
@@ -427,6 +430,10 @@ func (c *Control) deploy(w http.ResponseWriter, r *http.Request) {
 	token, err := c.token(r.Context())
 	if err != nil {
 		agent.Fail(w, 409, err)
+		return
+	}
+	if err := c.syncStorageIfConfigured(r, a.ServerID); err != nil {
+		agent.Fail(w, 502, err)
 		return
 	}
 	var d agent.Deployment

@@ -38,6 +38,13 @@ func (f *fakeRuntime) Deploy(ctx context.Context, a App, id, token string) (*Rel
 	}
 	return &Release{ID: id, Commit: id, Port: "12345", Container: id}, nil
 }
+func (f *fakeRuntime) Reload(ctx context.Context, a App, id string) (*Release, error) {
+	r, e := f.Deploy(ctx, a, id, "")
+	if r != nil && a.Current != nil {
+		r.Commit = a.Current.Commit
+	}
+	return r, e
+}
 func (f *fakeRuntime) Remove(context.Context, *Release) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

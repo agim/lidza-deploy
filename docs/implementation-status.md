@@ -44,3 +44,9 @@ The branch adds per-app PostgreSQL provisioning or external attachment, encrypte
 Scheduled dispatch, persistent alert deduplication, recovery notifications and mail outbox queueing passed PostgreSQL integration checks with sending disabled. Concurrent reload/send testing found **Līdza #27**, which was fixed upstream in v0.1.71. After upgrading, the original reproduction and the framework tests for concurrent readers, failed reload preservation and reconfiguration during queued delivery all pass with the race detector. **#26** is also fixed and the full `scripts/test.sh` suite (including onboarding, real Docker and Caddy, and vet) now passes. No real-provider SMTP or S3 acceptance test is claimed.
 
 Both framework release gates are satisfied. Real-provider credentials, public ACME and fresh-VM installation still require acceptance checks in the deployment environment; passing local integration tests does not establish those external results.
+
+## Runtime edits and database attachments
+
+Deployed-app settings now queue an image-only reload with readiness checking and retained healthy releases on failure. FQDN edits update routing, TLS authorization and the default APP_URL. Named same-agent database attachments support extra connections and primary switching while preserving old data. Existing state migrates once. Deployments and reloads back up distinct attached/current-release databases by default and fail closed on backup errors; operators can explicitly disable the policy per app.
+
+Validation covers real Docker connections across two database networks, primary switching, settings reload without another checkout, FQDN routing/TLS authorization, runtime APP_URL, secret delivery, failed reload/backup activation protection, legacy migration and shared-database retention. GUI tests cover additional database creation, named bindings and primary switching.

@@ -25,15 +25,20 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cryp
   const downloadEvent=page.waitForEvent('download');await page.locator('#database-dialog a[download]').first().click();const download=await downloadEvent;const backupPath=await download.path();const bytes=fs.readFileSync(backupPath);if(bytes.subarray(0,5).toString()!=='PGDMP')throw Error('Not a PostgreSQL custom dump');
   await page.selectOption('#backup-form [name=backup_hours]','24');await page.click('#backup-form button[type=submit]');await page.waitForTimeout(300);await page.screenshot({path:path.join(root,'.local/screenshots/database-backups.png'),fullPage:true});
   const saved=await (await page.request.get(base+'/api/control/databases')).json();if(saved.databases.find(d=>d.app_id===id)?.backup.hours!==24)throw Error('Backup frequency not saved');
+  await page.locator('#database-dialog summary').filter({hasText:'Create or connect another database'}).click();
+  await page.fill('#attach-database-form [name=id]',id+'-extra');await page.fill('#attach-database-form [name=env_key]','ANALYTICS_DATABASE_URL');await page.selectOption('#attach-database-form [name=database_mode]','local');await page.selectOption('#attach-database-form [name=backup_hours]','0');const creation=page.waitForResponse(r=>r.url().endsWith('/apps/'+id+'/database')&&r.request().method()==='POST');await page.click('#attach-database-form button[type=submit]');const created=await creation;if(!created.ok())throw Error('Additional database creation failed: '+(await created.json()).error);await page.waitForFunction(expected=>document.querySelector('#managed-database')?.value===expected,id+'-extra');
+  for(let i=0;i<100;i++){if(await page.locator('#database-run').textContent()==='Back up now')break;await page.click('#database-refresh');await page.waitForTimeout(500);}
+  await page.fill('#bind-database-form [name=env_key]','DATABASE_URL');await page.selectOption('#bind-database-form [name=id]',id+'-extra');const switching=page.waitForResponse(r=>r.url().endsWith('/apps/'+id+'/database')&&r.request().method()==='POST');await page.click('#bind-database-form button[type=submit]');if(!(await switching).ok())throw Error('Primary switch request failed');
+  const settings=await (await page.request.get(base+'/api/control/apps/'+id+'/settings')).json();if(settings.database_bindings.DATABASE_URL!==id+'-extra'||settings.database_bindings.ANALYTICS_DATABASE_URL!==id+'-extra')throw Error('Additional attachment or main switch failed');if(!settings.backup_before_deploy)throw Error('Pre-deployment backups not enabled by default');
   await page.locator('#database-dialog [data-close]').click();response=await page.request.delete(base+'/api/control/apps/'+id,{headers:{Origin:base},data:{confirm:id}});if(!response.ok())throw Error('App removal failed');
-  await page.locator('[data-tab=backups]').click();await page.getByText('Retained after app removal',{exact:false}).waitFor();
+  await page.locator('[data-tab=backups]').click();await page.getByText('Retained after app removal',{exact:false}).first().waitFor();
   await page.locator('[data-tab=settings]').click();await page.locator('#storage-form').waitFor();if(!await page.locator('#mail-form').count())throw Error('Missing infrastructure controls');
   if(errors.length)throw Error(errors.join('\n'));
-  console.log('PASS: GUI local database creation, masked external URL, backup/download, schedule editing, retained backups, integration controls');
+  console.log('PASS: GUI local database creation, masked external URL, backup/download, schedule editing, named attachments, primary switch, pre-deployment default, retained backups, integration controls');
  }finally{
   if(page){await page.request.delete(base+'/api/control/apps/'+id,{headers:{Origin:base},data:{confirm:id}}).catch(()=>{});await page.request.delete(base+'/api/control/servers/'+host,{headers:{Origin:base}}).catch(()=>{});}
   if(browser)await browser.close();if(agent.exitCode===null){agent.kill('SIGTERM');await new Promise(r=>agent.once('exit',r));}
-  const name='lidza-db-'+id;for(const args of [['rm','-f',name],['volume','rm',name+'-data'],['network','rm',name]])try{execFileSync('docker',args,{stdio:'ignore'})}catch{}
+  for(const dbID of [id,id+'-extra']){const name='lidza-db-'+dbID;for(const args of [['rm','-f',name],['volume','rm',name+'-data'],['network','rm',name]])try{execFileSync('docker',args,{stdio:'ignore'})}catch{}}
   fs.rmSync(dir,{recursive:true,force:true});
  }
 })().catch(e=>{console.error(e.message);process.exitCode=1});

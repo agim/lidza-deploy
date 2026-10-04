@@ -139,6 +139,9 @@ func (c *Control) dispatchPush(ctx context.Context, payload json.RawMessage) err
 		return err
 	}
 	var d agent.Deployment
+	if err := c.syncStorageIfConfigured(req, a.ServerID); err != nil {
+		return err
+	}
 	return c.agentCall(req, a.ServerID, "POST", "/v1/apps/"+a.ID+"/deploy", agent.DeployRequest{Token: token, Key: "github:" + job.Delivery}, &d)
 }
 func (c *Control) deliveries(w http.ResponseWriter, r *http.Request) {

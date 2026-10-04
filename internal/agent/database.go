@@ -21,6 +21,8 @@ type BackupPolicy struct {
 	Offsite bool `json:"offsite"`
 }
 type DatabaseRequest struct {
+	ID     string       `json:"id,omitempty"`
+	EnvKey string       `json:"env_key,omitempty"`
 	Mode   string       `json:"mode"` // local, external, none
 	URL    string       `json:"url,omitempty"`
 	Backup BackupPolicy `json:"backup"`
@@ -48,16 +50,17 @@ type Database struct {
 	Backups       []BackupRecord `json:"backups"`
 }
 type DatabaseView struct {
-	AppID      string         `json:"app_id"`
-	Mode       string         `json:"mode"`
-	Ready      bool           `json:"ready"`
-	Operation  string         `json:"operation"`
-	Error      string         `json:"error"`
-	Event      string         `json:"event"`
-	Backup     BackupPolicy   `json:"backup"`
-	NextBackup time.Time      `json:"next_backup"`
-	Backups    []BackupRecord `json:"backups"`
-	Retained   bool           `json:"retained"`
+	Attachments []DatabaseAttachment `json:"attachments"`
+	AppID       string               `json:"app_id"`
+	Mode        string               `json:"mode"`
+	Ready       bool                 `json:"ready"`
+	Operation   string               `json:"operation"`
+	Error       string               `json:"error"`
+	Event       string               `json:"event"`
+	Backup      BackupPolicy         `json:"backup"`
+	NextBackup  time.Time            `json:"next_backup"`
+	Backups     []BackupRecord       `json:"backups"`
+	Retained    bool                 `json:"retained"`
 }
 
 func (p BackupPolicy) Validate() error {
@@ -70,6 +73,18 @@ func (p BackupPolicy) Validate() error {
 	return nil
 }
 func (r DatabaseRequest) Validate() error {
+	if r.ID != "" && !idPattern.MatchString(r.ID) {
+		return errors.New("invalid database ID")
+	}
+	if r.EnvKey != "" && !validDatabaseKey(r.EnvKey) {
+		return errors.New("use DATABASE_URL or a name ending in _DATABASE_URL")
+	}
+	if r.Mode == "existing" {
+		if r.ID == "" {
+			return errors.New("choose a database")
+		}
+		return nil
+	}
 	if r.Mode == "" || r.Mode == "none" {
 		return nil
 	}
@@ -102,33 +117,67 @@ func (m *Manager) databaseViews() []DatabaseView {
 	defer m.mu.Unlock()
 	out := []DatabaseView{}
 	for id, d := range m.data.Databases {
-		_, live := m.data.Apps[id]
-		out = append(out, DatabaseView{AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: d.Backup, NextBackup: d.NextBackup, Backups: slices.Clone(d.Backups), Retained: !live})
+		attachments := m.attachmentsLocked(id)
+		live := len(attachments) > 0
+		for _, a := range m.data.Apps {
+			if a.Current != nil && slices.Contains(a.Current.DatabaseIDs, id) {
+				live = true
+			}
+		}
+		out = append(out, DatabaseView{Attachments: attachments, AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: d.Backup, NextBackup: d.NextBackup, Backups: slices.Clone(d.Backups), Retained: !live})
 	}
 	return out
 }
-func (m *Manager) configureDatabase(id string, input DatabaseRequest) error {
+func (m *Manager) configureDatabase(appID string, input DatabaseRequest) error {
 	if err := input.Validate(); err != nil {
 		return err
 	}
-	if input.Mode == "none" || input.Mode == "" {
+	if input.Mode == "" || input.Mode == "none" {
 		return nil
+	}
+	if input.EnvKey == "" {
+		input.EnvKey = "DATABASE_URL"
+	}
+	if input.ID == "" {
+		input.ID = appID
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	a, ok := m.data.Apps[id]
+	a, ok := m.data.Apps[appID]
 	if !ok || a.Retiring {
 		return errors.New("application unavailable")
 	}
-	if m.busy(id) {
-		return errors.New("wait for the active deployment")
+	if m.busy(appID) {
+		return errors.New("wait for deployment or reload")
 	}
+	if input.Mode == "existing" {
+		return m.bindDatabaseLocked(appID, input.EnvKey, input.ID)
+	}
+	if _, exists := a.Env[input.EnvKey]; !exists && len(a.Env) >= 100 {
+		return errors.New("at most 100 environment variables")
+	}
+	id := input.ID
 	previous, exists := m.data.Databases[id]
-	if exists && (previous.Mode != "external" || input.Mode != "external" || previous.Operation != "") {
-		return errors.New("database already configured or busy; use retry or backup settings")
+	if exists {
+		if previous.Ready {
+			return errors.New("create another connection and attach it to change the URL; the old database and backups are preserved")
+		}
+		if previous.Mode != "external" || input.Mode != "external" || previous.Operation != "" || a.Bindings[input.EnvKey] != id {
+			return errors.New("database ID exists; choose attach existing or a new ID")
+		}
+		for _, ref := range m.attachmentsLocked(id) {
+			if m.busy(ref.AppID) {
+				return errors.New("an attached app is busy")
+			}
+		}
+	} else if len(m.data.Databases) >= 200 {
+		return errors.New("agent database limit reached")
 	}
-	if _, ok = a.Env["DATABASE_URL"]; ok && !exists {
-		return errors.New("remove manual DATABASE_URL before attaching a managed database")
+	if _, manual := a.Env[input.EnvKey]; manual && a.Bindings[input.EnvKey] == "" {
+		return errors.New("remove the manually configured variable before attaching a database")
+	}
+	if input.Backup.Offsite && m.data.BackupStorage == nil {
+		return errors.New("configure S3 storage first")
 	}
 	d := Database{AppID: id, Mode: input.Mode, URL: input.URL, Backup: input.Backup}
 	if exists {
@@ -140,11 +189,16 @@ func (m *Manager) configureDatabase(id string, input DatabaseRequest) error {
 		u := url.URL{Scheme: "postgres", User: url.UserPassword("app", newID()+newID()), Host: d.Network + ":5432", Path: "/app", RawQuery: "sslmode=disable"}
 		d.URL = u.String()
 	}
-	if input.Backup.Offsite && m.data.BackupStorage == nil {
-		return errors.New("configure S3 storage before enabling off-site backups")
+	oldApp := a
+	a.Bindings = maps.Clone(a.Bindings)
+	if a.Bindings == nil {
+		a.Bindings = map[string]string{}
 	}
+	a.Bindings[input.EnvKey] = id
+	m.data.Apps[appID] = a
 	m.data.Databases[id] = d
 	if err := m.save(); err != nil {
+		m.data.Apps[appID] = oldApp
 		if exists {
 			m.data.Databases[id] = previous
 		} else {
@@ -164,10 +218,7 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 	if !ok {
 		return errors.New("no database configured")
 	}
-	a, live := m.data.Apps[id]
-	if !live || a.Retiring {
-		return errors.New("application unavailable; retained database is preserved")
-	}
+
 	if d.Operation != "" {
 		return errors.New("database operation already running")
 	}
@@ -180,8 +231,10 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 	if action == "provision" && d.Ready {
 		return errors.New("database already ready")
 	}
-	if action == "provision" && m.busy(id) {
-		return errors.New("wait for the active deployment")
+	for _, ref := range m.attachmentsLocked(id) {
+		if m.busy(ref.AppID) {
+			return errors.New("wait for the active deployment or reload")
+		}
 	}
 	old := d
 	d.Operation = action
@@ -218,6 +271,7 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		reloadApps := map[string]bool{}
 		latest := m.data.Databases[id]
 		latest.Operation = ""
 		latest.Event = newID()
@@ -234,13 +288,16 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 			if action == "provision" {
 				latest.Ready = true
 				latest.NextBackup = time.Now().UTC()
-				a := m.data.Apps[id]
-				a.Env = maps.Clone(a.Env)
-				if a.Env == nil {
-					a.Env = map[string]string{}
+				for _, ref := range m.attachmentsLocked(id) {
+					a := m.data.Apps[ref.AppID]
+					a.Env = maps.Clone(a.Env)
+					if a.Env == nil {
+						a.Env = map[string]string{}
+					}
+					a.Env[ref.EnvKey] = latest.URL
+					m.data.Apps[a.ID] = a
+					reloadApps[a.ID] = true
 				}
-				a.Env["DATABASE_URL"] = latest.URL
-				m.data.Apps[id] = a
 			} else {
 				latest.NextBackup = time.Now().UTC().Add(time.Duration(latest.Backup.Hours) * time.Hour)
 			}
@@ -254,6 +311,17 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 		}
 		if record.ID != "" {
 			m.pruneBackupsLocked(id)
+		}
+
+		for appID := range reloadApps {
+			a := m.data.Apps[appID]
+			if a.Current != nil {
+				if _, e := m.queueLocked(a, DeployRequest{}, true); e != nil {
+					latest.Error = "database ready; automatic reload could not start; use Reload after other operations finish"
+					m.data.Databases[id] = latest
+					_ = m.save()
+				}
+			}
 		}
 	}()
 	return nil

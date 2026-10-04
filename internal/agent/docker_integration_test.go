@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -24,8 +25,10 @@ func TestDockerTwoAppsRedeployRollback(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatal(err, string(out))
 	}
+	var checkouts atomic.Int32
 	rt := &Docker{Root: t.TempDir()}
 	rt.checkout = func(ctx context.Context, a App, dir, token string) error {
+		checkouts.Add(1)
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return err
 		}
@@ -102,26 +105,118 @@ func TestDockerTwoAppsRedeployRollback(t *testing.T) {
 	one.Env = map[string]string{"RELEASE_TEXT": "one-v1"}
 	two := testApp("smoke-two")
 	two.Env = map[string]string{"RELEASE_TEXT": "two-v1"}
+	if err := m.Upsert(one); err != nil {
+		t.Fatal(err)
+	}
+	dbIDs := []string{"db-smoke-" + newID()[:10], "db-smoke-" + newID()[:10]}
+	t.Cleanup(func() {
+		m.Close()
+		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for _, a := range m.Apps() {
+			_ = rt.Remove(cleanup, a.Current)
+			_ = rt.Remove(cleanup, a.Previous)
+		}
+		for _, id := range dbIDs {
+			for _, args := range [][]string{{"rm", "-f", "lidza-db-" + id}, {"volume", "rm", "lidza-db-" + id + "-data"}, {"network", "rm", "lidza-db-" + id}} {
+				_, _ = command(cleanup, "", nil, "docker", args...)
+			}
+		}
+	})
+	for i, key := range []string{"DATABASE_URL", "ANALYTICS_DATABASE_URL"} {
+		if err := m.configureDatabase(one.ID, DatabaseRequest{ID: dbIDs[i], EnvKey: key, Mode: "local", Backup: BackupPolicy{Keep: 10}}); err != nil {
+			t.Fatal(err)
+		}
+		if d := waitDatabase(t, m, dbIDs[i]); !d.Ready || d.Error != "" {
+			t.Fatal("database provisioning", d.Error)
+		}
+	}
+	one.Env = nil
 	first := deploy(one)
+	assertDatabases := func() {
+		t.Helper()
+		req := httptest.NewRequest("GET", "http://"+one.Domain+"/check-databases", nil)
+		w := httptest.NewRecorder()
+		Proxy(m).ServeHTTP(w, req)
+		if w.Code != 200 || w.Body.String() != "ok" {
+			t.Fatal("attached database connections inaccessible", w.Code)
+		}
+	}
+	assertDatabases()
+	for _, d := range m.databaseViews() {
+		if len(d.Backups) != 1 {
+			t.Fatal("deployment did not back up each database")
+		}
+	}
 	deploy(two)
 	if request(one.Domain) != "one-v1" || request(two.Domain) != "two-v1" {
 		t.Fatal("FQDN routing crossed applications")
 	}
+	oldDomain := one.Domain
+	one.Domain = "changed-smoke.example.com"
 	value := "one-v2"
 	if err := m.PatchSettings(one.ID, SettingsPatch{Branch: one.Branch, Domain: one.Domain, EnvChanges: map[string]*string{"RELEASE_TEXT": &value}}); err != nil {
 		t.Fatal(err)
 	}
-	// Match GUI redeploy: omitted environment preserves the agent's saved patch.
-	one.Env = nil
-	second := deploy(one)
+	// Saving settings reloads the current image without calling checkout again.
+	second := m.Deployments()[len(m.Deployments())-1].ID
+	deadline := time.Now().Add(time.Minute)
+	for time.Now().Before(deadline) {
+		if m.Current(one.ID).ID == second {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	if first == second || request(one.Domain) != "one-v2" {
 		t.Fatal("redeploy not serving new release")
+	}
+	if m.Target(oldDomain) != nil {
+		t.Fatal("old FQDN still routes")
+	}
+	for host, code := range map[string]int{oldDomain: 403, one.Domain: 200} {
+		req := httptest.NewRequest("GET", "/tls/allow?domain="+host, nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		w := httptest.NewRecorder()
+		Handler(m).ServeHTTP(w, req)
+		if w.Code != code {
+			t.Fatal("TLS domain authorization did not follow FQDN edit")
+		}
+	}
+	if checkouts.Load() != 2 {
+		t.Fatal("runtime reload cloned source")
+	}
+	env, err := command(ctx, "", nil, "docker", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", m.Current(one.ID).Container)
+	if err != nil || !strings.Contains(env, "APP_URL=https://"+one.Domain) {
+		t.Fatal("new runtime origin not applied")
 	}
 	if err := m.Rollback(ctx, one.ID); err != nil {
 		t.Fatal(err)
 	}
 	if request(one.Domain) != "one-v1" || request(two.Domain) != "two-v1" {
 		t.Fatal("rollback failed or affected other app")
+	}
+	// Switching primary to a second database reloads and retains both named variables.
+	if err := m.configureDatabase(one.ID, DatabaseRequest{Mode: "existing", ID: dbIDs[1], EnvKey: "DATABASE_URL"}); err != nil {
+		t.Fatal(err)
+	}
+	reloadID := m.Deployments()[len(m.Deployments())-1].ID
+	deadline = time.Now().Add(time.Minute)
+	for time.Now().Before(deadline) {
+		if m.Current(one.ID).ID == reloadID {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if m.Current(one.ID).ID != reloadID {
+		t.Fatal("database switch did not reload")
+	}
+	assertDatabases()
+	m.mu.Lock()
+	a := m.data.Apps[one.ID]
+	same := a.Env["DATABASE_URL"] == a.Env["ANALYTICS_DATABASE_URL"]
+	m.mu.Unlock()
+	if !same {
+		t.Fatal("primary did not switch")
 	}
 	// Verify actual runtime hardening, not just argument construction.
 	cmd := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.HostConfig.ReadonlyRootfs}} {{.Config.User}} {{.HostConfig.Memory}}", m.Current(one.ID).Container)
