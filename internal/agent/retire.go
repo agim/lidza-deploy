@@ -25,13 +25,26 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 			return errors.New("wait for the database operation to finish")
 		}
 	}
-	if m.busy(id) {
+	for _, t := range m.data.Tasks {
+		if t.AppID == id && t.Running && t.Mode == "schedule" {
+			m.mu.Unlock()
+			return errors.New("wait for scheduled command to finish")
+		}
+	}
+	if m.busy(id) || a.Restoring {
 		m.mu.Unlock()
 		return errors.New("application has an active deployment; retry removal after it finishes")
 	}
 	if !a.Retiring {
 		old := a
 		a.Retiring = true
+		for key, t := range m.data.Tasks {
+			if t.AppID == id {
+				t.Enabled = false
+				t.RunKey = newID()
+				m.data.Tasks[key] = t
+			}
+		}
 		m.data.Apps[id] = a
 		if err := m.save(); err != nil {
 			m.data.Apps[id] = old
@@ -54,8 +67,20 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 			}
 		}
 	}
+	for _, task := range m.taskList(id) {
+		if task.Container != "" {
+			if _, err := command(cleanup, "", nil, "docker", "rm", "-f", task.Container); err != nil {
+				return errors.New("task cleanup failed; retry removal")
+			}
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for key, t := range m.data.Tasks {
+		if t.AppID == id {
+			delete(m.data.Tasks, key)
+		}
+	}
 	delete(m.data.Apps, id)
 	if err := m.save(); err != nil {
 		m.data.Apps[id] = a

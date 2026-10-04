@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/buildinfo"
 	"log"
 	"net/http"
 	"os/signal"
@@ -15,7 +17,12 @@ import (
 
 func main() {
 	path := flag.String("config", "/etc/lidza-agent/config.json", "configuration file")
+	version := flag.Bool("version", false, "print release version")
 	flag.Parse()
+	if *version {
+		fmt.Println(buildinfo.Version)
+		return
+	}
 	cfg, err := agent.LoadConfig(*path)
 	if err != nil {
 		log.Fatal(err)

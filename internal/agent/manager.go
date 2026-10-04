@@ -29,19 +29,20 @@ type job struct {
 	token      string
 }
 type Manager struct {
-	domainWake    chan struct{}
-	domains       map[string]DomainStatus
-	databaseSlots chan struct{}
-	mu            sync.Mutex
-	removing      map[string]bool
-	key           []byte
-	cfg           Config
-	data          diskState
-	runtime       Runtime
-	queue         chan job
-	ctx           context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
+	cpuTotal, cpuIdle float64
+	domainWake        chan struct{}
+	domains           map[string]DomainStatus
+	databaseSlots     chan struct{}
+	mu                sync.Mutex
+	removing          map[string]bool
+	key               []byte
+	cfg               Config
+	data              diskState
+	runtime           Runtime
+	queue             chan job
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
@@ -65,6 +66,16 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
+	if m.data.Tasks == nil {
+		m.data.Tasks = map[string]Task{}
+	}
+	for key, t := range m.data.Tasks {
+		if t.Running && t.Mode == "schedule" {
+			t.Running = false
+			t.Error = "agent restarted during command; inspect before retry"
+			m.data.Tasks[key] = t
+		}
+	}
 	if m.data.Databases == nil {
 		m.data.Databases = map[string]Database{}
 	}
@@ -77,6 +88,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		}
 	}
 	for id, a := range m.data.Apps {
+		if a.Restoring {
+			a.Restoring = false
+			m.data.Apps[id] = a
+		}
 		if a.Bindings == nil {
 			a.Bindings = map[string]string{}
 			if _, ok := m.data.Databases[id]; ok && m.data.BindingsVersion == 0 {
@@ -145,7 +160,11 @@ func (m *Manager) Apps() []App {
 func (m *Manager) Deployments() []Deployment {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]Deployment{}, m.data.Deployments...)
+	out := append([]Deployment{}, m.data.Deployments...)
+	for i := range out {
+		out[i].Duration = deploymentDuration(out[i])
+	}
+	return out
 }
 func (m *Manager) Upsert(a App) error {
 	if err := a.Validate(); err != nil {
@@ -153,7 +172,7 @@ func (m *Manager) Upsert(a App) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.busy(a.ID) {
+	if m.busy(a.ID) || m.data.Apps[a.ID].Restoring {
 		return errors.New("application has an active deployment")
 	}
 	old, exists := m.data.Apps[a.ID]
@@ -178,6 +197,8 @@ func (m *Manager) Upsert(a App) error {
 		}
 	}
 	a.DomainStatus = nil
+	a.Restoring = old.Restoring
+	a.Maintenance = old.Maintenance
 	a.Bindings = old.Bindings
 	if exists {
 		a.BackupBeforeDeploy = old.BackupBeforeDeploy
@@ -215,7 +236,13 @@ func (m *Manager) Enqueue(id string, req DeployRequest) (Deployment, error) {
 	}
 	return m.queueLocked(a, req, false)
 }
-func (m *Manager) queueLocked(a App, req DeployRequest, reload bool) (Deployment, error) {
+func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...[]string) (Deployment, error) {
+	if m.upgradePending() {
+		return Deployment{}, errors.New("agent upgrade in progress")
+	}
+	if a.Restoring {
+		return Deployment{}, errors.New("wait for database restore")
+	}
 	if len(req.Key) > 200 || len(req.Token) > 4096 {
 		return Deployment{}, errors.New("request exceeds limit")
 	}
@@ -259,7 +286,10 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool) (Deployment
 	if len(m.queue) == cap(m.queue) {
 		return Deployment{}, errors.New("deployment queue full; retry later")
 	}
-	d := Deployment{ID: newID(), AppID: a.ID, Status: "queued", Created: time.Now().UTC(), Key: req.Key, Kind: "deploy"}
+	d := Deployment{ID: newID(), AppID: a.ID, Status: "queued", Created: time.Now().UTC(), Key: req.Key, Kind: "deploy", Branch: a.Branch, Domain: a.Domain, Changes: changeKeys(m.data.Apps[a.ID], a)}
+	if len(changes) > 0 {
+		d.Changes = slices.Clone(changes[0])
+	}
 	if reload {
 		d.Kind = "reload"
 	}
@@ -294,8 +324,13 @@ func (m *Manager) update(id, status string, release *Release, err error) error {
 			continue
 		}
 		d.Status = status
+		if status == "building" {
+			now := time.Now().UTC()
+			d.Started = &now
+		}
 		if release != nil {
 			d.Commit = release.Commit
+			d.CommitMessage = release.CommitMessage
 		}
 		if err != nil {
 			d.Error = err.Error()
@@ -322,6 +357,7 @@ func (m *Manager) work() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(m.ctx, 2*time.Hour)
+			ctx = m.deploymentDiagnostics(ctx, j)
 			var release *Release
 			if j.app.BackupBeforeDeploy == nil || *j.app.BackupBeforeDeploy {
 				err = m.backupBeforeRelease(ctx, j.backupIDs)

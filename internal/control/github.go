@@ -57,6 +57,7 @@ func (c *Control) hook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Secret = ""
+	a.Previews.Env = nil
 	agent.JSON(w, 200, a)
 }
 func (c *Control) webhook(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +82,10 @@ func (c *Control) webhook(w http.ResponseWriter, r *http.Request) {
 	event := r.Header.Get("X-GitHub-Event")
 	if event == "ping" {
 		w.WriteHeader(204)
+		return
+	}
+	if event == "pull_request" {
+		c.enqueuePreview(w, r, a, body)
 		return
 	}
 	if event != "push" || !a.AutoDeploy {

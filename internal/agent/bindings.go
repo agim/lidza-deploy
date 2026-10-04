@@ -53,7 +53,7 @@ func (m *Manager) bindDatabaseLocked(appID, key, id string) error {
 	m.data.Apps[appID] = a
 	var err error
 	if a.Current != nil {
-		_, err = m.queueLocked(a, DeployRequest{}, true)
+		_, err = m.queueLocked(a, DeployRequest{}, true, changeKeys(old, a))
 	} else {
 		err = m.save()
 	}

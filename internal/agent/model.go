@@ -11,6 +11,10 @@ import (
 )
 
 type App struct {
+	Preview            bool              `json:"preview,omitempty"`
+	PullRequest        int               `json:"pull_request,omitempty"`
+	Restoring          bool              `json:"restoring,omitempty"`
+	Maintenance        Maintenance       `json:"maintenance"`
 	DomainStatus       *DomainStatus     `json:"domain_status,omitempty"`
 	Bindings           map[string]string `json:"database_bindings,omitempty"`
 	BackupBeforeDeploy *bool             `json:"backup_before_deploy,omitempty"`
@@ -26,30 +30,39 @@ type App struct {
 	Previous           *Release          `json:"previous,omitempty"`
 }
 type Release struct {
-	DatabaseIDs []string  `json:"database_ids,omitempty"`
-	Image       string    `json:"image,omitempty"`
-	ID          string    `json:"id"`
-	Commit      string    `json:"commit"`
-	Container   string    `json:"container"`
-	Port        string    `json:"port"`
-	Created     time.Time `json:"created"`
+	CommitMessage string    `json:"commit_message,omitempty"`
+	DatabaseIDs   []string  `json:"database_ids,omitempty"`
+	Image         string    `json:"image,omitempty"`
+	ID            string    `json:"id"`
+	Commit        string    `json:"commit"`
+	Container     string    `json:"container"`
+	Port          string    `json:"port"`
+	Created       time.Time `json:"created"`
 }
 type Deployment struct {
-	Kind     string     `json:"kind,omitempty"`
-	ID       string     `json:"id"`
-	AppID    string     `json:"app_id"`
-	Status   string     `json:"status"`
-	Commit   string     `json:"commit,omitempty"`
-	Error    string     `json:"error,omitempty"`
-	Created  time.Time  `json:"created"`
-	Finished *time.Time `json:"finished,omitempty"`
-	Key      string     `json:"key,omitempty"`
+	Log           string     `json:"log,omitempty"`
+	Started       *time.Time `json:"started,omitempty"`
+	Duration      float64    `json:"duration_seconds"`
+	Branch        string     `json:"branch,omitempty"`
+	Domain        string     `json:"domain,omitempty"`
+	Changes       []string   `json:"changes,omitempty"`
+	CommitMessage string     `json:"commit_message,omitempty"`
+	Kind          string     `json:"kind,omitempty"`
+	ID            string     `json:"id"`
+	AppID         string     `json:"app_id"`
+	Status        string     `json:"status"`
+	Commit        string     `json:"commit,omitempty"`
+	Error         string     `json:"error,omitempty"`
+	Created       time.Time  `json:"created"`
+	Finished      *time.Time `json:"finished,omitempty"`
+	Key           string     `json:"key,omitempty"`
 }
 type DeployRequest struct {
 	Token string `json:"github_token,omitempty"`
 	Key   string `json:"key,omitempty"`
 }
 type diskState struct {
+	Tasks           map[string]Task     `json:"tasks,omitempty"`
 	BindingsVersion int                 `json:"bindings_version"`
 	Databases       map[string]Database `json:"databases,omitempty"`
 	BackupStorage   *storage.Config     `json:"backup_storage,omitempty"`
@@ -63,6 +76,9 @@ var domainPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 var envPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (a App) Validate() error {
+	if a.PullRequest < 0 || a.PullRequest > 999999999 || a.PullRequest > 0 && !a.Preview {
+		return errors.New("invalid preview pull request")
+	}
 	if !idPattern.MatchString(a.ID) {
 		return errors.New("id must be a lowercase slug, up to 48 characters")
 	}

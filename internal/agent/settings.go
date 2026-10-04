@@ -42,7 +42,7 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	if old.Retiring {
 		return errors.New("application is being removed")
 	}
-	if m.busy(id) {
+	if m.busy(id) || old.Restoring {
 		return errors.New("application has an active deployment")
 	}
 	a := old
@@ -76,7 +76,7 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	m.data.Apps[id] = a
 	var err error
 	if a.Current != nil {
-		_, err = m.queueLocked(a, DeployRequest{}, true)
+		_, err = m.queueLocked(a, DeployRequest{}, true, changeKeys(old, a))
 	} else {
 		err = m.save()
 	}

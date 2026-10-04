@@ -90,7 +90,7 @@ if [[ -z "$stage" ]]; then
  fi
  export DEBIAN_FRONTEND=noninteractive
  apt-get update
- apt-get install -y ca-certificates curl gnupg git openssl
+ apt-get install -y ca-certificates curl gnupg git openssl util-linux
  install -d -m 0755 /etc/apt/keyrings
  if ! command -v docker >/dev/null; then
   curl --proto '=https' --tlsv1.2 -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/lidza-docker.asc
@@ -162,6 +162,9 @@ if $with_control; then
   printf '[{"id":"local","name":"This server","url":"http://127.0.0.1:9090","token":"%s"}]\n' "$token" > "$root/var/lib/lidza-control/servers.json"
  fi
 fi
+install -d -m 0755 "$root/usr/local/libexec"
+install -m 0755 "$bundle/deploy/upgrade-agent.sh" "$root/usr/local/libexec/lidza-agent-upgrade"
+install -m 0644 "$bundle/deploy/lidza-agent-upgrade.path" "$bundle/deploy/lidza-agent-upgrade.service" "$root/etc/systemd/system/"
 config=$(mktemp "$root/etc/caddy/.lidza-config.XXXXXX")
 {
  echo '# Managed by lidza-deploy installer'
@@ -193,6 +196,7 @@ systemctl enable --now docker
 # Verify access with the actual service account before claiming readiness.
 runuser -u lidza-agent -- docker info >/dev/null
 systemctl enable lidza-agent caddy
+systemctl enable --now lidza-agent-upgrade.path
 systemctl restart lidza-agent
 systemctl restart caddy
 # Apply the installer routing even if Caddy has an older autosave (including its apt default).

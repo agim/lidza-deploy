@@ -94,6 +94,16 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 			if d.Retained {
 				continue
 			}
+			if d.Ready && d.Backup.Hours > 0 {
+				var latest time.Time
+				for _, b := range d.Backups {
+					if b.Kind != "predeployment" && b.Created.After(latest) {
+						latest = b.Created
+					}
+				}
+				stale := latest.IsZero() && d.NextBackup.Before(time.Now().Add(-30*time.Minute)) || !latest.IsZero() && time.Since(latest) > time.Duration(d.Backup.Hours)*2*time.Hour
+				record(c.observe(ctx, "backup-age:"+result.Server.ID+":"+d.AppID, "Scheduled backup is overdue for "+d.AppID, stale, 2))
+			}
 			record(c.observe(ctx, "database:"+result.Server.ID+":"+d.AppID, "Database or backup operation failed for "+d.AppID, d.Error != "", 1))
 			if d.Ready && d.Operation == "" && d.Backup.Hours > 0 && !d.NextBackup.After(time.Now()) {
 				if d.Backup.Offsite {
@@ -107,6 +117,24 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 					record(err)
 				}
 			}
+		}
+	}
+	for _, result := range c.readFleet(request, "/v1/server-health") {
+		if result.Err != nil {
+			continue
+		}
+		var h agent.ServerHealth
+		if json.Unmarshal(result.Body, &h) != nil {
+			continue
+		}
+		for _, disk := range h.Disks {
+			record(c.observe(ctx, "disk:"+result.Server.ID+":"+disk.Path, "Disk space is low on "+result.Server.Name+" ("+disk.Path+")", disk.UsedPercent >= 85 || disk.Available < 1<<30, 2))
+		}
+		if h.MemoryTotal > 0 {
+			record(c.observe(ctx, "memory:"+result.Server.ID, "Memory is low on "+result.Server.Name, h.MemoryAvailable < h.MemoryTotal/10, 3))
+		}
+		if h.CPUs > 0 {
+			record(c.observe(ctx, "load:"+result.Server.ID, "CPU load is high on "+result.Server.Name, h.Load1 > float64(h.CPUs)*2, 5))
 		}
 	}
 	for _, result := range c.readFleet(request, "/v1/app-health") {
@@ -149,5 +177,6 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 			record(c.observe(ctx, "deploy:"+result.Server.ID+":"+id, "Deployment failed for "+id, d.Status == "failed", 1))
 		}
 	}
+	record(c.tasksTick(ctx, request))
 	return firstErr
 }

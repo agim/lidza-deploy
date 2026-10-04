@@ -202,6 +202,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	if receivedToken != "private-fixture-token" {
 		t.Fatal("framework grant did not reach private deployment")
 	}
+	exercisePreviews(t, c, ctx)
 	if w := call("DELETE", "/api/control/apps/portal/webhook", "", cookies, cfg.PublicURL); w.Code != 200 {
 		t.Fatal("disable autodeploy", w.Code, w.Body)
 	}

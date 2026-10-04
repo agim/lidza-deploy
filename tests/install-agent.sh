@@ -29,6 +29,9 @@ paired=json.loads((root/'var/lib/lidza-control/servers.json').read_text())
 assert paired[0]['token']==connection['token']
 assert '--resume' in (root/'etc/systemd/system/caddy.service.d/10-lidza-resume.conf').read_text()
 config=(root/'etc/caddy/Caddyfile').read_text()
+assert (root/'usr/local/libexec/lidza-agent-upgrade').is_file()
+assert (root/'etc/systemd/system/lidza-agent-upgrade.path').is_file()
+assert (root/'etc/systemd/system/lidza-agent-upgrade.service').is_file()
 assert 'ask http://127.0.0.1:9090/tls/allow' in config
 assert 'handle /.well-known/lidza-deploy-host' in config
 assert 'redir https://{host}{uri} permanent' in config
