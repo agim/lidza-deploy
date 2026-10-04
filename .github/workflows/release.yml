@@ -137,4 +137,4 @@ jobs:
               assert asset['digest'] == 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(), name
           print('Verified all four uploaded assets against the built files')
           PY
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -f tag_name="$VERSION" -f target_commitish="$RELEASE_COMMIT" -F draft=false -F prerelease=false -f make_latest=true --silent
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -f tag_name="$VERSION" -F draft=false -F prerelease=false -f make_latest=true --silent
