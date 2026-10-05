@@ -314,6 +314,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/webhook", c.hook)
 	handle("POST /api/control/apps/{id}/github-app", c.migrateGitHubApp)
 	handle("GET /api/control/apps/{id}/logs", c.logs)
+	handle("GET /api/control/apps/{id}/errors", c.appErrors)
 	handle("GET /api/control/deployments", c.deployments)
 	handle("GET /api/control/deliveries", c.deliveries)
 	handle("GET /api/control/github/repos", c.repos)

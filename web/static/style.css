@@ -64,3 +64,5 @@ body[data-design=terminal] input,body[data-design=terminal] textarea,body[data-d
 body[data-role]:not([data-role="admin"]) :is(#storage-form,#mail-form,#attach-database-form,#bind-database-form,#backup-form,#database-connection-form) button,
 body[data-role]:not([data-role="admin"]) :is(#database-run,[data-restore],a[download],#managed-database),
 body[data-role="viewer"] #settings-form button[type="submit"] { display:none; }
+
+.error-filters{align-items:end;flex-wrap:wrap}.error-filters label{min-width:160px;flex:1}.error-message{max-width:380px;overflow-wrap:anywhere}.error-stack{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}#error-detail-dialog{width:min(900px,94vw)}

@@ -51,6 +51,8 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 			receivedToken = request.Token
 			w.WriteHeader(202)
 			io.WriteString(w, `{"id":"job","status":"queued"}`)
+		} else if strings.HasSuffix(r.URL.Path, "/errors") {
+			io.WriteString(w, `{"status":"ready","errors":[],"limit":500}`)
 		} else {
 			io.WriteString(w, `[]`)
 		}
@@ -151,6 +153,15 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 		}
 	}
 	setRole("viewer")
+	if w := call("GET", "/api/control/apps/portal/errors", "", nil, ""); w.Code != 401 {
+		t.Fatal("unauthenticated app errors exposed", w.Code)
+	}
+	if w := call("GET", "/api/control/apps/missing/errors", "", memberCookies, ""); w.Code != 404 {
+		t.Fatal("unknown app errors exposed", w.Code)
+	}
+	if w := call("GET", "/api/control/apps/portal/errors", "", memberCookies, ""); w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("viewer cannot read assigned app errors", w.Code, w.Body)
+	}
 	if w := call("GET", "/api/control/apps", "", memberCookies, ""); w.Code != 200 {
 		t.Fatal("viewer cannot read fleet", w.Code)
 	}
