@@ -22,7 +22,7 @@ func TestAppErrorsRequireAgentKeyAndGiveSetupState(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := func(key string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest("GET", "/v1/apps/errors/errors", nil)
+		r := httptest.NewRequest("GET", "/v1/apps/errors/analytics-errors", nil)
 		r.Header.Set("Authorization", "Bearer "+key)
 		w := httptest.NewRecorder()
 		Handler(m).ServeHTTP(w, r)
@@ -68,7 +68,7 @@ func TestDockerFrameworkErrorsReadRedactAndIsolate(t *testing.T) {
 	if d := waitDatabase(t, m, id); !d.Ready {
 		t.Fatal("fixture database unavailable", d.Error)
 	}
-	if out, err := m.appErrors(ctx, id); err != nil || out.Status != "needs_analytics" {
+	if out, err := m.analyticsErrors(ctx, id); err != nil || out.Status != "needs_analytics" {
 		t.Fatal("missing analytics schema not explained", out.Status, err)
 	}
 	m.mu.Lock()
@@ -103,7 +103,7 @@ func TestDockerFrameworkErrorsReadRedactAndIsolate(t *testing.T) {
 	if err := reporter.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	out, err := m.appErrors(ctx, id)
+	out, err := m.analyticsErrors(ctx, id)
 	if err != nil || out.Status != "ready" || len(out.Errors) != 3 {
 		t.Fatal("framework errors not read", err, len(out.Errors))
 	}
@@ -116,7 +116,7 @@ func TestDockerFrameworkErrorsReadRedactAndIsolate(t *testing.T) {
 	if !strings.Contains(string(data), "[redacted]") || out.Errors[0].Source != "server" || out.Errors[0].Fingerprint != out.Errors[1].Fingerprint {
 		t.Fatal("redaction or framework grouping lost")
 	}
-	if other, err := m.appErrors(ctx, "other-app"); err != nil || len(other.Errors) != 0 || other.Status != "needs_database" {
+	if other, err := m.analyticsErrors(ctx, "other-app"); err != nil || len(other.Errors) != 0 || other.Status != "needs_database" {
 		t.Fatal("errors crossed application assignments")
 	}
 	shared := testApp("shared-errors")
@@ -124,14 +124,14 @@ func TestDockerFrameworkErrorsReadRedactAndIsolate(t *testing.T) {
 	if err := m.Upsert(shared); err != nil {
 		t.Fatal(err)
 	}
-	if sharedOut, err := m.appErrors(ctx, id); err != nil || !sharedOut.Shared {
+	if sharedOut, err := m.analyticsErrors(ctx, id); err != nil || !sharedOut.Shared {
 		t.Fatal("shared database attribution was hidden", err)
 	}
 	// The framework API's query limit bounds the dashboard sample.
 	if _, err := pool.Exec(ctx, `INSERT INTO app_error(source,message,fingerprint) SELECT 'client','browser failure','browser-group' FROM generate_series(1,505)`); err != nil {
 		t.Fatal(err)
 	}
-	out, err = m.appErrors(ctx, id)
+	out, err = m.analyticsErrors(ctx, id)
 	if err != nil || len(out.Errors) != appErrorLimit {
 		t.Fatal("sample limit not respected", err, len(out.Errors))
 	}
@@ -139,7 +139,7 @@ func TestDockerFrameworkErrorsReadRedactAndIsolate(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE app_error SET message=repeat('<',3000),stack=repeat('<',5000)"); err != nil {
 		t.Fatal(err)
 	}
-	out, err = m.appErrors(ctx, id)
+	out, err = m.analyticsErrors(ctx, id)
 	payload, _ := json.Marshal(out)
 	if err != nil || !out.Truncated || len(payload) > (2<<20)+2048 {
 		t.Fatal("encoded response budget not enforced", err, len(payload))
@@ -148,7 +148,7 @@ func TestDockerFrameworkErrorsReadRedactAndIsolate(t *testing.T) {
 	if _, err := pool.Exec(ctx, "ALTER TABLE app_error RENAME TO saved_error; CREATE VIEW app_error AS SELECT 1 AS id"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.appErrors(ctx, id); err == nil {
+	if _, err := m.analyticsErrors(ctx, id); err == nil {
 		t.Fatal("incompatible error schema silently ignored")
 	}
 }

@@ -1,45 +1,37 @@
 # Application errors
 
-Open **Errors** in the workspace, or **Errors** on an application card. Choose an application, search messages/routes/stack traces/request IDs, filter server or frontend reports, and select **Inspect error** to see the most recent stack and occurrence times.
+Each hosting agent automatically reads its apps' Docker console output and sends error reports to the Deploy control panel. No analytics pack, app database, repository change or separate reporting command is required for server console errors. Installing/upgrading the agent and pairing it with this control panel enables the collector; pairing configuration is refreshed automatically.
 
-The dashboard reuses the released Līdza `analytics.Recent` API and stored fingerprints. It reads up to 500 recent errors from the selected app's configured primary PostgreSQL database. Repeated fingerprints form one group; counts and search cover that sample, not the entire retention period. It refreshes every 30 seconds while open, with a manual refresh button. Responses and long fields are bounded; a size-capped response is labeled.
+Open **Errors** in the workspace or on an application card. **Agent console errors** is the default. Search messages/routes/stack traces/request IDs, filter reports, and select **Inspect error** for occurrence times, stack, container, release and commit. Repeated framework fingerprints form one group. Counts and search cover up to 500 recent reports, rather than the entire retention period. The GUI refreshes every 30 seconds and also offers Refresh errors.
 
-## Enable capture in a hosted app
+## Collection and delivery
 
-In the app repository:
+The agent checks current and rollback web containers and continuous worker containers every 15 seconds. It recognizes structured JSON ERROR/FATAL/PANIC records, structured HTTP status 500 or higher, and explicit text error/panic markers. Līdza already emits structured request and panic logs without analytics. JSON stack/route/request metadata is retained; plain Go panic continuation lines are included when present in the same read. Arbitrary prose containing the word “error” is not classified as a failure. Scheduled task output remains available in Workers & jobs and is not part of this continuous container collector.
+
+Reports and per-container timestamp cursors are saved in the agent's existing encrypted state before transmission. Each report has a deterministic ID incorporating its app incarnation, container and log occurrence. Identical lines at the same timestamp retain separate occurrence IDs. The agent retries failed delivery, including after a restart; the control panel deduplicates retries and acknowledges only after its database transaction commits.
+
+The collector uses the paired agent's existing server key over HTTPS (loopback HTTP for local development). Redirects are refused. The panel verifies the server and current app assignment/incarnation, so stale reports cannot be attributed to a removed-and-recreated app or another server's app. Console reports are stored centrally in the control-panel database using released framework error tables/fingerprints. They remain readable while the hosting agent is offline. Heartbeats and collection warnings distinguish stale/offline/error collection from an empty result. Admins, deployers and viewers share their existing fleet read access.
+
+Central console reports are retained for 30 days; the scheduled collector-configuration job also prunes older deployment-owned records. The agent buffers up to 1,000 unsent reports, sending at most 20 per batch; collection pauses when this buffer is full. On first capture of a container it looks back 15 minutes. Each read is limited to 1,000 log lines and 64 KiB, and fields/responses are bounded. Reads reaching these limits produce a warning. Docker log rotation, bursts beyond a read limit, a full backlog, or a stopped agent can lose uncaptured output; this is not a guarantee of complete log archival. Keep high-volume logs in a dedicated logging service when exhaustive retention is required.
+
+Known currently configured environment values and database passwords are masked before reports enter the agent's outbox. Structured request paths omit query strings; user IDs and arbitrary structured fields are not forwarded. The GUI escapes text. Arbitrary, encoded or formerly configured secrets in messages/stack traces/plain logs cannot be reliably recognized: applications must avoid logging them. Both agent encrypted state/master key and the control-panel database need normal backup protection. Existing readiness/deployment email alerts remain separate; console reports do not automatically send emails.
+
+## Optional app analytics
+
+Choose **Optional app analytics** to inspect the app's own framework error store, including frontend reports. This mode is independent of automatic console capture. It reads `analytics.Recent` through the agent from the app's configured primary PostgreSQL connection. A missing database/schema displays instructions; database/network/permission failures show an unavailable state.
+
+Enable the pack through the framework's project setup command:
 
 ```sh
-lidza pack add analytics
+lidza install --packs analytics
 ```
 
-Keep the `db` pack enabled, apply the generated schema/migrations using the app's normal migration workflow, commit and redeploy. Attach local or external PostgreSQL as `DATABASE_URL` through the deployment GUI. The platform does not edit or push changes to your repository or create framework tables behind your app's migration system.
+Or use `lidza pack add analytics` in an existing project and follow its normal schema/migration workflow. Keep `db` enabled, commit the app changes and redeploy. This project setup command uses development database configuration; follow the app's production migration workflow for a hosted database. The analytics pack captures recovered panics and typed-handler 500 errors; handled failures can use `report.Capture` from `github.com/agim/lidza/pkg/report`.
 
-The analytics pack captures recovered server panics and typed-handler 500 errors. To record other handled failures explicitly, use the existing framework API:
+For frontend reports, enable the framework reporter with `VITE_ANALYTICS=1` during the frontend build and mount its generated analytics routes. A runtime variable after frontend compilation cannot enable a build-time flag. `ANALYTICS_RETENTION` controls the app store's retention. Apps sharing a primary database can share analytics records; the GUI warns when configured connections show that database is shared. Console reports remain isolated by hosting assignment even when apps share databases.
 
-```go
-report.Capture(ctx, report.Error{
-    Source: "server",
-    Message: "checkout failed",
-    Route: "POST /checkout",
-})
-```
+## Validation and upgrade
 
-Import `github.com/agim/lidza/pkg/report`. Ordinary `slog.Error` output remains available in runtime Logs; it is not automatically a stored analytics report.
+Automated tests cover parsing, multiline panics, same-timestamp occurrences, replay, redaction, encrypted outbox restart/retry, scoped authentication, stale app rejection and central deduplication. `node tests/browser/errors.cjs` runs a real Docker container, agent and control panel, captures console errors with no app database or analytics, and checks grouping/search/details/mobile layout and retained reports while the agent is offline. Existing PostgreSQL analytics tests cover the optional mode.
 
-For frontend reports, enable the framework's frontend reporter with `VITE_ANALYTICS=1` during the frontend build and mount its generated analytics routes. Setting a runtime variable after the frontend is compiled cannot enable a build-time flag. The dashboard can read existing reports even when the web container is stopped. The framework's `ANALYTICS_RETENTION` setting controls database retention; this dashboard does not delete reports or install a second error collector.
-
-## Access and database scope
-
-The control panel authenticates the team member and delegates to the application's assigned agent using the existing server key. Admins, deployers and viewers can read errors in their shared fleet. The browser receives no database URL, password or SQL control. Reads use the app's own database credentials, a read-only connection, one connection per request, a statement timeout and a bounded operation deadline. Managed local PostgreSQL is reached on its private Docker bridge; no database port is published. External databases must be reachable by the hosting agent, with the connection's normal TLS settings.
-
-Known currently configured environment values and database passwords are masked in messages/stacks/routes/request IDs. Full URLs and user identifiers are omitted. Arbitrary, encoded or previously configured secrets cannot be reliably recognized; app code must avoid placing credentials or personal data in reports. Output is escaped as text in the GUI.
-
-Framework error records belong to a database and do not identify the hosting app. Apps sharing a primary database can share its error store; the GUI warns when configured connections show that database is shared. Separate primary databases provide separate stores. Aliases or externally shared databases the platform cannot recognize may also contain other writers' reports. Switching the primary connection changes the store shown; it does not migrate old reports.
-
-Missing database/analytics schema displays setup instructions. Database/network/permission/schema failures show an unavailable state, rather than a successful empty result. An empty store is not proof that reporting is enabled or the app is healthy. Existing readiness/deployment email alerts remain separate; captured errors do not automatically send emails.
-
-## Validation
-
-`TEST_DOCKER=1 go test -race ./internal/agent` covers the released framework reporter writing real PostgreSQL errors, agent reads/redaction, separate and shared assignments, response limits, incompatible schema handling, and authenticated access. The control integration checks owner/viewer access and anonymous rejection. `node tests/browser/errors.cjs` provisions an isolated real database/agent, seeds the framework schema, exercises grouping/search/source filters/details, checks mobile layout and database outages, and cleans up its resources.
-
-Upgrade the control panel and agents together to obtain the new read endpoint. Existing v0.2.1 binaries do not include this dashboard.
+Upgrade the control panel and hosting agents together. The existing v0.2.1 binaries do not include this collector/dashboard. No new framework release or manually copied reporting secret is required.

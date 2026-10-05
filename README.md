@@ -16,7 +16,7 @@ See the [deployment readiness review](docs/deployment-readiness.md) for the late
 - Docker release builds, non-root application containers, CPU/memory/process limits, loopback-only application ports, and `/readyz` checks before traffic switches.
 - Separate host routing per app; DNS verification and proactive Caddy certificate issuance on deployment and FQDN edits, with periodic retries. See [Domains and automatic HTTPS](docs/domains-ssl.md).
 - Deployment history, runtime logs, and rollback to the previous healthy release.
-- Application Errors dashboard: grouped framework analytics reports, search, source filters and masked stack details.
+- Application Errors dashboard: automatic agent console collection, central storage, grouping/search and masked stack details; optional framework analytics reports.
 - The selected **Signal** interface uses Līdza’s released dark brand palette. Standalone HTML previews remain available.
 - GUI server inventory, branch/domain settings, write-only environment edits, and retryable app removal.
 
@@ -136,7 +136,7 @@ Back up PostgreSQL, `/var/lib/lidza-control`, `/var/lib/lidza-agent` including t
 
 New installations connect through the [guided GitHub App flow](docs/github-app-plan.md) after login. Existing OAuth connections remain usable and can be reconnected without restarting the control panel. Līdza v0.1.71 fixes [#26](https://github.com/agim/lidza/issues/26), and the onboarding regression now passes.
 
-See [Application errors](docs/application-errors.md) to enable the hosted app’s analytics pack and use its Errors dashboard. Capture remains opt-in in each app; the GUI reads its existing PostgreSQL error store.
+See [Application errors](docs/application-errors.md) for automatic server error collection. Paired agents forward console errors to Deploy without an app database or analytics pack; app analytics remains an optional source for richer/frontend reports.
 
 See the [deployment runbook](docs/deployment.md) for security boundaries, recovery, rollback and removal semantics. [Līdza #24](https://github.com/agim/lidza/issues/24) confirms the wizard uses existing framework APIs; [#25](https://github.com/agim/lidza/issues/25) shipped deployment generation improvements in v0.1.70.
 

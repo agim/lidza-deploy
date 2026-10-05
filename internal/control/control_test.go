@@ -372,6 +372,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 		t.Fatal("agent token exposed")
 	}
 
+	exerciseConsoleIngest(t, c, ctx, call, cookies)
 	exerciseAppConnection(t, c, ctx, call, cookies)
 
 }

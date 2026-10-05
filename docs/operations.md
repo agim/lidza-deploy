@@ -72,4 +72,4 @@ If build and uploaded-asset verification pass but an existing draft cannot be pu
 
 ## Application error reports
 
-Use **Errors** in the workspace or on an app card to inspect grouped server/frontend errors from its configured primary database. Enable the released analytics pack in each app; this is separate from Docker runtime logs and readiness alerts. See [Application errors](application-errors.md) for setup, database scope, retention, privacy and bounded-sample behavior.
+Use **Errors** in the workspace or on an app card. Paired hosting agents automatically forward console errors to central storage, with no app analytics pack or database required. Optional app analytics supplies richer/frontend reports separately. See [Application errors](application-errors.md) for setup, database scope, retention, privacy and bounded-sample behavior.

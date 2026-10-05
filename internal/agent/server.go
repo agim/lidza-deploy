@@ -55,6 +55,7 @@ func Handler(m *Manager) http.Handler {
 		w.WriteHeader(403)
 	})
 	private := http.NewServeMux()
+	private.HandleFunc("PUT /v1/error-reporting", m.configureErrorReporting)
 	private.HandleFunc("GET /v1/server-health", m.healthRoute)
 	private.HandleFunc("POST /v1/apps/{id}/restore", m.restoreRoute)
 	private.HandleFunc("PUT /v1/apps/{id}/maintenance", func(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +144,7 @@ func Handler(m *Manager) http.Handler {
 		}
 		JSON(w, 200, map[string]string{"status": "rolled_back"})
 	})
-	private.HandleFunc("GET /v1/apps/{id}/errors", m.errorsRoute)
+	private.HandleFunc("GET /v1/apps/{id}/analytics-errors", m.errorsRoute)
 	private.HandleFunc("GET /v1/apps/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		a, ok := m.data.Apps[r.PathValue("id")]

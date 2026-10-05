@@ -28,7 +28,7 @@ type AppErrors struct {
 	Truncated bool                    `json:"truncated,omitempty"`
 }
 
-func (m *Manager) appErrors(ctx context.Context, id string) (AppErrors, error) {
+func (m *Manager) analyticsErrors(ctx context.Context, id string) (AppErrors, error) {
 	out := AppErrors{Status: "ready", Errors: []analytics.StoredError{}, Limit: appErrorLimit}
 	m.mu.Lock()
 	a, ok := m.data.Apps[id]
@@ -132,7 +132,7 @@ func boundedErrorText(s string, limit int) string {
 
 func (m *Manager) errorsRoute(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	out, err := m.appErrors(r.Context(), r.PathValue("id"))
+	out, err := m.analyticsErrors(r.Context(), r.PathValue("id"))
 	if err != nil {
 		Fail(w, http.StatusServiceUnavailable, err)
 		return

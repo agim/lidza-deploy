@@ -10,7 +10,7 @@ The application pins Līdza v0.1.75. Authentication, encrypted credentials, priv
 - Restore into a new database with integrity checks, source preservation and attachment/reload after success.
 - CPU/load, memory, agent/Docker disk space, PostgreSQL sizes, low-resource/overdue-backup alerts and recovery notices.
 - Deployment commit subjects, durations, failure details, changed setting names and bounded captured build logs.
-- Hosted-application Errors dashboard using released framework analytics records: grouping, search, source filters, stack/request details, setup guidance and explicit outage/shared-database states. See [Application errors](application-errors.md).
+- Hosted-application Errors dashboard with automatic agent console collection, encrypted retry outbox, authenticated central storage/deduplication, grouping/search and retained reports during agent outages; optional app analytics. See [Application errors](application-errors.md).
 - App-specific maintenance pages.
 - Signed pull-request preview deployment and cleanup, separate environment and optional private database.
 - Background worker start/restart/disable/logs, current-image/environment reconciliation, durable interval/daily command dispatch, overlap prevention and failure alerts.

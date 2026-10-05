@@ -14,6 +14,7 @@ import (
 	"github.com/agim/lidza-deploy/internal/agent"
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	gh "github.com/agim/lidza-deploy/internal/providers/github"
+	"github.com/agim/lidza/packs/analytics"
 	"github.com/agim/lidza/packs/audit"
 	"github.com/agim/lidza/packs/auth"
 	"github.com/agim/lidza/packs/db"
@@ -170,7 +171,7 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(71924161)"); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable); err != nil {
+	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable+analytics.Tables+consoleTable); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -201,6 +202,13 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	q.Handle("deploy.preview", c.auditedJob("deploy.preview", c.dispatchPreview), jobs.Concurrency(2))
 	q.Handle("deploy.task", c.auditedJob("deploy.task", c.dispatchTask), jobs.Concurrency(4))
 	q.Handle("ops.tick", c.operationsTick, jobs.Concurrency(1))
+	q.Handle("errors.sync", c.configureCollectors, jobs.Concurrency(1))
+	if err := q.Schedule("errors.sync", jobs.Every(time.Minute), nil); err != nil {
+		return err
+	}
+	if _, err := q.Enqueue(ctx, "errors.sync", nil); err != nil {
+		return err
+	}
 	return q.Schedule("ops.tick", jobs.Every(time.Minute), nil)
 }
 func (c *Control) token(ctx context.Context) (string, error) {
@@ -315,6 +323,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/github-app", c.migrateGitHubApp)
 	handle("GET /api/control/apps/{id}/logs", c.logs)
 	handle("GET /api/control/apps/{id}/errors", c.appErrors)
+	handle("GET /api/control/apps/{id}/analytics-errors", c.analyticsErrors)
 	handle("GET /api/control/deployments", c.deployments)
 	handle("GET /api/control/deliveries", c.deliveries)
 	handle("GET /api/control/github/repos", c.repos)
@@ -323,6 +332,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
 	mux.HandleFunc("POST /hooks/github-app", c.githubAppWebhook)
 	mux.HandleFunc("POST /api/agent/checkout-token", c.checkoutToken)
+	mux.HandleFunc("POST /api/agent/errors", c.ingestErrors)
 	mux.Handle("/api/control/", c.Protect(private))
 	mux.Handle("/", frontend)
 	return mux

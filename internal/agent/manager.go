@@ -30,6 +30,8 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	reportMu          sync.Mutex
+	reportWake        chan struct{}
 	cpuTotal, cpuIdle float64
 	domainWake        chan struct{}
 	domains           map[string]DomainStatus
@@ -48,7 +50,7 @@ type Manager struct {
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
 	ctx, cancel := context.WithCancel(parent)
-	m := &Manager{domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
+	m := &Manager{reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		cancel()
 		return nil, err
@@ -125,6 +127,8 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	}
 	m.wg.Add(1)
 	go m.work()
+	m.wg.Add(1)
+	go m.consoleLoop()
 	if cfg.TLSListen != "" {
 		m.wg.Add(1)
 		go m.domainLoop()
