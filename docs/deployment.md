@@ -87,15 +87,13 @@ Proxy the control panel through a separate Caddy hostname. Block `/metrics`, `/r
 
 ## GitHub authorization and auto-deploy
 
-Create a GitHub OAuth App with callback:
+New installations use **Integrations → Connect GitHub**. Enter an organization name only if the App should belong to that organization; otherwise it belongs to your personal account. Approve the prefilled private GitHub App, return, then choose **Choose repositories** and select its repositories. The owner never copies OAuth credentials or a private key. Local Līdza login remains independent of GitHub. Organizations can require administrator approval.
 
-```
-https://deploy.example.com/api/v1/auth/connect/github/callback
-```
+The control panel verifies installations and stores the App private key in framework-encrypted product state. Its webhook secret uses sealed framework credentials. Short-lived, repository-scoped installation tokens are minted automatically. The agent receives a one-use checkout ticket and obtains a fresh token after its queue/backup wait, before cloning; it never receives the App private key. Upgrade both control panel and agents to use this protocol.
 
-Enter the OAuth client ID and secret in the first-run wizard or Integrations. The default connector scopes are `repo admin:repo_hook`; repository admin permission is needed to create hooks. Organization policies may require approval. Līdza handles state, PKCE, authenticated owner binding, encrypted grants, token lifecycle, and disconnect. The app's operator check also limits who can initiate a connection.
+App-owned signed webhooks use `/hooks/github-app`; Auto-deploy chooses which app/branch receives them without creating per-repository hooks. Public repositories can still deploy without connecting GitHub. Use Load repositories when creating an app to choose authorized private repositories.
 
-Sign in, open Integrations, and authorize GitHub. Add an app with `owner/repository`, branch, FQDN, target server, and any runtime environment. Public repositories can deploy without a GitHub connection. Private repositories need an authorized grant. Click Auto-deploy to create or update the GitHub push webhook. On reconnect, the framework stores the renewed grant; queued dispatches retrieve credentials when they run.
+Existing OAuth connections remain functional. Their callback remains `/api/v1/auth/connect/github/callback`, and existing grants use `repo admin:repo_hook`. Reconnect them from Integrations if needed. **Use GitHub App** verifies access before switching an existing app and its previews. Old per-repository hook deliveries are then ignored; remove those hooks in GitHub. See [Guided GitHub connection](github-app-plan.md) for migration and scope limits.
 
 Only a valid HMAC SHA-256 signature, matching repository, and matching branch can enqueue deployment. Deleted branches and other event types are ignored. Persistent Līdza jobs retry dispatch up to 12 times with backoff when the agent is unavailable. The integration page can disconnect GitHub; disable or delete the repository webhook in GitHub when retiring an app. The agent deduplicates accepted deliveries within its retained 500-deployment history.
 

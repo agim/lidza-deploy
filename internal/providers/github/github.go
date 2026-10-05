@@ -43,7 +43,9 @@ func (c *Client) Request(ctx context.Context, token, method, path string, body, 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Content-Type", "application/json")
@@ -62,9 +64,10 @@ func (c *Client) Request(ctx context.Context, token, method, path string, body, 
 }
 
 type Repository struct {
-	FullName      string `json:"full_name"`
-	Private       bool   `json:"private"`
-	DefaultBranch string `json:"default_branch"`
+	InstallationID int64  `json:"installation_id,omitempty"`
+	FullName       string `json:"full_name"`
+	Private        bool   `json:"private"`
+	DefaultBranch  string `json:"default_branch"`
 }
 
 func (c *Client) Repositories(ctx context.Context, token string, page int) ([]Repository, error) {

@@ -121,7 +121,7 @@ func (c *Control) dispatchPreview(ctx context.Context, payload json.RawMessage) 
 		return nil
 	}
 	// Revalidate the current PR state so an old queued open/sync cannot resurrect a closed PR.
-	token, err := c.token(ctx)
+	token, err := c.tokenFor(ctx, parent)
 	if err != nil {
 		return err
 	}
@@ -147,7 +147,7 @@ func (c *Control) dispatchPreview(ctx context.Context, payload json.RawMessage) 
 		return errors.New("preview ID conflict")
 	}
 	if !exists {
-		a = Application{ID: id, ServerID: parent.ServerID, Repository: parent.Repository, Branch: fmt.Sprintf("pr-%d", in.Number), Domain: id + "." + parent.Previews.BaseDomain, Generation: random(), PreviewParent: parent.ID}
+		a = Application{ID: id, ServerID: parent.ServerID, Repository: parent.Repository, Branch: fmt.Sprintf("pr-%d", in.Number), Domain: id + "." + parent.Previews.BaseDomain, Generation: random(), PreviewParent: parent.ID, GitHubInstallation: parent.GitHubInstallation}
 		c.data.Apps[id] = a
 		if err = c.save(); err != nil {
 			delete(c.data.Apps, id)
@@ -198,7 +198,11 @@ func (c *Control) dispatchPreview(ctx context.Context, payload json.RawMessage) 
 			return errors.New("preview database not ready; retry")
 		}
 	}
-	return c.agentCall(r, parent.ServerID, "POST", "/v1/apps/"+id+"/deploy", agent.DeployRequest{Token: token, Key: "preview:" + in.Delivery}, nil)
+	credentials, err := c.deploymentCredentials(ctx, a, "preview:"+in.Delivery)
+	if err != nil {
+		return err
+	}
+	return c.agentCall(r, parent.ServerID, "POST", "/v1/apps/"+id+"/deploy", credentials, nil)
 }
 func (c *Control) deletePreview(r *http.Request, server, id string) error {
 	if err := c.agentCall(r, server, "DELETE", "/v1/previews/"+id, nil, nil); err != nil {

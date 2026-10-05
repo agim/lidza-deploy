@@ -58,8 +58,11 @@ type Deployment struct {
 	Key           string     `json:"key,omitempty"`
 }
 type DeployRequest struct {
-	Token string `json:"github_token,omitempty"`
-	Key   string `json:"key,omitempty"`
+	CredentialURL    string `json:"credential_url,omitempty"`
+	CredentialTicket string `json:"credential_ticket,omitempty"`
+	CredentialServer string `json:"credential_server,omitempty"`
+	Token            string `json:"github_token,omitempty"`
+	Key              string `json:"key,omitempty"`
 }
 type diskState struct {
 	Tasks           map[string]Task     `json:"tasks,omitempty"`

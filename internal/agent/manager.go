@@ -22,11 +22,12 @@ type Runtime interface {
 	Logs(context.Context, *Release) (string, error)
 }
 type job struct {
-	reload     bool
-	backupIDs  []string
-	app        App
-	deployment string
-	token      string
+	credentials DeployRequest
+	reload      bool
+	backupIDs   []string
+	app         App
+	deployment  string
+	token       string
 }
 type Manager struct {
 	cpuTotal, cpuIdle float64
@@ -243,6 +244,9 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 	if a.Restoring {
 		return Deployment{}, errors.New("wait for database restore")
 	}
+	if err := validateCheckoutCredential(req); err != nil {
+		return Deployment{}, err
+	}
 	if len(req.Key) > 200 || len(req.Token) > 4096 {
 		return Deployment{}, errors.New("request exceeds limit")
 	}
@@ -302,7 +306,7 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 		m.data.Deployments = before
 		return Deployment{}, err
 	}
-	m.queue <- job{app: a, deployment: d.ID, token: req.Token, reload: reload, backupIDs: ids}
+	m.queue <- job{app: a, deployment: d.ID, credentials: req, token: req.Token, reload: reload, backupIDs: ids}
 	return d, nil
 }
 func (m *Manager) Reload(id string) (Deployment, error) {
@@ -362,6 +366,9 @@ func (m *Manager) work() {
 			if j.app.BackupBeforeDeploy == nil || *j.app.BackupBeforeDeploy {
 				err = m.backupBeforeRelease(ctx, j.backupIDs)
 			}
+			if err == nil && j.credentials.CredentialURL != "" {
+				j.token, err = m.checkoutCredential(ctx, j.credentials)
+			}
 			if err == nil {
 				runCtx, stopRun := context.WithTimeout(ctx, 20*time.Minute)
 				if j.reload {
@@ -369,6 +376,7 @@ func (m *Manager) work() {
 						Reload(context.Context, App, string) (*Release, error)
 					}).Reload(runCtx, j.app, j.deployment)
 				} else {
+					runCtx = m.deploymentDiagnostics(runCtx, j)
 					release, err = m.runtime.Deploy(runCtx, j.app, j.deployment, j.token)
 				}
 				stopRun()

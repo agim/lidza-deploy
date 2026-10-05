@@ -15,6 +15,10 @@ import (
 )
 
 func (c *Control) hook(w http.ResponseWriter, r *http.Request) {
+	if a, ok := c.app(r.PathValue("id")); ok && a.GitHubInstallation > 0 {
+		c.enableGitHubAppDeploy(w, r, a)
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	a, ok := c.data.Apps[r.PathValue("id")]
@@ -62,7 +66,7 @@ func (c *Control) hook(w http.ResponseWriter, r *http.Request) {
 }
 func (c *Control) webhook(w http.ResponseWriter, r *http.Request) {
 	a, ok := c.app(r.PathValue("id"))
-	if !ok || a.Retiring || a.Secret == "" {
+	if !ok || a.Retiring || a.Secret == "" || a.GitHubInstallation > 0 {
 		http.NotFound(w, r)
 		return
 	}
@@ -79,12 +83,28 @@ func (c *Control) webhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
+	c.enqueueGitHubEvent(w, r, a, body)
+}
+func (c *Control) enqueueGitHubEvent(w http.ResponseWriter, r *http.Request, a Application, body []byte) {
 	event := r.Header.Get("X-GitHub-Event")
 	if event == "ping" {
 		w.WriteHeader(204)
 		return
 	}
 	if event == "pull_request" {
+		if !a.AutoDeploy {
+			var ev struct {
+				Action string `json:"action"`
+			}
+			if json.Unmarshal(body, &ev) != nil {
+				http.Error(w, "invalid payload", 400)
+				return
+			}
+			if ev.Action != "closed" {
+				w.WriteHeader(204)
+				return
+			}
+		}
 		c.enqueuePreview(w, r, a, body)
 		return
 	}
@@ -99,7 +119,7 @@ func (c *Control) webhook(w http.ResponseWriter, r *http.Request) {
 			FullName string `json:"full_name"`
 		} `json:"repository"`
 	}
-	if err = json.Unmarshal(body, &push); err != nil {
+	if err := json.Unmarshal(body, &push); err != nil {
 		http.Error(w, "invalid payload", 400)
 		return
 	}
@@ -135,7 +155,7 @@ func (c *Control) dispatchPush(ctx context.Context, payload json.RawMessage) err
 	if !ok || a.Retiring || !a.AutoDeploy || job.Generation != a.Generation {
 		return nil
 	}
-	token, err := c.token(ctx)
+	credentials, err := c.deploymentCredentials(ctx, a, "github:"+job.Delivery)
 	if err != nil {
 		return err
 	}
@@ -147,7 +167,7 @@ func (c *Control) dispatchPush(ctx context.Context, payload json.RawMessage) err
 	if err := c.syncStorageIfConfigured(req, a.ServerID); err != nil {
 		return err
 	}
-	return c.agentCall(req, a.ServerID, "POST", "/v1/apps/"+a.ID+"/deploy", agent.DeployRequest{Token: token, Key: "github:" + job.Delivery}, &d)
+	return c.agentCall(req, a.ServerID, "POST", "/v1/apps/"+a.ID+"/deploy", credentials, &d)
 }
 func (c *Control) deliveries(w http.ResponseWriter, r *http.Request) {
 	rows, err := jobs.From(r.Context()).Recent(r.Context(), 100)

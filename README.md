@@ -11,7 +11,7 @@ See the [deployment readiness review](docs/deployment-readiness.md) for the late
 ## Working features
 
 - GitHub public and private repositories, selected branches, manual deploy and redeploy.
-- Līdza-managed team sessions and GitHub OAuth connections. No provider or agent credentials in the browser.
+- Līdza-managed team sessions and guided GitHub App connections. No provider or agent credentials in the browser.
 - GitHub webhook creation/update, signed payload verification, repository/branch filtering, duplicate-delivery protection, and persistent dispatch retries through Līdza jobs.
 - Docker release builds, non-root application containers, CPU/memory/process limits, loopback-only application ports, and `/readyz` checks before traffic switches.
 - Separate host routing per app; DNS verification and proactive Caddy certificate issuance on deployment and FQDN edits, with periodic retries. See [Domains and automatic HTTPS](docs/domains-ssl.md).
@@ -85,10 +85,10 @@ Paste it into **Unlock setup**. Keep this key private. The wizard configures:
 1. Your operator email and password.
 2. Managed PostgreSQL on this host, or an existing PostgreSQL database.
 3. The GUI address supplied to the installer, prefilled and locked. Setup verifies public HTTPS; DNS and Caddy routing are already configured before you reach the wizard.
-4. GitHub OAuth client credentials. The wizard links to GitHub registration and supplies the callback URL. Configure these now if you need private repositories or automatic deployments.
+4. GitHub connection guidance. After login, choose **Connect GitHub** in Integrations, approve the prefilled GitHub App, then **Choose repositories**. No OAuth client ID, secret or private key needs to be copied.
 5. Agent pairing. The local agent is already paired; remote agents can be imported using their private connection file.
 
-Choose **Validate and finish setup**, then sign in at your public control-panel URL. Setup checks the database, agent and public HTTPS before completion; failed attempts can be retried. Settings are encrypted, and completed setup stays closed after restart. No database or OAuth environment-file editing is required for this installation path.
+Choose **Validate and finish setup**, then sign in at your public control-panel URL. Setup checks the database, agent and public HTTPS before completion; failed attempts can be retried. Settings are encrypted, and completed setup stays closed after restart. No database or GitHub environment-file editing is required for this installation path.
 
 [View the setup wizard](design-previews/setup-wizard.png).
 
@@ -133,7 +133,7 @@ sudo journalctl -u lidza-control -n 50 --no-pager
 
 Back up PostgreSQL, `/var/lib/lidza-control`, `/var/lib/lidza-agent` including their encryption keys, and Caddy's certificate storage. Staged installer checks and browser/database/deployment tests pass; live installation on a fresh supported VM and real GitHub/public ACME remain external acceptance checks.
 
-GitHub credentials can be configured during first setup or later in Integrations without restarting the control panel. Līdza v0.1.71 fixes [#26](https://github.com/agim/lidza/issues/26), and the onboarding regression now passes.
+New installations connect through the [guided GitHub App flow](docs/github-app-plan.md) after login. Existing OAuth connections remain usable and can be reconnected without restarting the control panel. Līdza v0.1.71 fixes [#26](https://github.com/agim/lidza/issues/26), and the onboarding regression now passes.
 
 See the [deployment runbook](docs/deployment.md) for security boundaries, recovery, rollback and removal semantics. [Līdza #24](https://github.com/agim/lidza/issues/24) confirms the wizard uses existing framework APIs; [#25](https://github.com/agim/lidza/issues/25) shipped deployment generation improvements in v0.1.70.
 
@@ -182,7 +182,7 @@ The Docker smoke test uses a local Git fixture, then real Docker build/run and r
 - `cmd/agent`: host agent; `internal/agent`: deployment lifecycle and application ingress.
 - `cmd/web`: Līdza app using its db/auth/jobs packs.
 - `internal/control`: fleet authorization, application configuration, and dispatch.
-- `internal/providers/github`: GitHub repository and webhook calls; OAuth is provided by Līdza.
+- `internal/providers/github`: GitHub App manifest exchange, JWT signing, selected repository listing and scoped installation tokens. Framework auth/state/credentials/audit/webhook primitives are reused.
 - `web/static`: embedded HTML/CSS/JavaScript, including the design gallery.
 - `deploy`: example configuration, Caddyfile, and systemd units.
 

@@ -14,7 +14,7 @@ The application pins Līdza v0.1.75. Authentication, encrypted credentials, priv
 - Signed pull-request preview deployment and cleanup, separate environment and optional private database.
 - Background worker start/restart/disable/logs, current-image/environment reconciliation, durable interval/daily command dispatch, overlap prevention and failure alerts.
 - Official agent release checks, checksum/manifest validation, atomic binary upgrades, co-located control-panel upgrade and failed-health rollback.
-- Required-FQDN installer, first-run setup wizard, GitHub OAuth/webhooks, storage and email configuration, and the approved Signal design using released Līdza colors.
+- Required-FQDN installer, first-run setup wizard, guided GitHub App connection/webhooks with legacy OAuth compatibility, storage and email configuration, and the approved Signal design using released Līdza colors.
 
 ## Team access and audit
 
@@ -26,6 +26,6 @@ Race-enabled Go tests and vet cover the product and released framework integrati
 
 Live public ACME, GitHub consent/private clone and actual PR webhooks, real S3/SMTP providers and a systemd upgrade on a dedicated production VM remain external acceptance checks. Local test CAs, fake GitHub endpoints and isolated service mocks do not establish those provider/host results. See [Operations](operations.md), [Domains and HTTPS](domains-ssl.md), and [Databases and backups](databases-backups.md) for requirements and recovery steps.
 
-## Guided GitHub App setup pending
+## Guided GitHub App setup
 
-The current GitHub connection requires manually configuring an OAuth App. A new-installation flow with prefilled GitHub App registration, chosen repositories and automatically renewed short-lived installation tokens is planned in [Guided GitHub connection](github-app-plan.md). The reusable framework capability is requested in [Līdza #29](https://github.com/agim/lidza/issues/29); dependent implementation waits for a verified tagged release under the framework-first rule. This is not yet part of the deployed GUI.
+New installs use **Connect GitHub → approve app → Choose repositories** after local login. The product uses framework one-use state, roles, sealed credentials, audit and HMAC webhook primitives; GitHub-specific manifest/JWT/installation/token handling lives here as directed by [Līdza #29](https://github.com/agim/lidza/issues/29#issuecomment-5987110069). Agent checkout tickets obtain fresh scoped credentials after queue delays. Existing OAuth apps remain usable and can be switched explicitly. See [Guided GitHub connection](github-app-plan.md) for permissions, organization ownership, migration and validation limits. Live GitHub acceptance remains unverified; this is not included in the existing v0.2.1 binaries.

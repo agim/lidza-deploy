@@ -50,26 +50,29 @@ type Config struct {
 	Connectors []auth.Connector
 }
 type Application struct {
-	Previews      PreviewConfig `json:"previews,omitempty"`
-	PreviewParent string        `json:"preview_parent,omitempty"`
-	Generation    string        `json:"generation,omitempty"`
-	Retiring      bool          `json:"retiring,omitempty"`
-	ID            string        `json:"id"`
-	ServerID      string        `json:"server_id"`
-	Repository    string        `json:"repository"`
-	Branch        string        `json:"branch"`
-	Domain        string        `json:"domain"`
-	AutoDeploy    bool          `json:"auto_deploy"`
-	HookID        int64         `json:"hook_id,omitempty"`
-	Secret        string        `json:"secret,omitempty"`
+	GitHubInstallation int64         `json:"github_installation,omitempty"`
+	Previews           PreviewConfig `json:"previews,omitempty"`
+	PreviewParent      string        `json:"preview_parent,omitempty"`
+	Generation         string        `json:"generation,omitempty"`
+	Retiring           bool          `json:"retiring,omitempty"`
+	ID                 string        `json:"id"`
+	ServerID           string        `json:"server_id"`
+	Repository         string        `json:"repository"`
+	Branch             string        `json:"branch"`
+	Domain             string        `json:"domain"`
+	AutoDeploy         bool          `json:"auto_deploy"`
+	HookID             int64         `json:"hook_id,omitempty"`
+	Secret             string        `json:"secret,omitempty"`
 }
 type saved struct {
+	GitHubApp     *githubAppConfig       `json:"github_app,omitempty"`
 	BackupStorage *storage.Config        `json:"backup_storage,omitempty"`
 	Incidents     map[string]Incident    `json:"incidents,omitempty"`
 	Apps          map[string]Application `json:"apps"`
 	Servers       []Server               `json:"servers"`
 }
 type Control struct {
+	githubMu   sync.Mutex
 	cfg        Config
 	mu         sync.Mutex
 	registryMu sync.RWMutex
@@ -260,6 +263,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	private := http.NewServeMux()
 	handle := func(pattern string, fn http.HandlerFunc) { private.HandleFunc(pattern, c.protectedRoute(pattern, fn)) }
+	for _, pattern := range []string{"GET /api/control/github/app/status", "POST /api/control/github/app/register", "GET /api/control/github/app/manifest-callback", "POST /api/control/github/app/install", "GET /api/control/github/app/install-callback", "DELETE /api/control/github/app"} {
+		handle(pattern, c.githubAppRoute)
+	}
 	handle("GET /api/control/team", c.team)
 	handle("POST /api/control/team", c.team)
 	handle("DELETE /api/control/team/{subject}", c.team)
@@ -306,6 +312,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/deploy", c.deploy)
 	handle("POST /api/control/apps/{id}/rollback", c.rollback)
 	handle("POST /api/control/apps/{id}/webhook", c.hook)
+	handle("POST /api/control/apps/{id}/github-app", c.migrateGitHubApp)
 	handle("GET /api/control/apps/{id}/logs", c.logs)
 	handle("GET /api/control/deployments", c.deployments)
 	handle("GET /api/control/deliveries", c.deliveries)
@@ -313,13 +320,23 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/github/config", c.configureGitHub)
 
 	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
+	mux.HandleFunc("POST /hooks/github-app", c.githubAppWebhook)
+	mux.HandleFunc("POST /api/agent/checkout-token", c.checkoutToken)
 	mux.Handle("/api/control/", c.Protect(private))
 	mux.Handle("/", frontend)
 	return mux
 }
 func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 	token, err := c.token(r.Context())
-	agent.JSON(w, 200, map[string]any{"github_connected": err == nil && token != "", "github_configured": githubConfigured(), "server_count": len(c.servers()), "roles": heldRoles(r.Context()), "github_owner": auth.CurrentUser(r.Context()).ID == c.operatorID})
+	app := c.githubApp()
+	appConfigured := app != nil
+	appConnected := appConfigured && len(app.Installations) > 0
+	agent.JSON(w, 200, map[string]any{"github_app_configured": appConfigured, "github_app_connected": appConnected, "github_app_slug": func() string {
+		if app != nil {
+			return app.App.Slug
+		}
+		return ""
+	}(), "github_connected": appConnected || (err == nil && token != ""), "github_configured": appConfigured || githubConfigured(), "server_count": len(c.servers()), "roles": heldRoles(r.Context()), "github_owner": auth.CurrentUser(r.Context()).ID == c.operatorID})
 }
 func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	type view struct {
@@ -395,6 +412,19 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a := input.Application
+	if a.GitHubInstallation == 0 {
+		if cfg := c.githubApp(); cfg != nil {
+			if id, err := c.cfg.GitHub.RepositoryInstallation(r.Context(), cfg.App, a.Repository); err == nil && cfg.Installations[id] != "" {
+				a.GitHubInstallation = id
+			}
+		}
+	}
+	if a.GitHubInstallation > 0 {
+		if _, err := c.tokenFor(r.Context(), a); err != nil {
+			agent.Fail(w, 400, errors.New("select a repository from a verified GitHub installation"))
+			return
+		}
+	}
 	a.HookID = 0
 	a.Secret = ""
 	a.AutoDeploy = false
@@ -463,7 +493,7 @@ func (c *Control) deploy(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	token, err := c.token(r.Context())
+	credentialRequest, err := c.deploymentCredentials(r.Context(), a, "")
 	if err != nil {
 		agent.Fail(w, 409, err)
 		return
@@ -473,7 +503,7 @@ func (c *Control) deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var d agent.Deployment
-	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/deploy", agent.DeployRequest{Token: token}, &d); err != nil {
+	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/deploy", credentialRequest, &d); err != nil {
 		agent.Fail(w, 502, err)
 		return
 	}
@@ -529,6 +559,27 @@ func (c *Control) deployments(w http.ResponseWriter, r *http.Request) {
 	agent.JSON(w, 200, map[string]any{"deployments": out, "unavailable_servers": unavailable})
 }
 func (c *Control) repos(w http.ResponseWriter, r *http.Request) {
+	if cfg := c.githubApp(); cfg != nil && len(cfg.Installations) > 0 {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page < 1 {
+			page = 1
+		}
+		if page > 1000 {
+			agent.Fail(w, 400, errors.New("invalid page"))
+			return
+		}
+		all := []gh.Repository{}
+		for id := range cfg.Installations {
+			rows, err := c.cfg.GitHub.InstallationRepositories(r.Context(), cfg.App, id, page)
+			if err != nil {
+				agent.Fail(w, 409, errors.New("repository access unavailable; check GitHub installation approval"))
+				return
+			}
+			all = append(all, rows...)
+		}
+		agent.JSON(w, 200, all)
+		return
+	}
 	token, tokenErr := c.token(r.Context())
 	if tokenErr != nil {
 		agent.Fail(w, 409, tokenErr)

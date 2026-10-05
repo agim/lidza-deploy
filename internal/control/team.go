@@ -45,6 +45,8 @@ func permissionError(w http.ResponseWriter, err error) {
 // Downloads contain database contents and must not be treated as ordinary reads.
 func routePermission(pattern string) string {
 	switch pattern {
+	case "GET /api/control/github/app/status", "GET /api/control/github/app/manifest-callback", "GET /api/control/github/app/install-callback":
+		return "github.manage"
 	case "GET /api/control/team", "POST /api/control/team", "DELETE /api/control/team/{subject}":
 		return "team.manage"
 	case "GET /api/control/audit":

@@ -5,7 +5,7 @@ function canDeploy(){return isAdmin()||status.roles?.includes('deployer')}
 function renderTeamPermissions(){
  for(const node of document.querySelectorAll('[data-tab=team],[data-tab=audit]'))node.hidden=!isAdmin();
  $('#new-app').hidden=!isAdmin();
- for(const node of document.querySelectorAll('[data-manage-server],[data-remove-server],[data-upgrade],[data-previews],[data-action=remove],#github-config,#connect,#disconnect'))node.hidden=!isAdmin();
+ for(const node of document.querySelectorAll('[data-manage-server],[data-remove-server],[data-upgrade],[data-previews],[data-action=remove],[data-action=github-app],#github-config,#connect,#disconnect'))node.hidden=!isAdmin();
  if($('#connect'))$('#connect').hidden=!isAdmin()||(!demo&&!status.github_owner);
  if($('#disconnect'))$('#disconnect').hidden=!isAdmin()||(!demo&&!status.github_owner);
  for(const node of document.querySelectorAll('[data-action=deploy],[data-action=reload],[data-action=rollback],[data-action=webhook],[data-action=disable-webhook],[data-maintenance],[data-tasks],#settings-form button[type=submit]'))node.disabled=!canDeploy();

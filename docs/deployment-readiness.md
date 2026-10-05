@@ -1,5 +1,7 @@
 # Deployment readiness review — 2026-10-04
 
+This review predates the guided GitHub App connection. The current source now includes that flow; see [Guided GitHub connection](github-app-plan.md) for its additional tests and live acceptance limits. The original coverage/build numbers below describe the review revision.
+
 ## Decision
 
 The current source is suitable for a controlled deployment on a dedicated supported Linux server. It is **not yet verified for unattended production use**. Local checks pass, but the Go vulnerability-database check and real provider/fresh-host acceptance below remain incomplete. This is a tested deployment candidate, not a guarantee of production operation.
@@ -40,7 +42,7 @@ Statement coverage is 56.4% for the Go module (agent 64.3%, control 49.7%, onboa
 
 1. Install on a fresh dedicated Debian 12/13 or Ubuntu 22.04/24.04 systemd VM using a real FQDN. Verify signed package installation, service users/permissions, Docker access, startup after reboot and public firewall/ports 80/443. Stage tests do not exercise apt or systemd.
 2. Complete setup at the public HTTPS address. Deploy two apps with different FQDNs, then change one app's FQDN. Verify waiting-DNS status, issuance after DNS reaches the host, trusted public HTTPS and continued routing of the other app. Local CA tests do not prove public ACME or cloud NAT/firewall behavior.
-3. Authorize a real GitHub OAuth application, clone a private repository, create its webhook and push an update. Verify recorded commit, automatic deployment, invalid signature rejection, delivery retry/redelivery and PR preview creation/cleanup. GitHub organization approval and repository hook permissions can affect this flow.
+3. Register the prefilled GitHub App from Integrations, select repositories, clone a private repository and push an update. Verify recorded commit, automatic deployment, invalid signature rejection, delivery retry/redelivery and PR preview creation/cleanup. Verify organization ownership/approval and automatic installation-token renewal. Existing OAuth deployments also need migration acceptance.
 4. Configure the intended S3-compatible destination and SMTP provider. Verify an off-site backup object and download/integrity, a delivered failure alert and a recovery email. Local signed-request/outbox fixtures do not prove provider delivery.
 5. Complete `govulncheck` after allowing vuln.go.dev in the cloud environment settings. The destination was added to the saved draft while preserving existing explicit hosts; saving the draft does not apply the change to this machine. Run: `source scripts/env.sh; go run golang.org/x/vuln/cmd/govulncheck@latest ./...`.
 6. On the dedicated VM, verify a real managed upgrade and reboot. Save and test recovery of the control-panel PostgreSQL data, its encrypted configuration/master key, and each agent's encrypted state/master key. GUI app-database backups do not automatically back up the control panel itself.
@@ -57,7 +59,7 @@ Statement coverage is 56.4% for the Go module (agent 64.3%, control 49.7%, onboa
 
 ## Setup interview
 
-The first page asks for the server's one-time setup key. After unlocking, the current GUI shows a single numbered form: operator account, managed/external control-panel PostgreSQL, the installer-selected address, optional GitHub OAuth configuration, and optional remote-agent connection. The installer-selected FQDN is read-only. A colocated agent is paired automatically. GitHub and extra servers can be configured later. Finishing validates dependencies, saves encrypted configuration, starts the application and redirects to login; setup stays closed after restart.
+The first page asks for the server's one-time setup key. After unlocking, the current GUI shows a single numbered form: operator account, managed/external control-panel PostgreSQL, the installer-selected address, GitHub connection guidance, and optional remote-agent connection. The installer-selected FQDN is read-only. A colocated agent is paired automatically. GitHub and extra servers can be configured later. Finishing validates dependencies, saves encrypted configuration, starts the application and redirects to login; setup stays closed after restart.
 
 S3 storage, SMTP alerts and per-app database/backup choices are configured after login in Integrations and the app/database forms, not in this initial interview.
 
