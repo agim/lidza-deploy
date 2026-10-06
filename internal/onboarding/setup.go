@@ -182,7 +182,13 @@ func (s *Setup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == "POST" && r.URL.Path == "/api/setup/check":
-		agent.JSON(w, 200, map[string]any{"status": "claimed", "managed_database": dockerAvailable(), "public_url": s.opts.Origin})
+		var paired []control.Server
+		if err := state.Load(filepath.Join(s.opts.Dir, "servers.json"), &paired); err != nil {
+			agent.Fail(w, 500, errors.New("could not read paired agents"))
+			return
+		}
+		// Setup only needs a count; never return agent credentials to the browser.
+		agent.JSON(w, 200, map[string]any{"status": "claimed", "managed_database": dockerAvailable(), "public_url": s.opts.Origin, "paired_agent_count": len(paired)})
 		return
 	case r.Method == "POST" && r.URL.Path == "/api/setup/complete":
 		s.finish(w, r)

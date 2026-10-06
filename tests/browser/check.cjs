@@ -45,7 +45,7 @@ await page.getByRole('heading',{name:'Preview host',exact:true}).waitFor({state:
 await page.setViewportSize({width:390,height:844});await page.goto(base+'/console.html?demo=1&design=terminal');await page.waitForSelector('.app-card');const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);if(overflow)throw Error('mobile horizontal overflow');await page.screenshot({path:path.join(output,'mobile.png'),fullPage:true});
 const config={};for(const line of fs.readFileSync(path.join(root,'.local/dev.env'),'utf8').trim().split('\n')){const m=line.match(/^export ([A-Z_]+)=(.*)$/);if(m)config[m[1]]=m[2].replace(/^'|'$/g,'');}
 await page.route('**/api/control/deployments',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({deployments:[],unavailable_servers:['offline test agent']})}));
-await page.goto(base+'/login.html');if(await page.locator('body').getAttribute('data-design')!=='terminal')throw Error('login branding mismatch');await page.locator('[name=email]').fill(config.CONTROL_USER);await page.locator('[name=password]').fill(config.CONTROL_PASSWORD);await page.getByRole('button',{name:'Open workspace'}).click();await page.waitForURL('**/console.html');await page.waitForTimeout(800);await page.locator('#title').waitFor();await page.getByRole('link',{name:'Servers',exact:false}).first().click();await page.getByText('Local development',{exact:true}).waitFor();if(!(await page.locator('#error').textContent()).includes('offline test agent'))throw Error('partial failure not reported');await page.unroute('**/api/control/deployments');
+await page.goto(base+'/login.html');if(await page.locator('body').getAttribute('data-design')!=='terminal')throw Error('login branding mismatch');await page.locator('[name=email]').fill(config.CONTROL_USER);await page.locator('[name=password]').fill(config.CONTROL_PASSWORD);await page.getByRole('button',{name:'Open workspace'}).click();await page.waitForURL('**/console.html');await page.waitForTimeout(800);await page.locator('#title').waitFor();await page.locator('#menu-toggle').click();await page.getByRole('link',{name:'Servers',exact:false}).first().click();await page.getByText('Local development',{exact:true}).waitFor();if(!(await page.locator('#error').textContent()).includes('offline test agent'))throw Error('partial failure not reported');await page.unroute('**/api/control/deployments');
 if(await page.locator('body').getAttribute('data-design')!=='terminal')throw Error('selected brand design is not default');
 if(await page.locator('#design').isVisible())throw Error('design selector still in live UI');
 // Exercise real management through the control panel and local agent; no GitHub build is triggered.
@@ -55,6 +55,7 @@ try {
  await page.locator('#app-form [name=id]').fill(id);
  await page.locator('#app-form [name=repository]').fill('acme/browser-fixture');
  await page.locator('#app-form [name=domain]').fill(id+'.example.com');
+ await page.locator('#create-options>summary').click();
  await page.locator('#create-env-editor').getByRole('button',{name:'Add variable'}).click();
  await page.locator('#create-env-editor .env-name').fill('RETAINED');
  await page.locator('#create-env-editor .env-value').fill('fixture-secret');

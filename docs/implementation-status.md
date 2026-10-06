@@ -1,6 +1,6 @@
 # Implementation status
 
-The application pins Līdza v0.1.75. Authentication, encrypted credentials, private GitHub connections, durable job dispatch, interval/daily scheduling, mail alerts, S3 signing, scoped memberships and durable audit storage use released framework APIs.
+The application pins Līdza v0.1.81. Authentication, encrypted credentials, private GitHub connections, durable job dispatch, interval/daily scheduling, mail alerts, S3 signing, scoped memberships and durable audit storage use released framework APIs.
 
 ## Available
 

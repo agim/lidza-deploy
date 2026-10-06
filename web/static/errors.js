@@ -4,8 +4,7 @@ const errorView = {mode:'console', app: '', query: '', source: '', data: null, l
 
 function openAppErrors(id) {
   if (errorView.app !== id) resetErrorApp(id);
-  tab = 'errors';
-  render();
+  navigate('errors').catch(fail);
 }
 
 function resetErrorApp(id) {

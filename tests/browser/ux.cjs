@@ -1,0 +1,47 @@
+const {chromium}=require('playwright');
+const fs=require('node:fs'),path=require('node:path');
+const root=path.resolve(__dirname,'../..'),base=process.env.TEST_WEB_URL||'http://127.0.0.1:3000';
+const cfg={};for(const line of fs.readFileSync(path.join(root,'.local/dev.env'),'utf8').split('\n')){const m=line.match(/^export ([A-Z_]+)=(.*)$/);if(m)cfg[m[1]]=m[2].replace(/^'|'$/g,'')}
+const output=path.join(root,'.local/screenshots/ux');fs.mkdirSync(output,{recursive:true});
+function assert(value,message){if(!value)throw Error(message)}
+(async()=>{const browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox']});try{
+ const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ let hasServer=true,mailSaved=false;
+ await page.goto(base+'/console.html#integrations');await page.waitForURL('**/login.html?next=*');const arrow=await page.locator('#login .button-icon').boundingBox(),label=await page.locator('#login button span').first().boundingBox();assert(arrow.x-label.x-label.width>=8,'Login arrow spacing is too tight');assert(await page.locator('#login button').evaluate(e=>e.getBoundingClientRect().height)>=44,'Login touch target too small');await page.screenshot({path:path.join(output,'sign-in.png'),fullPage:true});
+ await page.fill('[name=email]',cfg.CONTROL_USER);await page.fill('[name=password]',cfg.CONTROL_PASSWORD);await page.getByRole('button',{name:'Open workspace'}).click();await page.waitForURL('**#integrations');
+ await page.route('**/api/control/status',r=>r.fulfill({json:{roles:['admin'],github_owner:true,github_public_https:true}}));
+ await page.route('**/api/control/apps',r=>r.fulfill({json:[]}));
+ await page.route('**/api/control/servers',r=>r.fulfill({json:hasServer?[{id:'fixture',name:'Production server',url:'https://agent.example.com'}]:[]}));
+ await page.route('**/api/control/deployments',r=>r.fulfill({json:{deployments:[],unavailable_servers:[]}}));
+ await page.route('**/api/control/deliveries',r=>r.fulfill({json:[{ID:'queued-fixture',State:'pending',Attempts:0,MaxAttempts:5},{ID:'retry-fixture',State:'pending',Attempts:2,MaxAttempts:5,LastError:'Agent offline'},{ID:'done-fixture',State:'done',Attempts:1,MaxAttempts:5}]}));
+ await page.route('**/api/control/databases',r=>r.fulfill({json:{databases:[]}}));
+ await page.route('**/api/control/infrastructure',r=>r.fulfill({json:{storage:{},mail:{configured:mailSaved,host:'smtp.example.com',from:'deploy@example.com'},messages:[],incidents:[]}}));
+ await page.route('**/api/control/mail',r=>{assert(r.request().method()==='PUT','Mail did not save');mailSaved=true;return r.fulfill({json:{status:'saved'}})});
+ await page.reload();await page.waitForSelector('#github-organization');
+ assert(await page.evaluate(()=>getComputedStyle(document.body).getPropertyValue('--bg').trim())==='#171214','Canvas palette changed');
+ assert(await page.evaluate(()=>getComputedStyle(document.body).getPropertyValue('--accent').trim())==='oklch(76% 0.1 345)','Accent palette changed');
+ assert(await page.locator('#content #logout').count()===0,'Sign out is still between integrations');
+ const cards=await page.locator('#content>.panel').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,bottom:r.bottom}}));
+ assert(cards.length===4&&cards.every(c=>c.x===cards[0].x&&c.width===cards[0].width),'Integration cards do not align');
+ assert(cards.slice(1).every((c,i)=>c.y-cards[i].bottom>=24),'Integration spacing is too tight');
+ assert(!await page.locator('#new-app').evaluate(e=>e.classList.contains('primary')),'App creation dominates Integrations');
+ await page.fill('#github-organization','unsaved-org');await page.fill('#mail-form [name=host]','smtp.draft.example.com');await page.locator('#title').click();await page.waitForTimeout(6000);
+ assert(await page.locator('#github-organization').inputValue()==='unsaved-org','Polling erased organization draft');
+ assert(await page.locator('#mail-form [name=host]').inputValue()==='smtp.draft.example.com','Polling erased mail draft');
+ await page.evaluate(()=>render());assert(await page.locator('#github-organization').inputValue()==='unsaved-org','Redraw erased draft');
+ await page.locator('#mail-form button[type=submit]').click();await page.getByText('Email settings saved. Send a test email to check delivery.').waitFor();assert(await page.locator('#github-organization').inputValue()==='unsaved-org','Saving another form erased organization draft');
+ page.once('dialog',d=>d.dismiss());await page.locator('[data-tab=apps]').click();assert(new URL(page.url()).hash==='#integrations','Canceled navigation discarded draft');
+ page.once('dialog',d=>d.accept());await page.locator('[data-tab=apps]').click();await page.getByRole('heading',{name:'Add your first application.',exact:true}).waitFor();assert(await page.locator('[data-add-first-app]').isVisible(),'Connected-server empty state lacks action');
+ await page.locator('[data-add-first-app]').click();await page.getByRole('dialog',{name:'New application',exact:true}).waitFor();assert(!await page.locator('#create-options').evaluate(e=>e.open),'Optional configuration is expanded by default');assert(await page.locator('#load-repos').evaluate(e=>e.getBoundingClientRect().height)>=44,'Repository action hit area too small');await page.keyboard.press('Escape');assert(await page.locator('[data-add-first-app]').evaluate(e=>e===document.activeElement),'Dialog focus did not return');
+ hasServer=false;await page.reload();await page.getByRole('heading',{name:'Connect your first server.',exact:true}).waitFor();assert(await page.locator('.empty [data-manage-server]').isVisible(),'Missing-server empty state lacks action');
+ await page.locator('[data-tab=deployments]').click();await page.locator('.delivery-attention').waitFor();assert(await page.locator('.delivery-attention').textContent().then(s=>s.includes('retrying')&&s.includes('queued')),'Queue states not prioritized');assert(!await page.locator('.completed-deliveries').evaluate(e=>e.open),'Completed queue expanded');
+ await page.locator('[data-tab=settings]').click();await page.locator('#connect').waitFor();await page.screenshot({path:path.join(output,'integrations-desktop.png'),fullPage:true});
+ const smallControls=await page.locator('#connect,#storage-form input,#mail-form input,#mail-form select').evaluateAll(nodes=>nodes.filter(n=>n.getBoundingClientRect().height<44).length);assert(!smallControls,'Important controls below 44px');
+ await page.locator('#account-menu summary').click();await page.getByRole('button',{name:'Sign out',exact:true}).waitFor();await page.keyboard.press('Escape');assert(!await page.locator('#account-menu').evaluate(e=>e.open),'Account menu did not close');assert(await page.locator('#account-menu summary').evaluate(e=>e===document.activeElement),'Account menu dismissal loses focus');
+ await page.setViewportSize({width:390,height:844});assert(!await page.locator('[data-tab=apps]').isVisible(),'Mobile navigation is not collapsed');await page.locator('#menu-toggle').click();assert(await page.locator('[data-tab=audit]').isVisible(),'Last navigation destination unavailable');await page.locator('[data-tab=apps]').click();assert(await page.locator('#menu-toggle').getAttribute('aria-expanded')==='false','Mobile menu stays open after navigation');await page.locator('#menu-toggle').click();await page.keyboard.press('Escape');assert(await page.locator('#menu-toggle').evaluate(e=>e===document.activeElement),'Mobile menu dismissal loses focus');
+ await page.locator('#menu-toggle').click();await page.locator('[data-tab=settings]').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile horizontal overflow');await page.screenshot({path:path.join(output,'integrations-mobile.png'),fullPage:true});
+ hasServer=true;await page.goto(base+'/console.html#applications');await page.getByRole('heading',{name:'Add your first application.',exact:true}).waitFor();await page.locator('#new-app').click();await page.getByRole('dialog',{name:'New application',exact:true}).waitFor();const footer=await page.locator('#app-dialog .dialog-actions').boundingBox();assert(footer.y>=0&&footer.y+footer.height<=844,'Mobile create actions are not visible');await page.keyboard.press('Escape');await page.locator('#menu-toggle').click();await page.locator('[data-tab=settings]').click();
+ await page.setViewportSize({width:720,height:500});assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'200% zoom-equivalent reflow overflows');await page.screenshot({path:path.join(output,'integrations-zoom-reflow.png'),fullPage:true});
+ await page.goto(base+'/login.html?next=https%3A%2F%2Fevil.example%2F');await page.fill('[name=email]',cfg.CONTROL_USER);await page.fill('[name=password]',cfg.CONTROL_PASSWORD);await page.getByRole('button',{name:'Open workspace'}).click();await page.waitForURL(base+'/console.html');
+ assert(!errors.length,'Browser errors: '+errors.join(', '));console.log('PASS: unchanged palette, aligned settings/account menu, 44px controls, optional form disclosure, state-aware onboarding, retained drafts, safe login return, queue priority, keyboard/mobile navigation and zoom-equivalent reflow; provider calls are fixtures');
+ }finally{await browser.close()}})().catch(e=>{console.error(e.message);process.exitCode=1});

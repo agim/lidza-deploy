@@ -6,7 +6,7 @@ This review predates the guided GitHub App connection. The current source now in
 
 The current source is suitable for a controlled deployment on a dedicated supported Linux server. It is **not yet verified for unattended production use**. Local checks pass, but the Go vulnerability-database check and real provider/fresh-host acceptance below remain incomplete. This is a tested deployment candidate, not a guarantee of production operation.
 
-The source pins Līdza v0.1.75. The existing public v0.2.1 binary release predates this dependency update and the security fixes below. Use the current source installer for this candidate; do not assume the old release bundle includes these fixes. No new binary release was published as part of this review.
+The review revision pinned Līdza v0.1.75; the current source now pins v0.1.81 and includes the [UI review fixes](ui-review.md). The existing public v0.2.1 binary release predates this dependency update and the security fixes below. Use the current source installer for this candidate; do not assume the old release bundle includes these fixes. No new binary release was published as part of this review.
 
 ## Findings fixed
 

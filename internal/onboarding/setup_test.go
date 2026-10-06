@@ -70,6 +70,16 @@ func TestSetupOwnershipAndSecretIsolation(t *testing.T) {
 			t.Fatal("bootstrap credential returned")
 		}
 	}
+	if err := os.WriteFile(filepath.Join(dir, "servers.json"), []byte(`[{"id":"local","name":"This server","url":"http://127.0.0.1:9090","token":"private-agent-test-token"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pairedResponse := setupRequest(s, "POST", "/api/setup/check", "{}", string(token), "http://127.0.0.1:3000")
+	var pairedStatus struct {
+		Count int `json:"paired_agent_count"`
+	}
+	if err := json.Unmarshal(pairedResponse.Body.Bytes(), &pairedStatus); err != nil || pairedStatus.Count != 1 || strings.Contains(pairedResponse.Body.String(), "private-agent-test-token") {
+		t.Fatal("paired agent status missing or leaked credentials", pairedResponse.Code)
+	}
 	restarted, err := New(opts)
 	if err != nil {
 		t.Fatal(err)

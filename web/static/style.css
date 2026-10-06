@@ -91,3 +91,81 @@ body[data-role="viewer"] #settings-form button[type="submit"] { display:none; }
 .integration-requirement p{font-size:13px;margin:8px 0 0;line-height:1.7}
 .integration-requirement code{overflow-wrap:anywhere}
 .integration-actions button:disabled{cursor:not-allowed}
+
+/* UX review: keep the released Līdza palette; improve layout and control geometry. */
+button,.button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 16px;font-size:14px;line-height:20px}
+.button-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none}
+button:disabled{cursor:not-allowed}
+input,select,textarea{font-size:14px;line-height:1.5;margin-top:8px;border-color:var(--muted)}
+input,select{min-height:44px}input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
+input[type=checkbox],input[type=radio]{min-height:auto}
+label{font-size:14px;line-height:1.5;margin-bottom:16px}
+label small{display:block;margin:8px 0 0;font-size:13px;line-height:1.6}
+.hint,.panel p,.integration-panel .integration-guidance,.integration-panel .integration-note,.integration-account p{font-size:14px;line-height:1.7}
+.hint{margin:12px 0 24px}.optional{font-size:13px;font-weight:400;color:var(--muted);margin-left:8px}
+summary{min-height:44px;line-height:1.6;padding:10px 0;font-size:14px}
+summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.text-button{padding:10px 8px;margin:0 0 16px;min-height:44px;font-size:14px;justify-content:flex-start}
+button:not(.primary):not(.icon):not(.text-button),.button:not(.primary){border-color:var(--muted)}
+.sidebar-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+#menu-toggle{display:none}
+.nav-icon{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+nav :is(button,a){min-height:44px}
+.sidebar{overflow-y:auto}
+.account-menu{position:relative;margin:0}
+.account-menu summary{display:flex;align-items:center;gap:8px;padding:0;list-style:none;font-size:13px;white-space:nowrap}
+.account-menu summary::-webkit-details-marker{display:none}
+.account-actions{position:absolute;right:0;top:calc(100% + 12px);z-index:30;display:grid;gap:16px;width:220px;padding:20px;border:1px solid var(--muted);border-radius:6px;background:var(--surface);box-shadow:var(--shadow)}
+.account-actions button{width:100%;justify-content:flex-start}
+#mode{font-size:12px;line-height:1.5;max-width:260px;white-space:normal}
+body[data-section=settings] #content{display:grid;gap:24px;max-width:860px}
+body[data-section=settings] #content>.panel{margin:0;max-width:none;width:100%}
+body[data-section=settings] .panel h2{margin-top:8px}
+body[data-section=settings] .panel .table-wrap{margin-top:16px}
+body[data-section=settings] .panel h3{margin-top:24px}
+body[data-section=settings] .integration-header h2{margin-top:8px}
+body[data-section=settings] .integration-account{max-width:540px}
+.integration-panel{padding:24px}
+.integration-requirement details{margin:12px 0 0}
+.integration-requirement summary{font-size:14px}
+.integration-requirement p{max-width:none}
+body[data-design=terminal] .page-heading p{font-size:14px;line-height:1.65}
+body[data-design=terminal] .toolbar h2{font-size:16px}
+body[data-design=terminal] .card-head h3{font-size:15px}
+body[data-design=terminal] .card-actions button{min-height:44px;font-size:13px;padding:10px 12px;border-color:var(--muted)}
+body[data-design=terminal] .card-actions .deploy{border-color:var(--accent)}
+body[data-design=terminal] .pill{font-size:12px;line-height:1.5}
+.pill.failed{font-weight:650}
+.card-head,.card-head>div{min-width:0}.domain,.repo{overflow-wrap:anywhere}
+.card-actions{gap:8px}
+.empty{padding:32px}.empty p{font-size:14px;line-height:1.7}.empty button{margin-top:16px}
+.delivery-attention{margin-bottom:24px}.completed-deliveries{margin-top:24px}.completed-deliveries summary{font-weight:550}
+#app-dialog,#settings-dialog,#server-dialog,#database-dialog,#feature-dialog,#log-dialog{max-height:calc(100dvh - 40px);overflow-y:auto}
+.dialog-actions{position:sticky;bottom:-28px;background:var(--surface);padding:16px 0;margin-top:24px;z-index:2;flex-wrap:wrap}
+#create-options{margin:24px 0}#create-options>label{margin-top:16px}
+.check-label{min-height:44px}
+.login-panel{max-width:520px;margin:0 auto;padding:32px}.login-panel h1{font-size:32px;line-height:1.25;letter-spacing:-1px}.login-panel p{font-size:15px}.login-panel .primary{margin-top:8px}
+#extra-agent{margin:16px 0 0}#extra-agent>p{margin-top:16px}
+@media(max-width:760px){
+ body[data-design=terminal] .sidebar,.sidebar{position:static;height:auto;width:100%;padding:16px;overflow:visible}
+ #menu-toggle{display:inline-flex;flex-direction:column;gap:0;font-size:14px;padding:8px 12px;min-width:100px}
+ #mobile-section{font-size:11px;line-height:1.5;color:var(--muted);font-weight:400;max-width:130px;white-space:normal}
+ .sidebar #workspace-navigation,body[data-design=terminal] .sidebar #workspace-navigation{display:none}
+ .sidebar.menu-open #workspace-navigation,body[data-design=terminal] .sidebar.menu-open #workspace-navigation{display:grid;grid-template-columns:1fr;gap:4px;margin-top:16px;overflow:visible}
+ .sidebar #workspace-navigation a{white-space:normal;min-height:44px;font-size:14px}
+ .top-actions .account-menu .avatar{display:grid}.top-actions{min-width:0;gap:12px}
+ .topbar,body[data-design=terminal] .topbar{height:auto;min-height:62px;flex-wrap:wrap;gap:12px;padding:12px 16px}
+ .top-actions{margin-left:auto}.top-actions #mode{max-width:150px;font-size:11px}
+ .account-menu summary>span:not(.avatar){display:none}
+ .stats small,body[data-design=terminal] .stats small{display:block;font-size:11px;line-height:1.5}
+ .stats span{display:block;min-height:30px;line-height:1.5}
+ .page-heading{flex-wrap:wrap;gap:16px}.page-heading p{max-width:100%}
+ .stats{min-width:0}.stats article{min-width:0;overflow-wrap:anywhere}
+ .integration-header{gap:12px}.integration-panel,.panel{padding:20px}
+ .dialog-actions{gap:8px}.dialog-actions button{flex:1;font-size:13px}
+ dialog{padding:20px}.dialog-actions{bottom:-20px}
+ .login-panel{padding:24px}.gallery-main{padding:24px 16px}
+}
+.integration-account label,.integration-status,.integration-panel .integration-app{font-size:14px}
+.setup-shell .panel #paired-agent{font-size:14px;font-weight:550;margin:16px 0}
+@media(max-width:760px){body[data-design=terminal] .card-head{min-width:0}.repo{flex-wrap:wrap}.server-grid .panel p{overflow-wrap:anywhere}}

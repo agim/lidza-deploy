@@ -1,5 +1,5 @@
 'use strict';
-function featureDialog(title,html){let d=document.querySelector('#feature-dialog');if(!d){d=document.createElement('dialog');d.id='feature-dialog';document.body.append(d)}d.innerHTML=`<div class="dialog-title"><h2>${escape(title)}</h2><button type="button" id="feature-close" aria-label="Close">×</button></div>${html}<p id="feature-error" class="error" hidden></p>`;d.querySelector('#feature-close').onclick=()=>d.close();d.showModal();return d}
+function featureDialog(title,html){let d=document.querySelector('#feature-dialog');if(!d){d=document.createElement('dialog');d.id='feature-dialog';document.body.append(d)}d.setAttribute('aria-labelledby','feature-title');d.innerHTML=`<div class="dialog-title"><h2 id="feature-title">${escape(title)}</h2><button type="button" id="feature-close" aria-label="Close">×</button></div>${html}<p id="feature-error" class="error" hidden></p>`;d.querySelector('#feature-close').onclick=()=>d.close();d.showModal();return d}
 function featureError(e){const p=document.querySelector('#feature-error');if(p){p.textContent=e.message;p.hidden=false}else fail(e)}
 async function featureAction(event){
  const task=event.target.closest('[data-tasks]');if(task){await openTasks(task.dataset.tasks);return true}
