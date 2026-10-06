@@ -24,7 +24,7 @@ This supports one fleet team with admin, deployer and viewer roles, with one act
 
 ## Installation and first startup
 
-Use a dedicated **Debian 12/13 or Ubuntu 22.04/24.04** server with systemd, sudo/root access, and a public IP. Allow inbound TCP ports **80 and 443** for application HTTPS and your normal SSH port. The installer installs Git, Docker Engine, Caddy, and the bundled services. A Go toolchain is needed only on the machine building the bundle.
+For public app hosting, use a dedicated **Debian 12/13 or Ubuntu 22.04/24.04** server with systemd, sudo/root access, and a public IP. Allow inbound TCP ports **80 and 443** for application HTTPS and your normal SSH port. The installer installs Git, Docker Engine, Caddy, and the bundled services. A Go toolchain is needed only on the machine building the bundle.
 
 ### 1. Run the installer
 
@@ -40,7 +40,7 @@ Or install the published `main` directly:
 curl -fsSL https://raw.githubusercontent.com/agim/lidza-deploy/main/install.sh | sudo sh -s -- --fqdn deploy.example.com
 ```
 
-The root installer builds the agent and control panel, installs their prerequisites, pairs the local agent, and starts the services. It reuses Go 1.27+ or downloads temporary Go 1.27.1 with a pinned, verified SHA-256 checksum. You do not need to build or transfer a bundle manually. Docker, Caddy, Git and systemd services are installed by the bundled host installer. The default includes the control panel; PostgreSQL and other settings are configured in the browser. **`--fqdn` is required.** Omitting it stops before downloads, builds or host changes. Use `--fqdn localhost` explicitly for a local/tunnel installation; localhost is never selected implicitly. With `--agent-only`, the FQDN names the agent API instead.
+The root installer builds the agent and control panel, installs their prerequisites, pairs the local agent, and starts the services. It reuses Go 1.27+ or downloads temporary Go 1.27.1 with a pinned, verified SHA-256 checksum. You do not need to build or transfer a bundle manually. Docker, Git and systemd services are installed by the bundled host installer; public mode also installs Caddy. The default includes the control panel; PostgreSQL and other settings are configured in the browser. **`--fqdn` is required.** Omitting it stops before downloads, builds or host changes. Use `--fqdn localhost` explicitly for a local/tunnel installation; localhost is never selected implicitly. With `--agent-only`, the FQDN names the agent API instead.
 
 To inspect the host or planned actions:
 
@@ -61,7 +61,7 @@ The downloaded equivalent is `curl -fsSL https://raw.githubusercontent.com/agim/
 
 `--version REF` selects a branch, tag or commit. `--stage /absolute/path` produces an inspectable installation tree without changing packages or services. `--bundle /path/to/lidza-agent-linux-amd64.tar.gz` uses a prebuilt archive and verifies its adjacent `.sha256` file. Both amd64 and arm64 hosts are detected automatically.
 
-Re-running preserves existing credentials and configuration. The control panel listens internally on loopback port 3000. Caddy exposes the chosen public GUI FQDN over HTTPS immediately, including the setup wizard. Reinstall with the same FQDN; changing an existing installation’s canonical hostname requires an explicit migration. An existing unmanaged Caddy configuration is rejected; use a dedicated host. The full option list is `sh install.sh --help`.
+Re-running preserves existing credentials and configuration. The control panel listens internally on loopback port 3000. Caddy exposes the chosen public GUI FQDN over HTTPS immediately, including the setup wizard. Reinstall with the same FQDN; changing an existing installation’s canonical hostname requires an explicit migration. In public mode, an existing unmanaged Caddy configuration is rejected; use a dedicated host. Local mode leaves Caddy and ports 80/443 untouched. The full option list is `sh install.sh --help`.
 
 For offline transfer or building on another machine, `./scripts/package-agent.sh amd64` (or `arm64`) still creates a bundle in `dist/`; see the [deployment runbook](docs/deployment.md).
 
@@ -75,7 +75,7 @@ Read the one-time ownership key in an SSH session or your cloud provider's serve
 sudo cat /var/lib/lidza-control/setup-token
 ```
 
-For an explicitly local installation (`sudo sh install.sh --fqdn localhost`), open `http://localhost:3000`. To access that local installation remotely, keep this tunnel open from your computer:
+For an explicitly local installation (`sudo sh install.sh --fqdn localhost`), open `http://localhost:3000`. This mode can coexist with other web servers: it does not install, configure or restart Caddy, and does not require ports 80/443. Ports 3000, 9090 and 8081 must be available for the control panel and local agent. To host public apps with automatic SSL, add a remote hosting agent installed with a public FQDN on a server with ports 80/443 available. Supplying `--hostname` alongside `--fqdn localhost` enables public hosting on this machine and requires those ports. To access that local installation remotely, keep this tunnel open from your computer:
 
 ```sh
 ssh -N -L 3000:127.0.0.1:3000 user@control-host

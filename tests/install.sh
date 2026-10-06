@@ -14,6 +14,31 @@ done
 sh install.sh --help > "$scratch/help"
 sh install.sh --fqdn localhost --plan > "$scratch/plan"
 sh install.sh --check > "$scratch/check"
+# Public and GUI port conflicts stop the root installer before source downloads.
+mkdir -p "$scratch/preflight/etc/caddy" "$scratch/preflight/run/systemd/system" "$scratch/preflight-bin"
+printf 'ID=ubuntu\nVERSION_ID=24.04\n' > "$scratch/preflight/etc/os-release"
+printf '# unrelated Caddy\n' > "$scratch/preflight/etc/caddy/Caddyfile"
+python3 - install.sh "$scratch/preflight" "$scratch/preflight-install.sh" <<'PYFIXTURE'
+import pathlib,sys
+s=pathlib.Path(sys.argv[1]).read_text()
+for path in ['/etc', '/run/systemd/system']:
+ s=s.replace(path,sys.argv[2]+path)
+pathlib.Path(sys.argv[3]).write_text(s)
+PYFIXTURE
+cat > "$scratch/preflight-bin/id" <<'SHID'
+#!/bin/sh
+printf '0\n'
+SHID
+cat > "$scratch/preflight-bin/ss" <<'SHSS'
+#!/bin/sh
+case "$*" in *':3000'*) printf 'LISTEN 0 128 127.0.0.1:3000 *:*\n';; esac
+SHSS
+chmod +x "$scratch/preflight-bin/"*
+if PATH="$scratch/preflight-bin:$PATH" sh "$scratch/preflight-install.sh" --fqdn deploy.example.com > "$scratch/root-public.log" 2>&1;then echo 'Root installer accepted unrelated Caddy' >&2;exit 1;fi
+rg -q 'existing unmanaged Caddy' "$scratch/root-public.log"
+if PATH="$scratch/preflight-bin:$PATH" sh "$scratch/preflight-install.sh" --fqdn localhost > "$scratch/root-local-busy.log" 2>&1;then echo 'Root installer accepted occupied GUI port' >&2;exit 1;fi
+rg -q 'port 3000 is already in use' "$scratch/root-local-busy.log"
+! rg -q 'Downloading|Building' "$scratch/root-public.log" "$scratch/root-local-busy.log"
 sh install.sh --fqdn localhost --stage "$scratch/source-stage" > "$scratch/source.log"
 [[ -x "$scratch/source-stage/usr/local/bin/lidza-agent" ]]
 [[ -x "$scratch/source-stage/usr/local/bin/lidza-control" ]]
@@ -44,7 +69,8 @@ rg -q '^CONTROL_SETUP_ORIGIN=https://deploy.example.com$' "$scratch/download-sta
 rg -q 'deploy.example.com' "$scratch/download-stage/etc/caddy/Caddyfile"
 if sh install.sh --fqdn other.example.com --bundle "$PWD/dist/lidza-agent-linux-amd64.tar.gz" --stage "$scratch/download-stage" >/dev/null 2>&1;then echo 'Implicit hostname migration accepted' >&2;exit 1;fi
 rg -q '^CONTROL_SETUP_ORIGIN=http://localhost:3000$' "$scratch/source-stage/etc/lidza-control/control.env"
-if rg -q 'reverse_proxy 127.0.0.1:3000' "$scratch/source-stage/etc/caddy/Caddyfile";then echo 'Local GUI exposed in Caddy' >&2;exit 1;fi
+[[ ! -e "$scratch/source-stage/etc/caddy" ]]
+[[ ! -e "$scratch/source-stage/etc/systemd/system/caddy.service.d" ]]
 cat > "$scratch/mockbin/go" <<'SH'
 #!/bin/sh
 printf '%s\n' go1.24.0

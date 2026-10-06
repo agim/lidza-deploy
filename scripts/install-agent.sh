@@ -10,14 +10,18 @@ Usage: sudo ./install-agent.sh --fqdn deploy.example.com|localhost [--with-contr
        ./install-agent.sh --fqdn localhost --plan
        ./install-agent.sh --fqdn deploy.example.com --stage /absolute/staging-directory [options]
 
-Installs Docker Engine, Caddy, Git, the bundled agent and systemd services.
+Installs Docker Engine, Git, the bundled agent and systemd services.
+Public mode also installs Caddy for application HTTPS.
 --with-control also installs the browser-configured control panel on this host.
 --fqdn is required: the GUI hostname with --with-control, otherwise the agent hostname.
-Use --fqdn localhost explicitly for loopback access. Public DNS must point here.
+Use --fqdn localhost explicitly for loopback access without taking ports 80/443.
+Local mode leaves Caddy untouched; use remote public agents for automatic HTTPS.
+Adding --hostname enables public hosting and requires free ports 80/443.
 With --with-control, the agent API stays on loopback unless --hostname is supplied.
 --hostname exposes the authenticated API over automatic HTTPS for a remote GUI.
 --stage writes an inspectable filesystem tree without installing packages or services.
-Requires a dedicated Debian 12/13 or Ubuntu 22.04/24.04 server for live installation.
+Requires Debian 12/13 or Ubuntu 22.04/24.04 with systemd.
+Public hosting requires a dedicated server.
 TXT
 }
 while (($#)); do
@@ -41,6 +45,8 @@ if ! $with_control;then
 elif [[ "$fqdn" != localhost && "$hostname" == "$fqdn" ]];then
  echo 'The GUI --fqdn and agent --hostname must be different hostnames.' >&2;exit 2
 fi
+public_host=false
+[[ "$fqdn" == localhost && -z "$hostname" ]] || public_host=true
 setup_origin=http://localhost:3000
 [[ "$fqdn" == localhost ]] || setup_origin="https://$fqdn"
 # Refuse an implicit hostname migration before any installation side effects.
@@ -63,14 +69,15 @@ fi
 if $plan; then
  cat <<TXT
 1. Verify the local bundle checksum and supported host.
-2. Install Git, Docker Engine and Caddy through signed apt repositories.
+2. Install Git and Docker Engine through signed apt repositories.
 3. Preserve an existing agent token; otherwise generate a random token.
 4. Install the agent, private configuration, and systemd service.
-5. Validate Caddy routing for application FQDNs and the optional agent hostname.
-6. Start services; check the authenticated agent API and Caddy configuration.
+5. Public mode only: install and validate Caddy routing for application FQDNs.
+6. Start services; check the authenticated agent API.
 7. Save private GUI connection details in /etc/lidza-agent/connection.json.
 GUI setup address: $setup_origin
 Agent API hostname: ${hostname:-loopback only}
+Public hosting/Caddy: $public_host (local mode leaves ports 80/443 untouched)
 TXT
  exit 0
 fi
@@ -82,11 +89,23 @@ if [[ -z "$stage" ]]; then
  case "$ID:$VERSION_ID" in debian:12|debian:13|ubuntu:22.04|ubuntu:24.04) ;; *) echo 'Unsupported host; use Debian 12/13 or Ubuntu 22.04/24.04.' >&2;exit 1;; esac
  [[ $(cat "$bundle/ARCH") == "$(dpkg --print-architecture)" ]] || { echo 'Bundle architecture does not match this host.' >&2;exit 1; }
  [[ -d /run/systemd/system ]] || { echo 'A running systemd host is required.' >&2;exit 1; }
- if [[ -f /etc/caddy/Caddyfile ]] && ! head -1 /etc/caddy/Caddyfile | grep -qx '# Managed by lidza-deploy installer'; then
+ if $public_host && [[ -f /etc/caddy/Caddyfile ]] && ! head -1 /etc/caddy/Caddyfile | grep -qx '# Managed by lidza-deploy installer'; then
   echo 'Existing unmanaged Caddy configuration detected; installation stopped without replacing it. Use a dedicated host or integrate the staged configuration.' >&2;exit 1
  fi
- if command -v ss >/dev/null && ss -ltnH '( sport = :80 or sport = :443 )' | grep -q . && [[ ! -f /etc/lidza-agent/config.json ]]; then
+ if $public_host && command -v ss >/dev/null && ss -ltnH '( sport = :80 or sport = :443 )' | grep -q . && [[ ! -f /etc/lidza-agent/config.json ]]; then
   echo 'Ports 80/443 are already in use. Use a dedicated host.' >&2;exit 1
+ fi
+ # Stop before changing packages when a new service cannot bind its loopback port.
+ if command -v ss >/dev/null; then
+  for service_port in 'lidza-agent:9090' 'lidza-agent:8081'; do
+   service=${service_port%:*}; port=${service_port#*:}
+   if [[ ! -f /etc/systemd/system/$service.service ]] && ss -ltnH "sport = :$port" | grep -q .; then
+    echo "Port $port is already in use; free this port before installing $service. No installation changes were made." >&2;exit 1
+   fi
+  done
+  if $with_control && [[ ! -f /etc/systemd/system/lidza-control.service ]] && ss -ltnH 'sport = :3000' | grep -q .; then
+   echo 'Port 3000 is already in use; free this port before installing the control panel. No installation changes were made.' >&2;exit 1
+  fi
  fi
  export DEBIAN_FRONTEND=noninteractive
  apt-get update
@@ -99,7 +118,7 @@ if [[ -z "$stage" ]]; then
   apt-get update
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
  fi
- if ! command -v caddy >/dev/null; then
+ if $public_host && ! command -v caddy >/dev/null; then
   key=$(mktemp);trap 'rm -f "$key"' EXIT
   curl --proto '=https' --tlsv1.2 -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o "$key"
   gpg --batch --yes --dearmor -o /etc/apt/keyrings/lidza-caddy.gpg "$key"
@@ -118,7 +137,7 @@ if [[ -z "$stage" ]]; then
  fi
 fi
 root=$stage
-install -d -m 0755 "$root/usr/local/bin" "$root/etc/systemd/system" "$root/etc/caddy"
+install -d -m 0755 "$root/usr/local/bin" "$root/etc/systemd/system"
 install -d -m 0700 "$root/etc/lidza-agent" "$root/var/lib/lidza-agent" "$root/var/lib/lidza-agent/docker"
 install -m 0755 "$bundle/bin/lidza-agent" "$root/usr/local/bin/lidza-agent"
 install -m 0644 "$bundle/deploy/lidza-agent.service" "$root/etc/systemd/system/lidza-agent.service"
@@ -139,6 +158,8 @@ if [[ -n "$hostname" ]]; then server_id="agent-$(printf '%s' "$hostname" | sha25
 printf '{"id":"%s","name":"%s","url":"%s","token":"%s"}\n' "$server_id" "${hostname:-Local server}" "$api_url" "$token" > "$root/etc/lidza-agent/connection.json"
 # Use a stable, valid local ID when no hostname is supplied.
 if [[ -z "$hostname" ]]; then sed -i 's/"id":""/"id":"local"/' "$root/etc/lidza-agent/connection.json";fi
+if $public_host; then
+install -d -m 0755 "$root/etc/caddy"
 # GUI-written Caddy configuration is autosaved and restored on restarts.
 install -d -m 0755 "$root/etc/systemd/system/caddy.service.d"
 cat > "$root/etc/systemd/system/caddy.service.d/10-lidza-resume.conf" <<'UNIT'
@@ -147,6 +168,7 @@ ExecStart=
 ExecStart=/usr/bin/caddy run --environ --resume --config /etc/caddy/Caddyfile
 ExecReload=
 UNIT
+fi
 if $with_control; then
  install -d -m 0700 "$root/etc/lidza-control" "$root/var/lib/lidza-control" "$root/var/lib/lidza-control/docker"
  install -m 0755 "$bundle/bin/lidza-control" "$root/usr/local/bin/lidza-control"
@@ -165,6 +187,7 @@ fi
 install -d -m 0755 "$root/usr/local/libexec"
 install -m 0755 "$bundle/deploy/upgrade-agent.sh" "$root/usr/local/libexec/lidza-agent-upgrade"
 install -m 0644 "$bundle/deploy/lidza-agent-upgrade.path" "$bundle/deploy/lidza-agent-upgrade.service" "$root/etc/systemd/system/"
+if $public_host; then
 config=$(mktemp "$root/etc/caddy/.lidza-config.XXXXXX")
 {
  echo '# Managed by lidza-deploy installer'
@@ -181,26 +204,32 @@ config=$(mktemp "$root/etc/caddy/.lidza-config.XXXXXX")
  fi
 } > "$config"
 chmod 0644 "$config"
+fi
 if [[ -n "$stage" ]]; then
- mv "$config" "$root/etc/caddy/Caddyfile"
+ if $public_host; then mv "$config" "$root/etc/caddy/Caddyfile";fi
  echo "Staged installation in $stage. No host packages or services changed."
  exit 0
 fi
 chown -R lidza-agent:lidza-agent /etc/lidza-agent /var/lib/lidza-agent
 if $with_control; then chown -R lidza-control:lidza-control /etc/lidza-control /var/lib/lidza-control;fi
+if $public_host; then
 caddy validate --config "$config" --adapter caddyfile
 if [[ -f /etc/caddy/Caddyfile ]]; then cp -p /etc/caddy/Caddyfile /etc/caddy/Caddyfile.lidza-backup;fi
 mv "$config" /etc/caddy/Caddyfile
+fi
 systemctl daemon-reload
 systemctl enable --now docker
 # Verify access with the actual service account before claiming readiness.
 runuser -u lidza-agent -- docker info >/dev/null
-systemctl enable lidza-agent caddy
+systemctl enable lidza-agent
+if $public_host; then systemctl enable caddy;fi
 systemctl enable --now lidza-agent-upgrade.path
 systemctl restart lidza-agent
+if $public_host; then
 systemctl restart caddy
 # Apply the installer routing even if Caddy has an older autosave (including its apt default).
 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+fi
 for attempt in {1..30}; do
  if curl -fsS http://127.0.0.1:9090/health >/dev/null; then break;fi
  [[ "$attempt" != 30 ]] || { echo 'Agent failed readiness; inspect journalctl -u lidza-agent.' >&2;exit 1; }
@@ -208,8 +237,12 @@ for attempt in {1..30}; do
 done
 # Keep the token out of command arguments and installer output.
 printf 'header = "Authorization: Bearer %s"\n' "$token" | curl --config - -fsS http://127.0.0.1:9090/v1/apps >/dev/null
+if $public_host; then
 systemctl is-active --quiet caddy
 printf '%s\n' 'Agent, Docker and Caddy are installed and running.' 'Private GUI connection details: /etc/lidza-agent/connection.json' 'For a remote GUI, the agent hostname must resolve to this host and ports 80/443 must be reachable.'
+else
+ printf '%s\n' 'Agent and Docker are installed and running in local mode. Existing Caddy and ports 80/443 were left untouched.' 'Private GUI connection details: /etc/lidza-agent/connection.json' 'Automatic HTTPS for hosted apps requires a public hosting agent; add one in the GUI.'
+fi
 
 if $with_control; then
  systemctl enable lidza-control

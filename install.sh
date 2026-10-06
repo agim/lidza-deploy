@@ -31,8 +31,10 @@ Usage: sh install.sh --fqdn deploy.example.com|localhost [options]
   --plan               Show installation steps without installing
   --yes, -y            Noninteractive install (already the default)
   --help, -h           Show help
-Requires a dedicated Debian 12/13 or Ubuntu 22.04/24.04 systemd host.
-Installs Git, Docker, Caddy and services; first-run settings are entered in the GUI.
+Requires Debian 12/13 or Ubuntu 22.04/24.04 with systemd.
+Public hosting requires a dedicated host; localhost mode leaves ports 80/443 alone.
+Installs Git, Docker and services; public mode also installs Caddy.
+First-run settings are entered in the GUI.
 Public DNS must point to this host and ports 80/443 must be reachable.
 Go is reused when suitable or downloaded temporarily with a pinned checksum.
 TXT
@@ -70,10 +72,11 @@ case "$stage" in '') ;; /*) [ "$stage" != / ] || die 'stage must not be /'; case
 case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) die 'only amd64 and arm64 are supported';; esac
 if [ "$plan" -eq 1 ]; then
  printf '%s\n' "Līdza Deploy ($arch, source $version)" \
-  '1. Check the dedicated Debian/Ubuntu systemd host.' \
+  '1. Check the Debian/Ubuntu systemd host.' \
   '2. Verify a local bundle, or build the source with verified Go.' \
-  '3. Install Git, Docker Engine, Caddy and the hosting agent.'
+  '3. Install Git, Docker Engine and the agent; public mode also installs Caddy.'
  if [ "$with_control" -eq 1 ]; then printf '%s\n' '4. Install and start the control panel, paired with the local agent.' "5. Open the chosen GUI address ($fqdn) and complete browser setup.";fi
+ if [ "$fqdn" = localhost ] && [ -z "$hostname" ];then printf '%s\n' 'Local mode: leave Caddy and ports 80/443 untouched; use public agents for app HTTPS.';fi
  exit 0
 fi
 if [ "$check" -eq 1 ]; then
@@ -91,6 +94,24 @@ if [ -z "$stage" ]; then
  . /etc/os-release
  case "$ID:$VERSION_ID" in debian:12|debian:13|ubuntu:22.04|ubuntu:24.04) ;; *) die 'use Debian 12/13 or Ubuntu 22.04/24.04';; esac
  [ -d /run/systemd/system ] || die 'a running systemd host is required'
+ if [ "$fqdn" != localhost ] || [ -n "$hostname" ]; then
+  if [ -f /etc/caddy/Caddyfile ] && ! head -1 /etc/caddy/Caddyfile | grep -qx '# Managed by lidza-deploy installer';then
+   die 'existing unmanaged Caddy configuration detected; use a dedicated public hosting server or --fqdn localhost without --hostname'
+  fi
+  if command -v ss >/dev/null 2>&1 && ss -ltnH '( sport = :80 or sport = :443 )' | grep -q . && [ ! -f /etc/lidza-agent/config.json ];then
+   die 'ports 80/443 are already in use; use a dedicated public hosting server or --fqdn localhost without --hostname'
+  fi
+ fi
+ if command -v ss >/dev/null 2>&1;then
+  service_ports='lidza-agent:9090 lidza-agent:8081'
+  if [ "$with_control" -eq 1 ];then service_ports="$service_ports lidza-control:3000";fi
+  for service_port in $service_ports;do
+   service=${service_port%:*};port=${service_port#*:}
+   if [ ! -f "/etc/systemd/system/$service.service" ] && ss -ltnH "sport = :$port" | grep -q .;then
+    die "port $port is already in use; free this port before installing $service. No installation changes were made"
+   fi
+  done
+ fi
 fi
 for tool in tar sha256sum; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required";done
 scratch=$(mktemp -d /tmp/lidza-deploy-install.XXXXXX)
