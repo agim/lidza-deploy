@@ -15,7 +15,7 @@ The application pins Līdza v0.1.81. Authentication, encrypted credentials, priv
 - Signed pull-request preview deployment and cleanup, separate environment and optional private database.
 - Background worker start/restart/disable/logs, current-image/environment reconciliation, durable interval/daily command dispatch, overlap prevention and failure alerts.
 - Official agent release checks, checksum/manifest validation, atomic binary upgrades, co-located control-panel upgrade and failed-health rollback.
-- Required-FQDN installer, first-run setup wizard, guided GitHub App connection/webhooks with legacy OAuth compatibility, storage and email configuration, and the approved Signal design using released Līdza colors.
+- Required-FQDN installer, first-run setup wizard, guided GitHub App connection/webhooks using installation tokens, storage and email configuration, and the approved Signal design using released Līdza colors.
 
 ## Team access and audit
 
@@ -29,4 +29,4 @@ Live public ACME, GitHub consent/private clone and actual PR webhooks, real S3/S
 
 ## Guided GitHub App setup
 
-New installs use **Connect GitHub → approve app → Choose repositories** after local login. The product uses framework one-use state, roles, sealed credentials, audit and HMAC webhook primitives; GitHub-specific manifest/JWT/installation/token handling lives here as directed by [Līdza #29](https://github.com/agim/lidza/issues/29#issuecomment-5987110069). Agent checkout tickets obtain fresh scoped credentials after queue delays. Existing OAuth apps remain usable and can be switched explicitly. See [Guided GitHub connection](github-app-plan.md) for permissions, organization ownership, migration and validation limits. Live GitHub acceptance remains unverified; this is not included in the existing v0.2.1 binaries.
+New installs use **Connect GitHub → approve app → Choose repositories** after local login. The product uses framework one-use state, roles, sealed credentials, audit and HMAC webhook primitives; GitHub-specific manifest/JWT/installation/token handling lives here as directed by [Līdza #29](https://github.com/agim/lidza/issues/29#issuecomment-5987110069). Agent checkout tickets obtain fresh scoped credentials after queue delays. GitHub Apps are the exclusive authorization method. See [Guided GitHub connection](github-app-plan.md) for permissions, organization ownership, repository attachment and validation limits. Live GitHub acceptance remains unverified; this is not included in the existing v0.2.1 binaries.

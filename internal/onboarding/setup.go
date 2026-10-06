@@ -32,8 +32,6 @@ type Input struct {
 	Password     string          `json:"password"`
 	DatabaseMode string          `json:"database_mode"`
 	DatabaseURL  string          `json:"database_url"`
-	GitHubID     string          `json:"github_id"`
-	GitHubSecret string          `json:"github_secret"`
 	Network      Network         `json:"network"`
 	Agent        *control.Server `json:"agent,omitempty"`
 }
@@ -208,9 +206,6 @@ func validate(input Input) error {
 	if !strings.Contains(input.Email, "@") || len(input.Password) < 16 {
 		return errors.New("enter an operator email and a password of at least 16 characters")
 	}
-	if (input.GitHubID == "") != (input.GitHubSecret == "") {
-		return errors.New("GitHub client ID and secret must be supplied together")
-	}
 	if input.DatabaseMode != "managed" && input.DatabaseMode != "external" {
 		return errors.New("choose a managed or existing database")
 	}
@@ -317,12 +312,9 @@ func (s *Setup) finish(w http.ResponseWriter, r *http.Request) {
 	if secret == "" {
 		secret = random()
 	}
-	values := map[string]string{"PUBLIC_URL": input.PublicURL, "APP_URL": input.PublicURL, "CONTROL_USER": input.Email, "CONTROL_PASSWORD": input.Password, "DATABASE_URL": dburl, "AUTH_SECRET": secret, "AUTH_COOKIE_SECURE": "true", "AUTH_CONNECT": "", "AUTH_CONNECT_GITHUB_CLIENT_ID": input.GitHubID, "AUTH_CONNECT_GITHUB_CLIENT_SECRET": input.GitHubSecret}
+	values := map[string]string{"PUBLIC_URL": input.PublicURL, "APP_URL": input.PublicURL, "CONTROL_USER": input.Email, "CONTROL_PASSWORD": input.Password, "DATABASE_URL": dburl, "AUTH_SECRET": secret, "AUTH_COOKIE_SECURE": "true", "AUTH_CONNECT": "", "AUTH_CONNECT_GITHUB_CLIENT_ID": "", "AUTH_CONNECT_GITHUB_CLIENT_SECRET": ""}
 	if strings.HasPrefix(input.PublicURL, "http://") {
 		values["AUTH_COOKIE_SECURE"] = "false"
-	}
-	if input.GitHubID != "" {
-		values["AUTH_CONNECT"] = "github"
 	}
 	if _, e := os.Stat(filepath.Join(s.opts.Dir, "servers.json")); e == nil {
 		values["CONTROL_SERVERS_FILE"] = filepath.Join(s.opts.Dir, "servers.json")

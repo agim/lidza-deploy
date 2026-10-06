@@ -2,10 +2,12 @@ const {chromium}=require('playwright');
 const base=process.env.TEST_WEB_URL||'http://127.0.0.1:8879';
 function assert(value,message){if(!value)throw Error(message)}
 (async()=>{const browser=await chromium.launch({executablePath:process.env.CHROMIUM_BIN||'/usr/bin/chromium',args:['--no-sandbox']});try{const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
-await page.route('**/api/control/*',r=>{const name=new URL(r.request().url()).pathname.split('/').pop();return r.fulfill({json:name==='status'?{roles:['admin']}:name==='deployments'?{deployments:[],unavailable_servers:[]}:[]})});
+let oauthConfigured=false;
+await page.route('**/api/control/*',r=>{const name=new URL(r.request().url()).pathname.split('/').pop();return r.fulfill({json:name==='status'?{roles:['admin'],github_owner:true,github_public_https:true,github_oauth_configured:oauthConfigured}:name==='infrastructure'?{storage:{},mail:{},messages:[],incidents:[]}:name==='deployments'?{deployments:[],unavailable_servers:[]}:[]})});
 await page.goto(base+'/console.html');await page.waitForFunction(()=>document.querySelector('#mode').textContent.startsWith('Updated'));
 await page.evaluate(()=>{fail(new Error('Action failed: <unsafe>'));notice('Queued: <unsafe>')});await page.waitForTimeout(6500);
 assert(await page.locator('#error').isVisible(),'Polling cleared action error');assert(await page.locator('#error').textContent().then(t=>t.includes('<unsafe>')),'Message escaped incorrectly');assert(await page.locator('#toast').isVisible(),'Notification expired');await page.locator('#error button').click();assert(await page.locator('#error').isHidden(),'Error dismissal failed');await page.locator('#toast button').click();assert(await page.locator('#toast').isHidden(),'Notice dismissal failed');
+await page.locator('[data-tab=settings]').click();await page.waitForSelector('#connect');assert(await page.locator('.integration-legacy').count()===0,'Fresh installation exposes missing OAuth connector');assert(await page.locator('#connect').textContent()==='Connect GitHub','GitHub App registration missing');oauthConfigured=true;await page.reload();await page.waitForSelector('#connect');assert(await page.locator('.integration-legacy').count()===0,'Legacy OAuth remains exposed');
 let finishRetry;let calls=0;
 await page.route('**/api/setup/check',r=>r.fulfill({json:{paired_agent_count:1,managed_database:true,public_url:'http://localhost:3000'}}));
 await page.route('**/api/setup/complete',async r=>{if(++calls===2)await new Promise(resolve=>finishRetry=resolve);await r.fulfill({status:400,json:{error:'Database authentication failed'}})});

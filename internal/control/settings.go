@@ -67,7 +67,7 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 	agent.JSON(w, 200, next)
 }
 
-// Disabling does not depend on a working OAuth grant. GitHub may continue to
+// Disabling does not depend on a working GitHub connection. GitHub may continue to
 // deliver signed events; we acknowledge them without scheduling deployments.
 func (c *Control) disableHook(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()

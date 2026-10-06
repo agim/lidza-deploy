@@ -40,7 +40,7 @@ func (c *Control) enableGitHubAppDeploy(w http.ResponseWriter, r *http.Request, 
 	current.Previews.Env = nil
 	agent.JSON(w, 200, current)
 }
-func (c *Control) migrateGitHubApp(w http.ResponseWriter, r *http.Request) {
+func (c *Control) attachGitHubApp(w http.ResponseWriter, r *http.Request) {
 	a, ok := c.app(r.PathValue("id"))
 	cfg := c.githubApp()
 	if !ok || a.Retiring || a.PreviewParent != "" || cfg == nil {

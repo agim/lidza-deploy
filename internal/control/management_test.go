@@ -165,7 +165,7 @@ func TestPartialFleetHistoryAndStalePush(t *testing.T) {
 		t.Fatal("partial history lost", w.Body)
 	}
 	c.data.Apps["portal"] = Application{ID: "portal", Generation: "new-instance", AutoDeploy: true}
-	// No service context: a stale job must exit before attempting to obtain OAuth.
+	// No service context: a stale job must exit before attempting to obtain GitHub credentials.
 	if err := c.dispatchPush(context.Background(), json.RawMessage(`{"app_id":"portal","generation":"deleted-instance","delivery":"old"}`)); err != nil {
 		t.Fatal("stale job not ignored", err)
 	}

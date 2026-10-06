@@ -118,7 +118,7 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 		t.Fatal(err)
 	}
 
-	// Explicit migration updates existing preview credential assignments too.
+	// Connecting a repository updates existing preview credential assignments too.
 	c.mu.Lock()
 	a.GitHubInstallation = 0
 	c.data.Apps[a.ID] = a
@@ -128,24 +128,21 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 	c.data.Apps[child.ID] = child
 	c.mu.Unlock()
 	if w := request("POST", "/api/control/apps/portal/github-app", `{}`); w.Code != 200 {
-		t.Fatal("legacy migration failed", w.Code, w.Body)
+		t.Fatal("repository connection failed", w.Code, w.Body)
 	}
 	migrated, _ := c.app(a.ID)
 	preview, _ := c.app(child.ID)
 	if migrated.GitHubInstallation != 7 || preview.GitHubInstallation != 7 {
-		t.Fatal("migration omitted app or existing preview")
+		t.Fatal("repository connection omitted app or existing preview")
 	}
 	a = migrated
 	c.mu.Lock()
 	delete(c.data.Apps, child.ID)
 	c.mu.Unlock()
-	legacyRequest := httptest.NewRequest("POST", "/hooks/github/portal", nil).WithContext(ctx)
-	legacyRequest.SetPathValue("id", a.ID)
-	legacyResponse := httptest.NewRecorder()
-	c.webhook(legacyResponse, legacyRequest)
-	if legacyResponse.Code != 404 {
-		t.Fatal("legacy webhook still active after migration")
+	if w := request("POST", "/hooks/github/portal", ""); w.Code != 404 {
+		t.Fatal("legacy webhook route remains active", w.Code)
 	}
+
 	credentials, err := c.deploymentCredentials(ctx, a, "queued-deploy")
 	if err != nil || credentials.Token != "" || credentials.CredentialTicket == "" {
 		t.Fatal("queue received a token instead of a ticket", err)

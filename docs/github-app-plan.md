@@ -26,15 +26,15 @@ A token may expire while a deployment waits in the agent's queue. The control pa
 
 Revocation, installation suspension/deletion and repository removal must fail closed and show that access is no longer available. They must not silently fall back to broad OAuth grants. Reauthorization is necessary only when access actually needs restoration or a replacement app connection is chosen.
 
-## Migration and verification
+## Verification
 
-Keep existing OAuth deployments functional during the migration, and use guided GitHub App registration for new installations. Confirm GitHub App access to each mapped private repository before replacing that app's credential source. Signed deliveries arriving from existing OAuth hooks must not cause duplicate deployments alongside the new app webhook. Retiring legacy hooks requires explicit migration state and an available grant/permission; do not remove access before the replacement has been verified.
+GitHub Apps are the exclusive authorization method. OAuth credential configuration, reconnect routes, stored-account token fallback and legacy repository webhook routes are removed. Public apps deploy without authorization; connect their repositories to an installation before enabling automatic deployment or private checkout.
 
-Automated checks cover no-secret registration, owner/state/callback checks, replay, encrypted restart persistence, installation verification, selected-repository listing, delayed checkout credentials, expired/revoked tokens, signatures/delivery deduplication, secret omission, browser registration/install navigation and legacy migration. Complete actual GitHub creation/install/private-clone/push acceptance after fixture tests; mock GitHub tests do not establish live consent or organization behavior.
+Automated checks cover no-secret registration, owner/state/callback checks, replay, encrypted restart persistence, installation verification, selected-repository listing, delayed checkout credentials, expired/revoked tokens, signatures/delivery deduplication, secret omission, browser registration/install navigation and repository attachment. Complete actual GitHub creation/install/private-clone/push acceptance after fixture tests; mock GitHub tests do not establish live consent or organization behavior.
 
 For organization repositories, enter the organization name before Connect GitHub so the private App is created under that organization. A private App can be installed only on its owning account. Choose repositories again after approval or permission changes. Only the local installation owner may register or install the App.
 
-Existing apps switch using **Use GitHub App** after the repository is selected in GitHub. This verifies access, updates existing preview assignments and ignores old OAuth hook deliveries; remove the old repository hooks manually. Disconnect is blocked while apps still depend on the connection. Uninstall/delete the App in GitHub to revoke its GitHub access.
+Public apps use **Connect repository** after the repository is selected in GitHub. This verifies access and updates existing preview assignments. Disconnect is blocked while apps still depend on the connection. Uninstall/delete the App in GitHub to revoke its GitHub access.
 
 Upgrade both the control panel and hosting agents together: older agents reject the new checkout-ticket fields. No centralized authorization broker is needed. The owner can register one private App per control panel; additional account ownership requires a separate control panel in this first implementation.
 
