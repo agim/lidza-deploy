@@ -260,7 +260,7 @@ func (s *Setup) finish(w http.ResponseWriter, r *http.Request) {
 	}
 	conn, err := pgx.Connect(ctx, dburl)
 	if err != nil {
-		agent.Fail(w, 400, errors.New("could not connect to PostgreSQL; check its address, credentials and TLS configuration"))
+		agent.Fail(w, 400, databaseConnectionError(err))
 		return
 	}
 	err = conn.Ping(ctx)

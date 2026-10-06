@@ -24,3 +24,9 @@ The 200% zoom-equivalent check uses a 720 CSS-pixel viewport for a 1440-pixel de
 The first-run browser suite exercises managed PostgreSQL, operator login and restart durability, and checks the already-paired agent presentation. Its public HTTPS origin is mapped to a local test backend; it does not establish public DNS or ACME acceptance.
 
 Broader application, database/backup, feature, team, console-error and GitHub fixture suites remain separate functional checks. Real provider acceptance and the product's documented operational limits remain unchanged by these UI fixes.
+
+## Walnut preview and reinstall recovery
+
+Walnut is available at `/console.html?demo=1&design=walnut` and `/setup.html?design=walnut`. It shares Signal’s layout and uses the proposed brown/silver tokens. Signal remains the live default. `tests/browser/walnut.cjs` checks contrast, desktop/mobile/setup rendering and the unchanged default; point `TEST_WEB_URL` at a running panel or a static server serving `web/static`.
+
+Managed setup recovers a missing or rejected database password through the labelled container’s local socket, with SQL on stdin, and seals the replacement using the existing framework credentials API. Existing data is retained, including when the container was recreated on its previous volume. Unrelated containers are refused; inspect failures report Docker access separately. No destructive reset option was added. Real-Docker regression tests cover both recovery cases, retained data and ownership refusal; a fake-Docker test covers inspect access errors.

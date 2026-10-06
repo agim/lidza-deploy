@@ -1,4 +1,5 @@
 'use strict';
+if(new URLSearchParams(location.search).get('design')==='walnut')document.body.dataset.design='walnut';
 const $=s=>document.querySelector(s);let token='';
 function error(e){$('#setup-error').textContent=e.message;$('#setup-error').hidden=false}
 async function send(path,body){const res=await fetch('/api/setup/'+path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(body)});let value;try{value=await res.json()}catch{throw Error('Setup request rejected ('+res.status+'). Check the setup key and use the address printed by the installer.')}if(!res.ok)throw Error(value.error||'Setup failed');return value}
