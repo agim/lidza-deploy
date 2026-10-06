@@ -3,7 +3,18 @@ const fs=require('fs'),path=require('path');
 const root=path.resolve(__dirname,'../..');const output=path.join(root,'.local','screenshots');fs.mkdirSync(output,{recursive:true});
 const base=process.env.TEST_WEB_URL||'http://127.0.0.1:3000';
 (async()=>{const browser=await chromium.launch({executablePath:process.env.CHROMIUM_BIN||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
-for(const design of ['studio','terminal','fleet']){await page.goto(base+'/console.html?demo=1&design='+design);await page.getByRole('button',{name:'Applications',exact:false}).first().click();await page.waitForSelector('.app-card');if(await page.locator('.app-card').count()!==3)throw Error('missing demo apps');await page.screenshot({path:path.join(output,design+'.png'),fullPage:true});await page.getByRole('button',{name:'New application'}).click();await page.locator('#app-form [name=id]').fill('preview-'+design);await page.locator('[name=repository]').fill('acme/preview');await page.locator('#app-form [name=domain]').fill('preview-'+design+'.example.com');await page.locator('#app-form [name=database_mode]').selectOption('none');await page.getByRole('button',{name:'Create application'}).click();await page.locator('[data-action=deploy][data-id="preview-'+design+'"]').click();await page.waitForTimeout(1500);if(await page.locator('.app-card').count()!==4)throw Error('demo create failed');await page.locator('[data-action=logs]').first().click();await page.waitForSelector('#log-dialog[open]');await page.locator('#log-dialog [data-close]').click();
+// Section URLs must survive reloads and browser history, keeping preview parameters.
+await page.goto(base+'/console.html?demo=1&design=terminal');
+await page.locator('[data-tab=servers]').click();await page.waitForURL('**#servers');
+await page.locator('[data-tab=settings]').click();await page.waitForURL('**#integrations');
+await page.reload();await page.waitForFunction(()=>document.querySelector('#crumb').textContent==='Integrations');
+await page.goBack();await page.waitForFunction(()=>document.querySelector('#crumb').textContent==='Servers');
+await page.goForward();await page.waitForFunction(()=>document.querySelector('#crumb').textContent==='Integrations');
+if(!page.url().includes('demo=1&design=terminal'))throw Error('Section navigation lost preview parameters');
+await page.goto(base+'/console.html?demo=1&design=terminal#deployments');await page.waitForFunction(()=>document.querySelector('#crumb').textContent==='Deployments');
+if(await page.locator('[data-tab=deployments]').getAttribute('aria-current')!=='page')throw Error('Active section is not accessible');
+await page.goto(base+'/console.html?demo=1#unknown');await page.waitForFunction(()=>document.querySelector('#crumb').textContent==='Applications');
+for(const design of ['studio','terminal','fleet']){await page.goto(base+'/console.html?demo=1&design='+design);await page.getByRole('link',{name:'Applications',exact:false}).first().click();await page.waitForSelector('.app-card');if(await page.locator('.app-card').count()!==3)throw Error('missing demo apps');await page.screenshot({path:path.join(output,design+'.png'),fullPage:true});await page.getByRole('button',{name:'New application'}).click();await page.locator('#app-form [name=id]').fill('preview-'+design);await page.locator('[name=repository]').fill('acme/preview');await page.locator('#app-form [name=domain]').fill('preview-'+design+'.example.com');await page.locator('#app-form [name=database_mode]').selectOption('none');await page.getByRole('button',{name:'Create application'}).click();await page.locator('[data-action=deploy][data-id="preview-'+design+'"]').click();await page.waitForTimeout(1500);if(await page.locator('.app-card').count()!==4)throw Error('demo create failed');await page.locator('[data-action=logs]').first().click();await page.waitForSelector('#log-dialog[open]');await page.locator('#log-dialog [data-close]').click();
 await page.locator('[data-action=settings][data-id="preview-'+design+'"]').click();
 await page.locator('#settings-form [name=branch]').fill('release');
 await page.locator('#settings-form summary').click();await page.locator('#settings-form [name=env_changes]').fill('{"FEATURE":"enabled"}');
@@ -16,7 +27,7 @@ await page.locator('[data-action=disable-webhook]').first().click();
 page.once('dialog',dialog=>dialog.accept('preview-'+design));
 await page.locator('[data-action=remove][data-id="preview-'+design+'"]').click();
 if(await page.locator('.app-card').count()!==3)throw Error('demo removal failed');
-await page.getByRole('button',{name:'Servers',exact:false}).first().click();
+await page.getByRole('link',{name:'Servers',exact:false}).first().click();
 await page.getByRole('button',{name:'Connect server',exact:false}).click();
 await page.locator('#server-form [name=id]').fill('preview-host');
 await page.locator('#server-form [name=name]').fill('Preview host');
@@ -34,7 +45,7 @@ await page.getByRole('heading',{name:'Preview host',exact:true}).waitFor({state:
 await page.setViewportSize({width:390,height:844});await page.goto(base+'/console.html?demo=1&design=terminal');await page.waitForSelector('.app-card');const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);if(overflow)throw Error('mobile horizontal overflow');await page.screenshot({path:path.join(output,'mobile.png'),fullPage:true});
 const config={};for(const line of fs.readFileSync(path.join(root,'.local/dev.env'),'utf8').trim().split('\n')){const m=line.match(/^export ([A-Z_]+)=(.*)$/);if(m)config[m[1]]=m[2].replace(/^'|'$/g,'');}
 await page.route('**/api/control/deployments',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({deployments:[],unavailable_servers:['offline test agent']})}));
-await page.goto(base+'/login.html');if(await page.locator('body').getAttribute('data-design')!=='terminal')throw Error('login branding mismatch');await page.locator('[name=email]').fill(config.CONTROL_USER);await page.locator('[name=password]').fill(config.CONTROL_PASSWORD);await page.getByRole('button',{name:'Open workspace'}).click();await page.waitForURL('**/console.html');await page.waitForTimeout(800);await page.locator('#title').waitFor();await page.getByRole('button',{name:'Servers',exact:false}).first().click();await page.getByText('Local development',{exact:true}).waitFor();if(!(await page.locator('#error').textContent()).includes('offline test agent'))throw Error('partial failure not reported');await page.unroute('**/api/control/deployments');
+await page.goto(base+'/login.html');if(await page.locator('body').getAttribute('data-design')!=='terminal')throw Error('login branding mismatch');await page.locator('[name=email]').fill(config.CONTROL_USER);await page.locator('[name=password]').fill(config.CONTROL_PASSWORD);await page.getByRole('button',{name:'Open workspace'}).click();await page.waitForURL('**/console.html');await page.waitForTimeout(800);await page.locator('#title').waitFor();await page.getByRole('link',{name:'Servers',exact:false}).first().click();await page.getByText('Local development',{exact:true}).waitFor();if(!(await page.locator('#error').textContent()).includes('offline test agent'))throw Error('partial failure not reported');await page.unroute('**/api/control/deployments');
 if(await page.locator('body').getAttribute('data-design')!=='terminal')throw Error('selected brand design is not default');
 if(await page.locator('#design').isVisible())throw Error('design selector still in live UI');
 // Exercise real management through the control panel and local agent; no GitHub build is triggered.
@@ -78,4 +89,4 @@ try {
  if(!response.ok())throw Error('test app cleanup failed');
 }
 await page.goto(base+'/');await page.waitForURL('**/console.html');
-if(errors.length)throw Error(errors.join('\n'));console.log('PASS: three interactive designs, create/deploy/logs/settings, server management, mobile layout, real Lidza login, partial fleet history, live app create/edit/remove, default design and root navigation');await browser.close()})().catch(e=>{console.error(e);process.exit(1)});
+if(errors.length)throw Error(errors.join('\n'));console.log('PASS: three interactive designs, create/deploy/logs/settings, server management, mobile layout, real Lidza login, partial fleet history, live app create/edit/remove, default design, section links, reload/deep links, Back/Forward and root navigation');await browser.close()})().catch(e=>{console.error(e);process.exit(1)});
