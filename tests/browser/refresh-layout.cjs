@@ -1,0 +1,20 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const base=process.env.TEST_WEB_URL||'http://127.0.0.1:8879';
+(async()=>{const browser=await chromium.launch({executablePath:'/usr/bin/chromium',args:['--no-sandbox']});try{
+const page=await browser.newPage({viewport:{width:390,height:844}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+await page.goto(base+'/console.html?demo=1#applications');await page.locator('.app-card').first().waitFor();
+assert.equal(await page.locator('.app-card').first().locator('.card-actions>button').count(),3);
+assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth),0);
+await page.locator('.app-more summary').first().click();await page.evaluate(()=>window.scrollTo(0,500));
+await page.evaluate(()=>refresh({background:true}));assert.equal(await page.locator('.app-more').first().evaluate(e=>e.open),true);
+await page.evaluate(()=>{window.stableNode=document.querySelector('.app-card');window.savedY=scrollY});
+await page.evaluate(()=>refresh({background:true}));assert(await page.evaluate(()=>stableNode===document.querySelector('.app-card')),'Unchanged poll replaces DOM');assert(await page.evaluate(()=>savedY===scrollY),'Page scroll reset');
+await page.goto(base+'/console.html?demo=1#deployments');await page.locator('[data-history]').first().waitFor();
+assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth),0);
+assert(await page.locator('[data-history]').first().isVisible(),'Mobile logs inaccessible');
+await page.screenshot({path:'.local/security-layout/deployments-mobile.png',fullPage:true});
+await page.setViewportSize({width:900,height:844});await page.evaluate(()=>{const e=document.querySelector('#content>.table-wrap');e.scrollLeft=150;window.tableScroll=e.scrollLeft;deployments[0].commit_message='changed';render()});
+assert(await page.evaluate(()=>document.querySelector('#content>.table-wrap').scrollLeft===tableScroll),'Changed data resets table scroll');
+assert.equal(errors.length,0,errors.join('\n'));console.log('PASS: compact actions, mobile release cards, no page overflow, unchanged poll retains DOM, changed refresh retains scroll and open menus');
+}finally{await browser.close()}})().catch(e=>{console.error(e);process.exit(1)});
