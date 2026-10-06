@@ -20,7 +20,16 @@ type Docker struct {
 	Client   *http.Client
 	checkout func(context.Context, App, string, string) error
 }
-type limitedBuffer struct{ bytes.Buffer }
+type limitedBuffer struct {
+	bytes.Buffer
+	diagnostic func(string)
+}
+
+// Hide bytes.Buffer's promoted ReadFrom so io.Copy uses the bounded,
+// diagnostic Write path for every chunk instead of buffering until EOF.
+func (b *limitedBuffer) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(struct{ io.Writer }{b}, r)
+}
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
@@ -30,6 +39,9 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 			p = p[:remaining]
 		}
 		_, _ = b.Buffer.Write(p)
+		if b.diagnostic != nil {
+			b.diagnostic(b.String())
+		}
 	}
 	return n, nil
 }
@@ -46,10 +58,17 @@ func command(ctx context.Context, dir string, extra []string, name string, args 
 	c.Env = append(c.Env, extra...)
 	c.WaitDelay = 5 * time.Second
 	var b limitedBuffer
+	if start, ok := ctx.Value(diagnosticStreamKey{}).(func(string) func(string)); ok {
+		b.diagnostic = start(name)
+	}
 	c.Stdout = &b
 	c.Stderr = &b
 	err := c.Run()
-	commandDiagnostic(ctx, name, b.String())
+	if b.diagnostic != nil {
+		b.diagnostic(b.String())
+	} else {
+		commandDiagnostic(ctx, name, b.String())
+	}
 	if err != nil {
 		return "", fmt.Errorf("%s failed: %w", name, err)
 	}

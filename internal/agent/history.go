@@ -10,6 +10,7 @@ import (
 )
 
 type diagnosticKey struct{}
+type diagnosticStreamKey struct{}
 
 func commandDiagnostic(ctx context.Context, name, output string) {
 	if log, ok := ctx.Value(diagnosticKey{}).(func(string)); ok {
@@ -18,7 +19,7 @@ func commandDiagnostic(ctx context.Context, name, output string) {
 }
 func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Context {
 	secrets := append(outputSecrets(j.app.Env), j.token)
-	return context.WithValue(ctx, diagnosticKey{}, func(line string) {
+	ctx = context.WithValue(ctx, diagnosticKey{}, func(line string) {
 		line = scrubOutput(line, secrets)
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -34,6 +35,46 @@ func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Cont
 			}
 		}
 	})
+	return context.WithValue(ctx, diagnosticStreamKey{}, func(name string) func(string) {
+		m.mu.Lock()
+		base := ""
+		for _, d := range m.data.Deployments {
+			if d.ID == j.deployment {
+				base = d.Log
+				break
+			}
+		}
+		m.mu.Unlock()
+		return func(output string) {
+			line := base + scrubLiveOutput(name+"\n"+output, secrets) + "\n"
+			if len(line) > 65536 {
+				line = line[:65536]
+			}
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			for i := range m.data.Deployments {
+				if m.data.Deployments[i].ID == j.deployment {
+					m.data.Deployments[i].Log = line
+					break
+				}
+			}
+		}
+	})
+}
+
+// Hide incomplete secrets at a chunk boundary as well as complete values.
+// Snapshots are re-redacted from the bounded raw command buffer each time.
+func scrubLiveOutput(text string, secrets []string) string {
+	for _, secret := range secrets {
+		limit := min(len(secret)-1, len(text))
+		for n := limit; n > 0; n-- {
+			if strings.HasSuffix(text, secret[:n]) {
+				text = text[:len(text)-n] + "[redacted]"
+				break
+			}
+		}
+	}
+	return scrubOutput(text, secrets)
 }
 func changeKeys(old App, a App) []string {
 	keys := []string{}

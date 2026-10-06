@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"github.com/agim/lidza-deploy/internal/platform/state"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMaintenanceIsolationAndEscaping(t *testing.T) {
@@ -138,5 +140,60 @@ func TestUpgradeBlocksNewOperationsUntilHealthy(t *testing.T) {
 	}
 	if m.upgradePending() {
 		t.Fatal("healthy upgrade left operation gate closed")
+	}
+}
+
+func TestDeploymentOutputAppearsBeforeCommandFinishes(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	a := testApp("one")
+	m.mu.Lock()
+	m.data.Deployments = []Deployment{{ID: "streaming"}}
+	m.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = m.deploymentDiagnostics(ctx, job{deployment: "streaming", app: a, token: "private-token"})
+	marker := filepath.Join(t.TempDir(), "continue")
+	done := make(chan error, 1)
+	go func() {
+		_, err := command(ctx, "", nil, "sh", "-c", `printf 'phase-one\nprivate-'; while [ ! -f "$1" ]; do sleep 0.01; done; printf 'token\nphase-two\n'`, "fixture", marker)
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		log := m.Deployments()[0].Log
+		if strings.Contains(log, "phase-one") {
+			if strings.Contains(log, "private-") {
+				t.Fatal("partial secret leaked before command completion")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("output was buffered until command completion")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatal("command completed before live output was checked", err)
+	default:
+	}
+	if err := os.WriteFile(marker, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	log := m.Deployments()[0].Log
+	if !strings.Contains(log, "phase-two") || strings.Contains(log, "private-token") || !strings.Contains(log, "[redacted]") {
+		t.Fatal("final output missing or secret exposed")
+	}
+}
+
+func TestCommandCopyKeepsOutputBoundedAndPublishesChunks(t *testing.T) {
+	writes := 0
+	b := limitedBuffer{diagnostic: func(string) { writes++ }}
+	n, err := io.Copy(&b, io.LimitReader(strings.NewReader(strings.Repeat("x", 70000)), 70000))
+	if err != nil || n != 70000 || b.Len() != 65536 || writes < 2 {
+		t.Fatalf("copy bypassed bounded live writes: bytes=%d retained=%d writes=%d err=%v", n, b.Len(), writes, err)
 	}
 }
