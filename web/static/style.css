@@ -175,3 +175,11 @@ body[data-design=walnut]{--bg:#2C231F;--surface:#3B2F29;--sidebar:#3B2F29;--soft
 body[data-design=walnut] .pill.failed,body[data-design=walnut] .error{background:#4b2d29;color:#f0b7ac}
 body[data-design=walnut] pre{background:var(--bg);color:var(--ink)}
 .walnut-mini{background:#2C231F;color:#D8D8D8}.walnut-mini i{background:#3B2F29}.walnut-mini em{background:#4A3B33}
+
+/* Notifications remain readable until explicitly dismissed. */
+#error,#toast,#setup-error{display:flex;align-items:flex-start;gap:16px;justify-content:space-between}
+#error[hidden],#toast[hidden],#setup-error[hidden]{display:none}
+#error>span,#toast>span,#setup-error>span{min-width:0;overflow-wrap:anywhere}
+.notice-dismiss{flex-shrink:0;min-height:44px;padding:8px 12px;background:transparent;border-color:currentColor;color:inherit}
+#toast{max-width:calc(100vw - 32px)}
+@media(max-width:480px){#error,#toast,#setup-error{flex-direction:column;gap:8px}}

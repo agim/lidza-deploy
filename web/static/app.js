@@ -23,8 +23,9 @@ function deliveryTable(rows){return '<div class="table-wrap"><table><thead><tr><
 
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function theme(){document.body.dataset.design=design;$('#design').value=design;$('#design').hidden=!demo;$('#design-link').hidden=!demo}
-function notice(s){$('#toast').textContent=s;$('#toast').hidden=false;clearTimeout(notice.timer);notice.timer=setTimeout(()=>$('#toast').hidden=true,5000)}
-function fail(e){$('#error').textContent=e.message||String(e);$('#error').hidden=false}
+function showNotice(target,message){target.replaceChildren();const text=document.createElement('span');text.textContent=message;const close=document.createElement('button');close.type='button';close.className='notice-dismiss';close.textContent='Dismiss';close.setAttribute('aria-label','Dismiss notification');close.onclick=()=>{target.hidden=true};target.append(text,close);target.hidden=false}
+function notice(s){showNotice($('#toast'),s)}
+function fail(e,source='action'){const target=$('#error');if(source==='refresh'&&!target.hidden&&target.dataset.source==='action')return;target.dataset.source=source;showNotice(target,e.message||String(e))}
 async function api(path,method='GET',body){const res=await fetch('/api/'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(res.status===401){location.href='/login.html?next='+encodeURIComponent(location.pathname+location.search+location.hash);throw Error('Please sign in.')}let data;try{data=await res.json()}catch{data={}}if(!res.ok)throw Error(data.error?.message||data.error||'Request failed ('+res.status+')');return data}
 function initDemo(){servers=[{id:'eu-1',name:'Frankfurt · production',url:'https://agent-eu.example.com'},{id:'us-1',name:'Virginia · staging',url:'https://agent-us.example.com'}];apps=[{id:'customer-portal',repository:'acme/customer-portal',domain:'portal.example.com',branch:'main',server_id:'eu-1',auto_deploy:true},{id:'content-studio',repository:'acme/content-studio',domain:'studio.example.com',branch:'main',server_id:'eu-1',auto_deploy:true},{id:'documentation',repository:'acme/docs',domain:'docs.example.com',branch:'main',server_id:'us-1',auto_deploy:false}];deployments=apps.map((a,i)=>({id:'demo-'+i,app_id:a.id,status:'live',commit:['a6b92fe','8f129bc','319fa27'][i],created:new Date(Date.now()-(i+1)*3600000).toISOString()}));apps.forEach(a=>a.current={commit:latest(a.id).commit});status={github_connected:true,github_configured:true};$('#demo-banner').hidden=false;$('#mode').textContent='Interactive preview'}
 async function refresh({background=false}={}) {
@@ -38,9 +39,9 @@ async function refresh({background=false}={}) {
   [apps,servers,deployments,status,deliveries]=results.map((result,i)=>result.status==='fulfilled'?result.value:current[i]);
   if(results[2].status==='fulfilled'){unavailableServers=deployments.unavailable_servers||[];deployments=deployments.deployments||[];}
   const failures=results.filter(result=>result.status==='rejected');refreshFailures=failures.length+unavailableServers.length;
-  if(failures.length)fail(Error('Some data could not be refreshed: '+failures.map(result=>result.reason.message).join('; ')));
-  else if(unavailableServers.length)fail(Error('Deployment history unavailable for: '+unavailableServers.join(', ')+'. Other servers remain available.'));
-  else $('#error').hidden=true;
+  if(failures.length)fail(Error('Some data could not be refreshed: '+failures.map(result=>result.reason.message).join('; ')),'refresh');
+  else if(unavailableServers.length)fail(Error('Deployment history unavailable for: '+unavailableServers.join(', ')+'. Other servers remain available.'),'refresh');
+  else if($('#error').dataset.source==='refresh')$('#error').hidden=true;
  }
  if(!background||!dirtyForms.size){render();if(!refreshFailures)lastRefresh=Date.now()}updateConnectionBadge();
  }finally{refreshing=false}
