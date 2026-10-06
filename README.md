@@ -86,7 +86,7 @@ Paste it into **Unlock setup**. Keep this key private. The wizard configures:
 1. Your operator email and password.
 2. Managed PostgreSQL on this host, or an existing PostgreSQL database.
 3. The GUI address supplied to the installer, prefilled and locked. Setup verifies public HTTPS; DNS and Caddy routing are already configured before you reach the wizard.
-4. GitHub connection guidance. After login, choose **Connect GitHub** in Integrations, approve the prefilled GitHub App, then **Choose repositories**. No OAuth client ID, secret or private key needs to be copied.
+4. GitHub connection guidance. After login, choose **Connect GitHub** in Integrations, approve the prefilled GitHub App, then **Choose repositories**. No OAuth client ID, secret or private key needs to be copied. This requires a public HTTPS control-panel address: localhost installations cannot receive GitHub callbacks or automatic deployment webhooks.
 5. Agent pairing. The local agent is already paired; remote agents can be imported using their private connection file.
 
 Choose **Validate and finish setup**, then sign in at your public control-panel URL. Setup checks the database, agent and public HTTPS before completion; failed attempts can be retried. Settings are encrypted, and completed setup stays closed after restart. No database or GitHub environment-file editing is required for this installation path.
