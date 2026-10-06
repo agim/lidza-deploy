@@ -35,7 +35,7 @@ Managed setup recovers a missing or rejected database password through the label
 
 Action errors and status notices remain visible until dismissed. Successful background polling clears only recovered refresh errors, preserving action errors. Setup retains the previous error while a retry is in progress and focuses/scrolls to new errors. Each notice has a keyboard-accessible Dismiss button, and message text is inserted as text rather than HTML. `tests/browser/notifications.cjs` covers polling, expiry, retry retention, focus and dismissal against the actual UI with fixture API responses.
 
-GitHub Apps are the exclusive authorization method. Legacy OAuth reconnect/configuration routes and saved-account token fallback are removed. Public deploys remain available without authorization. API integration and browser checks cover removed routes, manifest registration, selected repositories, installation tokens and repository attachment.
+GitHub Apps are the primary GUI connection flow. OAuth connectors, configured callback routes and existing saved grants remain supported. Legacy reconnect UI is hidden. Public deploys remain available without authorization. API integration and browser checks cover OAuth configuration/reload, manifest registration, selected repositories, installation tokens and repository attachment.
 
 ## Live deployment build output
 

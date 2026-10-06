@@ -206,7 +206,7 @@ func (c *Control) githubAppRoute(w http.ResponseWriter, r *http.Request) {
 }
 func (c *Control) tokenFor(ctx context.Context, a Application) (string, error) {
 	if a.GitHubInstallation == 0 {
-		return "", nil
+		return c.token(ctx)
 	}
 	cfg := c.githubApp()
 	if cfg == nil || cfg.Installations[a.GitHubInstallation] == "" {
@@ -216,7 +216,8 @@ func (c *Control) tokenFor(ctx context.Context, a Application) (string, error) {
 }
 func (c *Control) deploymentCredentials(ctx context.Context, a Application, key string) (agent.DeployRequest, error) {
 	if a.GitHubInstallation == 0 {
-		return agent.DeployRequest{Key: key}, nil
+		token, err := c.token(ctx)
+		return agent.DeployRequest{Token: token, Key: key}, err
 	}
 	// Validate access now for feedback, but mint checkout credentials after the
 	// agent's queue/backup wait. The one-use ticket carries no GitHub credentials.

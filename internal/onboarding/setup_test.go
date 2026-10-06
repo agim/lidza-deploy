@@ -171,16 +171,27 @@ func TestFirstRunBootAndRestart(t *testing.T) {
 	if login.Code != 200 {
 		t.Fatal("initial operator cannot sign in", login.Code, login.Body)
 	}
-	r := httptest.NewRequest("GET", "/api/v1/auth/connect/github/start", nil)
+	// Configure GitHub through the authenticated GUI API and verify live reload.
+	r := httptest.NewRequest("POST", "/api/control/github/config", strings.NewReader(`{"client_id":"fixture-id","client_secret":"fixture-secret"}`))
+	r.Header.Set("Origin", input.PublicURL)
+	r.Header.Set("Content-Type", "application/json")
 	for _, cookie := range login.Result().Cookies() {
 		r.AddCookie(cookie)
 	}
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, r)
-	if w.Code != 404 {
-		t.Fatal("legacy OAuth is exposed", w.Code)
+	if w.Code != 200 {
+		t.Fatal("GitHub GUI config", w.Code, w.Body)
 	}
-
+	r = httptest.NewRequest("GET", "/api/v1/auth/connect/github/start", nil)
+	for _, cookie := range login.Result().Cookies() {
+		r.AddCookie(cookie)
+	}
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != 302 || !strings.Contains(w.Header().Get("Location"), "github.com") {
+		t.Error("connector not reloaded (upstream framework issue)", w.Code)
+	}
 	if err = s.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -194,8 +205,8 @@ func TestFirstRunBootAndRestart(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	restored.ServeHTTP(w, r)
-	if w.Code != 404 {
-		t.Fatal("restart exposed legacy OAuth", w.Code)
+	if w.Code != 302 || !strings.Contains(w.Header().Get("Location"), "github.com") {
+		t.Fatal("GitHub configured before boot did not activate", w.Code)
 	}
 	if w := setupRequest(restored, "GET", "/readyz", "", "", ""); w.Code != 200 {
 		t.Fatal("restarted app not ready", w.Code, w.Body)

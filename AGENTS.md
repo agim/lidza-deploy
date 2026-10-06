@@ -8,3 +8,5 @@
 - The user approved Signal with the exact released Līdza dark brand palette. Use it as the live default; retain alternatives only as previews.
 - Continue authorized implementation and validation autonomously; leave nonblocking questions until the end.
 - Use existing isolated cloud checkouts; do not create Git worktrees unless asked.
+
+- Never disable OAuth. Preserve configured OAuth connectors and existing grants. The guided GitHub App registration is the primary GUI flow; do not expose legacy reconnect UI on new installations.

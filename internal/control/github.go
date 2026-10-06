@@ -2,10 +2,14 @@ package control
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"github.com/agim/lidza-deploy/internal/agent"
 	"github.com/agim/lidza/packs/jobs"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -15,7 +19,71 @@ func (c *Control) hook(w http.ResponseWriter, r *http.Request) {
 		c.enableGitHubAppDeploy(w, r, a)
 		return
 	}
-	agent.Fail(w, 409, errors.New("connect this repository through the GitHub App before enabling auto-deploy"))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	a, ok := c.data.Apps[r.PathValue("id")]
+	if !ok || a.Retiring {
+		http.NotFound(w, r)
+		return
+	}
+	token, tokenErr := c.token(r.Context())
+	if tokenErr != nil {
+		agent.Fail(w, 409, tokenErr)
+		return
+	}
+	if token == "" || c.cfg.GitHub == nil {
+		agent.Fail(w, 409, errors.New("connect GitHub first"))
+		return
+	}
+	if !strings.HasPrefix(c.cfg.PublicURL, "https://") {
+		agent.Fail(w, 409, errors.New("webhooks require a public HTTPS control-panel URL"))
+		return
+	}
+	// Persist the secret before making the hook reachable. A retry uses it again.
+	if a.Secret == "" {
+		a.Secret = random()
+		c.data.Apps[a.ID] = a
+		if err := c.save(); err != nil {
+			agent.Fail(w, 500, err)
+			return
+		}
+	}
+	id, err := c.cfg.GitHub.Hook(r.Context(), token, a.Repository, strings.TrimSuffix(c.cfg.PublicURL, "/")+"/hooks/github/"+a.ID, a.Secret, a.HookID)
+	if err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	a.HookID = id
+	a.AutoDeploy = true
+	c.data.Apps[a.ID] = a
+	if err = c.save(); err != nil {
+		agent.Fail(w, 500, err)
+		return
+	}
+	a.Secret = ""
+	a.Previews.Env = nil
+	agent.JSON(w, 200, a)
+}
+func (c *Control) webhook(w http.ResponseWriter, r *http.Request) {
+	a, ok := c.app(r.PathValue("id"))
+	if !ok || a.Retiring || a.Secret == "" || a.GitHubInstallation > 0 {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	signature := r.Header.Get("X-Hub-Signature-256")
+	raw, err := hex.DecodeString(strings.TrimPrefix(signature, "sha256="))
+	mac := hmac.New(sha256.New, []byte(a.Secret))
+	_, _ = mac.Write(body)
+	if err != nil || !strings.HasPrefix(signature, "sha256=") || !hmac.Equal(raw, mac.Sum(nil)) {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	c.enqueueGitHubEvent(w, r, a, body)
 }
 func (c *Control) enqueueGitHubEvent(w http.ResponseWriter, r *http.Request, a Application, body []byte) {
 	event := r.Header.Get("X-GitHub-Event")

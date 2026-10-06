@@ -2,12 +2,16 @@ package control
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/agim/lidza"
 	"github.com/agim/lidza/packs/audit"
 	"github.com/agim/lidza/packs/auth"
 	"github.com/agim/lidza/packs/db"
 	"github.com/agim/lidza/packs/jobs"
+	"github.com/agim/lidza/pkg/credentials"
 	"github.com/agim/lidza/pkg/router"
 	"io"
 	"net/http"
@@ -30,6 +34,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	t.Setenv("AUTH_CONNECT", "")
 	t.Setenv("APP_URL", "http://127.0.0.1:3000")
 	var agentCalls int
+	var receivedToken string
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		agentCalls++
 		if r.Header.Get("Authorization") != "Bearer "+strings.Repeat("a", 32) {
@@ -43,6 +48,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Error(err)
 			}
+			receivedToken = request.Token
 			w.WriteHeader(202)
 			io.WriteString(w, `{"id":"job","status":"queued"}`)
 		} else if strings.HasSuffix(r.URL.Path, "/errors") {
@@ -52,14 +58,14 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 		}
 	}))
 	defer remote.Close()
-	cfg := Config{PublicURL: "http://127.0.0.1:3000", User: "operator@example.com", Password: "a-long-local-password-123", Key: []byte(strings.Repeat("k", 32)), DataDir: t.TempDir(), Servers: []Server{{ID: "one", URL: remote.URL, Token: strings.Repeat("a", 32)}}}
+	cfg := Config{Connectors: []auth.Connector{auth.GitHubConnect("test", "test")}, PublicURL: "http://127.0.0.1:3000", User: "operator@example.com", Password: "a-long-local-password-123", Key: []byte(strings.Repeat("k", 32)), DataDir: t.TempDir(), Servers: []Server{{ID: "one", URL: remote.URL, Token: strings.Repeat("a", 32)}}}
 	c, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	handler := c.Handler(http.NotFoundHandler())
 	app := lidza.App{Name: "test", Packs: []lidza.Pack{db.Pack(), auth.Pack(), audit.Pack(), jobs.Pack()}, OnStart: c.Start, Frontend: handler, Routes: func(r *router.Router) {
-		auth.Mount(r, auth.Options{NoRegister: true, Connectors: []auth.Connector{}})
+		auth.Mount(r, auth.Options{NoRegister: true, Connectors: []auth.Connector{auth.GitHubConnect("test", "test")}})
 		r.Handle("/api/control/", handler)
 	}}
 	boot, err := lidza.Boot(context.Background(), app)
@@ -117,10 +123,12 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	}
 
 	// Public repositories must deploy even when the GitHub connector is not configured.
+	connectors := c.cfg.Connectors
+	c.cfg.Connectors = nil
 	if w := call("POST", "/api/control/apps/portal/deploy", "{}", cookies, cfg.PublicURL); w.Code != 202 {
-		t.Fatal("public deploy required GitHub", w.Code)
+		t.Fatal("public deploy required OAuth", w.Code, w.Body.String())
 	}
-
+	c.cfg.Connectors = connectors
 	// An actual second framework user cannot access the deployment fleet.
 	ctx := lidza.WithServices(context.Background(), boot.Services)
 	other, err := auth.From(ctx).CreateUser(ctx, "other-"+random()+"@example.com", "Other", "another-long-password-123")
@@ -260,12 +268,93 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	if w := call("GET", "/api/control/audit?cursor="+auditPage.Next, "", cookies, ""); w.Code != 200 {
 		t.Fatal("audit cursor failed", w.Code)
 	}
-	for _, endpoint := range []struct{ method, path string }{{"GET", "/api/v1/auth/connect/github/start"}, {"POST", "/api/control/github/config"}, {"POST", "/hooks/github/portal"}} {
-		if w := call(endpoint.method, endpoint.path, "{}", cookies, cfg.PublicURL); w.Code != 404 {
-			t.Fatal("legacy OAuth route remains", endpoint.path, w.Code)
-		}
+	// Signed matching push dispatches; wrong branch and forged signatures do not.
+	c.mu.Lock()
+	a := c.data.Apps["portal"]
+	a.AutoDeploy = true
+	a.Secret = "webhook-secret"
+	c.data.Apps[a.ID] = a
+	c.mu.Unlock()
+	push := `{"ref":"refs/heads/main","repository":{"full_name":"acme/portal"}}`
+	deliveryID := random()
+	webhook := func(body, signature string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/hooks/github/portal", strings.NewReader(body))
+		r.Header.Set("X-Hub-Signature-256", signature)
+		r.Header.Set("X-GitHub-Event", "push")
+		r.Header.Set("X-GitHub-Delivery", deliveryID)
+		w := httptest.NewRecorder()
+		boot.Handler.ServeHTTP(w, r)
+		return w
+	}
+	sign := func(body string) string {
+		m := hmac.New(sha256.New, []byte(a.Secret))
+		m.Write([]byte(body))
+		return "sha256=" + hex.EncodeToString(m.Sum(nil))
+	}
+	count := agentCalls
+	if w := webhook(push, "sha256=00"); w.Code != 401 {
+		t.Fatal(w.Code)
+	}
+	wrong := strings.Replace(push, "main", "other", 1)
+	if w := webhook(wrong, sign(wrong)); w.Code != 204 {
+		t.Fatal(w.Code)
+	}
+	if agentCalls != count {
+		t.Fatal("invalid webhook dispatched")
+	}
+	if w := webhook(push, sign(push)); w.Code != 202 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	// Retain a grant using the framework's encrypted storage format. The controller
+	// retrieves it through auth.Connection; only the agent receives its token.
+	key, err := credentials.Key(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := credentials.Encrypt(key, []byte("private-fixture-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.From(ctx).Exec(ctx, `INSERT INTO auth_connection(id,owner,provider,subject,access_sealed) VALUES($1,$2,'github','fixture',$3) ON CONFLICT(owner,provider) DO UPDATE SET access_sealed=EXCLUDED.access_sealed`, random(), c.operatorID, sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.From(ctx).Exec(ctx, `DELETE FROM auth_connection WHERE owner=$1`, c.operatorID)
+	// The verified webhook persists an application-only job; dispatch uses the framework connection.
+	rows, err := jobs.From(ctx).Recent(ctx, 10)
+	if err != nil || len(rows) == 0 {
+		t.Fatal("webhook not persisted", err)
+	}
+	if err := c.dispatchPush(ctx, rows[0].Payload); err != nil {
+		t.Fatal(err)
+	}
+	if receivedToken != "private-fixture-token" {
+		t.Fatal("framework grant did not reach private deployment")
+	}
+	exercisePreviews(t, c, ctx)
+	if w := call("DELETE", "/api/control/apps/portal/webhook", "", cookies, cfg.PublicURL); w.Code != 200 {
+		t.Fatal("disable autodeploy", w.Code, w.Body)
+	}
+	count = agentCalls
+	if w := webhook(push, sign(push)); w.Code != 204 {
+		t.Fatal("disabled webhook queued", w.Code)
+	}
+	if err := c.dispatchPush(ctx, rows[0].Payload); err != nil {
+		t.Fatal(err)
+	}
+	if agentCalls != count {
+		t.Fatal("disabled job reached agent")
 	}
 
+	// Līdza issues the connector redirect with PKCE and repository scopes.
+	start := call("GET", "/api/v1/auth/connect/github/start?redirect=/console.html", "", cookies, "")
+	if start.Code != 302 {
+		t.Fatal(start.Code, start.Body.String())
+	}
+	location := start.Header().Get("Location")
+	if !strings.Contains(location, "code_challenge=") || !strings.Contains(location, "repo") {
+		t.Fatal("framework connection not configured", location)
+	}
 	b, err := os.ReadFile(c.path())
 	if err != nil {
 		t.Fatal(err)
@@ -285,6 +374,5 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 
 	exerciseConsoleIngest(t, c, ctx, call, cookies)
 	exerciseAppConnection(t, c, ctx, call, cookies)
-	exercisePreviews(t, c, ctx)
 
 }

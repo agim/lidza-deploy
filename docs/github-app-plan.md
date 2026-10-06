@@ -28,7 +28,7 @@ Revocation, installation suspension/deletion and repository removal must fail cl
 
 ## Verification
 
-GitHub Apps are the exclusive authorization method. OAuth credential configuration, reconnect routes, stored-account token fallback and legacy repository webhook routes are removed. Public apps deploy without authorization; connect their repositories to an installation before enabling automatic deployment or private checkout.
+The primary GUI flow uses GitHub Apps. OAuth support is retained: configured connectors, callback routes, existing encrypted grants and OAuth-backed deployments continue to work. New installs do not show legacy reconnect UI. Public apps can deploy without authorization; connect selected repositories through the guided GitHub App flow for private checkout and automatic deployment.
 
 Automated checks cover no-secret registration, owner/state/callback checks, replay, encrypted restart persistence, installation verification, selected-repository listing, delayed checkout credentials, expired/revoked tokens, signatures/delivery deduplication, secret omission, browser registration/install navigation and repository attachment. Complete actual GitHub creation/install/private-clone/push acceptance after fixture tests; mock GitHub tests do not establish live consent or organization behavior.
 

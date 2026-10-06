@@ -26,7 +26,7 @@ func Boot(ctx context.Context) (*lidza.Booted, error) {
 	}
 	h := c.Handler(web.Handler())
 	return lidza.Boot(ctx, lidza.App{Name: "lidza-deploy", CSP: strings.Replace(middleware.DefaultCSP, "form-action 'self'", "form-action 'self' https://github.com", 1), Frontend: h, Packs: []lidza.Pack{db.Pack(), auth.Pack(), audit.Pack(), jobs.Pack(), mail.Pack()}, OnStart: c.Start, Routes: func(r *router.Router) {
-		auth.Mount(r, auth.Options{Connectors: []auth.Connector{}, NoRegister: true, Providers: []auth.Provider{}, AfterSignIn: "/console.html", Title: "Līdza Deploy"})
+		auth.Mount(r, auth.Options{ConnectAuthorize: c.AuthorizeConnect, NoRegister: true, Providers: []auth.Provider{}, AfterSignIn: "/console.html", Title: "Līdza Deploy"})
 		r.Handle("/api/control/", h)
 		r.Handle("/api/agent/", h)
 	}})

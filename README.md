@@ -134,7 +134,7 @@ sudo journalctl -u lidza-control -n 50 --no-pager
 
 Back up PostgreSQL, `/var/lib/lidza-control`, `/var/lib/lidza-agent` including their encryption keys, and Caddy's certificate storage. Staged installer checks and browser/database/deployment tests pass; live installation on a fresh supported VM and real GitHub/public ACME remain external acceptance checks.
 
-GitHub authorization uses the [guided GitHub App flow](docs/github-app-plan.md) after local login. Installation tokens renew automatically for private checkout and signed webhooks trigger auto-deploy. Legacy OAuth connectors and credential configuration are not supported.
+GitHub authorization uses the [guided GitHub App flow](docs/github-app-plan.md) after local login. Installation tokens renew automatically for private checkout and signed webhooks trigger auto-deploy. Configured OAuth connectors and existing grants remain supported; the GUI does not present legacy reconnect links.
 
 See [Application errors](docs/application-errors.md) for automatic server error collection. Paired agents forward console errors to Deploy without an app database or analytics pack; app analytics remains an optional source for richer/frontend reports.
 

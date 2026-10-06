@@ -41,13 +41,14 @@ type Server struct {
 	Token string `json:"token,omitempty"`
 }
 type Config struct {
-	PublicURL string
-	User      string
-	Password  string
-	Key       []byte
-	DataDir   string
-	Servers   []Server
-	GitHub    *gh.Client
+	PublicURL  string
+	User       string
+	Password   string
+	Key        []byte
+	DataDir    string
+	Servers    []Server
+	GitHub     *gh.Client
+	Connectors []auth.Connector
 }
 type Application struct {
 	GitHubInstallation int64         `json:"github_installation,omitempty"`
@@ -210,6 +211,16 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	}
 	return q.Schedule("ops.tick", jobs.Every(time.Minute), nil)
 }
+func (c *Control) token(ctx context.Context) (string, error) {
+	conn, err := auth.From(ctx).Connection(ctx, c.operatorID, "github")
+	if errors.Is(err, auth.ErrNotConnected) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return conn.Token(ctx)
+}
 func (c *Control) agentCall(r *http.Request, serverID, method, path string, body, out any) error {
 	var target *Server
 	servers := c.servers()
@@ -309,14 +320,16 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/deploy", c.deploy)
 	handle("POST /api/control/apps/{id}/rollback", c.rollback)
 	handle("POST /api/control/apps/{id}/webhook", c.hook)
-	handle("POST /api/control/apps/{id}/github-app", c.attachGitHubApp)
+	handle("POST /api/control/apps/{id}/github-app", c.migrateGitHubApp)
 	handle("GET /api/control/apps/{id}/logs", c.logs)
 	handle("GET /api/control/apps/{id}/errors", c.appErrors)
 	handle("GET /api/control/apps/{id}/analytics-errors", c.analyticsErrors)
 	handle("GET /api/control/deployments", c.deployments)
 	handle("GET /api/control/deliveries", c.deliveries)
 	handle("GET /api/control/github/repos", c.repos)
+	handle("POST /api/control/github/config", c.configureGitHub)
 
+	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
 	mux.HandleFunc("POST /hooks/github-app", c.githubAppWebhook)
 	mux.HandleFunc("POST /api/agent/checkout-token", c.checkoutToken)
 	mux.HandleFunc("POST /api/agent/errors", c.ingestErrors)
@@ -325,6 +338,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	return mux
 }
 func (c *Control) status(w http.ResponseWriter, r *http.Request) {
+	token, err := c.token(r.Context())
 	app := c.githubApp()
 	appConfigured := app != nil
 	appConnected := appConfigured && len(app.Installations) > 0
@@ -333,7 +347,7 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 			return app.App.Slug
 		}
 		return ""
-	}(), "github_connected": appConnected, "github_configured": appConfigured, "server_count": len(c.servers()), "roles": heldRoles(r.Context()), "github_owner": auth.CurrentUser(r.Context()).ID == c.operatorID})
+	}(), "github_connected": appConnected || (err == nil && token != ""), "github_configured": appConfigured || githubConfigured(), "server_count": len(c.servers()), "roles": heldRoles(r.Context()), "github_owner": auth.CurrentUser(r.Context()).ID == c.operatorID})
 }
 func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	type view struct {
@@ -379,6 +393,12 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	agent.JSON(w, 200, out)
+}
+func (c *Control) AuthorizeConnect(ctx context.Context, u *auth.User, provider string) error {
+	if u.ID != c.operatorID {
+		return errors.New("operator access required")
+	}
+	return nil
 }
 func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	var input struct {
@@ -571,7 +591,29 @@ func (c *Control) repos(w http.ResponseWriter, r *http.Request) {
 		agent.JSON(w, 200, all)
 		return
 	}
-	agent.Fail(w, 409, errors.New("connect GitHub and choose repositories first"))
+	token, tokenErr := c.token(r.Context())
+	if tokenErr != nil {
+		agent.Fail(w, 409, tokenErr)
+		return
+	}
+	if token == "" || c.cfg.GitHub == nil {
+		agent.Fail(w, 409, errors.New("connect GitHub first"))
+		return
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	if page > 1000 {
+		http.Error(w, "invalid page", 400)
+		return
+	}
+	repos, err := c.cfg.GitHub.Repositories(r.Context(), token, page)
+	if err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	agent.JSON(w, 200, repos)
 }
 func ConfigFromEnv() (Config, error) {
 	key, err := credentials.Key(".")
@@ -590,6 +632,11 @@ func ConfigFromEnv() (Config, error) {
 		if err := state.Load(file, &cfg.Servers); err != nil {
 			return cfg, err
 		}
+	}
+	var warnings []string
+	cfg.Connectors, warnings = auth.ConnectorsFromEnv(values)
+	if len(warnings) > 0 {
+		return cfg, fmt.Errorf("GitHub connector configuration: %s", strings.Join(warnings, "; "))
 	}
 	cfg.GitHub = &gh.Client{}
 	return cfg, nil

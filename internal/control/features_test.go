@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 func exercisePreviews(t *testing.T, c *Control, ctx context.Context) {
@@ -58,18 +57,6 @@ func exercisePreviews(t *testing.T, c *Control, ctx context.Context) {
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
-		if r.URL.Path == "/repos/acme/portal/installation" {
-			json.NewEncoder(w).Encode(map[string]any{"id": 7, "app_id": 42})
-			return
-		}
-		if r.URL.Path == "/app/installations/7" {
-			json.NewEncoder(w).Encode(map[string]any{"id": 7, "app_id": 42, "permissions": map[string]string{"contents": "read", "pull_requests": "read"}})
-			return
-		}
-		if r.URL.Path == "/app/installations/7/access_tokens" {
-			json.NewEncoder(w).Encode(map[string]any{"token": "preview-installation-token", "expires_at": time.Now().Add(time.Hour)})
-			return
-		}
 		if r.URL.Path != "/repos/acme/portal/pulls/7" {
 			t.Error(r.URL.Path)
 		}

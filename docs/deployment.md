@@ -73,7 +73,7 @@ For explicit `--fqdn localhost`, the GUI has no public Caddy route. Use `http://
 
 Settings are encrypted through Līdza credentials in the control data directory. Back up that directory (including its master key), PostgreSQL, and agent state securely. Completion is durable before the setup key is removed; restart boots the configured application and never reopens setup. Failed setup can be retried and reuses its managed database.
 
-GitHub App registration happens after local login through Integrations. No OAuth connector or copied client credentials are used. Live GitHub approval/private checkout and public ACME still require acceptance checks with your host.
+GitHub App registration happens after local login through Integrations. The primary GUI flow requires no copied client credentials; configured OAuth connectors remain supported. Live GitHub approval/private checkout and public ACME still require acceptance checks with your host.
 
 The existing environment-configured development path remains supported by `scripts/dev-prepare.sh` and `scripts/dev-web.sh`. Process environment overrides take precedence; GUI configuration rejects overridden GitHub keys rather than silently ignoring edits.
 
@@ -93,7 +93,7 @@ The control panel verifies installations and stores the App private key in frame
 
 App-owned signed webhooks use `/hooks/github-app`; Auto-deploy chooses which app/branch receives them without creating per-repository hooks. Public repositories can still deploy without connecting GitHub. Use Load repositories when creating an app to choose authorized private repositories.
 
-GitHub Apps are the only GitHub authorization method. **Connect repository** verifies access and attaches an existing public app and its previews to an authorized installation. Legacy OAuth configuration, reconnect routes and per-repository OAuth webhook routes are not served. See [Guided GitHub connection](github-app-plan.md) for permissions and scope limits.
+GitHub App registration is the primary GUI flow. **Connect repository** verifies access and attaches an existing app and its previews to an authorized installation. Configured OAuth connectors, existing grants and their callbacks remain supported; the GUI does not expose legacy reconnect links on new installs. See [Guided GitHub connection](github-app-plan.md) for permissions and scope limits.
 
 Only a valid HMAC SHA-256 signature, matching repository, and matching branch can enqueue deployment. Deleted branches and other event types are ignored. Persistent Līdza jobs retry dispatch up to 12 times with backoff when the agent is unavailable. The integration page can disconnect GitHub; disable or delete the repository webhook in GitHub when retiring an app. The agent deduplicates accepted deliveries within its retained 500-deployment history.
 
