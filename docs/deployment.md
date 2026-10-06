@@ -141,4 +141,4 @@ Application database provisioning, local/S3 backup policies and SMTP alert setup
 
 ### Go download failures during source installation
 
-The root source installer downloads pinned Go 1.27.1 through `go.dev`, then tries the direct official `dl.google.com/go` URL if that request fails. Both paths use the same pinned SHA-256 verification. If both fail, installation stops before package/service changes and prints the direct URL to check from the host. A 404 at this stage concerns the Go archive, not the GUI hostname or DNS.
+The default root installer uses verified released binaries and does not download Go. Only explicit `--source` or `--version REF` installations build the source. The source installer downloads pinned Go 1.27.1 through `go.dev`, then tries the direct official `dl.google.com/go` URL if that request fails. Both paths use the same pinned SHA-256 verification. If both fail, installation stops before package/service changes and prints the direct URL to check from the host. A 404 at this stage concerns the Go archive, not the GUI hostname or DNS.

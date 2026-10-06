@@ -13,6 +13,7 @@ hostname=''
 email=''
 stage=''
 bundle=''
+source_build=0
 check=0
 plan=0
 usage() {
@@ -24,7 +25,8 @@ Usage: sh install.sh --fqdn deploy.example.com|localhost [options]
   --with-control       Install agent + web control panel (default)
   --hostname FQDN      Expose the agent API over HTTPS for a remote control panel
   --email ADDRESS      Caddy certificate contact email
-  --version REF        GitHub branch/tag/commit to build (default: main)
+  --source             Build from source instead of using released binaries
+  --version REF        Build this GitHub branch/tag/commit (implies --source)
   --bundle PATH        Use a local tar.gz bundle and adjacent .sha256 file
   --stage DIRECTORY    Write an inspectable tree; no packages/services changed
   --check              Report host prerequisites without installing
@@ -36,7 +38,8 @@ Public hosting requires a dedicated host; localhost mode leaves ports 80/443 alo
 Installs Git, Docker and services; public mode also installs Caddy.
 First-run settings are entered in the GUI.
 Public DNS must point to this host and ports 80/443 must be reachable.
-Go is reused when suitable or downloaded temporarily with a pinned checksum.
+Default installs verified release binaries; Go is not needed.
+Source builds reuse Go or download it temporarily with a pinned checksum.
 TXT
 }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -44,11 +47,12 @@ while [ "$#" -gt 0 ]; do
  case "$1" in
   --agent-only) with_control=0; shift;;
   --with-control) with_control=1; shift;;
+  --source) source_build=1; shift;;
   --fqdn|--hostname|--email|--version|--bundle|--stage)
    [ "$#" -ge 2 ] || die "$1 requires a value"
    case "$1" in
     --fqdn) fqdn=$2;; --hostname) hostname=$2;; --email) email=$2;;
-    --version) version=$2;version_given=1;; --bundle) bundle=$2;; --stage) stage=$2;;
+    --version) version=$2;version_given=1;source_build=1;; --bundle) bundle=$2;; --stage) stage=$2;;
    esac
    shift 2;;
   --check) check=1;shift;; --plan) plan=1;shift;;
@@ -71,9 +75,9 @@ case "$stage" in '') ;; /*) [ "$stage" != / ] || die 'stage must not be /'; case
 [ "$(uname -s)" = Linux ] || die 'only Linux hosting servers are supported'
 case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) die 'only amd64 and arm64 are supported';; esac
 if [ "$plan" -eq 1 ]; then
- printf '%s\n' "Līdza Deploy ($arch, source $version)" \
+ printf '%s\n' "Līdza Deploy ($arch)" \
   '1. Check the Debian/Ubuntu systemd host.' \
-  '2. Verify a local bundle, or build the source with verified Go.' \
+  '2. Verify released binaries (or an explicit local bundle/source build).' \
   '3. Install Git, Docker Engine and the agent; public mode also installs Caddy.'
  if [ "$with_control" -eq 1 ]; then printf '%s\n' '4. Install and start the control panel, paired with the local agent.' "5. Open the chosen GUI address ($fqdn) and complete browser setup.";fi
  if [ "$fqdn" = localhost ] && [ -z "$hostname" ];then printf '%s\n' 'Local mode: leave Caddy and ports 80/443 untouched; use public agents for app HTTPS.';fi
@@ -127,6 +131,14 @@ verify() {
  actual=$(sha256sum "$file");actual=${actual%% *}
  [ "$actual" = "$expected" ] || die 'checksum verification failed'
 }
+if [ -z "$bundle" ] && [ "$source_build" -eq 0 ]; then
+ printf '%s\n' 'Downloading verified Līdza Deploy release binaries…'
+ asset="lidza-agent-linux-$arch.tar.gz"
+ release_url='https://github.com/agim/lidza-deploy/releases/latest/download'
+ fetch "$release_url/$asset" "$scratch/$asset" || die 'Could not download release binaries. Check GitHub access from this host. Use --source only if you intend to build with Go.'
+ fetch "$release_url/$asset.sha256" "$scratch/$asset.sha256" || die 'Could not download the release checksum; installation stopped before host changes.'
+ bundle="$scratch/$asset"
+fi
 if [ -n "$bundle" ]; then
  [ -f "$bundle" ] && [ -f "$bundle.sha256" ] || die 'bundle and adjacent .sha256 file are required'
  checksum=$(awk 'NR==1 {print $1}' "$bundle.sha256")

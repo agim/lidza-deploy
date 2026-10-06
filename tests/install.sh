@@ -39,7 +39,7 @@ rg -q 'existing unmanaged Caddy' "$scratch/root-public.log"
 if PATH="$scratch/preflight-bin:$PATH" sh "$scratch/preflight-install.sh" --fqdn localhost > "$scratch/root-local-busy.log" 2>&1;then echo 'Root installer accepted occupied GUI port' >&2;exit 1;fi
 rg -q 'port 3000 is already in use' "$scratch/root-local-busy.log"
 ! rg -q 'Downloading|Building' "$scratch/root-public.log" "$scratch/root-local-busy.log"
-sh install.sh --fqdn localhost --stage "$scratch/source-stage" > "$scratch/source.log"
+sh install.sh --source --fqdn localhost --stage "$scratch/source-stage" > "$scratch/source.log"
 [[ -x "$scratch/source-stage/usr/local/bin/lidza-agent" ]]
 [[ -x "$scratch/source-stage/usr/local/bin/lidza-control" ]]
 [[ -f "$scratch/source-stage/var/lib/lidza-control/servers.json" ]]
@@ -60,6 +60,8 @@ while [ "$#" -gt 0 ];do
  case "$1" in -o) output=$2;shift 2;; https://*) url=$1;shift;; *) shift;; esac
 done
 case "$url" in
+ https://github.com/agim/lidza-deploy/releases/latest/download/lidza-agent-linux-*.tar.gz.sha256) cp "$INSTALL_TEST_BUNDLE.sha256" "$output";;
+ https://github.com/agim/lidza-deploy/releases/latest/download/lidza-agent-linux-*.tar.gz) cp "$INSTALL_TEST_BUNDLE" "$output";;
  https://codeload.github.com/agim/lidza-deploy/tar.gz/main) cp "$INSTALL_TEST_SOURCE" "$output";;
  https://go.dev/dl/go1.27.1.linux-*.tar.gz)
   if [ "${INSTALL_TEST_PRIMARY_404:-0}" = 1 ];then exit 22;fi
@@ -72,7 +74,20 @@ esac
 SH
 chmod +x "$scratch/mockbin/curl"
 export INSTALL_TEST_SOURCE="$scratch/source.tar.gz"
-cat install.sh | PATH="$scratch/mockbin:$PATH" sh -s -- --fqdn deploy.example.com --stage "$scratch/download-stage" > "$scratch/download.log"
+export INSTALL_TEST_BUNDLE="$PWD/dist/lidza-agent-linux-amd64.tar.gz"
+# Default curl|sh installation uses a release and never invokes Go.
+cat > "$scratch/mockbin/go" <<'SHNO_GO'
+#!/bin/sh
+exit 99
+SHNO_GO
+chmod +x "$scratch/mockbin/go"
+cat install.sh | PATH="$scratch/mockbin:$PATH" sh -s -- --fqdn localhost --stage "$scratch/release-stage" > "$scratch/release.log"
+[[ -x "$scratch/release-stage/usr/local/bin/lidza-control" ]]
+rg -q 'release binaries' "$scratch/release.log"
+! rg -q 'Downloading.*Go|Building agent' "$scratch/release.log"
+rm "$scratch/mockbin/go"
+
+cat install.sh | PATH="$scratch/mockbin:$PATH" sh -s -- --source --fqdn deploy.example.com --stage "$scratch/download-stage" > "$scratch/download.log"
 [[ -x "$scratch/download-stage/usr/local/bin/lidza-control" ]]
 rg -q '^CONTROL_SETUP_ORIGIN=https://deploy.example.com$' "$scratch/download-stage/etc/lidza-control/control.env"
 rg -q 'deploy.example.com' "$scratch/download-stage/etc/caddy/Caddyfile"
@@ -85,16 +100,16 @@ cat > "$scratch/mockbin/go" <<'SH'
 printf '%s\n' go1.24.0
 SH
 chmod +x "$scratch/mockbin/go"
-if PATH="$scratch/mockbin:$PATH" sh install.sh --fqdn localhost --stage "$scratch/go-bad-stage" > "$scratch/go-bad.log" 2>&1;then echo 'Unverified Go accepted' >&2;exit 1;fi
+if PATH="$scratch/mockbin:$PATH" sh install.sh --source --fqdn localhost --stage "$scratch/go-bad-stage" > "$scratch/go-bad.log" 2>&1;then echo 'Unverified Go accepted' >&2;exit 1;fi
 rg -q 'checksum verification failed' "$scratch/go-bad.log"
 [[ ! -e "$scratch/go-bad-stage" ]]
 
 # A failed redirect retries the direct official origin; both failures are actionable.
-if INSTALL_TEST_GO_ARCHIVE= INSTALL_TEST_PRIMARY_404=1 PATH="$scratch/mockbin:$PATH" sh install.sh --fqdn localhost --stage "$scratch/go-unavailable-stage" > "$scratch/go-unavailable.log" 2>&1;then echo 'Missing Go download accepted' >&2;exit 1;fi
+if INSTALL_TEST_GO_ARCHIVE= INSTALL_TEST_PRIMARY_404=1 PATH="$scratch/mockbin:$PATH" sh install.sh --source --fqdn localhost --stage "$scratch/go-unavailable-stage" > "$scratch/go-unavailable.log" 2>&1;then echo 'Missing Go download accepted' >&2;exit 1;fi
 rg -q 'either official URL' "$scratch/go-unavailable.log"
 [[ ! -e "$scratch/go-unavailable-stage" ]]
 if [ -n "${INSTALL_TEST_GO_ARCHIVE:-}" ];then
- INSTALL_TEST_PRIMARY_404=1 PATH="$scratch/mockbin:$PATH" sh install.sh --fqdn localhost --stage "$scratch/go-fallback-stage" > "$scratch/go-fallback.log" 2>&1
+ INSTALL_TEST_PRIMARY_404=1 PATH="$scratch/mockbin:$PATH" sh install.sh --source --fqdn localhost --stage "$scratch/go-fallback-stage" > "$scratch/go-fallback.log" 2>&1
  rg -q 'direct Google download' "$scratch/go-fallback.log"
  [[ -x "$scratch/go-fallback-stage/usr/local/bin/lidza-control" ]]
 fi
