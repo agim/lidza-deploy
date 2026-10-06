@@ -138,3 +138,7 @@ If the agent is unavailable or Docker cleanup fails, the application remains mar
 The live workspace opens directly at the root and uses the approved Līdza-branded Signal design. If one server is unavailable, deployment history from healthy servers remains visible with an explicit warning naming unavailable servers.
 
 Application database provisioning, local/S3 backup policies and SMTP alert setup are documented in [Databases and backups](databases-backups.md). Līdza v0.1.71 resolves [#27](https://github.com/agim/lidza/issues/27); concurrent mail reload and queued-delivery regressions pass. Upgrade both the control panel and hosting agents to use the database APIs.
+
+### Go download failures during source installation
+
+The root source installer downloads pinned Go 1.27.1 through `go.dev`, then tries the direct official `dl.google.com/go` URL if that request fails. Both paths use the same pinned SHA-256 verification. If both fail, installation stops before package/service changes and prints the direct URL to check from the host. A 404 at this stage concerns the Go archive, not the GUI hostname or DNS.

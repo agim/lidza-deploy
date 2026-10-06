@@ -162,7 +162,10 @@ else
    arm64) go_sum=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec;;
   esac
   printf '%s\n' 'Downloading verified Go 1.27.1 for this build…'
-  fetch "https://go.dev/dl/go1.27.1.linux-$arch.tar.gz" "$scratch/go.tar.gz"
+  if ! fetch "https://go.dev/dl/go1.27.1.linux-$arch.tar.gz" "$scratch/go.tar.gz"; then
+   printf '%s\n' 'Go download failed through go.dev; trying the direct Google download…' >&2
+   fetch "https://dl.google.com/go/go1.27.1.linux-$arch.tar.gz" "$scratch/go.tar.gz" || die "Go 1.27.1 could not be downloaded from either official URL. Check https://dl.google.com/go/go1.27.1.linux-$arch.tar.gz from this host, then retry. No packages or services were changed."
+  fi
   verify "$go_sum" "$scratch/go.tar.gz"
   tar -xzf "$scratch/go.tar.gz" -C "$scratch"
   go_cmd="$scratch/go/bin/go"

@@ -59,7 +59,16 @@ output='';url=''
 while [ "$#" -gt 0 ];do
  case "$1" in -o) output=$2;shift 2;; https://*) url=$1;shift;; *) shift;; esac
 done
-case "$url" in https://codeload.github.com/agim/lidza-deploy/tar.gz/main) cp "$INSTALL_TEST_SOURCE" "$output";; https://go.dev/dl/go1.27.1.linux-*.tar.gz) printf 'invalid Go archive\n' > "$output";; *) exit 1;; esac
+case "$url" in
+ https://codeload.github.com/agim/lidza-deploy/tar.gz/main) cp "$INSTALL_TEST_SOURCE" "$output";;
+ https://go.dev/dl/go1.27.1.linux-*.tar.gz)
+  if [ "${INSTALL_TEST_PRIMARY_404:-0}" = 1 ];then exit 22;fi
+  printf 'invalid Go archive\n' > "$output";;
+ https://dl.google.com/go/go1.27.1.linux-*.tar.gz)
+  [ -n "${INSTALL_TEST_GO_ARCHIVE:-}" ] || exit 22
+  cp "$INSTALL_TEST_GO_ARCHIVE" "$output";;
+ *) exit 1;;
+esac
 SH
 chmod +x "$scratch/mockbin/curl"
 export INSTALL_TEST_SOURCE="$scratch/source.tar.gz"
@@ -80,10 +89,20 @@ if PATH="$scratch/mockbin:$PATH" sh install.sh --fqdn localhost --stage "$scratc
 rg -q 'checksum verification failed' "$scratch/go-bad.log"
 [[ ! -e "$scratch/go-bad-stage" ]]
 
+# A failed redirect retries the direct official origin; both failures are actionable.
+if INSTALL_TEST_GO_ARCHIVE= INSTALL_TEST_PRIMARY_404=1 PATH="$scratch/mockbin:$PATH" sh install.sh --fqdn localhost --stage "$scratch/go-unavailable-stage" > "$scratch/go-unavailable.log" 2>&1;then echo 'Missing Go download accepted' >&2;exit 1;fi
+rg -q 'either official URL' "$scratch/go-unavailable.log"
+[[ ! -e "$scratch/go-unavailable-stage" ]]
+if [ -n "${INSTALL_TEST_GO_ARCHIVE:-}" ];then
+ INSTALL_TEST_PRIMARY_404=1 PATH="$scratch/mockbin:$PATH" sh install.sh --fqdn localhost --stage "$scratch/go-fallback-stage" > "$scratch/go-fallback.log" 2>&1
+ rg -q 'direct Google download' "$scratch/go-fallback.log"
+ [[ -x "$scratch/go-fallback-stage/usr/local/bin/lidza-control" ]]
+fi
+
 cp dist/lidza-agent-linux-amd64.tar.gz "$scratch/bad.tar.gz"
 cp dist/lidza-agent-linux-amd64.tar.gz.sha256 "$scratch/bad.tar.gz.sha256"
 printf 'tampered\n' >> "$scratch/bad.tar.gz"
 if sh install.sh --fqdn localhost --bundle "$scratch/bad.tar.gz" --stage "$scratch/bad-stage" > /dev/null 2>&1;then echo 'Tampered archive accepted' >&2;exit 1;fi
 [[ ! -e "$scratch/bad-stage" ]]
 if sh install.sh --fqdn localhost --version '../bad' --stage "$scratch/bad-stage" >/dev/null 2>&1;then echo 'Invalid source ref accepted' >&2;exit 1;fi
-printf '%s\n' 'PASS: root installer, source build, curl|sh path, control/agent modes, repeated install, archive/Go checksum rejection, and ref validation'
+printf '%s\n' 'PASS: root installer, source build, curl|sh path, control/agent modes, repeated install, official Go download fallback/unavailability, archive/Go checksum rejection, and ref validation'
