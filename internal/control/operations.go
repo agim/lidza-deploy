@@ -81,6 +81,7 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 			firstErr = err
 		}
 	}
+	record(c.securityTick(ctx))
 	for _, result := range c.readFleet(request, "/v1/databases") {
 		record(c.observe(ctx, "server:"+result.Server.ID, "Hosting server "+result.Server.Name+" is unreachable", result.Err != nil, 3))
 		if result.Err != nil {

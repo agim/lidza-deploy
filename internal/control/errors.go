@@ -99,6 +99,24 @@ func (c *Control) ingestErrors(w http.ResponseWriter, r *http.Request) {
 			agent.Fail(w, 400, errors.New("invalid console error record"))
 			return
 		}
+		if e.Security != nil {
+			switch e.Security.Category {
+			case "path-traversal", "secret-file", "execution-probe", "endpoint-discovery":
+			default:
+				agent.Fail(w, 400, errors.New("invalid security category"))
+				return
+			}
+			if e.Security.Status < 100 || e.Security.Status >= 500 {
+				agent.Fail(w, 400, errors.New("invalid probe status"))
+				return
+			}
+			switch e.Security.Outcome {
+			case "rejected", "redirected", "review-response":
+			default:
+				agent.Fail(w, 400, errors.New("invalid probe outcome"))
+				return
+			}
+		}
 		for _, p := range []*string{e.Stack, e.Route, e.Method, e.RequestID} {
 			if p != nil && len(*p) > 16384 {
 				agent.Fail(w, 400, errors.New("console error detail too large"))
@@ -126,7 +144,7 @@ func (c *Control) ingestErrors(w http.ResponseWriter, r *http.Request) {
 		sum := sha256.Sum256([]byte(server + a.ID + a.Generation + e.ID))
 		v := hex.EncodeToString(sum[:16])
 		id := fmt.Sprintf("%s-%s-%s-%s-%s", v[:8], v[8:12], v[12:16], v[16:20], v[20:])
-		extra, _ := json.Marshal(map[string]string{"deploy_server": server, "deploy_app": a.ID, "deploy_generation": a.Generation, "container": e.Container, "release": e.Release, "commit": e.Commit})
+		extra, _ := json.Marshal(map[string]any{"deploy_server": server, "deploy_app": a.ID, "deploy_generation": a.Generation, "container": e.Container, "release": e.Release, "commit": e.Commit, "security": e.Security})
 		if _, err = tx.Exec(r.Context(), `INSERT INTO app_error(id,source,message,stack,route,method,request_id,fingerprint,extra,created_at) VALUES($1,'server',$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(id) DO NOTHING`, id, e.Message, e.Stack, e.Route, e.Method, e.RequestID, e.Fingerprint, extra, e.CreatedAt); err != nil {
 			agent.Fail(w, 503, errors.New("could not persist console errors"))
 			return
@@ -152,7 +170,8 @@ func (c *Control) appErrors(w http.ResponseWriter, r *http.Request) {
 	pairCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	pairErr := c.agentCall(r.WithContext(pairCtx), a.ServerID, "PUT", "/v1/error-reporting", c.reportingConfig(Server{ID: a.ServerID}), nil)
 	cancel()
-	rows, err := db.From(r.Context()).Query(r.Context(), `SELECT id,source,message,stack,route,method,request_id,fingerprint,created_at,extra FROM app_error WHERE extra->>'deploy_server'=$1 AND extra->>'deploy_app'=$2 AND extra->>'deploy_generation'=$3 ORDER BY created_at DESC LIMIT 500`, a.ServerID, a.ID, a.Generation)
+	security := r.URL.Path != "" && strings.HasSuffix(r.URL.Path, "/security")
+	rows, err := db.From(r.Context()).Query(r.Context(), `SELECT id,source,message,stack,route,method,request_id,fingerprint,created_at,extra FROM app_error WHERE extra->>'deploy_server'=$1 AND extra->>'deploy_app'=$2 AND extra->>'deploy_generation'=$3 AND (($4 AND extra->'security' IS NOT NULL AND extra->'security' != 'null'::jsonb) OR (NOT $4 AND (extra->'security' IS NULL OR extra->'security' = 'null'::jsonb))) ORDER BY created_at DESC LIMIT 500`, a.ServerID, a.ID, a.Generation, security)
 	if err != nil {
 		agent.Fail(w, 503, errors.New("console error store unavailable"))
 		return
@@ -168,13 +187,18 @@ func (c *Control) appErrors(w http.ResponseWriter, r *http.Request) {
 			agent.Fail(w, 503, errors.New("could not read console errors"))
 			return
 		}
-		var meta map[string]string
+		var securityMeta struct {
+			Security *agent.Probe `json:"security"`
+		}
+		json.Unmarshal(extra, &securityMeta)
+		e.Security = securityMeta.Security
+		var meta map[string]json.RawMessage
 		json.Unmarshal(extra, &meta)
 		e.AppID = a.ID
 		e.Generation = a.Generation
-		e.Container = meta["container"]
-		e.Release = meta["release"]
-		e.Commit = meta["commit"]
+		e.Container = stringField(meta["container"])
+		e.Release = stringField(meta["release"])
+		e.Commit = stringField(meta["commit"])
 		encoded, _ := json.Marshal(e)
 		size += len(encoded)
 		if size > 2<<20 {
@@ -220,3 +244,5 @@ func (c *Control) analyticsErrors(w http.ResponseWriter, r *http.Request) {
 	}
 	agent.JSON(w, 200, out)
 }
+
+func stringField(raw json.RawMessage) string { var s string; json.Unmarshal(raw, &s); return s }

@@ -324,6 +324,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("GET /api/control/apps/{id}/logs", c.logs)
 	handle("POST /api/control/apps/{id}/owner-claim", c.ownerClaim)
 	handle("GET /api/control/apps/{id}/errors", c.appErrors)
+	handle("GET /api/control/apps/{id}/security", c.appErrors)
 	handle("GET /api/control/apps/{id}/analytics-errors", c.analyticsErrors)
 	handle("GET /api/control/deployments", c.deployments)
 	handle("GET /api/control/deliveries", c.deliveries)

@@ -30,6 +30,7 @@ type ConsoleCursor struct {
 	Seen map[string]int `json:"seen"`
 }
 type ConsoleError struct {
+	Security *Probe `json:"security,omitempty"`
 	analytics.StoredError
 	AppID      string `json:"app_id"`
 	Generation string `json:"generation"`
@@ -235,6 +236,7 @@ func parseConsole(text string, app App, release Release, generation string, curs
 		next.Seen = map[string]int{}
 	}
 	counts := map[string]int{}
+	probeCount := 0
 	lines := strings.Split(text, "\n")
 	slices.SortStableFunc(lines, func(a, b string) int {
 		x, _, _ := strings.Cut(a, " ")
@@ -256,6 +258,18 @@ func parseConsole(text string, app App, release Release, generation string, curs
 			continue
 		}
 		e, found := consoleRecord(payload)
+		var probe *Probe
+		if !found {
+			e, probe, found = securityRecord(payload)
+		}
+		if probe != nil {
+			if probeCount >= 25 {
+				found = false
+				probe = nil
+			} else {
+				probeCount++
+			}
+		}
 		if found && len(out) >= capacity {
 			break
 		} // never advance beyond unsaved errors
@@ -298,7 +312,7 @@ func parseConsole(text string, app App, release Release, generation string, curs
 		if e.RequestID != "" {
 			stored.RequestID = &e.RequestID
 		}
-		out = append(out, ConsoleError{StoredError: stored, AppID: app.ID, Generation: generation, Container: release.Container, Release: release.ID, Commit: release.Commit})
+		out = append(out, ConsoleError{Security: probe, StoredError: stored, AppID: app.ID, Generation: generation, Container: release.Container, Release: release.ID, Commit: release.Commit})
 	}
 	return out, next
 }

@@ -55,7 +55,7 @@ func (c *Control) retire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(c.data.Apps, id)
-	for _, kind := range []string{"database:", "health:", "deploy:"} {
+	for _, kind := range []string{"database:", "health:", "deploy:", "security-burst:", "security-review:"} {
 		delete(c.data.Incidents, kind+a.ServerID+":"+id)
 	}
 	if err := c.save(); err != nil {
