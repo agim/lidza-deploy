@@ -2,6 +2,7 @@
 function featureDialog(title,html){let d=document.querySelector('#feature-dialog');if(!d){d=document.createElement('dialog');d.id='feature-dialog';document.body.append(d)}d.setAttribute('aria-labelledby','feature-title');d.innerHTML=`<div class="dialog-title"><h2 id="feature-title">${escape(title)}</h2><button type="button" id="feature-close" aria-label="Close">×</button></div>${html}<p id="feature-error" class="error" hidden></p>`;d.querySelector('#feature-close').onclick=()=>d.close();d.showModal();return d}
 function featureError(e){const p=document.querySelector('#feature-error');if(p){p.textContent=e.message;p.hidden=false}else fail(e)}
 async function featureAction(event){
+ const owner=event.target.closest('[data-owner-claim]');if(owner){await openOwnerClaim(owner.dataset.ownerClaim);return true}
  const task=event.target.closest('[data-tasks]');if(task){await openTasks(task.dataset.tasks);return true}
  const preview=event.target.closest('[data-previews]');if(preview){await openPreviews(preview.dataset.previews);return true}
  const upgrade=event.target.closest('[data-upgrade]');if(upgrade){await openUpgrade(upgrade.dataset.upgrade);return true}
@@ -36,3 +37,15 @@ function openDeploymentHistory(id){
 function deploymentLogText(d){return ['Application: '+d.app_id,'Deployment: '+d.id,'Server: '+(d.server_id||'unknown'),'Status: '+d.status,'Branch: '+(d.branch||'unknown'),'Domain: '+(d.domain||'unknown'),'Commit: '+(d.commit||'pending'),'Created: '+(d.created||'unknown'),'Duration: '+Math.round(d.duration_seconds||0)+' seconds','',d.error?'Failure: '+d.error:'','Agent build output:',d.log||'No build output recorded.'].join('\n')}
 async function copyLogText(text){const dialog=document.querySelector('dialog[open]');const message=(text,failed)=>{if(!dialog?.open){if(failed)fail(Error(text));else notice(text);return}let status=dialog.querySelector('[data-log-export-status]');if(!status){status=document.createElement('p');status.dataset.logExportStatus='';dialog.append(status)}status.className=failed?'error':'hint';status.setAttribute('role',failed?'alert':'status');if(failed)showNotice(status,text);else{status.textContent=text;status.hidden=false}};try{if(!navigator.clipboard?.writeText)throw Error('Clipboard unavailable');await navigator.clipboard.writeText(text);message('Logs copied.',false)}catch(e){message('Could not copy logs. Use Download logs instead.',true)}}
 function downloadLogText(filename,text){const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+
+async function openOwnerClaim(id){
+ const d=featureDialog(id+' · Operator setup', '<p>Reveal the one-time token to claim this app’s initial operator account. It grants ownership; share it only with the intended operator.</p><button id="reveal-owner-token">Reveal setup token</button><div id="owner-token-result" aria-live="polite"></div>');
+ d.addEventListener('close',()=>{d.querySelector('#owner-token-result')?.replaceChildren()},{once:true});
+ d.querySelector('#reveal-owner-token').onclick=async e=>{e.target.disabled=true;try{
+ const data=demo?{state:'unclaimed',token:'demo-only-not-a-real-setup-token-12345'}:await api('control/apps/'+id+'/owner-claim','POST',{});
+ if(!d.open)return;
+ const result=d.querySelector('#owner-token-result');result.replaceChildren();
+ const message=document.createElement('p');message.textContent=data.state==='claimed'?'This app has already been claimed. No setup token is available.':data.state==='disabled'?'Enable AUTH_OWNER_CLAIM=true in this app’s environment and deploy or reload it. The app needs Līdza v0.1.90 or newer.':'Sign in to the hosted app, then enter this token in its operator claim form.';result.append(message);
+ if(data.state==='unclaimed'&&data.token){const field=document.createElement('textarea');field.readOnly=true;field.setAttribute('aria-label','One-time operator setup token');field.value=data.token;const copy=document.createElement('button');copy.textContent='Copy setup token';copy.onclick=async()=>{try{await navigator.clipboard.writeText(field.value);copy.textContent='Copied'}catch{featureError(Error('Clipboard unavailable. Select and copy the token manually.'))}};result.append(field,copy)}
+ }catch(err){if(d.open)featureError(err)}finally{if(d.open)e.target.disabled=false}};
+}

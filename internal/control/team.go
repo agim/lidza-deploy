@@ -55,6 +55,8 @@ func routePermission(pattern string) string {
 		return "infrastructure.manage"
 	case "GET /api/control/github/repos":
 		return "deploy.repositories"
+	case "POST /api/control/apps/{id}/owner-claim":
+		return "deploy.secrets"
 	case "PATCH /api/control/apps/{id}/settings",
 		"PUT /api/control/apps/{id}/{feature}", "PUT /api/control/apps/{id}/tasks/{task}",
 		"POST /api/control/apps/{id}/tasks/{task}/{action}",
@@ -94,6 +96,9 @@ func (w *auditResponse) Write(b []byte) (int, error) {
 func (c *Control) protectedRoute(pattern string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mutates := r.Method != "GET" && r.Method != "HEAD"
+		if pattern == "POST /api/control/apps/{id}/owner-claim" {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		// Fixed registered route only: no URL query, raw path or request data.
 		action := "control." + strings.ToLower(strings.Fields(pattern)[0])
 		event := audit.Event{Action: action, Resource: strings.Fields(pattern)[1], Scope: fleetScope, Meta: map[string]string{"route": pattern}}

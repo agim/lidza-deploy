@@ -322,6 +322,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/webhook", c.hook)
 	handle("POST /api/control/apps/{id}/github-app", c.migrateGitHubApp)
 	handle("GET /api/control/apps/{id}/logs", c.logs)
+	handle("POST /api/control/apps/{id}/owner-claim", c.ownerClaim)
 	handle("GET /api/control/apps/{id}/errors", c.appErrors)
 	handle("GET /api/control/apps/{id}/analytics-errors", c.analyticsErrors)
 	handle("GET /api/control/deployments", c.deployments)
@@ -640,4 +641,19 @@ func ConfigFromEnv() (Config, error) {
 	}
 	cfg.GitHub = &gh.Client{}
 	return cfg, nil
+}
+
+func (c *Control) ownerClaim(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	a, ok := c.app(r.PathValue("id"))
+	if !ok || a.Retiring {
+		http.NotFound(w, r)
+		return
+	}
+	var out agent.OwnerClaim
+	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/owner-claim", map[string]string{}, &out); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	agent.JSON(w, 200, out)
 }

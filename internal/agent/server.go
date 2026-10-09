@@ -145,6 +145,7 @@ func Handler(m *Manager) http.Handler {
 		JSON(w, 200, map[string]string{"status": "rolled_back"})
 	})
 	private.HandleFunc("GET /v1/apps/{id}/analytics-errors", m.errorsRoute)
+	private.HandleFunc("POST /v1/apps/{id}/owner-claim", m.ownerClaimRoute)
 	private.HandleFunc("GET /v1/apps/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		a, ok := m.data.Apps[r.PathValue("id")]

@@ -92,6 +92,19 @@ func TestTeamAndAuditSurviveRestart(t *testing.T) {
 	if code := request(); code != 200 {
 		t.Fatal("existing session lost after restart", code)
 	}
+	r := httptest.NewRequest("POST", "/api/control/apps/fixture/owner-claim", strings.NewReader("{}"))
+	r.Header.Set("Content-Type", "application/json")
+	for _, cookie := range cookies {
+		r.AddCookie(cookie)
+	}
+	w := httptest.NewRecorder()
+	second.Handler.ServeHTTP(w, r)
+	if w.Code != 403 {
+		t.Fatal("viewer allowed to reveal setup tokens", w.Code)
+	}
+	if routePermission("POST /api/control/apps/{id}/owner-claim") != "deploy.secrets" {
+		t.Fatal("setup token permission is too broad")
+	}
 	if err := fleetRoles.RevokeAll(restarted, p.Subject, fleetScope); err != nil {
 		t.Fatal(err)
 	}

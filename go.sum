@@ -1,5 +1,7 @@
 github.com/agim/lidza v0.1.81 h1:GuHmSKypDOJ1f1MPT0CV6H1yoLowLbjVE2TeEk240Fg=
 github.com/agim/lidza v0.1.81/go.mod h1:laN69fmwsLlYA2bgOg2VZgNJSyTzyeRjKkJwRdkMVr8=
+github.com/agim/lidza v0.1.90 h1:v1FUK8PKE/l6ctwIptfq2+Mj68+EFbpzumeYeFap9pE=
+github.com/agim/lidza v0.1.90/go.mod h1:hz4+Ta9OC389Cq79TJUaRXPY7RoJc6RRgXIctYrOUvU=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
