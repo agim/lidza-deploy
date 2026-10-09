@@ -13,3 +13,9 @@ For each application, the existing operations job creates an incident when at le
 Activity uses the existing 30-day console report retention and a 500-record view limit. It is sampled: at most 25 probes per container collection pass, bounded Docker log reads, transport backpressure and offline periods limit coverage. This is not a total traffic counter. Alert thresholds refer to captured records, not inferred unseen requests. Sampling keeps noisy probes from consuming every collection slot; application errors retain their capture path.
 
 Agent authentication, fleet permissions, replay deduplication and incarnation checks apply to these reports. OAuth is unchanged. Upgrade older agents before interpreting an empty view as absence of probes.
+
+## Trusted proxies after the v0.1.91 upgrade
+
+Deploy's control-panel service trusts only loopback by default (`LIDZA_TRUSTED_PROXIES=loopback`), matching the installer’s Caddy → 127.0.0.1:3000 route. The framework now supplies resolved client identity to its existing authentication throttles and request logs. An explicit value in `/etc/lidza-control/control.env` overrides this service default; change it only to your actual trusted proxy addresses. A service restart is required.
+
+Hosted applications have their own framework dependency and configuration. Updating Deploy does not upgrade their framework or configure their trust automatically. For a Docker-hosted app, Caddy’s peer address inside the container may be the Docker bridge gateway rather than loopback; configure the actual gateway/proxy address, not a guessed address or a blanket trust of private networks. Their request rate limits remain explicit app policies using the released framework API. Deploy's Security activity view still does not automatically block IPs.

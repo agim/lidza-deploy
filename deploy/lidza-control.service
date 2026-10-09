@@ -6,6 +6,7 @@ User=lidza-control
 Group=lidza-control
 SupplementaryGroups=docker
 WorkingDirectory=/var/lib/lidza-control
+Environment=LIDZA_TRUSTED_PROXIES=loopback
 EnvironmentFile=/etc/lidza-control/control.env
 ExecStart=/usr/local/bin/lidza-control
 Restart=on-failure
