@@ -108,8 +108,20 @@ if [[ -z "$stage" ]]; then
   fi
  fi
  export DEBIAN_FRONTEND=noninteractive
- apt-get update
- apt-get install -y ca-certificates curl gnupg git openssl util-linux
+ # BEGIN base dependency check
+ missing_packages=()
+ for package in ca-certificates curl gnupg git openssl util-linux; do
+  if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+   missing_packages+=("$package")
+  fi
+ done
+ if [[ ${#missing_packages[@]} -gt 0 ]]; then
+  apt-get update
+  apt-get install -y "${missing_packages[@]}"
+ else
+  echo 'Base dependencies already installed; skipping apt refresh.'
+ fi
+ # END base dependency check
  install -d -m 0755 /etc/apt/keyrings
  if ! command -v docker >/dev/null; then
   curl --proto '=https' --tlsv1.2 -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/lidza-docker.asc
