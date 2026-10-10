@@ -16,9 +16,10 @@ import (
 )
 
 type Docker struct {
-	Root     string
-	Client   *http.Client
-	checkout func(context.Context, App, string, string) error
+	Root             string
+	Client           *http.Client
+	checkout         func(context.Context, App, string, string) error
+	readinessTimeout time.Duration
 }
 type limitedBuffer struct {
 	bytes.Buffer
@@ -146,8 +147,12 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 	release = &Release{ID: id, Commit: commit, Container: name, Image: image, Created: time.Now().UTC()}
 	candidate := release
 	success := false
+	created := false
 	defer func() {
 		if !success {
+			if created {
+				d.captureCandidateFailure(ctx, candidate)
+			}
 			cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			_ = d.Remove(cleanup, candidate)
@@ -184,6 +189,7 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 	if err != nil {
 		return nil, fmt.Errorf("start container: %w", err)
 	}
+	created = true
 	if len(networks) > 1 {
 		for _, network := range networks[1:] {
 			if _, err = command(ctx, dir, nil, "docker", "network", "connect", network, name); err != nil {
@@ -202,26 +208,65 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 		return nil, errors.New("unexpected container port mapping")
 	}
 	release.Port = strings.TrimPrefix(port, "127.0.0.1:")
-	health, cancel := context.WithTimeout(ctx, 90*time.Second)
+	if err = d.waitReady(ctx, release); err != nil {
+		return nil, err
+	}
+	success = true
+	return release, nil
+}
+
+func (d *Docker) captureCandidateFailure(ctx context.Context, r *Release) {
+	diagnostics, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	commandDiagnostic(diagnostics, "startup", "Capturing failed candidate state and runtime logs before cleanup.")
+	// State includes exit/OOM/restart information, without Config.Env or mounts.
+	_, _ = command(diagnostics, "", nil, "docker", "inspect", "--format", "{{json .State}}", r.Container)
+	_, _ = command(diagnostics, "", nil, "docker", "logs", "--tail", "200", "--timestamps", r.Container)
+}
+
+func (d *Docker) waitReady(ctx context.Context, r *Release) error {
+	timeout := d.readinessTimeout
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	health, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
+	commandDiagnostic(ctx, "readiness", "Container started; waiting for GET /readyz to return HTTP 200.")
+	var lastErr error
+	var lastBody string
+	nextReport := time.Time{}
 	for {
-		if err = d.Ready(health, release); err == nil {
-			success = true
-			return release, nil
+		body, err := d.probeReady(health, r)
+		if err == nil {
+			commandDiagnostic(ctx, "readiness", "Candidate passed /readyz (HTTP 200).")
+			return nil
+		}
+		if health.Err() == nil || lastErr == nil {
+			lastErr = err
+			lastBody = body
+		}
+		if time.Now().After(nextReport) {
+			commandDiagnostic(ctx, "readiness", fmt.Sprintf("%v\n%s", lastErr, lastBody))
+			nextReport = time.Now().Add(15 * time.Second)
 		}
 		select {
 		case <-health.Done():
-			return nil, errors.New("candidate failed /readyz; previous release retained")
+			commandDiagnostic(ctx, "readiness", fmt.Sprintf("Candidate did not become ready. Last probe: %v\n%s", lastErr, lastBody))
+			return errors.New("candidate failed /readyz; previous release retained")
 		case <-ticker.C:
 		}
 	}
 }
 func (d *Docker) Ready(ctx context.Context, r *Release) error {
+	_, err := d.probeReady(ctx, r)
+	return err
+}
+func (d *Docker) probeReady(ctx context.Context, r *Release) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+r.Port+"/readyz", nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	client := d.Client
 	if client == nil {
@@ -229,15 +274,17 @@ func (d *Docker) Ready(ctx context.Context, r *Release) error {
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer res.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
-	if res.StatusCode != 200 {
-		return fmt.Errorf("readiness returned %d", res.StatusCode)
+	if res.StatusCode == 200 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+		return "", nil
 	}
-	return nil
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+	return string(body), fmt.Errorf("readiness returned HTTP %d", res.StatusCode)
 }
+
 func (d *Docker) Remove(ctx context.Context, r *Release) error {
 	if r == nil {
 		return nil

@@ -261,3 +261,5 @@ The Docker smoke test uses a local Git fixture, then real Docker build/run and r
 Database GUI check (with the development agent/control running): `node tests/browser/databases.cjs`. It creates and cleans up an isolated hosting agent and database.
 
 Manage public keys for a dedicated `deploy` login from **Servers → SSH access**. See [SSH access](docs/ssh-access.md) for permissions, sudo and connection instructions.
+
+See [deployment logs](docs/deployment-logs.md) for build output, failed-candidate startup diagnostics, and readiness troubleshooting.
