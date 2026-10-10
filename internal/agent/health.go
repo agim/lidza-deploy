@@ -19,15 +19,18 @@ type DiskHealth struct {
 	UsedPercent float64 `json:"used_percent"`
 }
 type ServerHealth struct {
-	Checked         time.Time        `json:"checked"`
-	CPUs            int              `json:"cpus"`
-	CPUPercent      *float64         `json:"cpu_percent,omitempty"`
-	Load1           float64          `json:"load1"`
-	MemoryTotal     uint64           `json:"memory_total"`
-	MemoryAvailable uint64           `json:"memory_available"`
-	Disks           []DiskHealth     `json:"disks"`
-	DatabaseBytes   map[string]int64 `json:"database_bytes"`
-	Errors          []string         `json:"errors,omitempty"`
+	Checked          time.Time        `json:"checked"`
+	CPUs             int              `json:"cpus"`
+	CPUPercent       *float64         `json:"cpu_percent,omitempty"`
+	Load1            float64          `json:"load1"`
+	MemoryTotal      uint64           `json:"memory_total"`
+	MemoryAvailable  uint64           `json:"memory_available"`
+	SwapTotal        uint64           `json:"swap_total"`
+	SwapFree         uint64           `json:"swap_free"`
+	SwapProvisioning SwapStatus       `json:"swap_provisioning"`
+	Disks            []DiskHealth     `json:"disks"`
+	DatabaseBytes    map[string]int64 `json:"database_bytes"`
+	Errors           []string         `json:"errors,omitempty"`
 }
 
 func diskHealth(path string) (DiskHealth, error) {
@@ -46,13 +49,19 @@ func diskHealth(path string) (DiskHealth, error) {
 func (m *Manager) serverHealth(parent context.Context) ServerHealth {
 	ctx, cancel := context.WithTimeout(parent, 6*time.Second)
 	defer cancel()
-	out := ServerHealth{Checked: time.Now().UTC(), CPUs: runtime.NumCPU(), DatabaseBytes: map[string]int64{}, Disks: []DiskHealth{}}
+	out := ServerHealth{Checked: time.Now().UTC(), CPUs: runtime.NumCPU(), SwapProvisioning: m.swapStatus(), DatabaseBytes: map[string]int64{}, Disks: []DiskHealth{}}
 	fs, err := procfs.NewFS("/proc")
 	if err == nil {
 		mem, e := fs.Meminfo()
 		if e == nil && mem.MemTotalBytes != nil && mem.MemAvailableBytes != nil {
 			out.MemoryTotal = *mem.MemTotalBytes
 			out.MemoryAvailable = *mem.MemAvailableBytes
+			if mem.SwapTotalBytes != nil {
+				out.SwapTotal = *mem.SwapTotalBytes
+			}
+			if mem.SwapFreeBytes != nil {
+				out.SwapFree = *mem.SwapFreeBytes
+			}
 		} else {
 			out.Errors = append(out.Errors, "memory metrics unavailable")
 		}

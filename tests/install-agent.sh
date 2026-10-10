@@ -57,6 +57,7 @@ cp "$scratch/host/etc/caddy/Caddyfile" "$scratch/original-caddy"
 python3 - "$installer" "$scratch/host" "$scratch/live-installer" <<'PY'
 import pathlib,sys
 s=pathlib.Path(sys.argv[1]).read_text()
+s=s.replace('"$root/usr/local/libexec/lidza-agent-upgrade" --ensure-swap', 'echo swap-check >> "$INSTALL_HOST_LOG"')
 for path in ['/etc', '/var/lib', '/usr/local', '/run/systemd/system']:
  s=s.replace(path, sys.argv[2]+path)
 s=s.replace('[[ $EUID -eq 0 ]]', 'true')
@@ -103,6 +104,7 @@ cmp "$scratch/original-caddy" "$scratch/host/etc/caddy/Caddyfile"
 [[ ! -e "$scratch/host/etc/systemd/system/caddy.service.d" ]]
 ! rg -q '^caddy |^systemctl .*caddy|^apt-get .*caddy' "$scratch/host-actions"
 rg -q '^systemctl restart lidza-control$' "$scratch/host-actions"
+rg -q '^swap-check$' "$scratch/host-actions"
 rg -q 'http://localhost:3000' "$scratch/local-live.log"
 rg -q 'Automatic HTTPS for hosted apps requires a public hosting agent' "$scratch/local-live.log"
 # Local + public API hostname still generates full public hosting configuration.

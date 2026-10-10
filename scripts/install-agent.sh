@@ -200,6 +200,9 @@ if $with_control; then
 fi
 install -d -m 0755 "$root/usr/local/libexec"
 install -m 0755 "$bundle/deploy/upgrade-agent.sh" "$root/usr/local/libexec/lidza-agent-upgrade"
+if [[ -z "$stage" ]];then
+ "$root/usr/local/libexec/lidza-agent-upgrade" --ensure-swap || echo "Warning: automatic swap provisioning failed; check Server health before building apps." >&2
+fi
 install -m 0644 "$bundle/deploy/lidza-agent-upgrade.path" "$bundle/deploy/lidza-agent-upgrade.service" "$root/etc/systemd/system/"
 if $public_host; then
 config=$(mktemp "$root/etc/caddy/.lidza-config.XXXXXX")

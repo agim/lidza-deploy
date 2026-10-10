@@ -2,6 +2,65 @@
 # Root service: only official GitHub release assets may replace managed binaries.
 set -euo pipefail
 umask 077
+# lidza-swap-v1
+# Fixed root-only provisioning; never resize or overwrite an existing swap file.
+ensure_swap(){
+ [[ $EUID == 0 ]] || { echo 'Swap provisioning requires root.' >&2;return 1; }
+ exec 8>/run/lidza-swap.lock
+ flock -n 8 || return 0
+ local state=ready message='' result=0 swap_path=/var/lib/lidza-deploy.swap swap_tmp=''
+ swap_active(){ awk 'NR>1 {found=1} END {exit !found}' /proc/swaps; }
+ swap_error(){ state=failed;message=$1;result=1;echo "Warning: $message" >&2; }
+ if swap_active;then
+  message='Existing active swap preserved.'
+ elif [[ ! -f /etc/fstab || -L /etc/fstab ]];then
+  swap_error 'Cannot safely inspect /etc/fstab; swap was not changed.'
+ elif awk '$1 !~ /^#/ && $3=="swap" {found=1} END {exit !found}' /etc/fstab;then
+  if swapon -a && swap_active;then message='Existing configured swap activated.';else swap_error 'Configured swap could not be activated; inspect swapon -a.';fi
+ elif [[ -e "$swap_path" || -L "$swap_path" ]];then
+  if [[ -f "$swap_path" && ! -L "$swap_path" && $(stat -c '%u:%a:%h' "$swap_path") == '0:600:1' && $(blkid -p -s TYPE -o value "$swap_path" 2>/dev/null) == swap ]];then
+   if swapon "$swap_path";then message='Managed swap reactivated.';else swap_error 'Managed swap could not be activated.';fi
+  else swap_error 'Reserved swap path already exists and is not a safe managed swap file; it was left untouched.';fi
+ else
+  local filesystem available
+  filesystem=$(findmnt -n -o FSTYPE --target /var/lib) || filesystem=unknown
+  available=$(df -Pk /var/lib | awk 'END {print $4}')
+  if [[ "$filesystem" != ext4 && "$filesystem" != xfs ]];then
+   swap_error 'Automatic swap supports ext4 and XFS; configure swap manually on this filesystem.'
+  elif [[ ! "$available" =~ ^[0-9]+$ ]] || ((available<6291456));then
+   swap_error 'Swap needs 6 GiB free disk space (4 GiB swap plus 2 GiB reserve); free space or resize the server.'
+  else
+   swap_tmp=$(mktemp /var/lib/.lidza-swap.XXXXXX)
+   # Write allocated blocks: fallocate/sparse files are not portable swap backing.
+   if chmod 0600 "$swap_tmp" && dd if=/dev/zero of="$swap_tmp" bs=1M count=4096 conv=fsync status=none && mkswap "$swap_tmp" >/dev/null;then
+    # Never replace a file created concurrently by an administrator.
+    if ln "$swap_tmp" "$swap_path";then
+     rm -f "$swap_tmp";swap_tmp=''
+     if swapon "$swap_path";then message='Created and activated 4 GiB managed swap.';else rm -f "$swap_path";swap_error 'Could not activate managed swap; the new file was removed.';fi
+    else swap_error 'Reserved swap path appeared during provisioning; it was left untouched.';fi
+   else swap_error 'Could not allocate or format the 4 GiB swap file.';fi
+   [[ -z "$swap_tmp" ]] || rm -f "$swap_tmp"
+  fi
+ fi
+ # Repair persistence even if a previous process stopped after swapon succeeded.
+ if ((result==0)) && awk -v p="$swap_path" 'NR>1 && $1==p {found=1} END {exit !found}' /proc/swaps;then
+  if ! awk -v p="$swap_path" '$1==p && $3=="swap" {found=1} END {exit !found}' /etc/fstab;then
+   if [[ -L /etc/fstab || ! -f /etc/fstab ]];then swap_error 'Swap is active but persistence failed; check /etc/fstab.'
+   elif ! printf '%s none swap sw 0 0\n' "$swap_path" >> /etc/fstab;then swap_error 'Swap is active but persistence failed; check /etc/fstab.';fi
+  fi
+ fi
+ printf '%s\n' "$message"
+ local status_tmp
+ status_tmp=$(mktemp /var/tmp/lidza-swap-status.XXXXXX)
+ printf '{"state":"%s","message":"%s","checked_at":%s}\n' "$state" "$message" "$(date +%s)" > "$status_tmp"
+ if id lidza-agent >/dev/null 2>&1;then
+  chown lidza-agent:lidza-agent "$status_tmp";chmod 0600 "$status_tmp"
+  mv -T "$status_tmp" /var/lib/lidza-agent/swap-status.json
+ else rm -f "$status_tmp";fi
+ return "$result"
+}
+if [[ ${1:-} == --ensure-swap ]];then ensure_swap;exit $?;fi
+
 exec 9>/run/lidza-agent-upgrade.lock
 flock -n 9 || exit 0
 upgrade_dir=/var/lib/lidza-agent/upgrade
@@ -10,6 +69,7 @@ request=$upgrade_dir/request
 version=$(cat "$request")
 rm -f "$request"
 # lidza-ssh-access-v1
+if [[ "$version" == swap-check ]];then ensure_swap;exit $?;fi
 # Fixed operation: no caller-supplied commands, account names or filesystem paths.
 if [[ "$version" == ssh-keys ]]; then
  exec /usr/local/bin/lidza-agent -apply-ssh-keys

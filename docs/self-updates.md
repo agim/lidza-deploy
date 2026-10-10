@@ -19,3 +19,11 @@ Install this release once with the current installer on the GUI host and each ho
 The `/hooks/self-update` endpoint and `LIDZA_SELF_UPDATE_SECRET` / `LIDZA_SELF_UPDATE_SERVER` settings have been removed. The current installer and CLI helper delete these two retired environment entries; they leave OAuth and hosted-app webhook secrets intact.
 
 If you manually created a repository hook whose URL ends in `/hooks/self-update`, delete that hook in GitHub repository settings. App deployment hooks (`/hooks/github/...` and `/hooks/github-app`) continue to work and must be kept.
+
+## Automatic swap checks
+
+The installer and updated hosting agents check swap automatically. Existing active swap is preserved; configured inactive swap is activated. If none exists, Līdza Deploy creates a 4 GiB, root-owned swap file at `/var/lib/lidza-deploy.swap` and registers it in `/etc/fstab`. Provisioning requires ext4 or XFS and at least 6 GiB free space, leaving a 2 GiB reserve. Existing files at the reserved path are never reformatted or overwritten.
+
+An existing agent updated through the GUI checks after its verified root helper has been refreshed, normally within one minute. Agents recheck daily. **Servers → Server health** shows total/free swap and the provisioning result. Failures are also logged in `lidza-agent-upgrade.service`. Swap checks do not require a deploy-user sudo grant. Installation staging never provisions host swap.
+
+Swap reduces the chance of build-time out-of-memory failures, but heavy builds can still need a larger server. Disk-backed swapping can slow builds; it is not equivalent to additional RAM.
