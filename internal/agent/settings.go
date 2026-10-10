@@ -15,6 +15,7 @@ type SettingsPatch struct {
 	EnvChanges         map[string]*string `json:"env_changes"`
 }
 type Settings struct {
+	Cache              CacheView         `json:"cache"`
 	BackupBeforeDeploy bool              `json:"backup_before_deploy"`
 	Bindings           map[string]string `json:"database_bindings"`
 	ID                 string            `json:"id"`
@@ -30,7 +31,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if !ok {
 		return Settings{}, errors.New("unknown application")
 	}
-	return Settings{BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
+	return Settings{Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
 }
 func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	m.mu.Lock()
@@ -42,7 +43,7 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	if old.Retiring {
 		return errors.New("application is being removed")
 	}
-	if m.busy(id) || old.Restoring {
+	if m.busy(id) || old.Restoring || m.data.Caches[id].Operation {
 		return errors.New("application has an active deployment")
 	}
 	a := old
@@ -56,6 +57,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		a.Env = map[string]string{}
 	}
 	for k, v := range p.EnvChanges {
+		if k == "CACHE_URL" && m.data.Caches[id].Mode != "" {
+			return errors.New("CACHE_URL is managed through Cache settings")
+		}
 		if k == "AUTH_SECRET" && (v == nil || *v == "") {
 			return errors.New("AUTH_SECRET cannot be removed or cleared; supply a replacement explicitly to rotate authentication tokens")
 		}

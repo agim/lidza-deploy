@@ -30,6 +30,7 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	cacheProvision    func(context.Context, CacheResource) error
 	reportMu          sync.Mutex
 	reportWake        chan struct{}
 	cpuTotal, cpuIdle float64
@@ -77,6 +78,26 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 			t.Running = false
 			t.Error = "agent restarted during command; inspect before retry"
 			m.data.Tasks[key] = t
+		}
+	}
+	if m.data.Caches == nil {
+		m.data.Caches = map[string]CacheResource{}
+	}
+	for id, c := range m.data.Caches {
+		if c.Operation {
+			if c.Previous != nil {
+				c = *c.Previous
+			}
+			c.Previous = nil
+			c.Operation = false
+			c.Error = "Agent restarted during cache provisioning; retry cache setup."
+			m.data.Caches[id] = c
+		}
+	}
+	if d, ok := rt.(*Docker); ok {
+		d.prepareRuntime = m.preflightRuntime
+		d.runtimeDiagnostics = func(ctx context.Context, a App) context.Context {
+			return m.deploymentDiagnostics(ctx, job{app: a, deployment: deploymentID(ctx)})
 		}
 	}
 	if m.data.Databases == nil {
@@ -187,6 +208,9 @@ func (m *Manager) Upsert(a App) error {
 		return errors.New("application has an active deployment")
 	}
 	old, exists := m.data.Apps[a.ID]
+	if cache := m.data.Caches[a.ID]; cache.Mode != "" && !exists {
+		return errors.New("application ID is reserved by a retained cache resource")
+	}
 	if _, retained := m.data.Databases[a.ID]; retained && !exists {
 		return errors.New("application ID is reserved by a database resource")
 	}
@@ -211,6 +235,18 @@ func (m *Manager) Upsert(a App) error {
 	a.Restoring = old.Restoring
 	a.Maintenance = old.Maintenance
 	a.Bindings = old.Bindings
+	if c := m.data.Caches[a.ID]; c.Mode != "" {
+		if c.Operation {
+			return errors.New("cache operation is active")
+		}
+		if c.Ready && a.Env != nil {
+			a.Env = maps.Clone(a.Env)
+			if value := a.Env["CACHE_URL"]; value != "" && value != old.Env["CACHE_URL"] {
+				return errors.New("CACHE_URL is managed through cache attachments")
+			}
+			a.Env["CACHE_URL"] = old.Env["CACHE_URL"]
+		}
+	}
 	if exists {
 		a.BackupBeforeDeploy = old.BackupBeforeDeploy
 	}
@@ -292,6 +328,14 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 	}
 	var ids []string
 	networks := map[string]bool{}
+	if c := m.data.Caches[a.ID]; c.Mode != "" {
+		if c.Operation {
+			return Deployment{}, errors.New("wait for cache provisioning")
+		}
+		if c.Ready && c.Mode == "local" {
+			networks[c.Network] = true
+		}
+	}
 	for _, id := range a.Bindings {
 		d, ok := m.data.Databases[id]
 		if !ok || !d.Ready || d.Operation != "" {

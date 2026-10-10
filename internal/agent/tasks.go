@@ -264,6 +264,9 @@ func (m *Manager) startTaskContainer(ctx context.Context, a App, t Task, old str
 	}
 	networks := []string{}
 	m.mu.Lock()
+	if c := m.data.Caches[a.ID]; c.Ready && c.Mode == "local" {
+		networks = append(networks, c.Network)
+	}
 	for _, id := range a.Bindings {
 		if d := m.data.Databases[id]; d.Network != "" {
 			networks = append(networks, d.Network)

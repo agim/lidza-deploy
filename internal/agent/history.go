@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+type deploymentIDKey struct{}
+
+func deploymentID(ctx context.Context) string {
+	id, _ := ctx.Value(deploymentIDKey{}).(string)
+	return id
+}
+
 type diagnosticKey struct{}
 type diagnosticStreamKey struct{}
 
@@ -18,6 +25,7 @@ func commandDiagnostic(ctx context.Context, name, output string) {
 	}
 }
 func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Context {
+	ctx = context.WithValue(ctx, deploymentIDKey{}, j.deployment)
 	secrets := append(outputSecrets(j.app.Env), j.token)
 	ctx = context.WithValue(ctx, diagnosticKey{}, func(line string) {
 		line = scrubOutput(line, secrets)

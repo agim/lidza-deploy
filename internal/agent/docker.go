@@ -16,10 +16,12 @@ import (
 )
 
 type Docker struct {
-	Root             string
-	Client           *http.Client
-	checkout         func(context.Context, App, string, string) error
-	readinessTimeout time.Duration
+	prepareRuntime     func(context.Context, App, string) (App, error)
+	runtimeDiagnostics func(context.Context, App) context.Context
+	Root               string
+	Client             *http.Client
+	checkout           func(context.Context, App, string, string) error
+	readinessTimeout   time.Duration
 }
 type limitedBuffer struct {
 	bytes.Buffer
@@ -107,6 +109,15 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 		return nil, err
 	}
 	message, _ := command(ctx, source, nil, "git", "log", "-1", "--format=%s")
+	if d.prepareRuntime != nil {
+		a, err = d.prepareRuntime(ctx, a, source)
+		if err != nil {
+			return nil, err
+		}
+		if d.runtimeDiagnostics != nil {
+			ctx = d.runtimeDiagnostics(ctx, a)
+		}
+	}
 	if err = prepareBuild(source); err != nil {
 		return nil, err
 	}

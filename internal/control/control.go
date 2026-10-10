@@ -312,6 +312,8 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/servers", c.addServer)
 	handle("PUT /api/control/servers/{id}", c.editServer)
 	handle("DELETE /api/control/servers/{id}", c.removeServer)
+	handle("GET /api/control/apps/{id}/cache", c.cacheSettings)
+	handle("POST /api/control/apps/{id}/cache", c.cacheSettings)
 	handle("GET /api/control/databases", c.databases)
 	handle("POST /api/control/apps/{id}/database", c.configureDatabase)
 	handle("POST /api/control/apps/{id}/database/{action}", c.databaseAction)

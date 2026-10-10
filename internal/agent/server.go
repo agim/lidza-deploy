@@ -72,6 +72,7 @@ func Handler(m *Manager) http.Handler {
 		JSON(w, 200, in)
 	})
 	m.databaseRoutes(private)
+	m.cacheRoutes(private)
 	m.taskRoutes(private)
 	m.upgradeRoutes(private)
 	private.HandleFunc("DELETE /v1/previews/{id}", m.previewRoute)

@@ -39,7 +39,7 @@ func TestDockerTwoAppsRedeployRollback(t *testing.T) {
 		if err = os.WriteFile(filepath.Join(dir, "app"), b, 0755); err != nil {
 			return err
 		}
-		if err = os.WriteFile(filepath.Join(dir, "lidza.json"), []byte(`{"name":"fixture"}`), 0600); err != nil {
+		if err = os.WriteFile(filepath.Join(dir, "lidza.json"), []byte(`{"name":"fixture","frontend":{"template":"htmx"}}`), 0600); err != nil {
 			return err
 		}
 		if err = os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\nCOPY --chmod=755 app /app\nENTRYPOINT [\"/app\"]\n"), 0600); err != nil {

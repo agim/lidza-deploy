@@ -31,7 +31,7 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 			return errors.New("wait for scheduled command to finish")
 		}
 	}
-	if m.busy(id) || a.Restoring {
+	if m.busy(id) || a.Restoring || m.data.Caches[id].Operation {
 		m.mu.Unlock()
 		return errors.New("application has an active deployment; retry removal after it finishes")
 	}

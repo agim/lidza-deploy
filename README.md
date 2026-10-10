@@ -263,3 +263,5 @@ Database GUI check (with the development agent/control running): `node tests/bro
 Manage public keys for a dedicated `deploy` login from **Servers → SSH access**. See [SSH access](docs/ssh-access.md) for permissions, sudo and connection instructions.
 
 See [deployment logs](docs/deployment-logs.md) for build output, failed-candidate startup diagnostics, and readiness troubleshooting.
+
+Apps enabling `lidza/cache` receive a private authenticated Valkey service automatically when no connection is configured. Existing and failed apps get this on their next deployment. Configure local or external services in application Settings; see [application caches](docs/cache.md). Production preflight reports missing framework settings before building.

@@ -110,7 +110,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	// Management routes share the framework session and origin protections.
 	for _, endpoint := range []struct{ method, path string }{
 		{"POST", "/api/control/servers"}, {"PUT", "/api/control/servers/one"},
-		{"DELETE", "/api/control/servers/one"}, {"PATCH", "/api/control/apps/portal/settings"},
+		{"DELETE", "/api/control/servers/one"}, {"PATCH", "/api/control/apps/portal/settings"}, {"POST", "/api/control/apps/portal/cache"},
 		{"DELETE", "/api/control/apps/portal/webhook"},
 		{"DELETE", "/api/control/apps/portal"},
 	} {
@@ -166,7 +166,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 		t.Fatal("viewer cannot read fleet", w.Code)
 	}
 	for _, route := range []struct{ method, path string }{
-		{"POST", "/api/control/apps/portal/deploy"}, {"PATCH", "/api/control/apps/portal/settings"},
+		{"POST", "/api/control/apps/portal/deploy"}, {"PATCH", "/api/control/apps/portal/settings"}, {"POST", "/api/control/apps/portal/cache"},
 		{"POST", "/api/control/team"}, {"PUT", "/api/control/mail"},
 		{"GET", "/api/control/audit"}, {"GET", "/api/control/team"},
 		{"GET", "/api/control/servers/one/databases/portal/backups/snapshot"},
@@ -193,6 +193,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 		{"POST", "/api/control/servers"}, {"POST", "/api/control/apps"},
 		{"PUT", "/api/control/apps/portal/previews"}, {"PUT", "/api/control/apps/portal/restore"},
 		{"POST", "/api/control/apps/portal/restore"}, {"POST", "/api/control/apps/portal/database"},
+		{"POST", "/api/control/apps/portal/cache"},
 	} {
 		if w := call(route.method, route.path, "{}", memberCookies, cfg.PublicURL); w.Code != 403 {
 			t.Fatal("deployer reached admin operation", route.path, w.Code)
@@ -321,11 +322,14 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	}
 	defer db.From(ctx).Exec(ctx, `DELETE FROM auth_connection WHERE owner=$1`, c.operatorID)
 	// The verified webhook persists an application-only job; dispatch uses the framework connection.
-	rows, err := jobs.From(ctx).Recent(ctx, 10)
-	if err != nil || len(rows) == 0 {
+	// Recent orders by scheduled run time, so a retry from another fixture can
+	// precede this push. Select this test's exact delivery instead.
+	var payload json.RawMessage
+	err = db.From(ctx).QueryRow(ctx, `SELECT payload FROM job WHERE kind='deploy.push' AND payload->>'delivery'=$1`, deliveryID).Scan(&payload)
+	if err != nil {
 		t.Fatal("webhook not persisted", err)
 	}
-	if err := c.dispatchPush(ctx, rows[0].Payload); err != nil {
+	if err := c.dispatchPush(ctx, payload); err != nil {
 		t.Fatal(err)
 	}
 	if receivedToken != "private-fixture-token" {
@@ -339,7 +343,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	if w := webhook(push, sign(push)); w.Code != 204 {
 		t.Fatal("disabled webhook queued", w.Code)
 	}
-	if err := c.dispatchPush(ctx, rows[0].Payload); err != nil {
+	if err := c.dispatchPush(ctx, payload); err != nil {
 		t.Fatal(err)
 	}
 	if agentCalls != count {

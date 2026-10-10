@@ -196,9 +196,10 @@ async function openSettings(id) {
  const value=demo?{...app,env_keys:app.env_keys||[]}:await api('control/apps/'+id+'/settings');
  editingApp=id; const form=$('#settings-form'); form.reset();form.querySelectorAll('details').forEach(d=>d.open=false);
  form.elements.backup_before_deploy.checked=value.backup_before_deploy!==false;form.elements.branch.value=value.branch; form.elements.domain.value=value.domain;
- $('#env-keys').textContent=value.env_keys?.join(', ')||'No variables saved';envEditor('#settings-env-editor',value.env_keys||[],Object.keys(value.database_bindings||{}));
+ $('#env-keys').textContent=value.env_keys?.join(', ')||'No variables saved';envEditor('#settings-env-editor',value.env_keys||[],[...Object.keys(value.database_bindings||{}),...(value.cache?.managed?['CACHE_URL']:[])]);
  const primary=value.database_bindings?.DATABASE_URL;$('#settings-database-status').textContent=primary?'Primary database: '+primary:value.env_keys?.includes('DATABASE_URL')?'DATABASE_URL is set manually. Attach a managed database to enable backups.':'No primary database attached. Apps using the Līdza DB pack require DATABASE_URL.';
  $('#settings-database').onclick=()=>openDatabase(id).catch(err=>dialogError('#settings-error',err));
+ $('#settings-cache-status').textContent=cacheStatusText(value.cache);$('#settings-cache').hidden=!isAdmin();$('#settings-cache').onclick=()=>openCacheSettings(id).catch(err=>dialogError('#settings-error',err));
  $('#settings-title').textContent=id+' · settings'; $('#settings-error').hidden=true;
  $('#settings-dialog').showModal();loadBranchOptions(app.repository,app.github_installation||0,'settings').catch(()=>{});
 }

@@ -65,6 +65,7 @@ type DeployRequest struct {
 	Key              string `json:"key,omitempty"`
 }
 type diskState struct {
+	Caches          map[string]CacheResource `json:"caches,omitempty"`
 	ErrorReporting  *ErrorReporting          `json:"error_reporting,omitempty"`
 	ErrorOutbox     []ConsoleError           `json:"error_outbox,omitempty"`
 	ErrorCursors    map[string]ConsoleCursor `json:"error_cursors,omitempty"`
