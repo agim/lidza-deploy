@@ -110,7 +110,7 @@ if [[ -z "$stage" ]]; then
  export DEBIAN_FRONTEND=noninteractive
  # BEGIN base dependency check
  missing_packages=()
- for package in ca-certificates curl gnupg git openssl util-linux; do
+ for package in ca-certificates curl gnupg git openssl util-linux openssh-server sudo; do
   if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
    missing_packages+=("$package")
   fi

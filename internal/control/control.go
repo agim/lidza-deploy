@@ -285,6 +285,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/team", c.team)
 	handle("DELETE /api/control/team/{subject}", c.team)
 	handle("GET /api/control/audit", c.auditLog)
+	for _, pattern := range []string{"GET /api/control/servers/{server}/ssh-access", "POST /api/control/servers/{server}/ssh-access/keys", "DELETE /api/control/servers/{server}/ssh-access/keys/{key}", "PATCH /api/control/servers/{server}/ssh-access"} {
+		handle(pattern, c.sshAccess)
+	}
 	handle("GET /api/control/servers/{server}/upgrade", c.upgradeServer)
 	handle("POST /api/control/servers/{server}/upgrade", c.upgradeServer)
 	handle("PUT /api/control/apps/{id}/previews", c.previewConfig)

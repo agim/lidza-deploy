@@ -9,6 +9,11 @@ request=$upgrade_dir/request
 [[ -d "$upgrade_dir" && ! -L "$upgrade_dir" && -f "$request" && ! -L "$request" ]] || exit 0
 version=$(cat "$request")
 rm -f "$request"
+# lidza-ssh-access-v1
+# Fixed operation: no caller-supplied commands, account names or filesystem paths.
+if [[ "$version" == ssh-keys ]]; then
+ exec /usr/local/bin/lidza-agent -apply-ssh-keys
+fi
 mkdir -p "$upgrade_dir"
 report(){ status_tmp=$(mktemp /var/tmp/lidza-upgrade-status.XXXXXX);printf '{"state":"%s","message":"%s"}\n' "$1" "$2" > "$status_tmp";chown lidza-agent:lidza-agent "$status_tmp";chmod 0600 "$status_tmp";mv -T "$status_tmp" "$upgrade_dir/status.json"; }
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { report failed 'Invalid release version';exit 1; }

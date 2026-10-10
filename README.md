@@ -259,3 +259,5 @@ The Docker smoke test uses a local Git fixture, then real Docker build/run and r
 [Framework-first rule](AGENTS.md): reuse Līdza; file reusable gaps upstream and wait for a released capability. [Issue #23](https://github.com/agim/lidza/issues/23) shipped in v0.1.61 and is integrated here.
 
 Database GUI check (with the development agent/control running): `node tests/browser/databases.cjs`. It creates and cleans up an isolated hosting agent and database.
+
+Manage public keys for a dedicated `deploy` login from **Servers → SSH access**. See [SSH access](docs/ssh-access.md) for permissions, sudo and connection instructions.

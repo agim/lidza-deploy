@@ -65,3 +65,15 @@ printf '../bad\n' > "$scratch/var/lib/lidza-agent/upgrade/request"
 if "$scratch/helper";then echo 'Unsafe version accepted' >&2;exit 1;fi
 [[ $("$scratch/usr/local/bin/lidza-agent") == old-version ]]
 echo 'PASS: official release validation, healthy upgrade, failed-health rollback, checksum rejection and invalid-version rejection in isolated fixtures'
+
+# SSH changes dispatch only to the fixed privileged operation.
+cat > "$scratch/usr/local/bin/lidza-agent" <<'BIN'
+#!/usr/bin/env bash
+[[ "$*" == -apply-ssh-keys ]] || exit 1
+printf applied > "$UPGRADE_FIXTURE/ssh-applied"
+BIN
+chmod +x "$scratch/usr/local/bin/lidza-agent"
+printf 'ssh-keys\n' > "$scratch/var/lib/lidza-agent/upgrade/request"
+"$scratch/helper"
+[[ $(cat "$scratch/ssh-applied") == applied ]]
+echo 'PASS: fixed SSH helper dispatch'

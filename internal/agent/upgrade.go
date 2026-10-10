@@ -149,5 +149,6 @@ func (m *Manager) upgradeRoutes(mux *http.ServeMux) {
 
 func (m *Manager) upgradePending() bool {
 	status := m.upgradeStatus()
-	return status.State == "queued" || status.State == "upgrading"
+	ssh := m.sshAccess()
+	return status.State == "queued" || status.State == "upgrading" || ssh.State == "queued" || ssh.State == "applying"
 }

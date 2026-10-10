@@ -49,6 +49,8 @@ func routePermission(pattern string) string {
 		return "github.manage"
 	case "GET /api/control/team", "POST /api/control/team", "DELETE /api/control/team/{subject}":
 		return "team.manage"
+	case "GET /api/control/servers/{server}/ssh-access":
+		return "infrastructure.manage"
 	case "GET /api/control/audit":
 		return "audit.read"
 	case "GET /api/control/servers/{server}/databases/{id}/backups/{backup}":

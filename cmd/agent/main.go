@@ -18,9 +18,16 @@ import (
 func main() {
 	path := flag.String("config", "/etc/lidza-agent/config.json", "configuration file")
 	version := flag.Bool("version", false, "print release version")
+	applySSH := flag.Bool("apply-ssh-keys", false, "apply queued managed SSH access (root helper only)")
 	flag.Parse()
 	if *version {
 		fmt.Println(buildinfo.Version)
+		return
+	}
+	if *applySSH {
+		if err := agent.ApplySSHAccess(); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 	cfg, err := agent.LoadConfig(*path)
