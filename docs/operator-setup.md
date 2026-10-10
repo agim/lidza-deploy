@@ -9,6 +9,8 @@ Hosted apps using Līdza v0.1.90 or newer can protect their first operator with 
 
 The hosting agent mounts a private persistent directory at `/run/lidza-owner-claim` and sets `AUTH_OWNER_CLAIM_DIR` to that path. This managed path overrides a custom environment value for apps that opt in. Its files persist across container replacement. Token retrieval is an authenticated POST, audited without recording the token, with non-cacheable responses. Tokens are not collected from console logs and are not part of routine polling.
 
+The agent runs as `deploy`. Docker initializes the private directory for the app's UID 65532; a restricted helper reads its private files when the agent cannot access them directly. Token-reading helpers have networking and Docker logging disabled, and token bytes never enter deployment diagnostics. If an older agent reports `cannot prepare private setup directory`, update the hosting agent and retry the deployment.
+
 An optional platform-provided `AUTH_OWNER_CLAIM_TOKEN` must be at least 32 characters and shared across app nodes. Deploy reveals it only while the framework status says unclaimed. Changing platform tokens or the claim settings requires an app reload/redeploy; claiming applies immediately. Removing a GUI value doesn't clear a user's clipboard.
 
 For apps predating this agent support, reload after updating the agent so the private directory is mounted. Unsupported framework versions, missing migrations or disabled auth produce startup/status errors; do not enable the setting before the hosted app supports it.

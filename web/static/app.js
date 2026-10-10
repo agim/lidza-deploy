@@ -1,12 +1,12 @@
 'use strict';
 const $=s=>document.querySelector(s), params=new URLSearchParams(location.search), demo=params.get('demo')==='1';
-const sectionTabs={updates:'updates',security:'security',applications:'apps',deployments:'deployments',servers:'servers',databases:'backups',integrations:'settings',errors:'errors',team:'team',audit:'audit'};
+const sectionTabs={help:'help',updates:'updates',security:'security',applications:'apps',deployments:'deployments',servers:'servers',databases:'backups',integrations:'settings',errors:'errors',team:'team',audit:'audit'};
 const tabSections=Object.fromEntries(Object.entries(sectionTabs).map(([section,value])=>[value,section]));
-function tabFromURL(){return sectionTabs[location.hash.slice(1)]||'apps'}
+function tabFromURL(){return sectionTabs[location.hash.slice(1).split('/')[0]]||'apps'}
 let design=demo?(params.get('design')||'terminal'):'terminal', tab=params.has('github')?'settings':tabFromURL();
 function sectionURL(next){const url=new URL(location.href);url.hash=tabSections[next];return url}
 function navigate(next){if(!tabSections[next])return;if(next!==tab&&dirtyForms.size&&!confirm('Leave this section and discard unsaved changes?'))return Promise.resolve();if(next!==tab)dirtyForms.clear();closeMobileNavigation();const url=sectionURL(next);if(url.href!==location.href)history.pushState(null,'',url);tab=next;filter='';render();return refresh()}
-function restoreSection(){const next=tabFromURL();if(next===tab)return;for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();if(dirtyForms.size){if(!confirm('Leave this section and discard unsaved changes?')){history.pushState(null,'',sectionURL(tab));return}dirtyForms.clear()}closeMobileNavigation();tab=next;filter='';render();refresh().catch(fail)}
+function restoreSection(){const next=tabFromURL();if(next===tab){if(tab==='help')renderHelp();return}for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();if(dirtyForms.size){if(!confirm('Leave this section and discard unsaved changes?')){history.pushState(null,'',sectionURL(tab));return}dirtyForms.clear()}closeMobileNavigation();tab=next;filter='';render();refresh().catch(fail)}
 window.addEventListener('popstate',restoreSection);
 window.addEventListener('hashchange',restoreSection);
 let repositoryInstallations=new Map(), repositoryBranches=new Map(), branchEdited=false;
@@ -128,10 +128,11 @@ function renderServers(){
 function render(){
  const sameSection=document.body.dataset.section===tab;const drafts=captureFormDrafts();const scrolls=[...document.querySelectorAll('#content .table-wrap')].map(e=>({node:e,left:e.scrollLeft,top:e.scrollTop}));const anchor=sameSection?[...document.querySelectorAll('#content [data-app-card],#content [data-release],#content [data-database-card],#content [data-server-card]')].find(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.top<innerHeight}):null;const anchorTop=anchor?.getBoundingClientRect().top;const pageScroll=[window.scrollX,window.scrollY];const expanded=[...document.querySelectorAll('#content details[open][data-app-menu]')].map(e=>e.dataset.appMenu);document.body.dataset.section=tab;
  for(const b of document.querySelectorAll('[data-tab]')){b.classList.toggle('active',b.dataset.tab===tab);if(b.dataset.tab===tab)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')}
- const labels={updates:['Updates','Keep the control panel and hosting agents current.'],security:['Security activity','Review suspicious traffic across hosted applications.'],errors:['Errors','Understand failures in your applications.'],team:['Team','Give your team the access they need.'],audit:['Audit log','Who changed what, and when.'],apps:['Applications','A clear view of everything you’re building.'],deployments:['Deployments','Every release, from queued to live.'],servers:['Servers','A home for each app. A view across every host.'],backups:['Databases & backups','Protect application data across your servers.'],settings:['Integrations','Connect your repositories and automate your releases.']};
+ const labels={help:['Help','Practical guides for deploying and operating your apps.'],updates:['Updates','Keep the control panel and hosting agents current.'],security:['Security activity','Review suspicious traffic across hosted applications.'],errors:['Errors','Understand failures in your applications.'],team:['Team','Give your team the access they need.'],audit:['Audit log','Who changed what, and when.'],apps:['Applications','A clear view of everything you’re building.'],deployments:['Deployments','Every release, from queued to live.'],servers:['Servers','A home for each app. A view across every host.'],backups:['Databases & backups','Protect application data across your servers.'],settings:['Integrations','Connect your repositories and automate your releases.']};
  $('#mobile-section').textContent=labels[tab][0];$('#new-app').disabled=!servers.length;$('#new-app').title=servers.length?'':'Connect a server before creating an application';$('#new-app').classList.toggle('primary',tab!=='settings');$('#title').textContent=labels[tab][0]+'.';$('#crumb').textContent=labels[tab][0];$('#subtitle').textContent=labels[tab][1];$('#app-count').textContent=apps.length;$('#stat-apps').textContent=apps.length;$('#stat-releases').textContent=deployments.filter(d=>d.status==='live').length;$('#stat-servers').textContent=servers.length;
  const content=$('#content'),minimum=content.style.minHeight;if(sameSection)content.style.minHeight=content.offsetHeight+'px';
  if(tab==='apps')renderApplications();
+ if(tab==='help')renderHelp();
  if(tab==='updates'){renderUpdates();loadUpdates().catch(fail)}
  if(tab==='backups')renderBackups();
  if(tab==='errors')renderErrors();
