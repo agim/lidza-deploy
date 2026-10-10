@@ -107,6 +107,15 @@ func TestCacheAutomaticFirstFailedAndExistingApplication(t *testing.T) {
 	if err = m.PatchSettings(a.ID, SettingsPatch{Branch: a.Branch, Domain: a.Domain, EnvChanges: map[string]*string{"CACHE_URL": nil}}); err == nil {
 		t.Fatal("managed connection deleted through env editor")
 	}
+	if err = m.Upsert(testApp(a.ID)); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	updated := m.data.Apps[a.ID]
+	m.mu.Unlock()
+	if updated.Env["CACHE_URL"] != resource.URL || updated.Env["CACHE_PREFIX"] != prepared.Env["CACHE_PREFIX"] {
+		t.Fatal("full app update lost cache connection or namespace")
+	}
 	// Existing successful apps reload after a cache connection is changed.
 	d, err := m.Enqueue(a.ID, DeployRequest{})
 	if err != nil {

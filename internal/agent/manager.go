@@ -245,6 +245,9 @@ func (m *Manager) Upsert(a App) error {
 				return errors.New("CACHE_URL is managed through cache attachments")
 			}
 			a.Env["CACHE_URL"] = old.Env["CACHE_URL"]
+			if a.Env["CACHE_PREFIX"] == "" && old.Env["CACHE_PREFIX"] != "" {
+				a.Env["CACHE_PREFIX"] = old.Env["CACHE_PREFIX"]
+			}
 		}
 	}
 	if exists {
