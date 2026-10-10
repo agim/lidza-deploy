@@ -51,6 +51,12 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 // Never return raw command output on errors: build tools may echo secrets.
 func command(ctx context.Context, dir string, extra []string, name string, args ...string) (string, error) {
 	c := exec.CommandContext(ctx, name, args...)
+	if name == "git" {
+		// Only the Git child uses public source-file modes. Keep the parent
+		// agent's 0077 umask for tokens, environment files and encrypted state.
+		// Pass arguments as argv; never interpolate repository/branch values.
+		c = exec.CommandContext(ctx, "sh", append([]string{"-c", "umask 022; exec git \"$@\"", "git"}, args...)...)
+	}
 	c.Dir = dir
 	for _, key := range []string{"PATH", "HOME", "TMPDIR", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if v := os.Getenv(key); v != "" {
