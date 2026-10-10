@@ -86,7 +86,7 @@ function paintErrors() {
   $('#errors-refresh').disabled = errorView.loading || !errorView.app;
   const result = $('#errors-result');
   if (!errorView.app) { result.innerHTML = '<p>Add an application to view its captured errors.</p>'; return; }
-  if (errorView.failure) { result.innerHTML = `<div class="error" role="alert">${escape(errorView.failure)} Refresh to retry. Previously loaded data is unavailable until a successful refresh.</div>`; return; }
+  if (errorView.failure && !errorView.data) { result.innerHTML = `<div class="error" role="alert">${escape(errorView.failure)} Refresh to retry. Previously loaded data is unavailable until a successful refresh.</div>`; return; }
   if (!errorView.data) { result.textContent = 'Loading captured errors…'; return; }
   if (errorView.mode === 'analytics' && (errorView.data.status === 'needs_database' || errorView.data.status === 'needs_analytics')) {
     result.innerHTML = `<article class="app-card"><div class="card-body"><h2>Enable error reporting in this app</h2>
@@ -97,11 +97,27 @@ function paintErrors() {
   }
   const groups = errorGroups(), total = errorView.data.errors?.length || 0;
   const warning=errorView.data.mode==='console' && errorView.data.status!=='ready' ? `<div class="notice" role="status">${escape(errorView.data.collection_error || (errorView.data.status==='waiting_agent'?'Waiting for the hosting agent to connect its error collector.':'The hosting agent has not reported recently. Stored errors remain available.'))}</div>` : '';
-  result.innerHTML = `${warning}${errorView.data.shared ? '<div class="notice">This primary database is shared with another configured app. Its error store may include reports from every app using it. Separate primary databases provide separate error stores.</div>' : ''}<div class="toolbar"><h2>Captured failures</h2><span class="badge">${groups.length} matching groups · ${total} recent occurrences${errorView.data.truncated ? ' · response size capped' : ''}${errorView.loading ? ' · refreshing' : ''}</span></div>
+  const html = `${warning}${errorView.data.shared ? '<div class="notice">This primary database is shared with another configured app. Its error store may include reports from every app using it. Separate primary databases provide separate error stores.</div>' : ''}<div class="toolbar"><h2>Captured failures</h2><span class="badge">${groups.length} matching groups · ${total} recent occurrences${errorView.data.truncated ? ' · response size capped' : ''}${errorView.loading ? ' · refreshing' : ''}</span></div>
     <div class="table-wrap"><table><thead><tr><th>Error</th><th>Source / route</th><th>Occurrences</th><th>Last seen</th><th>Details</th></tr></thead><tbody>${groups.map(g => {
       const e = g.rows[0];
-      return `<tr><td class="error-message">${escape(e.message)}</td><td>${escape(e.source)}<br><code>${escape(e.route || '—')}</code></td><td>${g.rows.length}</td><td>${escape(new Date(e.createdAt).toLocaleString())}</td><td><button data-error-detail="${escape(g.key)}">Inspect error</button></td></tr>`;
+      return `<tr data-error-group="${escape(g.key)}"><td class="error-message">${escape(e.message)}</td><td>${escape(e.source)}<br><code>${escape(e.route || '—')}</code></td><td>${g.rows.length}</td><td>${escape(new Date(e.createdAt).toLocaleString())}</td><td><button data-error-detail="${escape(g.key)}">Inspect error</button></td></tr>`;
     }).join('') || `<tr><td colspan="5">${total ? 'No errors match these filters.' : 'No captured errors in this sample. This does not establish that the app is healthy or reporting correctly.'}</td></tr>`}</tbody></table></div>`;
+  const template=document.createElement('template');template.innerHTML=html;
+  if(!result.querySelector('.table-wrap'))result.replaceChildren(template.content);
+  else{
+    const body=result.querySelector('tbody'),next=template.content.querySelector('tbody'),retained=new Set();
+    for(const [index,fresh] of [...next.children].entries()){
+      let row=[...body.children].find(e=>e.dataset.errorGroup===fresh.dataset.errorGroup);
+      if(!row){row=fresh;body.append(row)}else if(row.innerHTML!==fresh.innerHTML){const focus=document.activeElement,button=row.querySelector('button'),newButton=fresh.querySelector('button');if(button&&newButton)newButton.replaceWith(button);row.replaceChildren(...fresh.childNodes);if(focus?.isConnected&&document.activeElement!==focus)focus.focus({preventScroll:true})}
+      if(body.children[index]!==row)body.insertBefore(row,body.children[index]||null);retained.add(row);
+    }
+    for(const row of [...body.children])if(!retained.has(row))row.remove();
+    result.querySelector('.toolbar .badge').textContent=template.content.querySelector('.toolbar .badge').textContent;
+    for(const warning of result.querySelectorAll(':scope>.notice'))warning.remove();
+    for(const warning of [...template.content.children].filter(node=>node.matches('.notice')))result.prepend(warning);
+  }
+  let failure=result.querySelector('#errors-refresh-failure');
+  if(errorView.failure){if(!failure){failure=document.createElement('p');failure.id='errors-refresh-failure';failure.className='error';failure.setAttribute('role','alert');result.prepend(failure)}failure.textContent=errorView.failure+' Previously loaded errors are retained.'}else failure?.remove();
 }
 
 function showErrorDetail(key) {

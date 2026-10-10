@@ -17,6 +17,7 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cryp
   await page.selectOption('#app-form [name=database_mode]','external');if(!await page.locator('#app-form [name=database_url]').isVisible()||await page.locator('#app-form [name=database_url]').getAttribute('type')!=='password')throw Error('External URL not masked');
   await page.selectOption('#app-form [name=database_mode]','local');await page.selectOption('#app-form [name=backup_hours]','0');await page.fill('#app-form [name=backup_keep]','2');
   fs.mkdirSync(path.join(root,'.local/screenshots'),{recursive:true});await page.screenshot({path:path.join(root,'.local/screenshots/new-app-database.png'),fullPage:true});await page.click('#app-form button[type=submit]');await page.locator('#app-dialog').waitFor({state:'hidden'});
+await page.locator('[data-app-menu="'+id+'"] summary').click();
   await page.locator('[data-action=database][data-id="'+id+'"]').click();await page.locator('#database-dialog').waitFor({state:'visible'});
   for(let i=0;i<100;i++){const text=await page.locator('#database-run').textContent();if(text==='Back up now')break;await page.click('#database-refresh');await page.waitForTimeout(500);}
   if(await page.locator('#database-run').textContent()!=='Back up now')throw Error('Database not ready');

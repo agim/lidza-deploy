@@ -48,6 +48,7 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
     response = await page.request.post(base + '/api/control/apps', {headers, data: {id, server_id: host, repository: 'acme/errors-fixture', branch: 'main', domain: id + '.example.com', env: {APP_SECRET: 'browser-private-value'}, database: {mode: 'none'}}});
     if (!response.ok()) throw Error('Could not create errors fixture app');
     await page.reload();
+await page.locator('[data-app-menu="'+id+'"] summary').click();
     await page.locator('[data-errors="' + id + '"]').click();
     for (let i = 0; i < 60; i++) {
       const data=await (await page.request.get(base+'/api/control/apps/'+id+'/errors')).json();

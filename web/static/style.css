@@ -207,3 +207,9 @@ body[data-design=walnut] pre{background:var(--bg);color:var(--ink)}
 .branch-options{display:flex;flex-wrap:wrap;gap:.4rem;padding:.65rem;border:1px solid var(--line);border-radius:.5rem;max-height:12rem;overflow:auto;margin:.4rem 0}.branch-options[hidden],.branch-options button[hidden]{display:none}.branch-options button{padding:.45rem .7rem;font-family:monospace;text-align:left}
 
 .ssh-fingerprint{overflow-wrap:anywhere;word-break:break-word}
+/* Polling must not change desktop column widths or fight our release/card anchor. */
+#content .cards,#release-table{overflow-anchor:none}
+@media(min-width:761px){#release-table table{table-layout:fixed;min-width:1050px}#release-table th:nth-child(1){width:190px}#release-table th:nth-child(2){width:100px}#release-table th:nth-child(3){width:105px}#release-table th:nth-child(4){width:190px}#release-table td:last-child{white-space:normal;overflow-wrap:anywhere}#release-table td:last-child button{display:block;margin-top:10px}}
+#deployment-output{overflow-anchor:none;min-height:25vh}
+
+.main-wrap main>#error{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);width:min(650px,90vw);max-height:35vh;overflow:auto;z-index:20;box-shadow:var(--shadow)}
