@@ -98,6 +98,12 @@ func TestFleetUpdatesPersistRetryAndUpgradePanelLast(t *testing.T) {
 	}
 	status := states["remote"]
 	status.Current = "v0.2.15"
+	status.State = "upgrading"
+	states["remote"] = status
+	tick()
+	if len(queued) != 1 {
+		t.Fatal("next host queued before CLI health checks completed", queued)
+	}
 	status.State = "succeeded"
 	states["remote"] = status
 	tick()

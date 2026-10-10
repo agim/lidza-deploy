@@ -215,6 +215,24 @@ func (c *Control) updateTick(ctx context.Context) error {
 			t.Message = "Agent unavailable; will retry"
 			return c.saveUpdateSettings(v)
 		}
+		if status.State == "upgrading" || status.State == "queued" {
+			if t.Started.IsZero() {
+				t.Started = time.Now().UTC()
+			}
+			if time.Since(t.Started) > 20*time.Minute {
+				t.State = "failed"
+				t.Message = "Update health checks did not finish; inspect the server updater"
+				return c.saveUpdateSettings(v)
+			}
+			t.State = "updating"
+			t.Message = status.Message
+			return c.saveUpdateSettings(v)
+		}
+		if t.State == "updating" && status.State == "failed" {
+			t.State = "failed"
+			t.Message = status.Message
+			return c.saveUpdateSettings(v)
+		}
 		needsPanel := false
 		for _, host := range c.servers() {
 			if host.ID == t.ServerID && localUpdateServer(host) && semver.IsValid(buildinfo.Version) && semver.Compare(buildinfo.Version, v.Version) < 0 {
@@ -234,15 +252,8 @@ func (c *Control) updateTick(ctx context.Context) error {
 			t.Message = "Run the current installer on this server to enable managed updates"
 			return c.saveUpdateSettings(v)
 		}
-		if status.State == "upgrading" || status.State == "queued" {
-			t.State = "updating"
-			t.Message = status.Message
-			return c.saveUpdateSettings(v)
-		}
-		if t.State == "updating" && status.State == "failed" {
-			t.State = "failed"
-			t.Message = status.Message
-			return c.saveUpdateSettings(v)
+		if t.State == "updating" && status.State == "succeeded" {
+			t.State = "waiting"
 		}
 		if t.State == "updating" && status.State == "idle" && time.Since(t.Started) > time.Minute {
 			t.State = "waiting"
