@@ -260,7 +260,13 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 	}
 	req.Header.Set("Authorization", "Bearer "+target.Token)
 	req.Header.Set("Content-Type", "application/json")
-	res, err := c.client.Do(req)
+	client := c.client
+	if strings.HasSuffix(path, "/state") {
+		copy := *client
+		copy.Timeout = 110 * time.Second
+		client = &copy
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		return errors.New("agent unavailable")
 	}
@@ -376,6 +382,7 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	type view struct {
 		Application
+		Stopped      bool                `json:"stopped"`
 		Maintenance  agent.Maintenance   `json:"maintenance"`
 		Restoring    bool                `json:"restoring,omitempty"`
 		DomainStatus *agent.DomainStatus `json:"domain_status,omitempty"`
@@ -407,6 +414,7 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, a := range remote {
 				if a.ID == out[i].ID {
+					out[i].Stopped = a.Stopped
 					out[i].Current = a.Current
 					out[i].DomainStatus = a.DomainStatus
 					out[i].Maintenance = a.Maintenance

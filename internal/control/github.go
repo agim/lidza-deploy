@@ -155,6 +155,14 @@ func (c *Control) dispatchPush(ctx context.Context, payload json.RawMessage) err
 	if !ok || a.Retiring || !a.AutoDeploy || job.Generation != a.Generation {
 		return nil
 	}
+	check, _ := http.NewRequestWithContext(ctx, "GET", c.cfg.PublicURL, nil)
+	var settings agent.Settings
+	if err := c.agentCall(check, a.ServerID, "GET", "/v1/apps/"+a.ID+"/settings", nil, &settings); err != nil {
+		return err
+	}
+	if settings.Stopped {
+		return nil
+	}
 	credentials, err := c.deploymentCredentials(ctx, a, "github:"+job.Delivery)
 	if err != nil {
 		return err

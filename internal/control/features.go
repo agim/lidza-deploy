@@ -15,6 +15,13 @@ func (c *Control) appFeature(w http.ResponseWriter, r *http.Request) {
 	action := r.PathValue("feature")
 	var in any
 	switch action {
+	case "state":
+		var value agent.ApplicationState
+		if err := agent.Decode(w, r, &value); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		in = value
 	case "maintenance":
 		var value agent.Maintenance
 		if err := agent.Decode(w, r, &value); err != nil {

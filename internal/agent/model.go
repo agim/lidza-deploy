@@ -11,6 +11,7 @@ import (
 )
 
 type App struct {
+	Stopped            bool              `json:"stopped"`
 	DefaultsApplied    bool              `json:"defaults_applied,omitempty"`
 	EnvSources         map[string]string `json:"env_sources,omitempty"`
 	StorageVolume      string            `json:"-"`
@@ -61,6 +62,7 @@ type Deployment struct {
 	Key           string     `json:"key,omitempty"`
 }
 type DeployRequest struct {
+	resume           bool              // internal start request; never accepted from JSON
 	Defaults         map[string]string `json:"application_defaults,omitempty"`
 	CredentialURL    string            `json:"credential_url,omitempty"`
 	CredentialTicket string            `json:"credential_ticket,omitempty"`

@@ -85,7 +85,7 @@ func (c *Control) tasksTick(ctx context.Context, r *http.Request) error {
 		}
 		for _, t := range tasks {
 			a, ok := c.app(t.AppID)
-			if !ok || a.Retiring || !t.Enabled || a.ServerID != result.Server.ID {
+			if !ok || a.Retiring || t.Paused || !t.Enabled || a.ServerID != result.Server.ID {
 				continue
 			}
 			if t.Mode == "worker" {
@@ -115,5 +115,12 @@ func (c *Control) dispatchTask(ctx context.Context, payload json.RawMessage) err
 		return nil
 	}
 	r, _ := http.NewRequestWithContext(ctx, "POST", c.cfg.PublicURL, nil)
+	var settings agent.Settings
+	if err := c.agentCall(r, a.ServerID, "GET", "/v1/apps/"+a.ID+"/settings", nil, &settings); err != nil {
+		return err
+	}
+	if settings.Stopped {
+		return nil
+	}
 	return c.agentCall(r, in.ServerID, "POST", "/v1/apps/"+a.ID+"/tasks/"+in.TaskID+"/run", map[string]string{"key": in.Key, "revision": in.Revision}, nil)
 }

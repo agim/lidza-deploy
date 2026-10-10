@@ -15,6 +15,8 @@ import (
 )
 
 type Task struct {
+	Launching    bool       `json:"launching,omitempty"`
+	Paused       bool       `json:"paused,omitempty"`
 	Revision     string     `json:"revision,omitempty"`
 	SeenKeys     []string   `json:"seen_keys,omitempty"`
 	ID           string     `json:"id"`
@@ -80,6 +82,7 @@ func (m *Manager) taskList(app string) []Task {
 	out := []Task{}
 	for _, t := range m.data.Tasks {
 		if app == "" || t.AppID == app {
+			t.Paused = m.data.Apps[t.AppID].Stopped
 			t.Command = slices.Clone(t.Command)
 			t.SeenKeys = nil
 			out = append(out, t)
@@ -118,6 +121,7 @@ func (m *Manager) putTask(appID string, t Task) error {
 	t.Container = ""
 	t.Release = ""
 	t.Running = false
+	t.Launching = false
 	t.Log = ""
 	t.Error = ""
 	t.RunKey = ""
@@ -145,7 +149,7 @@ func (m *Manager) runTask(appID, id, key string, revision ...string) error {
 	defer m.mu.Unlock()
 	a, ok := m.data.Apps[appID]
 	t, found := m.data.Tasks[taskKey(appID, id)]
-	if !ok || !found || a.Retiring || a.Restoring || a.Current == nil || m.busy(appID) || !t.Enabled {
+	if !ok || !found || a.Stopped || a.Retiring || a.Restoring || a.Current == nil || m.busy(appID) || !t.Enabled {
 		return errors.New("task or running app unavailable")
 	}
 	if len(revision) > 0 && revision[0] != "" && t.Revision != revision[0] {
@@ -190,6 +194,7 @@ func (m *Manager) runTask(appID, id, key string, revision ...string) error {
 	now := time.Now().UTC()
 	old := t
 	t.Running = true
+	t.Launching = true
 	t.Error = ""
 	t.Log = ""
 	t.LastRun = &now
@@ -226,6 +231,7 @@ func (m *Manager) runTask(appID, id, key string, revision ...string) error {
 			}
 			return
 		}
+		current.Launching = false
 		current.Container = name
 		current.Log = log
 		current.Running = t.Mode == "worker" && err == nil

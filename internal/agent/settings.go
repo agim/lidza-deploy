@@ -17,6 +17,7 @@ type SettingsPatch struct {
 	EnvChanges         map[string]*string `json:"env_changes"`
 }
 type Settings struct {
+	Stopped            bool              `json:"stopped"`
 	DefaultsApplied    bool              `json:"defaults_applied"`
 	EnvSources         map[string]string `json:"env_sources"`
 	PersistentStorage  bool              `json:"persistent_storage"`
@@ -36,7 +37,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if !ok {
 		return Settings{}, errors.New("unknown application")
 	}
-	return Settings{DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
+	return Settings{Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
 }
 func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	m.mu.Lock()

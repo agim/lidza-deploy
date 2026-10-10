@@ -31,6 +31,7 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	lifecycle         map[string]bool
 	cacheProvision    func(context.Context, CacheResource) error
 	reportMu          sync.Mutex
 	reportWake        chan struct{}
@@ -52,7 +53,7 @@ type Manager struct {
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
 	ctx, cancel := context.WithCancel(parent)
-	m := &Manager{reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
+	m := &Manager{lifecycle: map[string]bool{}, reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		cancel()
 		return nil, err
@@ -75,6 +76,11 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		m.data.Tasks = map[string]Task{}
 	}
 	for key, t := range m.data.Tasks {
+		if t.Launching {
+			t.Launching = false
+			t.Running = false
+			m.data.Tasks[key] = t
+		}
 		if t.Running && t.Mode == "schedule" {
 			t.Running = false
 			t.Error = "agent restarted during command; inspect before retry"
@@ -150,6 +156,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
+	m.enforceStoppedApps()
 	// Docker can assign new ephemeral host ports after container/daemon restarts.
 	m.reconcileRoutes()
 	m.wg.Add(1)
@@ -250,6 +257,7 @@ func (m *Manager) Upsert(a App) error {
 	a.DomainStatus = nil
 	a.Restoring = old.Restoring
 	a.Maintenance = old.Maintenance
+	a.Stopped = old.Stopped
 	a.Bindings = old.Bindings
 	if m.data.StorageVolumes[a.ID] != "" && a.Env != nil {
 		a.Env = maps.Clone(a.Env)
@@ -324,6 +332,9 @@ func (m *Manager) Upsert(a App) error {
 	return nil
 }
 func (m *Manager) busy(id string) bool {
+	if m.lifecycle[id] {
+		return true
+	}
 	for _, d := range m.data.Deployments {
 		if d.AppID == id && (d.Status == "queued" || d.Status == "building") {
 			return true
@@ -341,6 +352,15 @@ func (m *Manager) Enqueue(id string, req DeployRequest) (Deployment, error) {
 	return m.queueLocked(a, req, false)
 }
 func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...[]string) (Deployment, error) {
+	if a.Stopped && !req.resume {
+		if reload {
+			return Deployment{}, m.save()
+		}
+		return Deployment{}, errors.New("application is stopped; start it before deploying")
+	}
+	if req.resume {
+		a.Stopped = false
+	}
 	if m.upgradePending() {
 		return Deployment{}, errors.New("agent upgrade in progress")
 	}
@@ -431,6 +451,9 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 	if reload {
 		d.Kind = "reload"
 	}
+	if req.resume {
+		d.Kind = "start"
+	}
 	before := slices.Clone(m.data.Deployments)
 	m.data.Deployments = append(m.data.Deployments, d)
 	if len(m.data.Deployments) > 500 {
@@ -448,7 +471,7 @@ func (m *Manager) Reload(id string) (Deployment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.data.Apps[id]
-	if !ok || a.Retiring {
+	if !ok || a.Retiring || a.Stopped {
 		return Deployment{}, errors.New("application unavailable")
 	}
 	if a.Current == nil {
@@ -528,6 +551,9 @@ func (m *Manager) work() {
 				retired = a.Previous
 				a.Previous = a.Current
 				a.Current = release
+				if j.credentials.resume {
+					a.Stopped = false
+				}
 				m.data.Apps[a.ID] = a
 				if saveErr := m.update(j.deployment, "live", release, nil); saveErr != nil {
 					m.data.Apps[a.ID] = old
@@ -557,11 +583,25 @@ func (m *Manager) Rollback(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.data.Apps[id]
-	if !ok || a.Retiring || a.Previous == nil {
+	if !ok || a.Retiring || a.Stopped || a.Previous == nil {
 		return errors.New("no previous release")
 	}
 	if m.busy(id) {
 		return errors.New("deployment active")
+	}
+	if rt, ok := m.runtime.(lifecycleRuntime); ok {
+		if err := rt.SetRunning(ctx, []string{a.Previous.Container}, true); err != nil {
+			return err
+		}
+	}
+	if rt, ok := m.runtime.(routeRuntime); ok {
+		ports, err := rt.PublishedPorts(ctx, []string{a.Previous.Container})
+		if err != nil {
+			return err
+		}
+		copy := *a.Previous
+		copy.Port = ports[copy.Container]
+		a.Previous = &copy
 	}
 	if err := m.runtime.Ready(ctx, a.Previous); err != nil {
 		return fmt.Errorf("previous release is unhealthy: %w", err)
@@ -585,7 +625,7 @@ func (m *Manager) Target(host string) *Release {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, a := range m.data.Apps {
-		if a.Domain == host && !a.Retiring {
+		if a.Domain == host && !a.Retiring && !a.Stopped {
 			return a.Current
 		}
 	}

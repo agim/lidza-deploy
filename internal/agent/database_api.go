@@ -125,6 +125,10 @@ func (m *Manager) applicationHealth(parent context.Context) []AppHealth {
 	var wg sync.WaitGroup
 	for i, a := range apps {
 		out[i] = AppHealth{AppID: a.ID, State: "not_deployed"}
+		if a.Stopped {
+			out[i].State = "stopped"
+			continue
+		}
 		if a.Current == nil || a.Retiring {
 			continue
 		}

@@ -71,6 +71,19 @@ func Handler(m *Manager) http.Handler {
 		}
 		JSON(w, 200, in)
 	})
+	private.HandleFunc("PUT /v1/apps/{id}/state", func(w http.ResponseWriter, r *http.Request) {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Minute))
+		var in ApplicationState
+		if err := Decode(w, r, &in); err != nil {
+			Fail(w, 400, err)
+			return
+		}
+		if err := m.setApplicationState(r.PathValue("id"), in); err != nil {
+			Fail(w, 409, err)
+			return
+		}
+		JSON(w, 200, in)
+	})
 	m.databaseRoutes(private)
 	m.cacheRoutes(private)
 	m.taskRoutes(private)

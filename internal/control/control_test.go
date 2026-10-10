@@ -51,6 +51,8 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 			receivedToken = request.Token
 			w.WriteHeader(202)
 			io.WriteString(w, `{"id":"job","status":"queued"}`)
+		} else if strings.HasSuffix(r.URL.Path, "/settings") {
+			io.WriteString(w, `{"stopped":false}`)
 		} else if strings.HasSuffix(r.URL.Path, "/errors") {
 			io.WriteString(w, `{"status":"ready","errors":[],"limit":500}`)
 		} else {

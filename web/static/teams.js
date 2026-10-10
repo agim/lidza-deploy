@@ -9,7 +9,7 @@ function renderTeamPermissions(){
  for(const node of document.querySelectorAll('[data-ssh-access],[data-manage-server],[data-remove-server],[data-upgrade],[data-previews],[data-action=remove],[data-action=github-app],#github-config,#connect,#disconnect'))node.hidden=!isAdmin();
  if($('#connect'))$('#connect').hidden=!isAdmin()||(!demo&&!status.github_owner);
  if($('#disconnect'))$('#disconnect').hidden=!isAdmin()||(!demo&&!status.github_owner);
- for(const node of document.querySelectorAll('[data-action=deploy],[data-action=reload],[data-action=rollback],[data-action=webhook],[data-action=disable-webhook],[data-maintenance],[data-tasks],#settings-form button[type=submit]'))node.disabled=!canDeploy();
+ for(const node of document.querySelectorAll('[data-action=deploy],[data-action=reload],[data-action=rollback],[data-action=webhook],[data-action=disable-webhook],[data-app-state],[data-maintenance],[data-tasks],#settings-form button[type=submit]'))node.disabled=!canDeploy()||node.dataset.stopped==='1';
  document.body.dataset.role=isAdmin()?'admin':canDeploy()?'deployer':'viewer';
  if((tab==='team'||tab==='audit')&&!isAdmin()){$('#content').textContent='Administrator access is required.';return}
  if(tab==='team'||tab==='audit')renderTeamPage().catch(fail);

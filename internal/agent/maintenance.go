@@ -35,6 +35,11 @@ func (m *Manager) setMaintenance(id string, in Maintenance) error {
 }
 func (m *Manager) maintenancePage(w http.ResponseWriter, r *http.Request, host string) bool {
 	for _, a := range m.Apps() {
+		if a.Domain == host && !a.Retiring && a.Stopped {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, "application is stopped", http.StatusServiceUnavailable)
+			return true
+		}
 		if a.Domain == host && !a.Retiring && a.Maintenance.Enabled {
 			message := a.Maintenance.Message
 			if message == "" {
