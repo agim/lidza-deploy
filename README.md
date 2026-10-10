@@ -140,6 +140,72 @@ See [Application errors](docs/application-errors.md) for automatic server error 
 
 See the [deployment runbook](docs/deployment.md) for security boundaries, recovery, rollback and removal semantics. [Līdza #24](https://github.com/agim/lidza/issues/24) confirms the wizard uses existing framework APIs; [#25](https://github.com/agim/lidza/issues/25) shipped deployment generation improvements in v0.1.70.
 
+## Stopping apps and uninstalling
+
+Run these commands on **each hosting server**. Uninstalling the control panel or agent does not stop deployed Docker containers. First stop deployment scheduling and the agent:
+
+```sh
+sudo systemctl disable --now lidza-control.service lidza-agent.service lidza-agent-upgrade.path
+sudo systemctl stop lidza-agent-upgrade.service
+```
+
+An agent-only host has no `lidza-control.service`; omit that unit there. Already removed units may report “not found.”
+
+Stop all Līdza app releases and workers/jobs, and disable their Docker restart policies so they stay stopped after a reboot:
+
+```sh
+for label in io.lidza.managed=true io.lidza.task; do
+  sudo docker ps -aq --filter "label=$label" | xargs -r sudo docker update --restart=no
+  sudo docker ps -q --filter "label=$label" | xargs -r sudo docker stop
+done
+```
+
+These commands preserve containers and data and leave unrelated Docker apps running. Check that no app or worker containers remain running:
+
+```sh
+sudo docker ps --filter label=io.lidza.managed=true
+sudo docker ps --filter label=io.lidza.task
+```
+
+Managed PostgreSQL containers are separate. Hosted app databases use `io.lidza.database`; the control panel database uses `io.lidza.control.database`. To stop both, after stopping the apps, run this on each hosting server and the control panel host:
+
+```sh
+for label in io.lidza.database io.lidza.control.database; do
+  sudo docker ps -aq --filter "label=$label" | xargs -r sudo docker update --restart=no
+  sudo docker ps -q --filter "label=$label" | xargs -r sudo docker stop
+done
+```
+
+This preserves database volumes. External databases are unaffected.
+
+Verify what remains running:
+
+```sh
+sudo docker ps --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Labels}}'
+```
+
+An empty table means all containers are stopped. Unrelated containers may still be running on a shared host.
+
+Remove the installed services and binaries:
+
+```sh
+sudo rm -f /etc/systemd/system/lidza-control.service \
+  /etc/systemd/system/lidza-agent.service \
+  /etc/systemd/system/lidza-agent-upgrade.path \
+  /etc/systemd/system/lidza-agent-upgrade.service
+sudo systemctl daemon-reload
+sudo rm -f /usr/local/bin/lidza-control /usr/local/bin/lidza-agent
+```
+
+Optional: **permanently delete configuration, credentials, encryption keys, local backups and state** after backing up anything you need:
+
+```sh
+sudo rm -rf /etc/lidza-control /etc/lidza-agent \
+  /var/lib/lidza-control /var/lib/lidza-agent
+```
+
+Docker, images, stopped containers, database volumes and Caddy remain installed. Public installations also retain Caddy routes and certificates; remove the Līdza routes separately if needed. Localhost installation leaves existing Caddy untouched. Avoid global Docker prune commands if the host contains other applications.
+
 ## Development
 
 Requires Go 1.27.1+, Git, Docker Engine, and Python 3 for the local setup helper. The web assets need no build step.
