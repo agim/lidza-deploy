@@ -184,6 +184,7 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 		return nil, err
 	}
 	runArgs := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--restart", "unless-stopped", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--memory", "512m", "--cpus", "1", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile, "--env", "LIDZA_ADDR=0.0.0.0:3000", "--env", "LIDZA_MODE=production"}
+	runArgs = append(runArgs, storageMountArgs(a)...)
 	if a.Env["AUTH_OWNER_CLAIM"] == "true" {
 		claimDir, e := d.prepareOwnerClaim(a)
 		if e != nil {

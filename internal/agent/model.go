@@ -11,6 +11,7 @@ import (
 )
 
 type App struct {
+	StorageVolume      string            `json:"-"`
 	Preview            bool              `json:"preview,omitempty"`
 	PullRequest        int               `json:"pull_request,omitempty"`
 	Restoring          bool              `json:"restoring,omitempty"`
@@ -65,6 +66,7 @@ type DeployRequest struct {
 	Key              string `json:"key,omitempty"`
 }
 type diskState struct {
+	StorageVolumes  map[string]string        `json:"storage_volumes,omitempty"`
 	Caches          map[string]CacheResource `json:"caches,omitempty"`
 	ErrorReporting  *ErrorReporting          `json:"error_reporting,omitempty"`
 	ErrorOutbox     []ConsoleError           `json:"error_outbox,omitempty"`

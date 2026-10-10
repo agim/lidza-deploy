@@ -83,6 +83,9 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	if m.data.Caches == nil {
 		m.data.Caches = map[string]CacheResource{}
 	}
+	if m.data.StorageVolumes == nil {
+		m.data.StorageVolumes = map[string]string{}
+	}
 	for id, c := range m.data.Caches {
 		if c.Operation {
 			if c.Previous != nil {
@@ -208,6 +211,9 @@ func (m *Manager) Upsert(a App) error {
 		return errors.New("application has an active deployment")
 	}
 	old, exists := m.data.Apps[a.ID]
+	if m.data.StorageVolumes[a.ID] != "" && !exists {
+		return errors.New("application ID is reserved by retained storage")
+	}
 	if cache := m.data.Caches[a.ID]; cache.Mode != "" && !exists {
 		return errors.New("application ID is reserved by a retained cache resource")
 	}
@@ -235,6 +241,16 @@ func (m *Manager) Upsert(a App) error {
 	a.Restoring = old.Restoring
 	a.Maintenance = old.Maintenance
 	a.Bindings = old.Bindings
+	if m.data.StorageVolumes[a.ID] != "" && a.Env != nil {
+		a.Env = maps.Clone(a.Env)
+		if dir := a.Env["STORAGE_DIR"]; dir != "" && dir != appStorageMount {
+			return errors.New("STORAGE_DIR is managed by the persistent storage attachment")
+		}
+		a.Env["STORAGE_DIR"] = appStorageMount
+		if a.Env["STORAGE_PROVIDER"] == "" {
+			a.Env["STORAGE_PROVIDER"] = old.Env["STORAGE_PROVIDER"]
+		}
+	}
 	if c := m.data.Caches[a.ID]; c.Mode != "" {
 		if c.Operation {
 			return errors.New("cache operation is active")
@@ -353,6 +369,7 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 		ids = append(ids, a.Current.DatabaseIDs...)
 	}
 	a.Networks = slices.Sorted(maps.Keys(networks))
+	a.StorageVolume = m.data.StorageVolumes[a.ID]
 	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
 	if len(m.queue) == cap(m.queue) {
 		return Deployment{}, errors.New("deployment queue full; retry later")

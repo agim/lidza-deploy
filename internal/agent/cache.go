@@ -295,6 +295,13 @@ func (m *Manager) preflightRuntime(ctx context.Context, a App, source string) (A
 		effective["CACHE_URL"] = a.Env["CACHE_URL"]
 		commandDiagnostic(ctx, "cache", "Valkey is ready; CACHE_URL and the application network are attached. Credentials retained for future releases.")
 	}
+	a, err = m.prepareAppStorage(ctx, a, cfg, effective)
+	if err != nil {
+		return a, err
+	}
+	if a.StorageVolume != "" && effective["STORAGE_PROVIDER"] == "local" {
+		commandDiagnostic(ctx, "storage", "Persistent local storage is attached; files are retained across deployments and reloads.")
+	}
 	// Manifest defaults are non-secret production settings. Explicit app env wins.
 	merged := maps.Clone(cfg.Deploy.Env)
 	if merged == nil {
@@ -302,7 +309,7 @@ func (m *Manager) preflightRuntime(ctx context.Context, a App, source string) (A
 	}
 	maps.Copy(merged, a.Env)
 	a.Env = merged
-	if err := productionRequirements(cfg, effective); err != nil {
+	if err := productionRequirements(cfg, effective, a.StorageVolume != ""); err != nil {
 		return a, err
 	}
 	return a, a.Validate()
@@ -341,7 +348,7 @@ func productionValues(source string, cfg *config.Config, a App) (map[string]stri
 	}
 	return values, nil
 }
-func productionRequirements(cfg *config.Config, values map[string]string) error {
+func productionRequirements(cfg *config.Config, values map[string]string, persistentLocalStorage ...bool) error {
 	var missing []string
 	for _, enabled := range cfg.Packs {
 		for _, official := range pack.Officials {
@@ -350,6 +357,9 @@ func productionRequirements(cfg *config.Config, values map[string]string) error 
 			}
 			for _, setting := range official.Production {
 				v := strings.TrimSpace(values[setting.Name])
+				if enabled == "lidza/storage" && setting.Name == "STORAGE_PROVIDER" && v == "local" && len(persistentLocalStorage) > 0 && persistentLocalStorage[0] && values["STORAGE_DIR"] == appStorageMount {
+					continue
+				}
 				if v == "" && !setting.Optional {
 					missing = append(missing, setting.Name+" ("+enabled+")")
 				} else if slices.Contains(setting.Dev, strings.ToLower(v)) {

@@ -264,6 +264,7 @@ func (m *Manager) startTaskContainer(ctx context.Context, a App, t Task, old str
 	}
 	networks := []string{}
 	m.mu.Lock()
+	a.StorageVolume = m.data.StorageVolumes[a.ID]
 	if c := m.data.Caches[a.ID]; c.Ready && c.Mode == "local" {
 		networks = append(networks, c.Network)
 	}
@@ -277,6 +278,8 @@ func (m *Manager) startTaskContainer(ctx context.Context, a App, t Task, old str
 	if len(networks) > 0 {
 		args = append(args, "--network", networks[0])
 	}
+	// Workers and scheduled commands share the app's lasting storage volume.
+	args = append(args, storageMountArgs(a)...)
 	args = append(args, a.Current.Image)
 	args = append(args, t.Command[1:]...)
 	if _, err = command(ctx, "", nil, "docker", args...); err != nil {

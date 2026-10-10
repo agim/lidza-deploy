@@ -38,7 +38,7 @@ func TestDockerAutomaticCacheDeployReloadAndPersistence(t *testing.T) {
 		if err = os.Mkdir(filepath.Join(dir, "mail"), 0755); err != nil {
 			return err
 		}
-		for name, data := range map[string][]byte{"app": b, "mail/auth_reset.txt.tmpl": []byte("Reset your account: {{.URL}}"), "lidza.json": []byte(`{"name":"fixture","frontend":{"template":"htmx"},"packs":["lidza/db","lidza/auth","lidza/mail","lidza/cache"]}`), "Dockerfile": []byte("FROM scratch\nWORKDIR /app\nCOPY --chmod=755 app /app/app\nCOPY --chown=65532:65532 mail /app/mail\nENTRYPOINT [\"/app/app\"]\n")} {
+		for name, data := range map[string][]byte{"app": b, "mail/auth_reset.txt.tmpl": []byte("Reset your account: {{.URL}}"), "lidza.json": []byte(`{"name":"fixture","frontend":{"template":"htmx"},"packs":["lidza/db","lidza/auth","lidza/mail","lidza/cache","lidza/storage"]}`), "Dockerfile": []byte("FROM scratch\nWORKDIR /app\nCOPY --chmod=755 app /app/app\nCOPY --chown=65532:65532 mail /app/mail\nENTRYPOINT [\"/app/app\"]\n")} {
 			if err = os.WriteFile(filepath.Join(dir, name), data, 0755); err != nil {
 				return err
 			}
@@ -59,6 +59,8 @@ func TestDockerAutomaticCacheDeployReloadAndPersistence(t *testing.T) {
 	a.Env["MAIL_SMTP_URL"] = "smtp://fixture:fixture-password@smtp.example.com:587"
 	// As with the GUI, the application's master key is supplied explicitly.
 	a.Env["LIDZA_MASTER_KEY"] = strings.Repeat("ab", 32)
+	// Reproduce the production failure: local was previously rejected as dev-only.
+	a.Env["STORAGE_PROVIDER"] = "local"
 	name := "lidza-cache-" + a.ID
 	t.Cleanup(func() {
 		m.Close()
@@ -73,6 +75,7 @@ func TestDockerAutomaticCacheDeployReloadAndPersistence(t *testing.T) {
 		for _, args := range [][]string{{"rm", "-f", dbName}, {"volume", "rm", dbName + "-data"}, {"network", "rm", dbName}} {
 			_ = exec.Command("docker", args...).Run()
 		}
+		_ = exec.Command("docker", "volume", "rm", "lidza-storage-"+a.ID).Run()
 	})
 	if err := m.Upsert(a); err != nil {
 		t.Fatal(err)
@@ -126,6 +129,7 @@ func TestDockerAutomaticCacheDeployReloadAndPersistence(t *testing.T) {
 	}
 	deploy(false)
 	request("/write")
+	request("/storage-write")
 	m.mu.Lock()
 	resource := m.data.Caches[a.ID]
 	m.mu.Unlock()
@@ -152,11 +156,25 @@ func TestDockerAutomaticCacheDeployReloadAndPersistence(t *testing.T) {
 	}
 	deploy(true)
 	request("/read")
+	request("/storage-read")
 	if _, err = command(ctx, "", nil, "docker", "stop", name); err != nil {
 		t.Fatal(err)
 	}
 	deploy(false)
 	request("/read")
+	request("/storage-read")
+	if err = m.Rollback(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	request("/storage-read")
+	// Scheduled commands mount the same volume with the same unprivileged UID.
+	m.mu.Lock()
+	taskApp := m.data.Apps[a.ID]
+	m.mu.Unlock()
+	_, out, err := m.startTaskContainer(ctx, taskApp, Task{ID: "storage-reader", Mode: "schedule", Command: []string{"/app/app", "storage-task"}}, "")
+	if err != nil || !strings.Contains(out, "persisted") {
+		t.Fatal("scheduled command did not receive lasting storage", err, out)
+	}
 	m.mu.Lock()
 	stable := m.data.Caches[a.ID]
 	m.mu.Unlock()

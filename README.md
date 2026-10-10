@@ -265,3 +265,5 @@ Manage public keys for a dedicated `deploy` login from **Servers → SSH access*
 See [deployment logs](docs/deployment-logs.md) for build output, failed-candidate startup diagnostics, and readiness troubleshooting.
 
 Apps enabling `lidza/cache` receive a private authenticated Valkey service automatically when no connection is configured. Existing and failed apps get this on their next deployment. Configure local or external services in application Settings; see [application caches](docs/cache.md). Production preflight reports missing framework settings before building.
+
+Apps enabling `lidza/storage` with the local provider receive [persistent application storage](docs/application-storage.md) automatically. Uploads survive releases, reloads, and rollbacks; workers and scheduled commands share the attachment. Existing S3 configuration is preserved.

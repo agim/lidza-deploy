@@ -15,6 +15,7 @@ type SettingsPatch struct {
 	EnvChanges         map[string]*string `json:"env_changes"`
 }
 type Settings struct {
+	PersistentStorage  bool              `json:"persistent_storage"`
 	Cache              CacheView         `json:"cache"`
 	BackupBeforeDeploy bool              `json:"backup_before_deploy"`
 	Bindings           map[string]string `json:"database_bindings"`
@@ -31,7 +32,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if !ok {
 		return Settings{}, errors.New("unknown application")
 	}
-	return Settings{Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
+	return Settings{PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
 }
 func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	m.mu.Lock()
@@ -57,6 +58,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		a.Env = map[string]string{}
 	}
 	for k, v := range p.EnvChanges {
+		if k == "STORAGE_DIR" && m.data.StorageVolumes[id] != "" {
+			return errors.New("STORAGE_DIR is managed by the persistent storage attachment")
+		}
 		if k == "CACHE_URL" && m.data.Caches[id].Mode != "" {
 			return errors.New("CACHE_URL is managed through Cache settings")
 		}
