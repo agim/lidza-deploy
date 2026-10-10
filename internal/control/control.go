@@ -41,14 +41,16 @@ type Server struct {
 	Token string `json:"token,omitempty"`
 }
 type Config struct {
-	PublicURL  string
-	User       string
-	Password   string
-	Key        []byte
-	DataDir    string
-	Servers    []Server
-	GitHub     *gh.Client
-	Connectors []auth.Connector
+	PublicURL        string
+	User             string
+	Password         string
+	Key              []byte
+	DataDir          string
+	Servers          []Server
+	GitHub           *gh.Client
+	SelfUpdateSecret string
+	SelfUpdateServer string
+	Connectors       []auth.Connector
 }
 type Application struct {
 	GitHubInstallation int64         `json:"github_installation,omitempty"`
@@ -334,6 +336,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 
 	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
 	mux.HandleFunc("POST /hooks/github-app", c.githubAppWebhook)
+	mux.HandleFunc("POST /hooks/self-update", c.selfUpdate)
 	mux.HandleFunc("POST /api/agent/checkout-token", c.checkoutToken)
 	mux.HandleFunc("POST /api/agent/errors", c.ingestErrors)
 	mux.Handle("/api/control/", c.Protect(private))
@@ -627,7 +630,7 @@ func ConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{PublicURL: values["PUBLIC_URL"], User: values["CONTROL_USER"], Password: values["CONTROL_PASSWORD"], Key: key, DataDir: values["CONTROL_DATA_DIR"]}
+	cfg := Config{SelfUpdateSecret: values["LIDZA_SELF_UPDATE_SECRET"], SelfUpdateServer: values["LIDZA_SELF_UPDATE_SERVER"], PublicURL: values["PUBLIC_URL"], User: values["CONTROL_USER"], Password: values["CONTROL_PASSWORD"], Key: key, DataDir: values["CONTROL_DATA_DIR"]}
 	if cfg.DataDir == "" {
 		cfg.DataDir = "/var/lib/lidza-control"
 	}
