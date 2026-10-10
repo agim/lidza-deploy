@@ -274,6 +274,20 @@ func (m *Manager) Upsert(a App) error {
 	if a.Env == nil {
 		a.Env = old.Env
 	}
+	// New applications apply their committed schema before startup. Existing
+	// applications keep their migration policy, including an explicit opt-out.
+	if _, supplied := a.Env["DB_MIGRATE"]; !supplied {
+		if value, configured := old.Env["DB_MIGRATE"]; configured || !exists {
+			a.Env = maps.Clone(a.Env)
+			if a.Env == nil {
+				a.Env = map[string]string{}
+			}
+			if !exists {
+				value = "true"
+			}
+			a.Env["DB_MIGRATE"] = value
+		}
+	}
 	// Full app updates that omit secrets must not rotate an existing identity.
 	if a.Env["AUTH_SECRET"] == "" && old.Env["AUTH_SECRET"] != "" {
 		a.Env = maps.Clone(a.Env)
@@ -282,6 +296,9 @@ func (m *Manager) Upsert(a App) error {
 	var err error
 	a, _, err = provisionAuthSecret(a)
 	if err != nil {
+		return err
+	}
+	if err := a.Validate(); err != nil {
 		return err
 	}
 	m.data.Apps[a.ID] = a

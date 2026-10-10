@@ -186,7 +186,8 @@ func TestCacheManualConfigurationAndProductionPreflight(t *testing.T) {
 func TestCacheInvalidEnvironmentDoesNotLeaveOperationHung(t *testing.T) {
 	m := testManager(t, &fakeRuntime{})
 	a := testApp("full-env")
-	for i := 0; i < 98; i++ {
+	// Leave room for the generated AUTH_SECRET and default DB_MIGRATE.
+	for i := 0; i < 97; i++ {
 		a.Env["VAR"+strings.Repeat("X", i+1)] = "value"
 	}
 	if err := m.Upsert(a); err != nil {

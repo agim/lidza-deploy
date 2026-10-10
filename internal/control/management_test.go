@@ -62,7 +62,7 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 		t.Fatal(w.Code, w.Body)
 	}
 	w := call(c.settings, "GET", "portal", "")
-	if w.Code != 200 || strings.Contains(w.Body.String(), "never-return-this") || strings.Contains(w.Body.String(), "new-secret") || !strings.Contains(w.Body.String(), `["AUTH_SECRET","NEW","SECRET"]`) {
+	if w.Code != 200 || strings.Contains(w.Body.String(), "never-return-this") || strings.Contains(w.Body.String(), "new-secret") || !strings.Contains(w.Body.String(), `["AUTH_SECRET","DB_MIGRATE","NEW","SECRET"]`) {
 		t.Fatal("settings keys", w.Code, w.Body)
 	}
 	// Confirm credentials and metadata survive a restart, independent of the seed file.

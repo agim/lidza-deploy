@@ -20,7 +20,7 @@ See the [deployment readiness review](docs/deployment-readiness.md) for the late
 - The selected **Signal** interface uses Līdza’s released dark brand palette. Standalone HTML previews remain available.
 - GUI server inventory, branch/domain settings, write-only environment edits, and retryable app removal.
 
-This supports one fleet team with admin, deployer and viewer roles, with one active control-panel process and one agent process per deployment host. Server inventory is managed in the GUI and stored encrypted; a private JSON file can seed initial setup. It is not yet full Hatchbox feature parity: cloud-server provisioning, scaling, and zero-downtime database migrations are future product work.
+This supports one fleet team with admin, deployer and viewer roles, with one active control-panel process and one agent process per deployment host. Server inventory is managed in the GUI and stored encrypted; a private JSON file can seed initial setup. New applications default to `DB_MIGRATE=true` to apply committed migrations before startup; explicit opt-outs and existing applications' policies are preserved. It is not yet full Hatchbox feature parity: cloud-server provisioning, scaling, and zero-downtime database migrations are future product work.
 
 ## Installation and first startup
 
