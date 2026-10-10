@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
+	"github.com/agim/lidza-deploy/internal/buildinfo"
 	"github.com/agim/lidza-deploy/internal/onboarding"
 	"github.com/agim/lidza-deploy/internal/webapp"
 	"github.com/agim/lidza-deploy/web"
@@ -17,6 +20,12 @@ import (
 )
 
 func main() {
+	version := flag.Bool("version", false, "print release version")
+	flag.Parse()
+	if *version {
+		fmt.Println(buildinfo.Version)
+		return
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}

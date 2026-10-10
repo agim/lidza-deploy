@@ -47,7 +47,7 @@ jobs:
             (cd "$bundle" && sha256sum -c SHA256SUMS)
             test "$(cat "$bundle/ARCH")" = "$arch"
             if [ "$arch" = amd64 ]; then
-              test "$("$bundle/bin/lidza-agent" -version)" = "$LIDZA_DEPLOY_VERSION"
+              bash tests/release-version.sh "$bundle" "$LIDZA_DEPLOY_VERSION"
             fi
             rm -rf "$bundle"
           done
