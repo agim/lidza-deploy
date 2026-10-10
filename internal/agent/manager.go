@@ -125,6 +125,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
+	// Docker can assign new ephemeral host ports after container/daemon restarts.
+	m.reconcileRoutes()
+	m.wg.Add(1)
+	go m.routeLoop()
 	m.wg.Add(1)
 	go m.work()
 	m.wg.Add(1)

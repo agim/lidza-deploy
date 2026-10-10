@@ -193,7 +193,7 @@ func Proxy(m *Manager) http.Handler {
 			return
 		}
 		release := m.Target(host)
-		if release == nil {
+		if release == nil || release.Port == "" {
 			http.Error(w, "application unavailable", http.StatusServiceUnavailable)
 			return
 		}
