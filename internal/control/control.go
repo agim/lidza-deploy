@@ -329,6 +329,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("GET /api/control/deployments", c.deployments)
 	handle("GET /api/control/deliveries", c.deliveries)
 	handle("GET /api/control/github/repos", c.repos)
+	handle("GET /api/control/github/branches", c.branches)
 	handle("POST /api/control/github/config", c.configureGitHub)
 
 	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)

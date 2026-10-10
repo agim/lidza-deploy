@@ -46,6 +46,11 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 		case "/app/installations/7/access_tokens":
 			minted++
 			json.NewEncoder(w).Encode(map[string]any{"token": "fresh-installation-token", "expires_at": time.Now().Add(time.Hour)})
+		case "/repos/acme/portal/branches":
+			if r.Header.Get("Authorization") != "Bearer fresh-installation-token" {
+				t.Fatal("branch request omitted installation credentials")
+			}
+			json.NewEncoder(w).Encode([]map[string]string{{"name": "master"}, {"name": "release"}})
 		case "/installation/repositories":
 			json.NewEncoder(w).Encode(map[string]any{"repositories": []gh.Repository{{FullName: "acme/portal", Private: true}}})
 		default:
@@ -105,6 +110,12 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 	}
 	if w := request("GET", "/api/control/github/repos", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"installation_id":7`) {
 		t.Fatal("selected repositories missing", w.Code, w.Body)
+	}
+	if w := request("GET", "/api/control/github/branches?repository=acme/portal&installation=7", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"master"`) {
+		t.Fatal("private repository branches unavailable", w.Code, w.Body)
+	}
+	if w := request("GET", "/api/control/github/branches?repository=../bad&installation=7", ""); w.Code != 400 {
+		t.Fatal("unsafe repository accepted", w.Code)
 	}
 	c.mu.Lock()
 	a := c.data.Apps["portal"]

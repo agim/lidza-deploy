@@ -33,15 +33,16 @@ func (b *limitedBuffer) ReadFrom(r io.Reader) (int64, error) {
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
-	if b.Len() < 65536 {
-		remaining := 65536 - b.Len()
-		if len(p) > remaining {
-			p = p[:remaining]
-		}
-		_, _ = b.Buffer.Write(p)
-		if b.diagnostic != nil {
-			b.diagnostic(b.String())
-		}
+	// Keep the last output, where compilers and Docker report the cause.
+	if len(p) >= 65536 {
+		b.Reset()
+		p = p[len(p)-65536:]
+	} else if excess := b.Len() + len(p) - 65536; excess > 0 {
+		b.Next(excess)
+	}
+	_, _ = b.Buffer.Write(p)
+	if b.diagnostic != nil {
+		b.diagnostic(b.String())
 	}
 	return n, nil
 }
@@ -106,7 +107,7 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 		return nil, err
 	}
 	image := "lidza/" + a.ID + ":" + id
-	if _, err = command(ctx, source, nil, "docker", "build", "--tag", image, "."); err != nil {
+	if _, err = command(ctx, source, nil, "docker", "build", "--progress=plain", "--tag", image, "."); err != nil {
 		return nil, fmt.Errorf("image build: %w", err)
 	}
 	release, err = d.runImage(ctx, a, id, image, commit)

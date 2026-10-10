@@ -25,12 +25,8 @@ func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Cont
 		defer m.mu.Unlock()
 		for i := range m.data.Deployments {
 			d := &m.data.Deployments[i]
-			if d.ID == j.deployment && len(d.Log) < 65536 {
-				remaining := 65536 - len(d.Log)
-				if len(line) > remaining {
-					line = line[:remaining]
-				}
-				d.Log += line
+			if d.ID == j.deployment {
+				d.Log = deploymentLogTail(d.Log + line)
 				break
 			}
 		}
@@ -46,10 +42,7 @@ func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Cont
 		}
 		m.mu.Unlock()
 		return func(output string) {
-			line := base + scrubLiveOutput(name+"\n"+output, secrets) + "\n"
-			if len(line) > 65536 {
-				line = line[:65536]
-			}
+			line := deploymentLogTail(base + name + "\n" + scrubLiveOutput(output, secrets) + "\n")
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			for i := range m.data.Deployments {
@@ -66,6 +59,13 @@ func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Cont
 // Snapshots are re-redacted from the bounded raw command buffer each time.
 func scrubLiveOutput(text string, secrets []string) string {
 	for _, secret := range secrets {
+		// A rolling buffer can begin halfway through a secret. Hide that suffix.
+		for n := 1; n < len(secret); n++ {
+			if strings.HasPrefix(text, secret[n:]) {
+				text = "[redacted]" + text[len(secret)-n:]
+				break
+			}
+		}
 		limit := min(len(secret)-1, len(text))
 		for n := limit; n > 0; n-- {
 			if strings.HasSuffix(text, secret[:n]) {
@@ -133,4 +133,20 @@ func scrubOutput(text string, values []string) string {
 		}
 	}
 	return text
+}
+
+func deploymentLogTail(text string) string {
+	const limit = 65536
+	const notice = "[Earlier deployment output omitted; showing the latest output.]\n"
+	if len(text) <= limit {
+		return text
+	}
+	tail := text[len(text)-(limit-len(notice)):]
+	// Cut at a line boundary; never expose a fragment of a redaction marker.
+	if i := strings.IndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
+	} else {
+		return notice + tail
+	}
+	return notice + tail
 }

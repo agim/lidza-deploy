@@ -53,7 +53,7 @@ func routePermission(pattern string) string {
 		return "audit.read"
 	case "GET /api/control/servers/{server}/databases/{id}/backups/{backup}":
 		return "infrastructure.manage"
-	case "GET /api/control/github/repos":
+	case "GET /api/control/github/repos", "GET /api/control/github/branches":
 		return "deploy.repositories"
 	case "POST /api/control/apps/{id}/owner-claim":
 		return "deploy.secrets"

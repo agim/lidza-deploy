@@ -197,3 +197,28 @@ func TestCommandCopyKeepsOutputBoundedAndPublishesChunks(t *testing.T) {
 		t.Fatalf("copy bypassed bounded live writes: bytes=%d retained=%d writes=%d err=%v", n, b.Len(), writes, err)
 	}
 }
+
+func TestDeploymentOutputRetainsFailureTail(t *testing.T) {
+	b := limitedBuffer{}
+	b.Write([]byte(strings.Repeat("successful build step\n", 5000)))
+	b.Write([]byte("compiler: final build failure\n"))
+	if b.Len() > 65536 || !strings.HasSuffix(b.String(), "compiler: final build failure\n") {
+		t.Fatal("final command failure was discarded")
+	}
+	text := deploymentLogTail(strings.Repeat("previous command\n", 5000) + b.String())
+	if len(text) > 65536 || !strings.Contains(text, "Earlier deployment output omitted") || !strings.HasSuffix(text, "compiler: final build failure\n") {
+		t.Fatal("deployment history discarded failure tail")
+	}
+	long := deploymentLogTail(strings.Repeat("x", 70000) + "final failure")
+	if len(long) > 65536 || !strings.HasSuffix(long, "final failure") {
+		t.Fatal("long line discarded failure")
+	}
+}
+
+func TestRollingLogRedactsSecretAtBufferBoundary(t *testing.T) {
+	secret := "secret-database-password"
+	output := scrubLiveOutput(secret[7:]+"\ncompiler failed\n", []string{secret})
+	if strings.Contains(output, secret[7:]) || !strings.Contains(output, "compiler failed") {
+		t.Fatalf("boundary secret not redacted: %q", output)
+	}
+}
