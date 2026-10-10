@@ -56,6 +56,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		a.Env = map[string]string{}
 	}
 	for k, v := range p.EnvChanges {
+		if k == "AUTH_SECRET" && (v == nil || *v == "") {
+			return errors.New("AUTH_SECRET cannot be removed or cleared; supply a replacement explicitly to rotate authentication tokens")
+		}
 		if _, managed := a.Bindings[k]; managed {
 			return errors.New("database variables are managed by database attachments")
 		}

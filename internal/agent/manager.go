@@ -219,6 +219,16 @@ func (m *Manager) Upsert(a App) error {
 	if a.Env == nil {
 		a.Env = old.Env
 	}
+	// Full app updates that omit secrets must not rotate an existing identity.
+	if a.Env["AUTH_SECRET"] == "" && old.Env["AUTH_SECRET"] != "" {
+		a.Env = maps.Clone(a.Env)
+		a.Env["AUTH_SECRET"] = old.Env["AUTH_SECRET"]
+	}
+	var err error
+	a, _, err = provisionAuthSecret(a)
+	if err != nil {
+		return err
+	}
 	m.data.Apps[a.ID] = a
 	if err := m.save(); err != nil {
 		if exists {
@@ -300,6 +310,20 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 	if len(m.queue) == cap(m.queue) {
 		return Deployment{}, errors.New("deployment queue full; retry later")
 	}
+	// Backfill older apps only when explicitly deployed/reloaded. Persist before
+	// enqueueing so concurrent requests, retries and restarts reuse the same key.
+	oldApp := m.data.Apps[a.ID]
+	var generated bool
+	var err error
+	a, generated, err = provisionAuthSecret(a)
+	if err != nil {
+		return Deployment{}, err
+	}
+	if generated {
+		updated := oldApp
+		updated.Env = maps.Clone(a.Env)
+		m.data.Apps[a.ID] = updated
+	}
 	d := Deployment{ID: newID(), AppID: a.ID, Status: "queued", Created: time.Now().UTC(), Key: req.Key, Kind: "deploy", Branch: a.Branch, Domain: a.Domain, Changes: changeKeys(m.data.Apps[a.ID], a)}
 	if len(changes) > 0 {
 		d.Changes = slices.Clone(changes[0])
@@ -314,6 +338,7 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 	}
 	if err := m.save(); err != nil {
 		m.data.Deployments = before
+		m.data.Apps[a.ID] = oldApp
 		return Deployment{}, err
 	}
 	m.queue <- job{app: a, deployment: d.ID, credentials: req, token: req.Token, reload: reload, backupIDs: ids}
