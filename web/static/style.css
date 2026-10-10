@@ -214,3 +214,13 @@ body[data-design=walnut] pre{background:var(--bg);color:var(--ink)}
 #deployment-output{overflow-anchor:none;min-height:25vh}
 
 .main-wrap main>#error{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);width:min(650px,90vw);max-height:35vh;overflow:auto;z-index:20;box-shadow:var(--shadow)}
+
+/* Application creation uses document scrolling, never a nested modal. */
+.new-app-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;align-items:start}
+.setup-card{min-width:0;border:1px solid var(--line);border-radius:12px;padding:24px;background:var(--surface)}
+.setup-card h2{font-size:1.2rem;margin:0 0 16px}.setup-card small{display:block;margin-top:8px;line-height:1.5;color:var(--muted)}
+.new-app-environment{grid-column:1/-1}.new-app-finish{margin-top:24px;padding-bottom:24px}.new-app-finish>.hint{max-width:80ch}
+.new-app-page .branch-options{max-height:240px;overflow:auto}.new-app-page label{margin-bottom:18px}
+@media(max-width:900px){.new-app-grid{grid-template-columns:1fr;gap:16px}.setup-card{padding:20px}.new-app-environment{grid-column:auto}}
+
+.new-app-page .dialog-actions{position:static;background:transparent;margin-top:16px;padding:16px 0;z-index:auto}

@@ -4,7 +4,7 @@ function isAdmin(){return demo||status.roles?.includes('admin')}
 function canDeploy(){return isAdmin()||status.roles?.includes('deployer')}
 function renderTeamPermissions(){
  for(const node of document.querySelectorAll('[data-tab=team],[data-tab=audit]'))node.hidden=!isAdmin();
- $('#new-app').hidden=!isAdmin();
+ $('#new-app').hidden=!isAdmin()||tab==='newapp';
  for(const node of document.querySelectorAll('#defaults-form input,#defaults-form button[type=submit]'))node.disabled=!isAdmin()||!$('#defaults-form').dataset.ready||!!$('#defaults-form').dataset.saving;
  for(const node of document.querySelectorAll('[data-ssh-access],[data-manage-server],[data-remove-server],[data-upgrade],[data-previews],[data-action=remove],[data-action=github-app],#github-config,#connect,#disconnect'))node.hidden=!isAdmin();
  if($('#connect'))$('#connect').hidden=!isAdmin()||(!demo&&!status.github_owner);
