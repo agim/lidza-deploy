@@ -42,6 +42,7 @@ mkdir "$upgrade_tmp/bundle"
 tar --no-same-owner -xzf "$upgrade_tmp/$asset" -C "$upgrade_tmp/bundle"
 (cd "$upgrade_tmp/bundle" && sha256sum -c SHA256SUMS >/dev/null)
 [[ $("$upgrade_tmp/bundle/bin/lidza-agent" -version) == "$version" ]]
+[[ $("$upgrade_tmp/bundle/bin/lidza-control" -version) == "$version" ]]
 install -m 0755 /usr/local/bin/lidza-agent /usr/local/bin/lidza-agent.previous
 if systemctl is-enabled --quiet lidza-control;then control=true;install -m 0755 /usr/local/bin/lidza-control /usr/local/bin/lidza-control.previous;fi
 install -m 0755 "$upgrade_tmp/bundle/bin/lidza-agent" /usr/local/bin/lidza-agent.next
@@ -50,7 +51,11 @@ changed=true
 mv /usr/local/bin/lidza-agent.next /usr/local/bin/lidza-agent
 if $control;then mv /usr/local/bin/lidza-control.next /usr/local/bin/lidza-control;fi
 systemctl restart lidza-agent
-if $control;then systemctl restart lidza-control;fi
+if $control;then
+ # Retired self-update credentials have no role in GUI-driven release checks.
+ if [[ -f /etc/lidza-control/control.env ]];then sed -i '/^LIDZA_SELF_UPDATE_SECRET=/d;/^LIDZA_SELF_UPDATE_SERVER=/d' /etc/lidza-control/control.env;fi
+ systemctl restart lidza-control
+fi
 healthy=false
 for attempt in {1..60};do
  if curl --max-time 2 -fsS http://127.0.0.1:9090/health >/dev/null && { ! $control || curl --max-time 2 -fsS http://127.0.0.1:3000/readyz >/dev/null; };then healthy=true;break;fi
@@ -58,4 +63,9 @@ for attempt in {1..60};do
 done
 $healthy
 changed=false
+# Keep the verified CLI updater current for subsequent releases.
+if [[ -f "$upgrade_tmp/bundle/deploy/upgrade-agent.sh" ]];then
+ install -m 0755 "$upgrade_tmp/bundle/deploy/upgrade-agent.sh" /usr/local/libexec/lidza-agent-upgrade.next
+ mv /usr/local/libexec/lidza-agent-upgrade.next /usr/local/libexec/lidza-agent-upgrade
+fi
 report succeeded 'Official release installed; health checks passed'

@@ -188,6 +188,8 @@ if $with_control; then
  if [[ ! -f "$root/etc/lidza-control/control.env" ]]; then
   printf '%s\n' 'CONTROL_DATA_DIR=/var/lib/lidza-control' 'LIDZA_ADDR=127.0.0.1:3000' 'DOCKER_CONFIG=/var/lib/lidza-control/docker' > "$root/etc/lidza-control/control.env"
  fi
+ # Remove retired self-update webhook settings without touching OAuth configuration.
+ sed -i '/^LIDZA_SELF_UPDATE_SECRET=/d;/^LIDZA_SELF_UPDATE_SERVER=/d' "$root/etc/lidza-control/control.env"
  if ! grep -q '^CONTROL_SETUP_ORIGIN=.' "$root/etc/lidza-control/control.env";then
   sed -i '/^CONTROL_SETUP_ORIGIN=/d' "$root/etc/lidza-control/control.env"
   printf 'CONTROL_SETUP_ORIGIN=%s\n' "$setup_origin" >> "$root/etc/lidza-control/control.env"

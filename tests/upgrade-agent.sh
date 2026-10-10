@@ -3,14 +3,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 scratch=$(mktemp -d /tmp/lidza-upgrade-test.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT
-mkdir -p "$scratch"/{mock,release/bin,usr/local/bin,var/lib/lidza-agent/upgrade,var/tmp,run}
+mkdir -p "$scratch"/{mock,release/bin,release/deploy,usr/local/bin,usr/local/libexec,etc/lidza-control,var/lib/lidza-agent/upgrade,var/tmp,run}
 cat > "$scratch/release/bin/lidza-agent" <<'BIN'
 #!/usr/bin/env bash
 echo v0.2.0
 BIN
 cp "$scratch/release/bin/lidza-agent" "$scratch/release/bin/lidza-control"
 chmod +x "$scratch/release/bin/"*
-(cd "$scratch/release" && sha256sum bin/lidza-agent bin/lidza-control > SHA256SUMS)
+cp scripts/upgrade-agent.sh "$scratch/release/deploy/upgrade-agent.sh"
+printf "%s\n" "LIDZA_SELF_UPDATE_SECRET=retired-secret" "LIDZA_SELF_UPDATE_SERVER=local" "AUTH_CONNECT=github" > "$scratch/etc/lidza-control/control.env"
+(cd "$scratch/release" && sha256sum bin/lidza-agent bin/lidza-control deploy/upgrade-agent.sh > SHA256SUMS)
 tar -C "$scratch/release" -czf "$scratch/lidza-agent-linux-amd64.tar.gz" .
 (cd "$scratch" && sha256sum lidza-agent-linux-amd64.tar.gz > checksum)
 cat > "$scratch/mock/curl" <<'MOCK'
@@ -34,7 +36,7 @@ chmod +x "$scratch/mock/"*
 python3 - "$scratch" <<'PY'
 import pathlib,sys
 root=pathlib.Path(sys.argv[1]);s=pathlib.Path('scripts/upgrade-agent.sh').read_text()
-for p in ['/var/lib/lidza-agent','/usr/local/bin','/var/tmp','/run/lidza-agent-upgrade.lock']:
+for p in ['/var/lib/lidza-agent','/usr/local/bin','/usr/local/libexec','/etc/lidza-control','/var/tmp','/run/lidza-agent-upgrade.lock']:
  s=s.replace(p,str(root)+p)
 (root/'helper').write_text(s);(root/'helper').chmod(0o755)
 PY
@@ -44,6 +46,9 @@ old(){ printf '#!/usr/bin/env bash\necho old-version\n' > "$scratch/usr/local/bi
 old
 "$scratch/helper"
 [[ $("$scratch/usr/local/bin/lidza-agent" -version) == v0.2.0 ]]
+! rg -q "^LIDZA_SELF_UPDATE_" "$scratch/etc/lidza-control/control.env"
+rg -q "^AUTH_CONNECT=github$" "$scratch/etc/lidza-control/control.env"
+cmp scripts/upgrade-agent.sh "$scratch/usr/local/libexec/lidza-agent-upgrade"
 rg -q 'succeeded' "$scratch/var/lib/lidza-agent/upgrade/status.json"
 old
 touch "$scratch/bad-health"

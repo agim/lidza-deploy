@@ -1,25 +1,21 @@
-# Automatic control-panel updates
+# Control panel and agent updates
 
-The systemd installation can update itself when a stable Līdza Deploy release is published. Repository pushes alone do not trigger updates: the release workflow tests and packages both architectures first.
+Open **Updates** in the GUI. No GitHub account, application registration, repository webhook or webhook secret is required for release updates.
 
-Configure these values in the control panel's existing `/etc/lidza-control/control.env` file (keep its other values):
+- **Check now** fetches the latest stable public Līdza Deploy release and shows installed control-panel and agent versions.
+- **Update control panel & agents** queues a durable batch using the installed CLI updater on each connected server.
+- **Automatically install stable releases** opts this installation into hourly release checks and installation. It is disabled by default. Checks and queued work continue when the browser is closed.
 
-- `LIDZA_SELF_UPDATE_SECRET`: a unique secret generated with `openssl rand -hex 32`.
-- `LIDZA_SELF_UPDATE_SERVER`: the ID shown in Servers for the colocated agent, typically `local`. Its URL must use loopback.
+Remote agents update first, one at a time. The colocated agent on the control-panel host updates last; its helper replaces both the agent and GUI binaries. The browser can briefly lose connection while the GUI restarts. Reload Updates after it reconnects. An installation with a remote-only GUI must also connect the local agent on its GUI host to update that host.
 
-Restart `lidza-control`, then create a webhook in **agim/lidza-deploy → Settings → Webhooks**:
+The root helper downloads assets and checksums from the fixed official release repository, verifies the archive and bundled checksums, restarts services and checks readiness. Failed startup restores previous binaries. Hosted application containers continue running. OAuth, operator accounts, database data and application configuration are preserved.
 
-- Payload URL: `https://lidza-deploy.albaspot.com/hooks/self-update`
-- Content type: `application/json`
-- Secret: the same `LIDZA_SELF_UPDATE_SECRET`
-- SSL verification: enabled
-- Events: **Releases** only
-- Active: enabled
+A busy or temporarily unreachable server waits and is retried by the framework's durable minute schedule. Unsupported installers and failed upgrades stop the batch before updating remaining servers. Fix that host, then click Update again. Automatic mode does not repeatedly install a failed release; a manual retry or a newer release is required.
 
-GitHub's ping should return 200. Only signed `release/published` events for this repository are accepted. The agent independently checks the latest stable release. Drafts, prereleases, older versions and unrelated repositories do not queue updates. The webhook stays disabled until both settings are configured.
+Install this release once with the current installer on the GUI host and each hosting server to provision the latest CLI helper. Subsequent updates refresh the verified helper too. Existing **Servers → Agent upgrade** remains available for updating individual hosts.
 
-The existing root upgrade helper verifies official release checksums, replaces agent and control-panel binaries, restarts services, checks readiness and restores previous binaries if the update fails. OAuth and database configuration stay in the existing data directory and environment file.
+## Removal of the former self-update webhook
 
-Check webhook delivery responses in GitHub. If the host is busy deploying, backing up, restoring or already upgrading, the request returns 503; use **Redeliver** once it is idle. GitHub does not automatically retry failed deliveries. This endpoint does not provide unattended retry scheduling.
+The `/hooks/self-update` endpoint and `LIDZA_SELF_UPDATE_SECRET` / `LIDZA_SELF_UPDATE_SERVER` settings have been removed. The current installer and CLI helper delete these two retired environment entries; they leave OAuth and hosted-app webhook secrets intact.
 
-Creating a hook through the GitHub API requires repository webhook write permission. Connecting a GitHub App with read-only repository access is insufficient for that administration operation. Do not paste the webhook secret into issues, logs or chat.
+If you manually created a repository hook whose URL ends in `/hooks/self-update`, delete that hook in GitHub repository settings. App deployment hooks (`/hooks/github/...` and `/hooks/github-app`) continue to work and must be kept.

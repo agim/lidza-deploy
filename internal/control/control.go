@@ -41,16 +41,14 @@ type Server struct {
 	Token string `json:"token,omitempty"`
 }
 type Config struct {
-	PublicURL        string
-	User             string
-	Password         string
-	Key              []byte
-	DataDir          string
-	Servers          []Server
-	GitHub           *gh.Client
-	SelfUpdateSecret string
-	SelfUpdateServer string
-	Connectors       []auth.Connector
+	PublicURL  string
+	User       string
+	Password   string
+	Key        []byte
+	DataDir    string
+	Servers    []Server
+	GitHub     *gh.Client
+	Connectors []auth.Connector
 }
 type Application struct {
 	GitHubInstallation int64         `json:"github_installation,omitempty"`
@@ -68,6 +66,7 @@ type Application struct {
 	Secret             string        `json:"secret,omitempty"`
 }
 type saved struct {
+	Updates       UpdateSettings         `json:"updates"`
 	GitHubApp     *githubAppConfig       `json:"github_app,omitempty"`
 	BackupStorage *storage.Config        `json:"backup_storage,omitempty"`
 	Incidents     map[string]Incident    `json:"incidents,omitempty"`
@@ -75,15 +74,17 @@ type saved struct {
 	Servers       []Server               `json:"servers"`
 }
 type Control struct {
-	githubMu   sync.Mutex
-	cfg        Config
-	mu         sync.Mutex
-	registryMu sync.RWMutex
-	registry   []Server
-	data       saved
-	client     *http.Client
-	operatorID string
-	teamMu     sync.Mutex
+	releaseCheck func(*http.Request) (string, error)
+	updateMu     sync.Mutex
+	githubMu     sync.Mutex
+	cfg          Config
+	mu           sync.Mutex
+	registryMu   sync.RWMutex
+	registry     []Server
+	data         saved
+	client       *http.Client
+	operatorID   string
+	teamMu       sync.Mutex
 }
 
 func New(cfg Config) (*Control, error) {
@@ -211,7 +212,11 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if _, err := q.Enqueue(ctx, "errors.sync", nil); err != nil {
 		return err
 	}
-	return q.Schedule("ops.tick", jobs.Every(time.Minute), nil)
+	if err := q.Schedule("ops.tick", jobs.Every(time.Minute), nil); err != nil {
+		return err
+	}
+	q.Handle("updates.tick", func(ctx context.Context, _ json.RawMessage) error { return c.updateTick(ctx) }, jobs.Concurrency(1))
+	return q.Schedule("updates.tick", jobs.Every(time.Minute), nil)
 }
 func (c *Control) token(ctx context.Context) (string, error) {
 	conn, err := auth.From(ctx).Connection(ctx, c.operatorID, "github")
@@ -288,6 +293,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
 	handle("GET /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
 	handle("GET /api/control/server-health", c.serverHealth)
+	handle("GET /api/control/updates", c.updates)
+	handle("POST /api/control/updates/{action}", c.updates)
+	handle("PATCH /api/control/updates", c.updates)
 	handle("PUT /api/control/apps/{id}/{feature}", c.appFeature)
 	handle("POST /api/control/apps/{id}/restore", func(w http.ResponseWriter, r *http.Request) { r.SetPathValue("feature", "restore"); c.appFeature(w, r) })
 	handle("GET /api/control/status", c.status)
@@ -336,7 +344,6 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 
 	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
 	mux.HandleFunc("POST /hooks/github-app", c.githubAppWebhook)
-	mux.HandleFunc("POST /hooks/self-update", c.selfUpdate)
 	mux.HandleFunc("POST /api/agent/checkout-token", c.checkoutToken)
 	mux.HandleFunc("POST /api/agent/errors", c.ingestErrors)
 	mux.Handle("/api/control/", c.Protect(private))
@@ -630,7 +637,7 @@ func ConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{SelfUpdateSecret: values["LIDZA_SELF_UPDATE_SECRET"], SelfUpdateServer: values["LIDZA_SELF_UPDATE_SERVER"], PublicURL: values["PUBLIC_URL"], User: values["CONTROL_USER"], Password: values["CONTROL_PASSWORD"], Key: key, DataDir: values["CONTROL_DATA_DIR"]}
+	cfg := Config{PublicURL: values["PUBLIC_URL"], User: values["CONTROL_USER"], Password: values["CONTROL_PASSWORD"], Key: key, DataDir: values["CONTROL_DATA_DIR"]}
 	if cfg.DataDir == "" {
 		cfg.DataDir = "/var/lib/lidza-control"
 	}

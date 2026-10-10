@@ -38,7 +38,7 @@ func (m *Manager) upgradeStatus() UpgradeStatus {
 	}
 	return status
 }
-func latestAgentRelease(r *http.Request) (string, error) {
+func LatestRelease(r *http.Request) (string, error) {
 	req, err := http.NewRequestWithContext(r.Context(), "GET", "https://api.github.com/repos/agim/lidza-deploy/releases/latest", nil)
 	if err != nil {
 		return "", err
@@ -67,7 +67,7 @@ func (m *Manager) upgradeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/upgrade", func(w http.ResponseWriter, r *http.Request) {
 		status := m.upgradeStatus()
 		if r.URL.Query().Get("check") == "1" {
-			latest, err := latestAgentRelease(r)
+			latest, err := LatestRelease(r)
 			if err != nil {
 				status.Message = err.Error()
 			} else {

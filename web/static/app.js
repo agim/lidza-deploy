@@ -1,6 +1,6 @@
 'use strict';
 const $=s=>document.querySelector(s), params=new URLSearchParams(location.search), demo=params.get('demo')==='1';
-const sectionTabs={security:'security',applications:'apps',deployments:'deployments',servers:'servers',databases:'backups',integrations:'settings',errors:'errors',team:'team',audit:'audit'};
+const sectionTabs={updates:'updates',security:'security',applications:'apps',deployments:'deployments',servers:'servers',databases:'backups',integrations:'settings',errors:'errors',team:'team',audit:'audit'};
 const tabSections=Object.fromEntries(Object.entries(sectionTabs).map(([section,value])=>[value,section]));
 function tabFromURL(){return sectionTabs[location.hash.slice(1)]||'apps'}
 let design=demo?(params.get('design')||'terminal'):'terminal', tab=params.has('github')?'settings':tabFromURL();
@@ -46,6 +46,7 @@ async function refresh({background=false}={}) {
   else if(unavailableServers.length)fail(Error('Deployment history unavailable for: '+unavailableServers.join(', ')+'. Other servers remain available.'),'refresh');
   else if($('#error').dataset.source==='refresh')$('#error').hidden=true;
  }
+ if(tab==='updates')await loadUpdates();
  if(!background||!dirtyForms.size){const snapshot=JSON.stringify([tab,apps,servers,deployments,status,deliveries,unavailableServers]);if(!background||snapshot!==renderedSnapshot){render();renderedSnapshot=snapshot;}if(!refreshFailures)lastRefresh=Date.now()}updateConnectionBadge();
  }finally{refreshing=false}
 }
@@ -56,10 +57,11 @@ function card(a){let d=latest(a.id),server=servers.find(s=>s.id===a.server_id);r
 function render(){
  const sameSection=document.body.dataset.section===tab;const drafts=captureFormDrafts();const scrolls=[...document.querySelectorAll('#content .table-wrap')].map(e=>[e.scrollLeft,e.scrollTop]);const pageScroll=[window.scrollX,window.scrollY];const expanded=[...document.querySelectorAll('#content details[open][data-app-menu]')].map(e=>e.dataset.appMenu);document.body.dataset.section=tab;
  for(const b of document.querySelectorAll('[data-tab]')){b.classList.toggle('active',b.dataset.tab===tab);if(b.dataset.tab===tab)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')}
- const labels={security:['Security activity','Review suspicious traffic across hosted applications.'],errors:['Errors','Understand failures in your applications.'],team:['Team','Give your team the access they need.'],audit:['Audit log','Who changed what, and when.'],apps:['Applications','A clear view of everything you’re building.'],deployments:['Deployments','Every release, from queued to live.'],servers:['Servers','A home for each app. A view across every host.'],backups:['Databases & backups','Protect application data across your servers.'],settings:['Integrations','Connect your repositories and automate your releases.']};
+ const labels={updates:['Updates','Keep the control panel and hosting agents current.'],security:['Security activity','Review suspicious traffic across hosted applications.'],errors:['Errors','Understand failures in your applications.'],team:['Team','Give your team the access they need.'],audit:['Audit log','Who changed what, and when.'],apps:['Applications','A clear view of everything you’re building.'],deployments:['Deployments','Every release, from queued to live.'],servers:['Servers','A home for each app. A view across every host.'],backups:['Databases & backups','Protect application data across your servers.'],settings:['Integrations','Connect your repositories and automate your releases.']};
  $('#mobile-section').textContent=labels[tab][0];$('#new-app').disabled=!servers.length;$('#new-app').title=servers.length?'':'Connect a server before creating an application';$('#new-app').classList.toggle('primary',tab!=='settings');$('#title').textContent=labels[tab][0]+'.';$('#crumb').textContent=labels[tab][0];$('#subtitle').textContent=labels[tab][1];$('#app-count').textContent=apps.length;$('#stat-apps').textContent=apps.length;$('#stat-releases').textContent=deployments.filter(d=>d.status==='live').length;$('#stat-servers').textContent=servers.length;
  const content=$('#content');
  if(tab==='apps'){content.innerHTML=`<div class="toolbar"><h2>Your applications <span class="badge">${apps.length}</span></h2><label class="sr-only" for="search">Search applications</label><input id="search" class="search" placeholder="Search applications…" value="${escape(filter)}"></div><div class="cards">${apps.filter(a=>(a.id+' '+a.domain).includes(filter.toLowerCase())).map(card).join('')||applicationEmptyState()}</div>`;$('#search').addEventListener('input',e=>{filter=e.target.value;const start=e.target.selectionStart;render();$('#search').focus();$('#search').setSelectionRange(start,start)})}
+ if(tab==='updates'){renderUpdates();loadUpdates().catch(fail)}
  if(tab==='backups')renderBackups();
  if(tab==='errors')renderErrors();
  if(tab==='security')renderSecurityActivity();

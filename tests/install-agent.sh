@@ -12,8 +12,11 @@ if "$installer" --with-control --stage "$scratch/missing-fqdn" >/dev/null 2>&1;t
 "$installer" --fqdn localhost --plan > "$scratch/plan"
 "$installer" --stage "$scratch/stage" --with-control --fqdn deploy.example.com --hostname agent.example.com --email ops@example.com >/dev/null
 cp "$scratch/stage/etc/lidza-agent/agent.env" "$scratch/original.env"
+printf "%s\n" "LIDZA_SELF_UPDATE_SECRET=retired-secret" "LIDZA_SELF_UPDATE_SERVER=local" "AUTH_CONNECT=github" >> "$scratch/stage/etc/lidza-control/control.env"
 "$installer" --stage "$scratch/stage" --with-control --fqdn deploy.example.com --hostname agent.example.com --email ops@example.com >/dev/null
 cmp -s "$scratch/original.env" "$scratch/stage/etc/lidza-agent/agent.env"
+! rg -q "^LIDZA_SELF_UPDATE_" "$scratch/stage/etc/lidza-control/control.env"
+rg -q "^AUTH_CONNECT=github$" "$scratch/stage/etc/lidza-control/control.env"
 [[ $(stat -c %a "$scratch/stage/etc/lidza-agent/agent.env") == 600 ]]
 [[ $(stat -c %a "$scratch/stage/etc/lidza-agent/connection.json") == 600 ]]
 [[ -x "$scratch/stage/usr/local/bin/lidza-agent" ]]
