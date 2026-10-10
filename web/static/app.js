@@ -30,6 +30,7 @@ function theme(){document.body.dataset.design=design;$('#design').value=design;$
 function showNotice(target,message){target.replaceChildren();const text=document.createElement('span');text.textContent=message;const close=document.createElement('button');close.type='button';close.className='notice-dismiss';close.textContent='Dismiss';close.setAttribute('aria-label','Dismiss notification');close.onclick=()=>{target.hidden=true};target.append(text,close);target.hidden=false}
 function notice(s){showNotice($('#toast'),s)}
 function fail(e,source='action'){const target=$('#error');if(source==='refresh'&&!target.hidden&&target.dataset.source==='action')return;target.dataset.source=source;showNotice(target,e.message||String(e))}
+function byID(a,b){return a.id<b.id?-1:a.id>b.id?1:0}
 async function api(path,method='GET',body){const res=await fetch('/api/'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(res.status===401){location.href='/login.html?next='+encodeURIComponent(location.pathname+location.search+location.hash);throw Error('Please sign in.')}let data;try{data=await res.json()}catch{data={}}if(!res.ok)throw Error(data.error?.message||data.error||'Request failed ('+res.status+')');return data}
 function initDemo(){servers=[{id:'eu-1',name:'Frankfurt · production',url:'https://agent-eu.example.com'},{id:'us-1',name:'Virginia · staging',url:'https://agent-us.example.com'}];apps=[{id:'customer-portal',repository:'acme/customer-portal',domain:'portal.example.com',branch:'main',server_id:'eu-1',auto_deploy:true},{id:'content-studio',repository:'acme/content-studio',domain:'studio.example.com',branch:'main',server_id:'eu-1',auto_deploy:true},{id:'documentation',repository:'acme/docs',domain:'docs.example.com',branch:'main',server_id:'us-1',auto_deploy:false}];deployments=apps.map((a,i)=>({id:'demo-'+i,app_id:a.id,status:'live',commit:['a6b92fe','8f129bc','319fa27'][i],created:new Date(Date.now()-(i+1)*3600000).toISOString()}));apps.forEach(a=>a.current={commit:latest(a.id).commit});status={github_connected:true,github_configured:true};$('#demo-banner').hidden=false;$('#mode').textContent='Interactive preview'}
 async function refresh({background=false}={}) {
@@ -41,6 +42,7 @@ async function refresh({background=false}={}) {
   const results = await Promise.allSettled(['apps','servers','deployments','status','deliveries'].map(name=>api('control/'+name)));
   const current=[apps,servers,deployments,status,deliveries];
   [apps,servers,deployments,status,deliveries]=results.map((result,i)=>result.status==='fulfilled'?result.value:current[i]);
+  apps=[...apps].sort(byID);servers=[...servers].sort(byID);
   if(results[2].status==='fulfilled'){unavailableServers=deployments.unavailable_servers||[];deployments=deployments.deployments||[];}
   const failures=results.filter(result=>result.status==='rejected');refreshFailures=failures.length+unavailableServers.length;
   if(failures.length)fail(Error('Some data could not be refreshed: '+failures.map(result=>result.reason.message).join('; ')),'refresh');
@@ -70,7 +72,7 @@ function renderApplications(){
  if(!content.querySelector('.cards')){content.innerHTML='<div class="toolbar"><h2>Your applications <span class="badge"></span></h2><label class="sr-only" for="search">Search applications</label><input id="search" class="search" placeholder="Search applications…"></div><div class="cards"></div>';$('#search').oninput=e=>{filter=e.target.value;render()}}
  content.querySelector('.toolbar .badge').textContent=apps.length;
  if($('#search').value!==filter)$('#search').value=filter;
- const list=content.querySelector('.cards'),visible=apps.filter(a=>(a.id+' '+a.domain).toLowerCase().includes(filter.toLowerCase())),retained=new Set();
+ const list=content.querySelector('.cards'),visible=[...apps].sort(byID).filter(a=>(a.id+' '+a.domain).toLowerCase().includes(filter.toLowerCase())),retained=new Set();
  for(const [index,a] of visible.entries()){
   let node=[...list.children].find(e=>e.dataset.appCard===a.id);
   const template=document.createElement('template');template.innerHTML=card(a);const next=template.content.firstElementChild;

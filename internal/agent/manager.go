@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -190,6 +191,7 @@ func (m *Manager) Apps() []App {
 		}
 		out = append(out, a)
 	}
+	slices.SortFunc(out, func(a, b App) int { return cmp.Compare(a.ID, b.ID) })
 	return out
 }
 func (m *Manager) Deployments() []Deployment {

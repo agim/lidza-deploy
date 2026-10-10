@@ -4,6 +4,7 @@ package control
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -28,6 +29,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -414,6 +416,7 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	slices.SortFunc(out, func(a, b view) int { return cmp.Compare(a.ID, b.ID) })
 	agent.JSON(w, 200, out)
 }
 func (c *Control) AuthorizeConnect(ctx context.Context, u *auth.User, provider string) error {
