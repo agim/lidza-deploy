@@ -1,12 +1,13 @@
 'use strict';
 const $=s=>document.querySelector(s), params=new URLSearchParams(location.search), demo=params.get('demo')==='1';
-const sectionTabs={help:'help',updates:'updates',security:'security',applications:'apps',deployments:'deployments',servers:'servers',databases:'backups',integrations:'settings',errors:'errors',team:'team',audit:'audit'};
+const sectionTabs={defaults:'defaults',help:'help',updates:'updates',security:'security',applications:'apps',deployments:'deployments',servers:'servers',databases:'backups',integrations:'settings',errors:'errors',team:'team',audit:'audit'};
 const tabSections=Object.fromEntries(Object.entries(sectionTabs).map(([section,value])=>[value,section]));
 function tabFromURL(){return sectionTabs[location.hash.slice(1).split('/')[0]]||'apps'}
 let design=demo?(params.get('design')||'terminal'):'terminal', tab=params.has('github')?'settings':tabFromURL();
 function sectionURL(next){const url=new URL(location.href);url.hash=tabSections[next];return url}
 function navigate(next){if(!tabSections[next])return;if(next!==tab&&dirtyForms.size&&!confirm('Leave this section and discard unsaved changes?'))return Promise.resolve();if(next!==tab)dirtyForms.clear();closeMobileNavigation();const url=sectionURL(next);if(url.href!==location.href)history.pushState(null,'',url);tab=next;filter='';render();return refresh()}
-function restoreSection(){const next=tabFromURL();if(next===tab){if(tab==='help')renderHelp();return}for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();if(dirtyForms.size){if(!confirm('Leave this section and discard unsaved changes?')){history.pushState(null,'',sectionURL(tab));return}dirtyForms.clear()}closeMobileNavigation();tab=next;filter='';render();refresh().catch(fail)}
+function restoreSection(){const next=tabFromURL();if(next===tab){if(tab==='defaults')renderDefaults();
+ if(tab==='help')renderHelp();return}for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();if(dirtyForms.size){if(!confirm('Leave this section and discard unsaved changes?')){history.pushState(null,'',sectionURL(tab));return}dirtyForms.clear()}closeMobileNavigation();tab=next;filter='';render();refresh().catch(fail)}
 window.addEventListener('popstate',restoreSection);
 window.addEventListener('hashchange',restoreSection);
 let repositoryInstallations=new Map(), repositoryBranches=new Map(), branchEdited=false;
@@ -128,10 +129,11 @@ function renderServers(){
 function render(){
  const sameSection=document.body.dataset.section===tab;const drafts=captureFormDrafts();const scrolls=[...document.querySelectorAll('#content .table-wrap')].map(e=>({node:e,left:e.scrollLeft,top:e.scrollTop}));const anchor=sameSection?[...document.querySelectorAll('#content [data-app-card],#content [data-release],#content [data-database-card],#content [data-server-card]')].find(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.top<innerHeight}):null;const anchorTop=anchor?.getBoundingClientRect().top;const pageScroll=[window.scrollX,window.scrollY];const expanded=[...document.querySelectorAll('#content details[open][data-app-menu]')].map(e=>e.dataset.appMenu);document.body.dataset.section=tab;
  for(const b of document.querySelectorAll('[data-tab]')){b.classList.toggle('active',b.dataset.tab===tab);if(b.dataset.tab===tab)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')}
- const labels={help:['Help','Practical guides for deploying and operating your apps.'],updates:['Updates','Keep the control panel and hosting agents current.'],security:['Security activity','Review suspicious traffic across hosted applications.'],errors:['Errors','Understand failures in your applications.'],team:['Team','Give your team the access they need.'],audit:['Audit log','Who changed what, and when.'],apps:['Applications','A clear view of everything you’re building.'],deployments:['Deployments','Every release, from queued to live.'],servers:['Servers','A home for each app. A view across every host.'],backups:['Databases & backups','Protect application data across your servers.'],settings:['Integrations','Connect your repositories and automate your releases.']};
+ const labels={defaults:['Application defaults','Shared settings for an app’s first deployment.'],help:['Help','Practical guides for deploying and operating your apps.'],updates:['Updates','Keep the control panel and hosting agents current.'],security:['Security activity','Review suspicious traffic across hosted applications.'],errors:['Errors','Understand failures in your applications.'],team:['Team','Give your team the access they need.'],audit:['Audit log','Who changed what, and when.'],apps:['Applications','A clear view of everything you’re building.'],deployments:['Deployments','Every release, from queued to live.'],servers:['Servers','A home for each app. A view across every host.'],backups:['Databases & backups','Protect application data across your servers.'],settings:['Integrations','Connect your repositories and automate your releases.']};
  $('#mobile-section').textContent=labels[tab][0];$('#new-app').disabled=!servers.length;$('#new-app').title=servers.length?'':'Connect a server before creating an application';$('#new-app').classList.toggle('primary',tab!=='settings');$('#title').textContent=labels[tab][0]+'.';$('#crumb').textContent=labels[tab][0];$('#subtitle').textContent=labels[tab][1];$('#app-count').textContent=apps.length;$('#stat-apps').textContent=apps.length;$('#stat-releases').textContent=deployments.filter(d=>d.status==='live').length;$('#stat-servers').textContent=servers.length;
  const content=$('#content'),minimum=content.style.minHeight;if(sameSection)content.style.minHeight=content.offsetHeight+'px';
  if(tab==='apps')renderApplications();
+ if(tab==='defaults')renderDefaults();
  if(tab==='help')renderHelp();
  if(tab==='updates'){renderUpdates();loadUpdates().catch(fail)}
  if(tab==='backups')renderBackups();
@@ -197,7 +199,8 @@ async function openSettings(id) {
  const value=demo?{...app,env_keys:app.env_keys||[]}:await api('control/apps/'+id+'/settings');
  editingApp=id; const form=$('#settings-form'); form.reset();form.querySelectorAll('details').forEach(d=>d.open=false);
  form.elements.backup_before_deploy.checked=value.backup_before_deploy!==false;form.elements.branch.value=value.branch; form.elements.domain.value=value.domain;
- $('#env-keys').textContent=value.env_keys?.join(', ')||'No variables saved';envEditor('#settings-env-editor',value.env_keys||[],[...Object.keys(value.database_bindings||{}),...(value.cache?.managed?['CACHE_URL']:[]),...(value.persistent_storage?['STORAGE_DIR']:[])]);
+ $('#env-keys').textContent=value.env_keys?.join(', ')||'No variables saved';envEditor('#settings-env-editor',value.env_keys||[],[...Object.keys(value.database_bindings||{}),...(value.cache?.managed?['CACHE_URL']:[]),...(value.persistent_storage?['STORAGE_DIR']:[])],value.env_sources||{});
+ $('#settings-defaults').hidden=!isAdmin();$('#settings-defaults').onclick=()=>reviewDefaults(id,value).catch(err=>dialogError('#settings-error',err));
  const primary=value.database_bindings?.DATABASE_URL;$('#settings-database-status').textContent=primary?'Primary database: '+primary:value.env_keys?.includes('DATABASE_URL')?'DATABASE_URL is set manually. Attach a managed database to enable backups.':'No primary database attached. Apps using the Līdza DB pack require DATABASE_URL.';
  $('#settings-database').onclick=()=>openDatabase(id).catch(err=>dialogError('#settings-error',err));
  $('#settings-cache-status').textContent=cacheStatusText(value.cache);$('#settings-cache').hidden=!isAdmin();$('#settings-cache').onclick=()=>openCacheSettings(id).catch(err=>dialogError('#settings-error',err));
@@ -222,12 +225,12 @@ $('#settings-form').onsubmit = async event => {
  finally {button.disabled=false;}
 };
 for(const id of ['server-dialog','settings-dialog','app-dialog'])$("#"+id).addEventListener('close',()=>$("#"+id+' form').reset());
-function envEditor(selector,keys,managed=[]) {
+function envEditor(selector,keys,managed=[],origins={}) {
  const host=$(selector);host.replaceChildren();
  const rows=document.createElement('div');host.append(rows);
  function add(key='') {
   const row=document.createElement('div');row.className='env-row';row.dataset.saved=key?'1':'0';
-  const nameLabel=document.createElement('label');nameLabel.textContent='Name';const name=document.createElement('input');name.className='env-name';name.value=key;name.readOnly=!!key;name.autocomplete='off';name.spellcheck=false;name.placeholder='DATABASE_URL';nameLabel.append(name);
+  const nameLabel=document.createElement('label');nameLabel.textContent='Name';const name=document.createElement('input');name.className='env-name';name.value=key;name.readOnly=!!key;name.autocomplete='off';name.spellcheck=false;name.placeholder='DATABASE_URL';nameLabel.append(name);if(key){const source=document.createElement('small');source.textContent=origins[key]==='workspace'?'Workspace default':origins[key]==='built-in'?'Built-in default':'App setting';nameLabel.append(source)}
   const valueLabel=document.createElement('label');valueLabel.textContent='Value';const value=document.createElement('input');value.className='env-value';value.type='password';value.autocomplete='new-password';value.spellcheck=false;value.placeholder=key?'Saved value stays unchanged':'Enter value';valueLabel.append(value);
   const actionLabel=document.createElement('label');actionLabel.textContent='Action';const action=document.createElement('select');action.className='env-action';
   for(const [v,text] of (key?[['keep','Keep saved value'],['set','Replace value'],['delete','Delete variable']]:[['set','Set value'],['discard','Discard row']])){const o=document.createElement('option');o.value=v;o.textContent=text;action.append(o)}
@@ -244,7 +247,7 @@ function readEnv(selector,base,allowDelete) {
   if(action==='discard')continue;
   if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))throw Error('Enter a valid variable name.');
   if(seen.has(key))throw Error('Each variable name must be unique.');seen.add(key);
-  if(action==='keep')continue;
+  if(action==='keep'&&!row.querySelector('.env-value').value)continue;
   if(Object.hasOwn(changes,key))throw Error('Variable '+key+' also appears in the JSON changes.');
   changes[key]=action==='delete'?null:row.querySelector('.env-value').value;
  }
@@ -294,3 +297,7 @@ for(const prefix of ['create','settings']){
 
 $('#app-form').elements.repository.addEventListener('input',event=>{const query=event.target.value.toLowerCase();for(const button of $('#repo-options').querySelectorAll('button'))button.hidden=!button.dataset.repositoryChoice.toLowerCase().includes(query);});
 $('#repo-options').addEventListener('click',event=>{const button=event.target.closest('[data-repository-choice]');if(!button)return;const input=$('#app-form').elements.repository;input.value=button.dataset.repositoryChoice;input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));$('#repo-options').hidden=true;input.focus();});
+
+$('#settings-form').addEventListener('input',markFormDraft);
+$('#settings-form').addEventListener('change',markFormDraft);
+$('#settings-dialog').addEventListener('close',()=>clearFormDraft('settings-form'));

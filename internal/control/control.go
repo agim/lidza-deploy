@@ -66,12 +66,13 @@ type Application struct {
 	Secret             string        `json:"secret,omitempty"`
 }
 type saved struct {
-	Updates       UpdateSettings         `json:"updates"`
-	GitHubApp     *githubAppConfig       `json:"github_app,omitempty"`
-	BackupStorage *storage.Config        `json:"backup_storage,omitempty"`
-	Incidents     map[string]Incident    `json:"incidents,omitempty"`
-	Apps          map[string]Application `json:"apps"`
-	Servers       []Server               `json:"servers"`
+	ApplicationDefaults map[string]string      `json:"application_defaults"`
+	Updates             UpdateSettings         `json:"updates"`
+	GitHubApp           *githubAppConfig       `json:"github_app,omitempty"`
+	BackupStorage       *storage.Config        `json:"backup_storage,omitempty"`
+	Incidents           map[string]Incident    `json:"incidents,omitempty"`
+	Apps                map[string]Application `json:"apps"`
+	Servers             []Server               `json:"servers"`
 }
 type Control struct {
 	releaseCheck func(*http.Request) (string, error)
@@ -281,6 +282,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	for _, pattern := range []string{"GET /api/control/github/app/status", "POST /api/control/github/app/register", "GET /api/control/github/app/manifest-callback", "POST /api/control/github/app/install", "GET /api/control/github/app/install-callback", "DELETE /api/control/github/app"} {
 		handle(pattern, c.githubAppRoute)
 	}
+	handle("GET /api/control/application-defaults", c.applicationDefaults)
+	handle("PUT /api/control/application-defaults", c.applicationDefaults)
+	handle("POST /api/control/apps/{id}/apply-defaults", c.applyDefaults)
 	handle("GET /api/control/team", c.team)
 	handle("POST /api/control/team", c.team)
 	handle("DELETE /api/control/team/{subject}", c.team)

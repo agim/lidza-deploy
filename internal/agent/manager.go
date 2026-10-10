@@ -237,6 +237,14 @@ func (m *Manager) Upsert(a App) error {
 			return errors.New("domain already assigned")
 		}
 	}
+	a.DefaultsApplied = old.DefaultsApplied
+	a.EnvSources = maps.Clone(old.EnvSources)
+	if a.EnvSources == nil {
+		a.EnvSources = map[string]string{}
+	}
+	for k := range a.Env {
+		delete(a.EnvSources, k)
+	}
 	a.DomainStatus = nil
 	a.Restoring = old.Restoring
 	a.Maintenance = old.Maintenance
@@ -284,6 +292,7 @@ func (m *Manager) Upsert(a App) error {
 			}
 			if !exists {
 				value = "true"
+				a.EnvSources["DB_MIGRATE"] = "built-in"
 			}
 			a.Env["DB_MIGRATE"] = value
 		}
@@ -394,17 +403,25 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 	// Backfill older apps only when explicitly deployed/reloaded. Persist before
 	// enqueueing so concurrent requests, retries and restarts reuse the same key.
 	oldApp := m.data.Apps[a.ID]
-	var generated bool
+	if err := ValidateAppDefaults(req.Defaults); err != nil {
+		return Deployment{}, err
+	}
+	if !reload {
+		a = m.initialDefaults(a, req.Defaults)
+	}
 	var err error
-	a, generated, err = provisionAuthSecret(a)
+	a, _, err = provisionAuthSecret(a)
 	if err != nil {
 		return Deployment{}, err
 	}
-	if generated {
-		updated := oldApp
-		updated.Env = maps.Clone(a.Env)
-		m.data.Apps[a.ID] = updated
+	if err := a.Validate(); err != nil {
+		return Deployment{}, err
 	}
+	updated := oldApp
+	updated.Env = maps.Clone(a.Env)
+	updated.EnvSources = maps.Clone(a.EnvSources)
+	updated.DefaultsApplied = a.DefaultsApplied
+	m.data.Apps[a.ID] = updated
 	d := Deployment{ID: newID(), AppID: a.ID, Status: "queued", Created: time.Now().UTC(), Key: req.Key, Kind: "deploy", Branch: a.Branch, Domain: a.Domain, Changes: changeKeys(m.data.Apps[a.ID], a)}
 	if len(changes) > 0 {
 		d.Changes = slices.Clone(changes[0])

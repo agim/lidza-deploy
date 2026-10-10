@@ -157,7 +157,13 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 	if legacyResponse.Code != 404 {
 		t.Fatal("legacy webhook still active after migration")
 	}
+	c.mu.Lock()
+	c.data.ApplicationDefaults = map[string]string{"ADMIN_USERS": "shared@example.com", "DB_MIGRATE": "true"}
+	c.mu.Unlock()
 	credentials, err := c.deploymentCredentials(ctx, a, "queued-deploy")
+	if credentials.Defaults["ADMIN_USERS"] != "shared@example.com" {
+		t.Fatal("checkout request omitted workspace defaults")
+	}
 	if err != nil || credentials.Token != "" || credentials.CredentialTicket == "" {
 		t.Fatal("queue received a token instead of a ticket", err)
 	}

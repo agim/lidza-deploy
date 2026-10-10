@@ -11,6 +11,8 @@ import (
 )
 
 type App struct {
+	DefaultsApplied    bool              `json:"defaults_applied,omitempty"`
+	EnvSources         map[string]string `json:"env_sources,omitempty"`
 	StorageVolume      string            `json:"-"`
 	Preview            bool              `json:"preview,omitempty"`
 	PullRequest        int               `json:"pull_request,omitempty"`
@@ -59,11 +61,12 @@ type Deployment struct {
 	Key           string     `json:"key,omitempty"`
 }
 type DeployRequest struct {
-	CredentialURL    string `json:"credential_url,omitempty"`
-	CredentialTicket string `json:"credential_ticket,omitempty"`
-	CredentialServer string `json:"credential_server,omitempty"`
-	Token            string `json:"github_token,omitempty"`
-	Key              string `json:"key,omitempty"`
+	Defaults         map[string]string `json:"application_defaults,omitempty"`
+	CredentialURL    string            `json:"credential_url,omitempty"`
+	CredentialTicket string            `json:"credential_ticket,omitempty"`
+	CredentialServer string            `json:"credential_server,omitempty"`
+	Token            string            `json:"github_token,omitempty"`
+	Key              string            `json:"key,omitempty"`
 }
 type diskState struct {
 	StorageVolumes  map[string]string        `json:"storage_volumes,omitempty"`

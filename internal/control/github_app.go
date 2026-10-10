@@ -214,7 +214,12 @@ func (c *Control) tokenFor(ctx context.Context, a Application) (string, error) {
 	}
 	return c.cfg.GitHub.InstallationToken(ctx, cfg.App, a.GitHubInstallation, a.Repository)
 }
-func (c *Control) deploymentCredentials(ctx context.Context, a Application, key string) (agent.DeployRequest, error) {
+func (c *Control) deploymentCredentials(ctx context.Context, a Application, key string) (out agent.DeployRequest, err error) {
+	defer func() {
+		if err == nil {
+			out.Defaults = c.applicationDefaultsSnapshot()
+		}
+	}()
 	if a.GitHubInstallation == 0 {
 		token, err := c.token(ctx)
 		return agent.DeployRequest{Token: token, Key: key}, err

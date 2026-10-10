@@ -9,12 +9,16 @@ import (
 // Environment values are write-only over the settings API. Omitted keys survive;
 // null deletes a key, including secrets that the browser has never received.
 type SettingsPatch struct {
+	FromDefaults       bool               `json:"from_defaults,omitempty"`
+	OnlyMissing        bool               `json:"only_missing,omitempty"`
 	BackupBeforeDeploy *bool              `json:"backup_before_deploy,omitempty"`
 	Branch             string             `json:"branch"`
 	Domain             string             `json:"domain"`
 	EnvChanges         map[string]*string `json:"env_changes"`
 }
 type Settings struct {
+	DefaultsApplied    bool              `json:"defaults_applied"`
+	EnvSources         map[string]string `json:"env_sources"`
 	PersistentStorage  bool              `json:"persistent_storage"`
 	Cache              CacheView         `json:"cache"`
 	BackupBeforeDeploy bool              `json:"backup_before_deploy"`
@@ -32,7 +36,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if !ok {
 		return Settings{}, errors.New("unknown application")
 	}
-	return Settings{PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
+	return Settings{DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
 }
 func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	m.mu.Lock()
@@ -47,7 +51,23 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	if m.busy(id) || old.Restoring || m.data.Caches[id].Operation {
 		return errors.New("application has an active deployment")
 	}
+	if p.FromDefaults {
+		values := map[string]string{}
+		for k, v := range p.EnvChanges {
+			if v == nil {
+				return errors.New("defaults cannot delete variables")
+			}
+			values[k] = *v
+		}
+		if err := ValidateAppDefaults(values); err != nil {
+			return err
+		}
+	}
 	a := old
+	a.EnvSources = maps.Clone(old.EnvSources)
+	if a.EnvSources == nil {
+		a.EnvSources = map[string]string{}
+	}
 	if p.BackupBeforeDeploy != nil {
 		a.BackupBeforeDeploy = p.BackupBeforeDeploy
 	}
@@ -58,6 +78,15 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		a.Env = map[string]string{}
 	}
 	for k, v := range p.EnvChanges {
+		if p.FromDefaults && p.OnlyMissing {
+			if _, exists := a.Env[k]; exists {
+				continue
+			}
+		}
+		delete(a.EnvSources, k)
+		if p.FromDefaults {
+			a.EnvSources[k] = "workspace"
+		}
 		if k == "STORAGE_DIR" && m.data.StorageVolumes[id] != "" {
 			return errors.New("STORAGE_DIR is managed by the persistent storage attachment")
 		}
