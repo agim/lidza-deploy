@@ -127,6 +127,8 @@ async function openSettings(id) {
  editingApp=id; const form=$('#settings-form'); form.reset();form.querySelectorAll('details').forEach(d=>d.open=false);
  form.elements.backup_before_deploy.checked=value.backup_before_deploy!==false;form.elements.branch.value=value.branch; form.elements.domain.value=value.domain;
  $('#env-keys').textContent=value.env_keys?.join(', ')||'No variables saved';envEditor('#settings-env-editor',value.env_keys||[],Object.keys(value.database_bindings||{}));
+ const primary=value.database_bindings?.DATABASE_URL;$('#settings-database-status').textContent=primary?'Primary database: '+primary:value.env_keys?.includes('DATABASE_URL')?'DATABASE_URL is set manually. Attach a managed database to enable backups.':'No primary database attached. Apps using the Līdza DB pack require DATABASE_URL.';
+ $('#settings-database').onclick=()=>openDatabase(id).catch(err=>dialogError('#settings-error',err));
  $('#settings-title').textContent=id+' · settings'; $('#settings-error').hidden=true;
  $('#settings-dialog').showModal();loadBranchOptions(app.repository,app.github_installation||0,'settings').catch(()=>{});
 }
