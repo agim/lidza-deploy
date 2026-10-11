@@ -174,7 +174,8 @@ func (m *Manager) domainAllowed(ctx context.Context, domain string) bool {
 			return checkDomainRoute(ctx, a.Domain, m.domainProof(a.Domain), net.DefaultResolver.LookupIP, "80") == nil
 		}
 	}
-	return false
+	a, ok := m.hostApplication(ctx, domain)
+	return ok && a.CustomerHosts && !a.Stopped && !a.Retiring && a.Current != nil
 }
 
 func (m *Manager) wakeDomains() {

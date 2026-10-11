@@ -49,13 +49,13 @@ This installer targets dedicated systemd hosts. Docker access grants host-level 
 
 Use `deploy/Caddyfile` as the basis of the host configuration. Set `ACME_EMAIL` in Caddy's service environment. Validate it with `caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` before reloading.
 
-Caddy's catch-all HTTPS listener uses on-demand TLS. Before issuance it calls the loopback-only agent `/tls/allow?domain=...` endpoint. Only exact registered FQDNs are approved. Persist Caddy's normal data directory: it holds certificates, keys, and ACME account state. Caddy renews certificates automatically.
+Caddy's catch-all HTTPS listener uses on-demand TLS. Before issuance it calls the loopback-only agent `/tls/allow?domain=...` endpoint. Registered FQDNs are approved; opted-in running apps can also approve [customer hostnames](customer-hostnames.md) through the framework’s private `/tls-allow` endpoint. Persist Caddy's normal data directory: it holds certificates, keys, and ACME account state. Caddy renews certificates automatically.
 
 For each application, create DNS A (and AAAA only when IPv6 works) records pointing to the hosting server. Both HTTP and HTTPS must reach Caddy for redirects and ACME validation. Do not publish the agent's port 9090, ingress port 8081, or Docker's dynamic application ports.
 
 For a remote GUI, uncomment and customize the explicit `agent.example.com` block. It exposes only `/v1/*`; never expose `/tls/allow` via a public reverse proxy. Restrict the management hostname to the control-panel host at the firewall where practical. Configure DNS before expecting its certificate.
 
-These settings support multiple apps on the same host, each with its own FQDN/certificate. Wildcards and multiple aliases per app are not implemented in this first version.
+These settings support multiple apps on the same host, each with its own FQDN/certificate. Wildcard certificates are not supported. Dynamic customer hostnames are supported through an explicit per-app opt-in and `App.TLSHosts` approval.
 
 ## Install the control panel
 
@@ -83,7 +83,7 @@ Use the Servers page to connect an installed agent, edit its name/URL/token, or 
 
 The app creates the pinned framework auth/jobs/mail-outbox tables on first boot under a database advisory lock. Existing operator passwords are not reset on restart. `CONTROL_PASSWORD` may be removed after account creation; use Līdza's authenticated password-change endpoint to rotate it. Back up PostgreSQL, the control data directory, agent state, and the master key through a secure channel. Losing the master key loses access to encrypted grants and state.
 
-Proxy the control panel through a separate Caddy hostname. Block `/metrics`, `/readyz`, and `/healthz` externally; they are local operational endpoints. Other paths, including `/hooks/github/*`, must reach the web app. In particular, webhooks must not be hidden behind additional interactive proxy authentication.
+Proxy the control panel through a separate Caddy hostname. Block `/metrics`, `/readyz`, `/healthz`, and `/tls-allow` externally; they are local operational endpoints. Other paths, including `/hooks/github/*`, must reach the web app. In particular, webhooks must not be hidden behind additional interactive proxy authentication.
 
 ## GitHub authorization and auto-deploy
 

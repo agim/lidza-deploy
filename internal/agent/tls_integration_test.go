@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"github.com/agim/lidza"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,11 +23,36 @@ func TestCaddyDomainCertificates(t *testing.T) {
 		t.Skip("set TEST_CADDY=1 for real local certificate issuance")
 	}
 	m := testManager(t, &fakeRuntime{})
+	boot, err := lidza.Boot(context.Background(), lidza.App{TLSHosts: func(ctx context.Context, host string) error {
+		if host == "mta-sts.customer.example" {
+			return nil
+		}
+		return errors.New("not a customer")
+	}, Frontend: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-App-Host", r.Host)
+		fmt.Fprint(w, "certificate works")
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer boot.Close(context.Background())
+	backend := httptest.NewServer(boot.Handler)
+	defer backend.Close()
+	_, backendPort, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+
 	for _, id := range []string{"cert-one", "cert-two"} {
-		if err := m.Upsert(testApp(id)); err != nil {
+		a := testApp(id)
+		a.CustomerHosts = id == "cert-one"
+		if err := m.Upsert(a); err != nil {
 			t.Fatal(err)
 		}
 	}
+	m.mu.Lock()
+	for id, a := range m.data.Apps {
+		a.Current = &Release{ID: id, Port: backendPort}
+		m.data.Apps[id] = a
+	}
+	m.mu.Unlock()
 	api := httptest.NewServer(Handler(m))
 	defer api.Close()
 	free := func() int {
@@ -53,7 +80,7 @@ func TestCaddyDomainCertificates(t *testing.T) {
 	// A local CA tests issuance and hostname verification without consuming public ACME limits.
 	proofProxy := httptest.NewServer(Proxy(m))
 	defer proofProxy.Close()
-	config := fmt.Sprintf("{\n admin off\n https_port %d\n http_port %d\n on_demand_tls {\n ask %s/tls/allow\n }\n}\nhttps:// {\n tls internal {\n on_demand\n }\n respond \"certificate works\" 200\n}\n", port, httpPort, api.URL)
+	config := fmt.Sprintf("{\n admin off\n https_port %d\n http_port %d\n on_demand_tls {\n ask %s/tls/allow\n }\n}\nhttps:// {\n tls internal {\n on_demand\n }\n reverse_proxy %s\n}\n", port, httpPort, api.URL, strings.TrimPrefix(proofProxy.URL, "http://"))
 	config += fmt.Sprintf("http:// {\n handle /.well-known/lidza-deploy-host {\n reverse_proxy %s\n }\n handle {\n redir https://{host}{uri} permanent\n }\n}\n", strings.TrimPrefix(proofProxy.URL, "http://"))
 	dir := t.TempDir()
 	file := filepath.Join(dir, "Caddyfile")
@@ -94,12 +121,14 @@ func TestCaddyDomainCertificates(t *testing.T) {
 	}}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
-	for _, host := range []string{"cert-one.example.com", "cert-two.example.com"} {
+	for _, host := range []string{"cert-one.example.com", "cert-two.example.com", "mta-sts.customer.example"} {
 		lookup := func(context.Context, string, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("127.0.0.1")}, nil
 		}
-		if err := checkDomainRoute(ctx, host, m.domainProof(host), lookup, fmt.Sprint(httpPort)); err != nil {
-			t.Fatal("Caddy HTTP verification route", err)
+		if host != "mta-sts.customer.example" {
+			if err := checkDomainRoute(ctx, host, m.domainProof(host), lookup, fmt.Sprint(httpPort)); err != nil {
+				t.Fatal("Caddy HTTP verification route", err)
+			}
 		}
 		if err := verifyDomainCertificate(ctx, host, fmt.Sprintf("127.0.0.1:%d", port), &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
 			t.Fatal("proactive certificate request", err)
@@ -109,12 +138,23 @@ func TestCaddyDomainCertificates(t *testing.T) {
 			t.Fatal(err)
 		}
 		res.Body.Close()
+		if res.Header.Get("X-App-Host") != fmt.Sprintf("%s:%d", host, port) {
+			t.Fatal("wrong customer ingress host", res.Header.Get("X-App-Host"))
+		}
 		if res.StatusCode != 200 || res.TLS == nil || len(res.TLS.VerifiedChains) == 0 {
 			t.Fatal("certificate did not verify")
 		}
 		if err = res.TLS.PeerCertificates[0].VerifyHostname(host); err != nil {
 			t.Fatal(err)
 		}
+	}
+	res, err := client.Get(fmt.Sprintf("https://mta-sts.customer.example:%d/tls-allow?domain=mta-sts.customer.example", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 404 {
+		t.Fatal("approval endpoint exposed through Caddy", res.StatusCode)
 	}
 	if res, err := client.Get(fmt.Sprintf("https://unregistered.example.com:%d/", port)); err == nil {
 		res.Body.Close()

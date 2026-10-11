@@ -217,7 +217,7 @@ config=$(mktemp "$root/etc/caddy/.lidza-config.XXXXXX")
   printf '%s {\n handle /v1/* {\n  reverse_proxy 127.0.0.1:9090\n }\n handle {\n  respond 404\n }\n}\n' "$hostname"
  fi
  if $with_control && [[ "$fqdn" != localhost ]];then
-  printf '%s {\n @private path /metrics /readyz /healthz\n respond @private 404\n reverse_proxy 127.0.0.1:3000\n}\n' "$fqdn"
+  printf '%s {\n @private path /metrics /readyz /healthz /tls-allow /tls-allow/*\n respond @private 404\n reverse_proxy 127.0.0.1:3000\n}\n' "$fqdn"
  fi
 } > "$config"
 chmod 0644 "$config"

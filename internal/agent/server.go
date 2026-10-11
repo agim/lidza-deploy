@@ -199,14 +199,19 @@ func Proxy(m *Manager) http.Handler {
 			m.serveDomainProof(w, r, host)
 			return
 		}
-		if r.URL.Path == "/metrics" || r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+		if operatorPath(r.URL.Path) {
 			http.NotFound(w, r)
 			return
 		}
-		if m.maintenancePage(w, r, host) {
+		owner, found := m.hostApplication(r.Context(), host)
+		if !found {
+			http.Error(w, "application unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		release := m.Target(host)
+		if m.maintenancePage(w, r, owner.Domain) {
+			return
+		}
+		release := owner.Current
 		if release == nil || release.Port == "" {
 			http.Error(w, "application unavailable", http.StatusServiceUnavailable)
 			return

@@ -11,6 +11,7 @@ import (
 )
 
 type App struct {
+	CustomerHosts      bool              `json:"customer_hosts"`
 	Stopped            bool              `json:"stopped"`
 	DefaultsApplied    bool              `json:"defaults_applied,omitempty"`
 	EnvSources         map[string]string `json:"env_sources,omitempty"`

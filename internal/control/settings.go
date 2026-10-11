@@ -54,6 +54,9 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := old
+	if input.CustomerHosts != nil {
+		next.CustomerHosts = *input.CustomerHosts
+	}
 	next.Branch = input.Branch
 	next.Domain = input.Domain
 	c.data.Apps[old.ID] = next

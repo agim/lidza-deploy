@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/agim/lidza/pkg/credentials"
+	"golang.org/x/sync/singleflight"
 	"maps"
 	"os"
 	"path/filepath"
@@ -31,6 +32,10 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	hostMu            sync.Mutex
+	hostCache         map[string]hostVerdict
+	hostFlights       singleflight.Group
+	hostSlots         chan struct{}
 	lifecycle         map[string]bool
 	cacheProvision    func(context.Context, CacheResource) error
 	reportMu          sync.Mutex
@@ -53,7 +58,7 @@ type Manager struct {
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
 	ctx, cancel := context.WithCancel(parent)
-	m := &Manager{lifecycle: map[string]bool{}, reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
+	m := &Manager{hostCache: map[string]hostVerdict{}, hostSlots: make(chan struct{}, 8), lifecycle: map[string]bool{}, reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		cancel()
 		return nil, err
@@ -622,12 +627,9 @@ func (m *Manager) Current(id string) *Release {
 	return a.Current
 }
 func (m *Manager) Target(host string) *Release {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, a := range m.data.Apps {
-		if a.Domain == host && !a.Retiring && !a.Stopped {
-			return a.Current
-		}
+	a, ok := m.hostApplication(m.ctx, host)
+	if !ok || a.Stopped || a.Retiring {
+		return nil
 	}
-	return nil
+	return a.Current
 }

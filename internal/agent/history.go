@@ -86,6 +86,9 @@ func scrubLiveOutput(text string, secrets []string) string {
 }
 func changeKeys(old App, a App) []string {
 	keys := []string{}
+	if old.CustomerHosts != a.CustomerHosts {
+		keys = append(keys, "customer_hosts")
+	}
 	if old.Domain != a.Domain {
 		keys = append(keys, "domain")
 	}

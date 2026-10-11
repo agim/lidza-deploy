@@ -48,8 +48,12 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 	if w := call(c.editServer, "PUT", "one", server("")); w.Code != 200 {
 		t.Fatal("retain token", w.Code, w.Body)
 	}
-	if w := call(c.create, "POST", "", `{"id":"portal","server_id":"one","repository":"acme/portal","branch":"main","domain":"portal.example.com","env":{"SECRET":"never-return-this","OLD":"remove-me"}}`); w.Code != 201 {
+	if w := call(c.create, "POST", "", `{"id":"portal","server_id":"one","repository":"acme/portal","branch":"main","domain":"portal.example.com","customer_hosts":true,"env":{"SECRET":"never-return-this","OLD":"remove-me"}}`); w.Code != 201 {
 		t.Fatal(w.Code, w.Body)
+	}
+	settings, _ := manager.Settings("portal")
+	if !settings.CustomerHosts {
+		t.Fatal("creation lost customer-host opt-in")
 	}
 	if w := call(c.removeServer, "DELETE", "one", ""); w.Code != 409 {
 		t.Fatal("removed occupied server")
@@ -58,12 +62,16 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 	app, _ := c.app("portal")
 	app.Previews = PreviewConfig{Enabled: true, BaseDomain: "preview.example.com", Env: map[string]string{"API_TOKEN": previewSecret}}
 	c.data.Apps[app.ID] = app
-	if w := call(c.updateSettings, "PATCH", "portal", `{"branch":"release","domain":"new.example.com","env_changes":{"NEW":"new-secret","OLD":null}}`); w.Code != 200 || strings.Contains(w.Body.String(), previewSecret) {
+	if w := call(c.updateSettings, "PATCH", "portal", `{"branch":"release","domain":"new.example.com","customer_hosts":false,"env_changes":{"NEW":"new-secret","OLD":null}}`); w.Code != 200 || strings.Contains(w.Body.String(), previewSecret) {
 		t.Fatal(w.Code, w.Body)
 	}
 	w := call(c.settings, "GET", "portal", "")
 	if w.Code != 200 || strings.Contains(w.Body.String(), "never-return-this") || strings.Contains(w.Body.String(), "new-secret") || !strings.Contains(w.Body.String(), `["AUTH_SECRET","DB_MIGRATE","NEW","SECRET"]`) {
 		t.Fatal("settings keys", w.Code, w.Body)
+	}
+	settings, _ = manager.Settings("portal")
+	if settings.CustomerHosts {
+		t.Fatal("opt-out not sent to agent")
 	}
 	// Confirm credentials and metadata survive a restart, independent of the seed file.
 	c2, err := New(cfg)
@@ -74,7 +82,7 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 		t.Fatal("server not persisted")
 	}
 	a, _ := c2.app("portal")
-	if a.Branch != "release" || a.Domain != "new.example.com" {
+	if a.CustomerHosts || a.Branch != "release" || a.Domain != "new.example.com" {
 		t.Fatal("settings not persisted")
 	}
 	if a.Previews.Env["API_TOKEN"] != previewSecret {

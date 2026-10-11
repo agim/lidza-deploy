@@ -53,6 +53,7 @@ type Config struct {
 	Connectors []auth.Connector
 }
 type Application struct {
+	CustomerHosts      bool          `json:"customer_hosts"`
 	GitHubInstallation int64         `json:"github_installation,omitempty"`
 	Previews           PreviewConfig `json:"previews,omitempty"`
 	PreviewParent      string        `json:"preview_parent,omitempty"`
@@ -414,6 +415,7 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, a := range remote {
 				if a.ID == out[i].ID {
+					out[i].CustomerHosts = a.CustomerHosts
 					out[i].Stopped = a.Stopped
 					out[i].Current = a.Current
 					out[i].DomainStatus = a.DomainStatus
@@ -474,7 +476,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	a.AutoDeploy = false
 	a.Retiring = false
 	a.Generation = random()
-	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, Env: input.Env}
+	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, CustomerHosts: a.CustomerHosts, Env: input.Env}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
 		return

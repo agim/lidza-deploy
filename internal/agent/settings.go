@@ -9,6 +9,7 @@ import (
 // Environment values are write-only over the settings API. Omitted keys survive;
 // null deletes a key, including secrets that the browser has never received.
 type SettingsPatch struct {
+	CustomerHosts      *bool              `json:"customer_hosts,omitempty"`
 	FromDefaults       bool               `json:"from_defaults,omitempty"`
 	OnlyMissing        bool               `json:"only_missing,omitempty"`
 	BackupBeforeDeploy *bool              `json:"backup_before_deploy,omitempty"`
@@ -17,6 +18,7 @@ type SettingsPatch struct {
 	EnvChanges         map[string]*string `json:"env_changes"`
 }
 type Settings struct {
+	CustomerHosts      bool              `json:"customer_hosts"`
 	Stopped            bool              `json:"stopped"`
 	DefaultsApplied    bool              `json:"defaults_applied"`
 	EnvSources         map[string]string `json:"env_sources"`
@@ -37,7 +39,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if !ok {
 		return Settings{}, errors.New("unknown application")
 	}
-	return Settings{Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
+	return Settings{CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
 }
 func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	m.mu.Lock()
@@ -65,6 +67,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		}
 	}
 	a := old
+	if p.CustomerHosts != nil {
+		a.CustomerHosts = *p.CustomerHosts
+	}
 	a.EnvSources = maps.Clone(old.EnvSources)
 	if a.EnvSources == nil {
 		a.EnvSources = map[string]string{}

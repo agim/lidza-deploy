@@ -27,7 +27,7 @@ https:// {
 
 # Optional on the control-panel host (or this host when colocated):
 # deploy.example.com {
-#  @internal path /metrics /readyz /healthz
+#  @internal path /metrics /readyz /healthz /tls-allow /tls-allow/*
 #  respond @internal 404
 #  reverse_proxy 127.0.0.1:3000
 # }
