@@ -12,7 +12,7 @@ const base=process.env.TEST_WEB_URL||'http://127.0.0.1:8880';
   await page.locator('#help-search').fill('nothing-will-match-this');await page.locator('#help-empty').waitFor({state:'visible'});
   await page.locator('#help-search').fill('');await page.locator('[data-help-guide="first-admin"] a[data-help-topic="migrations"]').click();assert(page.url().endsWith('#help/migrations'));await page.locator('[data-help-guide="migrations"][open]').waitFor();
   await page.goBack();await page.locator('[data-help-guide="first-admin"][open]').waitFor();
-  await page.evaluate(()=>navigate('apps'));await page.locator('.app-card').first().waitFor();await page.evaluate(()=>openSettings(apps[0].id));await page.locator('#settings-dialog[open]').waitFor();
+  await page.evaluate(()=>navigate('apps'));await page.locator('.app-card').first().waitFor();await page.evaluate(()=>openSettings(apps[0].id));await page.locator('#settings-dialog:not([hidden])').waitFor();
   await page.locator('#settings-dialog [data-help-topic="first-admin"]').click();await page.locator('[data-help-guide="first-admin"][open]').waitFor();assert.equal(await page.locator('dialog[open]').count(),0);
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Help overflows mobile viewport');assert.deepEqual(errors,[]);await page.close();
  }

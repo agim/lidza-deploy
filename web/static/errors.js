@@ -125,9 +125,9 @@ function showErrorDetail(key) {
   if (!group) return;
   let dialog = $('#error-detail-dialog');
   if (!dialog) {
-    dialog = document.createElement('dialog');
+    dialog = document.createElement('section');dialog.className='workspace-page';dialog.hidden=true;
     dialog.id = 'error-detail-dialog';
-    document.body.append(dialog);
+    $('main').insertBefore(dialog,$('main footer'));
   }
   const last = group.rows[0], first = group.rows[group.rows.length - 1];
   dialog.innerHTML = `<div class="dialog-title"><h2>Error details · ${escape(errorView.app)}</h2><button id="error-detail-close" aria-label="Close error details">×</button></div>
@@ -136,7 +136,7 @@ function showErrorDetail(key) {
     <h3>Message</h3><pre class="error-stack">${escape(last.message)}</pre><h3>Stack trace</h3><pre class="error-stack">${escape(last.stack || 'No stack trace was captured.')}</pre>
     <p>Container: ${escape(last.container || '—')} · Release: ${escape(last.release || '—')} · Commit: ${escape(last.commit || '—')}</p><h3>Recent occurrences</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request ID</th></tr></thead><tbody>${group.rows.map(e => `<tr><td>${escape(new Date(e.createdAt).toLocaleString())}</td><td><code>${escape(e.requestId || '—')}</code></td></tr>`).join('')}</tbody></table></div>`;
   $('#error-detail-close').onclick = () => dialog.close();
-  dialog.showModal();
+  showWorkspacePage(dialog,'error-detail',JSON.stringify({app:errorView.app,key}));
 }
 
 function demoAppErrors() {

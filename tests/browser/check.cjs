@@ -62,7 +62,7 @@ try {
  if(await page.locator('#create-env-editor .env-value').getAttribute('type')!=='password')throw Error('secret entry not masked');
  await page.locator('#app-form [name=database_mode]').selectOption('none');await page.getByRole('button',{name:'Create application'}).click();
  await page.locator('[data-action=settings][data-id="'+id+'"]').click();
- await page.waitForSelector('#settings-dialog[open]');
+ await page.waitForSelector('#settings-dialog:not([hidden])');
  await page.locator('#env-keys').getByText('RETAINED',{exact:true}).waitFor();
  if((await page.locator('#settings-dialog').textContent()).includes('fixture-secret'))throw Error('saved secret exposed');
  await page.locator('#settings-form [name=branch]').fill('release');
@@ -71,7 +71,7 @@ try {
  await page.locator('#settings-env-editor .env-row').last().locator('.env-value').fill('fixture-value');
  await page.getByRole('button',{name:'Save settings',exact:true}).click();
  await page.locator('[data-action=settings][data-id="'+id+'"]').click();
- await page.waitForSelector('#settings-dialog[open]');
+ await page.waitForSelector('#settings-dialog:not([hidden])');
  if(await page.locator('#settings-form [name=branch]').inputValue()!=='release')throw Error('live settings failed');
  if(await page.locator('#env-keys').textContent()!=='ADDED, RETAINED')throw Error('live patch lost variables');
  if((await page.locator('#settings-env-editor .env-value').evaluateAll(nodes=>nodes.map(n=>n.value))).some(Boolean))throw Error('saved value returned to editor');
@@ -79,7 +79,7 @@ try {
  await page.locator('#settings-env-editor .env-row').last().locator('.env-action').selectOption('delete');
  await page.getByRole('button',{name:'Save settings',exact:true}).click();
  await page.locator('[data-action=settings][data-id="'+id+'"]').click();
- await page.waitForSelector('#settings-dialog[open]');
+ await page.waitForSelector('#settings-dialog:not([hidden])');
  if(await page.locator('#env-keys').textContent()!=='ADDED')throw Error('variable deletion failed');
  await page.locator('#settings-dialog [data-close]').first().click();
  page.once('dialog',dialog=>dialog.accept(id));

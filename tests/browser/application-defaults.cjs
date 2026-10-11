@@ -16,7 +16,7 @@ for(const width of [390,1440]){
  assert(await page.evaluate(()=>defaultInput===document.querySelector('#defaults-form [name=ADMIN_USERS]')&&document.activeElement===defaultInput&&defaultInput.value==='agim@albaspot.com'&&scrollY===savedY));
  await page.locator('#defaults-form button[type=submit]').click();await page.waitForFunction(()=>!dirtyForms.size);
  assert.equal(calls[0].values.ADMIN_USERS,'agim@albaspot.com');assert(!Object.hasOwn(calls[0].values,'MAIL_FROM'),'empty defaults submitted');
- await page.evaluate(()=>navigate('apps'));await page.locator('[data-action=settings]').click();await page.locator('#settings-dialog[open]').waitFor();
+ await page.evaluate(()=>navigate('apps'));await page.locator('[data-action=settings]').click();await page.locator('#settings-dialog:not([hidden])').waitFor();
  assert.match(await page.locator('#settings-env-editor').textContent(),/Workspace default/);
  // Browser autofill or programmatic fill can change a value without an input event.
  await page.evaluate(()=>{const row=[...document.querySelectorAll('#settings-env-editor .env-row')].find(r=>r.querySelector('.env-name').value==='ADMIN_USERS');row.querySelector('.env-value').value='direct@example.com'});
@@ -24,7 +24,7 @@ for(const width of [390,1440]){
  assert.equal(calls.find(c=>c.kind==='settings').env_changes.ADMIN_USERS,'direct@example.com');
  await page.locator('[data-action=settings]').click();await page.locator('#settings-defaults').click();
  assert.equal(await page.locator('#apply-defaults-form [value=ADMIN_USERS]').isChecked(),false);
- await page.locator('#apply-defaults-form [value=ADMIN_USERS]').check();await page.locator('#apply-defaults-form button[type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#feature-dialog').open);
+ await page.locator('#apply-defaults-form [value=ADMIN_USERS]').check();await page.locator('#apply-defaults-form button[type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#feature-page').open);
  const applied=calls.find(c=>c.kind==='apply');assert.equal(applied.replace,false);assert.equal(applied.revision,'updated');assert(applied.keys.includes('ADMIN_USERS'));
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'mobile overflow');assert.deepEqual(errors,[]);await page.close();
 }
