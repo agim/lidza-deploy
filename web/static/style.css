@@ -237,3 +237,5 @@ body[data-design=walnut] pre{background:var(--bg);color:var(--ink)}
 .workspace-page{max-width:1200px;margin:0 auto;min-width:0}.workspace-page>.dialog-title{gap:24px}.workspace-page .dialog-actions{position:static;margin-top:24px;padding:20px 0;background:transparent}.workspace-page .form-row{gap:24px}.workspace-page section[aria-label]{margin:24px 0;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
 .workspace-page pre{max-height:65vh;overflow:auto;white-space:pre-wrap;overflow-anchor:none}.workspace-page form{max-width:100%}.workspace-page .dialog-title h2{overflow-wrap:anywhere}.workspace-page label small{display:block;margin:8px 0 0}
 @media(max-width:760px){.workspace-page section[aria-label]{padding:16px}.workspace-page .dialog-title{align-items:flex-start}.workspace-page .dialog-title h2{font-size:24px}.workspace-page pre{max-height:60vh}}
+
+.dialog-notice{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;box-shadow:var(--shadow)}

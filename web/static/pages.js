@@ -18,7 +18,7 @@ async function restoreWorkspacePage(){
  if(detailLoading||detailLoaded===location.hash)return;
  const [prefix,kind,encoded]=location.hash.slice(1).split('/');if(prefix!=='page')return;
  let id;try{id=decodeURIComponent(encoded||'')}catch{fail(Error('Invalid page address.'));return}
- const routes={'error-detail':async value=>{const {app,key}=JSON.parse(value);resetErrorApp(app);await loadAppErrors();showErrorDetail(key)},settings:openSettings,'build-logs':openDeploymentHistory,'runtime-logs':openRuntimeLogs,database:openDatabase,tasks:openTasks,previews:openPreviews,cache:openCacheSettings,ssh:openSSHAccess,server:id=>openServer(id==='new'?undefined:id),defaults:async id=>reviewDefaults(id,demo?apps.find(a=>a.id===id):await api('control/apps/'+id+'/settings'))};
+ const routes={upgrade:openUpgrade,restore:value=>{const config=JSON.parse(value),button=document.createElement('button');button.dataset.restore=config.backup;button.dataset.source=config.source;button.dataset.server=config.server;return featureAction({target:button})},'error-detail':async value=>{const {app,key}=JSON.parse(value);resetErrorApp(app);await loadAppErrors();showErrorDetail(key)},settings:openSettings,'build-logs':openDeploymentHistory,'runtime-logs':openRuntimeLogs,database:openDatabase,tasks:openTasks,previews:openPreviews,cache:openCacheSettings,ssh:openSSHAccess,server:id=>openServer(id==='new'?undefined:id),defaults:async id=>reviewDefaults(id,demo?apps.find(a=>a.id===id):await api('control/apps/'+id+'/settings'))};
  if(!routes[kind]){fail(Error('Unknown workspace page.'));return}
  detailLoading=true;detailAddress=location.href;
  try{if(workspacePage)hideWorkspacePage();await routes[kind](id)}catch(error){fail(error)}finally{detailLoading=false}
