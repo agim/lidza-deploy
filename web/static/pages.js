@@ -12,7 +12,7 @@ function showWorkspacePage(page,kind,id){
  tab='detail';document.body.dataset.section='detail';$('#content').hidden=true;$('#new-app-page').hidden=true;$('.stats').hidden=true;$('#new-app').hidden=true;
  $('#title').textContent=page.querySelector('h2')?.textContent||'Application workspace';$('#crumb').textContent=$('#title').textContent;$('#subtitle').textContent='';$('#mobile-section').textContent=$('#title').textContent;
  for(const link of document.querySelectorAll('[data-tab]')){link.classList.remove('active');link.removeAttribute('aria-current')}
- closeMobileNavigation();window.scrollTo(0,0);return page;
+ for(const button of page.querySelectorAll(':scope > .dialog-title button,:scope > form > .dialog-title button')){button.textContent='← Back';button.setAttribute('aria-label','Back to previous page')}closeMobileNavigation();window.scrollTo(0,0);return page;
 }
 async function restoreWorkspacePage(){
  if(detailLoading||detailLoaded===location.hash)return;

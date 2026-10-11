@@ -60,7 +60,7 @@ body:is([data-design=terminal],[data-design=walnut]) input,body:is([data-design=
 .env-row{display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:12px;margin-bottom:12px}.env-row input,.env-row select{min-width:0;width:100%}details{margin:16px 0}summary{cursor:pointer;color:var(--muted)}@media(max-width:600px){.env-row{grid-template-columns:1fr}}
 .setup-shell{min-height:100vh}.setup-shell .button{display:inline-flex;align-items:center;max-width:100%}.setup-shell #callback{display:block;margin-top:6px}.setup-shell .panel>.hint{margin:12px 0 20px}@media(max-width:600px){.setup-shell .form-row{grid-template-columns:1fr}}
 
-.check-label{display:flex;align-items:center;gap:10px;margin:16px 0}.check-label input{width:auto}.card-actions{flex-wrap:wrap}#database-dialog{width:min(850px,94vw)}#database-dialog .table-wrap{margin-top:20px}#create-database{border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:16px 0;margin:18px 0}#database-content code{overflow-wrap:anywhere}
+.check-label{display:flex;align-items:center;gap:10px;margin:16px 0}.check-label input{width:auto}.card-actions{flex-wrap:wrap}dialog#database-dialog{width:min(850px,94vw)}#database-dialog .table-wrap{margin-top:20px}#create-database{border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:16px 0;margin:18px 0}#database-content code{overflow-wrap:anywhere}
 
 /* Backend permissions apply on every request; these keep team controls honest. */
 body[data-role]:not([data-role="admin"]) :is(#storage-form,#mail-form,#attach-database-form,#bind-database-form,#backup-form,#database-connection-form) button,
@@ -142,7 +142,7 @@ body:is([data-design=terminal],[data-design=walnut]) .pill{font-size:12px;line-h
 .card-actions{gap:8px}
 .empty{padding:32px}.empty p{font-size:14px;line-height:1.7}.empty button{margin-top:16px}
 .delivery-attention{margin-bottom:24px}.completed-deliveries{margin-top:24px}.completed-deliveries summary{font-weight:550}
-#app-dialog,#settings-dialog,#server-dialog,#database-dialog,#feature-dialog,#log-dialog{max-height:calc(100dvh - 40px);overflow-y:auto}
+dialog{max-height:calc(100dvh - 40px);overflow-y:auto}
 .dialog-actions{position:sticky;bottom:-28px;background:var(--surface);padding:16px 0;margin-top:24px;z-index:2;flex-wrap:wrap}
 #create-options{margin:24px 0}#create-options>label{margin-top:16px}
 .check-label{min-height:44px}
@@ -239,3 +239,9 @@ body[data-design=walnut] pre{background:var(--bg);color:var(--ink)}
 @media(max-width:760px){.workspace-page section[aria-label]{padding:16px}.workspace-page .dialog-title{align-items:flex-start}.workspace-page .dialog-title h2{font-size:24px}.workspace-page pre{max-height:60vh}}
 
 .dialog-notice{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;box-shadow:var(--shadow)}
+
+.workspace-page{width:100%;max-width:none;margin:0;max-height:none;overflow:visible}
+.workspace-page>.dialog-title h2,.workspace-page>form>.dialog-title h2{display:none}
+.workspace-page>.dialog-title,.workspace-page>form>.dialog-title{justify-content:flex-start;margin:0 0 24px}
+.backup-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.backup-actions .button{font-size:13px}
+.database-backup-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:20px 0}.database-backup-actions form{margin:0}
