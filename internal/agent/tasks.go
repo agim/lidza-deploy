@@ -289,6 +289,9 @@ func (m *Manager) startTaskContainer(ctx context.Context, a App, t Task, old str
 	networks := []string{}
 	m.mu.Lock()
 	a.StorageVolume = m.data.StorageVolumes[a.ID]
+	if c := m.data.ClickHouses[a.ID]; c.Ready {
+		networks = append(networks, c.Network)
+	}
 	if c := m.data.Caches[a.ID]; c.Ready && c.Mode == "local" {
 		networks = append(networks, c.Network)
 	}

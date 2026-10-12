@@ -300,6 +300,10 @@ func (m *Manager) preflightRuntime(ctx context.Context, a App, source string) (A
 		effective["CACHE_URL"] = a.Env["CACHE_URL"]
 		commandDiagnostic(ctx, "cache", "Valkey is ready; CACHE_URL and the application network are attached. Credentials retained for future releases.")
 	}
+	a, err = m.prepareClickHouse(ctx, a, effective)
+	if err != nil {
+		return a, err
+	}
 	a, err = m.prepareAppStorage(ctx, a, cfg, effective)
 	if err != nil {
 		return a, err
