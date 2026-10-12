@@ -213,7 +213,7 @@ func resourceInventory(ctx context.Context) ([]ContainerResource, error) {
 	if len(list) > 1000 {
 		return nil, errors.New("too many containers to account safely")
 	}
-	format := `{"id":{{json .Id}},"name":{{json .Name}},"app":{{json (index .Config.Labels "io.lidza.app")}},"task":{{json (index .Config.Labels "io.lidza.task")}},"database":{{json (index .Config.Labels "io.lidza.database")}},"cache":{{json (index .Config.Labels "io.lidza.cache")}},"operation":{{json (index .Config.Labels "io.lidza.operation")}},"running":{{.State.Running}},"restarting":{{.State.Restarting}},"status":{{json .State.Status}},"memory":{{.HostConfig.Memory}},"swap":{{.HostConfig.MemorySwap}},"nano":{{.HostConfig.NanoCpus}},"quota":{{.HostConfig.CpuQuota}},"period":{{.HostConfig.CpuPeriod}},"shares":{{.HostConfig.CpuShares}},"restarts":{{.RestartCount}},"oom":{{.State.OOMKilled}}}`
+	format := `{"id":{{json .Id}},"name":{{json .Name}},"app":{{json (index .Config.Labels "io.lidza.app")}},"task":{{json (index .Config.Labels "io.lidza.task")}},"database":{{json (index .Config.Labels "io.lidza.database")}},"cache":{{json (index .Config.Labels "io.lidza.cache")}},"clickhouse":{{json (index .Config.Labels "io.lidza.clickhouse")}},"operation":{{json (index .Config.Labels "io.lidza.operation")}},"running":{{.State.Running}},"restarting":{{.State.Restarting}},"status":{{json .State.Status}},"memory":{{.HostConfig.Memory}},"swap":{{.HostConfig.MemorySwap}},"nano":{{.HostConfig.NanoCpus}},"quota":{{.HostConfig.CpuQuota}},"period":{{.HostConfig.CpuPeriod}},"shares":{{.HostConfig.CpuShares}},"restarts":{{.RestartCount}},"oom":{{.State.OOMKilled}}}`
 	raw, err := resourceCommand(ctx, append([]string{"inspect", "--format", format}, list...)...)
 	if err != nil {
 		return nil, err
@@ -221,10 +221,10 @@ func resourceInventory(ctx context.Context) ([]ContainerResource, error) {
 	out := []ContainerResource{}
 	for _, line := range strings.Split(raw, "\n") {
 		var v struct {
-			ID, Name, App, Task, Database, Cache, Status, Operation string
-			Running, Restarting                                     bool
-			Memory, Swap, Nano, Quota, Period, Shares, Restarts     int64
-			OOM                                                     bool
+			ID, Name, App, Task, Database, Cache, Status, Operation, Clickhouse string
+			Running, Restarting                                                 bool
+			Memory, Swap, Nano, Quota, Period, Shares, Restarts                 int64
+			OOM                                                                 bool
 		}
 		if err := json.Unmarshal([]byte(line), &v); err != nil {
 			return nil, errors.New("invalid Docker resource inventory")
@@ -244,6 +244,8 @@ func resourceInventory(ctx context.Context) ([]ContainerResource, error) {
 		case v.App != "":
 			c.AppID = v.App
 			c.Kind = "web"
+		case v.Clickhouse != "":
+			c.Kind = "clickhouse"
 		case v.Database != "":
 			c.Kind = "database"
 		case v.Cache != "":
@@ -409,7 +411,7 @@ func makeResourceReport(state resourceState, containers []ContainerResource, pen
 		}
 		limit := c.MemoryLimit / mib
 		cpu := c.CPUQuota
-		if c.Kind == "database" || c.Kind == "cache" {
+		if c.Kind == "database" || c.Kind == "cache" || c.Kind == "clickhouse" {
 			l := serviceLimit(policy, c.Name, c.Kind)
 			limit = l.MemoryMB
 			cpu = l.CPUs
@@ -485,6 +487,9 @@ func makeResourceReport(state resourceState, containers []ContainerResource, pen
 func serviceLimit(p ResourcePolicy, name, kind string) ServiceResources {
 	if l, ok := p.Services[name]; ok {
 		return l
+	}
+	if kind == "clickhouse" {
+		return ServiceResources{2048, 1}
 	}
 	if kind == "database" {
 		return ServiceResources{1024, 0.5}
@@ -667,7 +672,7 @@ func (m *Manager) reconcileResourcePlan(ctx context.Context, projected *resource
 			continue
 		}
 		cpu := c.CPUQuota
-		if c.Kind == "database" || c.Kind == "cache" {
+		if c.Kind == "database" || c.Kind == "cache" || c.Kind == "clickhouse" {
 			cpu = serviceLimit(report.Policy, c.Name, c.Kind).CPUs
 		}
 		if cpu <= 0 {
@@ -682,7 +687,7 @@ func (m *Manager) reconcileResourcePlan(ctx context.Context, projected *resource
 	}
 	alloc := fairCPU(pool, wanted, weights)
 	for _, c := range report.Services {
-		if c.Kind == "database" || c.Kind == "cache" {
+		if c.Kind == "database" || c.Kind == "cache" || c.Kind == "clickhouse" {
 			l := serviceLimit(report.Policy, c.Name, c.Kind)
 			desired[c.Name] = struct {
 				memory int64
@@ -973,8 +978,11 @@ func (m *Manager) saveResourcePolicy(ctx context.Context, p ResourcePolicy) erro
 	}
 	allowed := map[string]bool{}
 	for _, c := range containers {
-		if c.Kind == "database" || c.Kind == "cache" {
+		if c.Kind == "database" || c.Kind == "cache" || c.Kind == "clickhouse" {
 			allowed[c.Name] = true
+			if l, ok := p.Services[c.Name]; ok && c.Kind == "clickhouse" && l.MemoryMB < 1024 {
+				return errors.New("managed ClickHouse requires at least 1024 MiB")
+			}
 			if l, ok := p.Services[c.Name]; ok && l.MemoryMB < 256 {
 				return errors.New("managed PostgreSQL and Valkey services require at least 256 MiB")
 			}
