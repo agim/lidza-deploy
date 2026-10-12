@@ -243,7 +243,29 @@ body[data-design=walnut] pre{background:var(--bg);color:var(--ink)}
 .workspace-page{width:100%;max-width:none;margin:0;max-height:none;overflow:visible}
 .workspace-page>.dialog-title h2,.workspace-page>form>.dialog-title h2{display:none}
 .workspace-page>.dialog-title,.workspace-page>form>.dialog-title{justify-content:flex-start;margin:0 0 24px}
-.backup-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.backup-actions .button{font-size:13px}
+.backup-actions{display:flex;align-items:center;gap:12px;flex-wrap:nowrap}.backup-actions .button{font-size:13px}
+.backup-actions :is(button,.button){min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+.panel p.error{color:#9a312a}
+[data-database-card]{display:grid;gap:24px;min-width:0}
+[data-database-summary]{display:grid;gap:16px;justify-items:start;min-width:0}
+.database-card-identity{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
+.database-card-identity h2{margin:0;overflow-wrap:anywhere;min-width:0}
+.database-card-identity .pill{margin:0}
+[data-database-summary]>p{margin:0}
+[data-database-summary]>button{min-height:44px;max-width:100%;white-space:normal;text-align:left}
+[data-database-card]>.table-wrap{min-width:0;margin:0}
+@media(max-width:600px){[data-database-summary]>button{width:100%;text-align:center}}
+@media(max-width:760px){
+ .backup-table,.backup-table tbody{display:block;width:100%;min-width:0}
+ .backup-table thead{display:none}
+ .backup-table tr[data-backup]{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;padding:20px;border-bottom:1px solid var(--line)}
+ .backup-table tr[data-backup]:last-child{border-bottom:0}
+ .backup-table tr[data-backup]>td{display:block;padding:0;border:0;min-width:0;white-space:normal}
+ .backup-table tr[data-backup]>td:is(:first-child,:nth-child(4),:last-child){grid-column:1/-1}
+ .backup-table tr[data-backup]>td::before{content:attr(data-label);display:block;margin-bottom:6px;font-size:11px;letter-spacing:.06em;color:var(--muted)}
+ .backup-table .backup-actions{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+ .backup-table .backup-actions>:is(a,button){width:100%}
+}
 .database-backup-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:20px 0}.database-backup-actions form{margin:0}
 .remote-backup-key{display:block;max-width:45ch;white-space:normal;overflow-wrap:anywhere}#storage-form label small{display:block;margin:6px 0;color:var(--muted)}
 
@@ -257,4 +279,34 @@ body[data-design=walnut] pre{background:var(--bg);color:var(--ink)}
 @media(max-width:600px){.env-editor-actions{flex-direction:column;align-items:stretch}.env-editor-actions>button{width:100%}}
 .workspace-page .hint a,.panel .hint a{color:var(--accent);text-decoration:underline;text-underline-offset:3px}
 
-.backup-table{table-layout:fixed;min-width:950px}.backup-table th:nth-child(1){width:180px}.backup-table th:nth-child(2){width:140px}.backup-table th:nth-child(3){width:90px}.backup-table th:nth-child(4){width:260px}.backup-table th:nth-child(5){width:280px}.backup-table td{white-space:normal;overflow-wrap:anywhere;vertical-align:top}body[data-design=terminal]{color-scheme:dark;scrollbar-color:var(--muted) var(--bg)}body[data-design=terminal] input:is([type=checkbox],[type=radio]){accent-color:var(--accent)}
+.backup-table{table-layout:fixed;min-width:1090px}.backup-table th:nth-child(1){width:180px}.backup-table th:nth-child(2){width:140px}.backup-table th:nth-child(3){width:90px}.backup-table th:nth-child(4){width:300px}.backup-table th:nth-child(5){width:380px}.backup-table td{white-space:normal;overflow-wrap:anywhere;vertical-align:top}body[data-design=terminal]{color-scheme:dark;scrollbar-color:var(--muted) var(--bg)}body[data-design=terminal] input:is([type=checkbox],[type=radio]){accent-color:var(--accent)}
+@media(max-width:760px){.backup-table{min-width:0;table-layout:auto}}
+
+/* Expanded application actions occupy their own row, never stretch the identity. */
+body:is([data-design=terminal],[data-design=walnut]) .app-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start}
+body:is([data-design=terminal],[data-design=walnut]) .card-body{display:block;padding:24px;min-width:0}
+body:is([data-design=terminal],[data-design=walnut]) .card-head{min-width:0;max-width:520px;align-items:flex-start}
+body:is([data-design=terminal],[data-design=walnut]) .card-head h3{font-size:18px;line-height:1.3}
+body:is([data-design=terminal],[data-design=walnut]) .domain{font-size:13px}
+body:is([data-design=terminal],[data-design=walnut]) .repo{margin:16px 0 0;font-size:13px;line-height:1.6}
+body:is([data-design=terminal],[data-design=walnut]) .card-actions{display:contents}
+.app-primary-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:24px}
+body:is([data-design=terminal],[data-design=walnut]) .app-primary-actions .deploy{margin:0}
+.app-more{grid-column:1/-1;margin:0;padding:0 24px;border-top:1px solid var(--line)}
+.app-more summary{padding:16px 0;font-size:14px}
+.app-more-actions{grid-template-columns:repeat(4,minmax(0,1fr));gap:24px;padding:4px 0 24px}
+.app-action-group{display:grid;gap:8px;align-content:start;min-width:0}
+.app-action-group h4{font-size:12px;font-weight:600;color:var(--muted);margin:0 0 4px}
+body:is([data-design=terminal],[data-design=walnut]) .app-action-group button{text-align:left;justify-content:flex-start;padding:10px 12px;font-weight:500;border-color:transparent;background:transparent}
+body:is([data-design=terminal],[data-design=walnut]) .app-action-group button:hover{background:var(--soft);border-color:var(--line)}
+body[data-design=terminal] .app-action-group .app-remove{color:#d9a1a1}
+@media(max-width:1100px){.app-more-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){
+ body:is([data-design=terminal],[data-design=walnut]) .app-card{grid-template-columns:minmax(0,1fr)}
+ body:is([data-design=terminal],[data-design=walnut]) .card-body{padding:20px}
+ .app-primary-actions{padding:0 20px 20px;gap:8px}
+ .app-primary-actions>button{flex:1 1 auto}
+ .app-more{padding:0 20px}
+ .app-more-actions{gap:20px}
+}
+@media(max-width:420px){.app-more-actions{grid-template-columns:minmax(0,1fr)}}
