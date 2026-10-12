@@ -95,6 +95,11 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		if p.FromDefaults {
 			a.EnvSources[k] = "workspace"
 		}
+		if c := m.data.ClickHouses[id]; c.Ready {
+			if _, managed := c.env()[k]; managed {
+				return errors.New("ClickHouse connection is managed by the hosting agent")
+			}
+		}
 		if k == "STORAGE_DIR" && m.data.StorageVolumes[id] != "" {
 			return errors.New("STORAGE_DIR is managed by the persistent storage attachment")
 		}

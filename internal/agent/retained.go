@@ -11,20 +11,22 @@ import (
 // Retained resource credentials remain in the encrypted agent state. Recreated
 // applications get a different resource identity and never inherit these keys.
 type RetainedResource struct {
-	ID            string        `json:"id"`
-	AppID         string        `json:"app_id"`
-	Created       time.Time     `json:"created"`
-	StorageVolume string        `json:"storage_volume,omitempty"`
-	Cache         CacheResource `json:"cache,omitempty"`
+	ClickHouse    ClickHouseResource `json:"clickhouse,omitempty"`
+	ID            string             `json:"id"`
+	AppID         string             `json:"app_id"`
+	Created       time.Time          `json:"created"`
+	StorageVolume string             `json:"storage_volume,omitempty"`
+	Cache         CacheResource      `json:"cache,omitempty"`
 }
 
 type RetainedResourceView struct {
-	ID            string    `json:"id"`
-	AppID         string    `json:"app_id"`
-	Created       time.Time `json:"created"`
-	StorageVolume string    `json:"storage_volume,omitempty"`
-	CacheMode     string    `json:"cache_mode,omitempty"`
-	CacheVolume   string    `json:"cache_volume,omitempty"`
+	ClickHouseVolume string    `json:"clickhouse_volume,omitempty"`
+	ID               string    `json:"id"`
+	AppID            string    `json:"app_id"`
+	Created          time.Time `json:"created"`
+	StorageVolume    string    `json:"storage_volume,omitempty"`
+	CacheMode        string    `json:"cache_mode,omitempty"`
+	CacheVolume      string    `json:"cache_volume,omitempty"`
 }
 
 func (a App) resourceID() string {
@@ -36,24 +38,25 @@ func (a App) resourceID() string {
 
 // The caller holds m.mu and persists this together with app removal/creation.
 func (m *Manager) archiveResourcesLocked(id string) {
-	volume, cache := m.data.StorageVolumes[id], m.data.Caches[id]
-	if volume == "" && cache.Mode == "" {
+	volume, cache, clickhouse := m.data.StorageVolumes[id], m.data.Caches[id], m.data.ClickHouses[id]
+	if volume == "" && cache.Mode == "" && clickhouse.Network == "" {
 		return
 	}
 	if m.data.RetainedResources == nil {
 		m.data.RetainedResources = map[string]RetainedResource{}
 	}
 	key := newID()
-	m.data.RetainedResources[key] = RetainedResource{ID: key, AppID: id, Created: time.Now().UTC(), StorageVolume: volume, Cache: cache}
+	m.data.RetainedResources[key] = RetainedResource{ID: key, AppID: id, Created: time.Now().UTC(), StorageVolume: volume, Cache: cache, ClickHouse: clickhouse}
 	delete(m.data.StorageVolumes, id)
 	delete(m.data.Caches, id)
+	delete(m.data.ClickHouses, id)
 }
 
 func (m *Manager) hasRetainedResourcesLocked(id string) bool {
 	if m.data.RetiredAppIDs[id] {
 		return true
 	}
-	if m.data.StorageVolumes[id] != "" || m.data.Caches[id].Mode != "" {
+	if m.data.StorageVolumes[id] != "" || m.data.Caches[id].Mode != "" || m.data.ClickHouses[id].Network != "" {
 		return true
 	}
 	if _, exists := m.data.Databases[id]; exists {
@@ -80,6 +83,7 @@ func (m *Manager) resourceSnapshotLocked() diskState {
 	out.Apps = maps.Clone(m.data.Apps)
 	out.StorageVolumes = maps.Clone(m.data.StorageVolumes)
 	out.Caches = maps.Clone(m.data.Caches)
+	out.ClickHouses = maps.Clone(m.data.ClickHouses)
 	out.RetainedResources = maps.Clone(m.data.RetainedResources)
 	out.RetiredAppIDs = maps.Clone(m.data.RetiredAppIDs)
 	out.Tasks = maps.Clone(m.data.Tasks)
@@ -92,6 +96,9 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 	out := []RetainedResourceView{}
 	for _, item := range m.data.RetainedResources {
 		view := RetainedResourceView{ID: item.ID, AppID: item.AppID, Created: item.Created, StorageVolume: item.StorageVolume, CacheMode: item.Cache.Mode}
+		if item.ClickHouse.Network != "" {
+			view.ClickHouseVolume = item.ClickHouse.Network + "-data"
+		}
 		if item.Cache.Network != "" {
 			view.CacheVolume = item.Cache.Network + "-data"
 		}
@@ -103,6 +110,9 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 	for id := range m.data.StorageVolumes {
 		legacy[id] = true
 	}
+	for id := range m.data.ClickHouses {
+		legacy[id] = true
+	}
 	for id := range m.data.Caches {
 		legacy[id] = true
 	}
@@ -112,6 +122,9 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 		}
 		cache := m.data.Caches[id]
 		view := RetainedResourceView{ID: "legacy-" + id, AppID: id, StorageVolume: m.data.StorageVolumes[id], CacheMode: cache.Mode}
+		if c := m.data.ClickHouses[id]; c.Network != "" {
+			view.ClickHouseVolume = c.Network + "-data"
+		}
 		if cache.Network != "" {
 			view.CacheVolume = cache.Network + "-data"
 		}
