@@ -38,7 +38,7 @@ Workers keep running with Docker if the control panel is down. Scheduled dispatc
 
 ## Managed agent upgrades
 
-The installer now includes a root systemd path/service pair and a release helper. Existing hosts must run the updated installer with their original required FQDN to install this capability. **Servers → Agent upgrade** shows the current version, latest stable official release and upgrade result. Development/custom-data-directory hosts report that the managed helper must be installed.
+The installer now includes a root systemd path/service pair and a release helper. Existing hosts must run the updated installer with their original required FQDN to install this capability. **Servers → Manage server → Agent upgrade** shows the current version, latest stable official release and upgrade result. Development/custom-data-directory hosts report that the managed helper must be installed.
 
 The agent queues a validated stable version. The helper accepts only `vMAJOR.MINOR.PATCH` releases from `agim/lidza-deploy`, selects the matching amd64/arm64 asset, verifies the archive checksum and inner manifest, and checks the binary version. It atomically replaces the agent and any co-located control panel, restarts their services and checks loopback health/readiness. Failed startup restores the previous binaries and records a failure; existing hosted containers keep running. New deployments/database operations are blocked while an upgrade is queued or running. Upgrade service logs are available through `journalctl -u lidza-agent-upgrade.service`.
 
@@ -73,3 +73,9 @@ If build and uploaded-asset verification pass but an existing draft cannot be pu
 ## Application error reports
 
 Use **Errors** in the workspace or on an app card. Paired hosting agents automatically forward console errors to central storage, with no app analytics pack or database required. Optional app analytics supplies richer/frontend reports separately. See [Application errors](application-errors.md) for setup, database scope, retention, privacy and bounded-sample behavior.
+
+## Server connections
+
+Host cards provide two actions: **Add application** selects that host in the new application page; **Manage server** opens its connection settings. The server page has **Connection**, **SSH access** and **Agent upgrade** navigation. These administration controls require an administrator. Saved agent tokens are not returned to the browser; a blank token keeps the current credential.
+
+**Disconnect server** is a separate section on the Connection page, disabled while applications remain registered on that server. Confirmation removes the control panel connection only. It does not uninstall the agent or delete retained data. Reconnecting the same agent restores access to that host’s retained resources.

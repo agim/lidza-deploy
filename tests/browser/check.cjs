@@ -14,7 +14,7 @@ if(!page.url().includes('demo=1&design=terminal'))throw Error('Section navigatio
 await page.goto(base+'/console.html?demo=1&design=terminal#deployments');await page.waitForFunction(()=>document.querySelector('#crumb').textContent==='Deployments');
 if(await page.locator('[data-tab=deployments]').getAttribute('aria-current')!=='page')throw Error('Active section is not accessible');
 await page.goto(base+'/console.html?demo=1#unknown');await page.waitForFunction(()=>document.querySelector('#crumb').textContent==='Applications');
-for(const design of ['studio','terminal','fleet']){await page.goto(base+'/console.html?demo=1&design='+design);await page.getByRole('link',{name:'Applications',exact:false}).first().click();await page.waitForSelector('.app-card');if(await page.locator('.app-card').count()!==3)throw Error('missing demo apps');await page.screenshot({path:path.join(output,design+'.png'),fullPage:true});await page.getByRole('button',{name:'New application'}).click();await page.locator('#app-form [name=id]').fill('preview-'+design);await page.locator('[name=repository]').fill('acme/preview');await page.locator('#app-form [name=domain]').fill('preview-'+design+'.example.com');await page.locator('#app-form [name=database_mode]').selectOption('none');await page.getByRole('button',{name:'Create application'}).click();await page.locator('[data-action=deploy][data-id="preview-'+design+'"]').click();await page.waitForTimeout(1500);if(await page.locator('.app-card').count()!==4)throw Error('demo create failed');await page.locator('[data-action=logs]').first().click();await page.waitForSelector('#log-dialog[open]');await page.locator('#log-dialog [data-close]').click();
+for(const design of ['studio','terminal','fleet']){await page.goto(base+'/console.html?demo=1&design='+design);await page.getByRole('link',{name:'Applications',exact:false}).first().click();await page.waitForSelector('.app-card');if(await page.locator('.app-card').count()!==3)throw Error('missing demo apps');await page.screenshot({path:path.join(output,design+'.png'),fullPage:true});await page.locator('#new-app').click();await page.locator('#app-form [name=id]').fill('preview-'+design);await page.locator('[name=repository]').fill('acme/preview');await page.locator('#app-form [name=domain]').fill('preview-'+design+'.example.com');await page.locator('#app-form [name=database_mode]').selectOption('none');await page.getByRole('button',{name:'Create application'}).click();await page.locator('[data-action=deploy][data-id="preview-'+design+'"]').click();await page.waitForTimeout(1500);if(await page.locator('.app-card').count()!==4)throw Error('demo create failed');await page.locator('[data-app-menu]').first().locator('summary').click();await page.locator('[data-action=logs]').first().click();await page.waitForSelector('#log-dialog:not([hidden])');await page.locator('#log-dialog [data-close]').click();
 await page.locator('[data-action=settings][data-id="preview-'+design+'"]').click();
 await page.locator('#settings-form [name=branch]').fill('release');
 await page.locator('#settings-form summary').click();await page.locator('#settings-form [name=env_changes]').fill('{"FEATURE":"enabled"}');
@@ -23,7 +23,8 @@ await page.locator('[data-action=settings][data-id="preview-'+design+'"]').click
 if(await page.locator('#settings-form [name=branch]').inputValue()!=='release')throw Error('settings not saved');
 if(await page.locator('#env-keys').textContent()!=='FEATURE')throw Error('environment keys missing');
 await page.locator('#settings-dialog [data-close]').first().click();
-await page.locator('[data-action=disable-webhook]').first().click();
+await page.locator('[data-app-menu]').first().locator('summary').click();await page.locator('[data-action=disable-webhook]').first().click();
+await page.locator('[data-app-menu="preview-'+design+'"] summary').click();
 page.once('dialog',dialog=>dialog.accept('preview-'+design));
 await page.locator('[data-action=remove][data-id="preview-'+design+'"]').click();
 if(await page.locator('.app-card').count()!==3)throw Error('demo removal failed');
@@ -33,11 +34,12 @@ await page.locator('#server-form [name=id]').fill('preview-host');
 await page.locator('#server-form [name=name]').fill('Preview host');
 await page.locator('#server-form [name=url]').fill('https://agent-preview.example.com');
 await page.locator('#server-form [name=token]').fill('x'.repeat(32));
-await page.getByRole('button',{name:'Save server',exact:true}).click();
+await page.getByRole('button',{name:'Save connection',exact:true}).click();
 await page.getByRole('heading',{name:'Preview host',exact:true}).waitFor();
 await page.locator('[data-manage-server="preview-host"]').click();
 if(await page.locator('#server-form [name=token]').inputValue()!=='')throw Error('token returned to browser');
 await page.locator('#server-dialog [data-close]').first().click();
+await page.locator('[data-manage-server="preview-host"]').click();
 page.once('dialog',dialog=>dialog.accept());
 await page.locator('[data-remove-server="preview-host"]').click();
 await page.getByRole('heading',{name:'Preview host',exact:true}).waitFor({state:'detached'});
@@ -51,7 +53,9 @@ if(await page.locator('#design').isVisible())throw Error('design selector still 
 // Exercise real management through the control panel and local agent; no GitHub build is triggered.
 const id='browser-check-'+Date.now();
 try {
- await page.getByRole('button',{name:'New application'}).click();
+ await page.locator('#menu-toggle').click();await page.locator('[data-tab=apps]').click();
+ await page.locator('#new-app').click();
+ await page.locator('#server-select').selectOption('local');
  await page.locator('#app-form [name=id]').fill(id);
  await page.locator('#app-form [name=repository]').fill('acme/browser-fixture');
  await page.locator('#app-form [name=domain]').fill(id+'.example.com');
@@ -63,7 +67,7 @@ try {
  await page.locator('#app-form [name=database_mode]').selectOption('none');await page.getByRole('button',{name:'Create application'}).click();
  await page.locator('[data-action=settings][data-id="'+id+'"]').click();
  await page.waitForSelector('#settings-dialog:not([hidden])');
- await page.locator('#env-keys').getByText('RETAINED',{exact:true}).waitFor();
+ if(await page.locator('#env-keys').textContent()!=='AUTH_SECRET, DB_MIGRATE, RETAINED')throw Error('new app migration default or supplied variable missing');
  if((await page.locator('#settings-dialog').textContent()).includes('fixture-secret'))throw Error('saved secret exposed');
  await page.locator('#settings-form [name=branch]').fill('release');
  await page.locator('#settings-env-editor').getByRole('button',{name:'Add variable'}).click();
@@ -73,15 +77,16 @@ try {
  await page.locator('[data-action=settings][data-id="'+id+'"]').click();
  await page.waitForSelector('#settings-dialog:not([hidden])');
  if(await page.locator('#settings-form [name=branch]').inputValue()!=='release')throw Error('live settings failed');
- if(await page.locator('#env-keys').textContent()!=='ADDED, RETAINED')throw Error('live patch lost variables');
+ if(await page.locator('#env-keys').textContent()!=='ADDED, AUTH_SECRET, DB_MIGRATE, RETAINED')throw Error('live patch lost variables');
  if((await page.locator('#settings-env-editor .env-value').evaluateAll(nodes=>nodes.map(n=>n.value))).some(Boolean))throw Error('saved value returned to editor');
  await page.locator('#settings-env-editor .env-row').first().locator('.env-value').fill('rotated-secret');
  await page.locator('#settings-env-editor .env-row').last().locator('.env-action').selectOption('delete');
  await page.getByRole('button',{name:'Save settings',exact:true}).click();
  await page.locator('[data-action=settings][data-id="'+id+'"]').click();
  await page.waitForSelector('#settings-dialog:not([hidden])');
- if(await page.locator('#env-keys').textContent()!=='ADDED')throw Error('variable deletion failed');
+ if(await page.locator('#env-keys').textContent()!=='ADDED, AUTH_SECRET, DB_MIGRATE')throw Error('variable deletion failed');
  await page.locator('#settings-dialog [data-close]').first().click();
+ await page.locator('[data-app-menu="'+id+'"] summary').click();
  page.once('dialog',dialog=>dialog.accept(id));
  await page.locator('[data-action=remove][data-id="'+id+'"]').click();
  await page.locator('[data-action=remove][data-id="'+id+'"]').waitFor({state:'detached'});

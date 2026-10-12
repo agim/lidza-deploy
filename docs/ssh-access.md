@@ -1,6 +1,6 @@
 # SSH access to hosting servers
 
-In **Servers → SSH access**, add your MacBook's SSH **public** key with a recognizable label. On your Mac, `cat ~/.ssh/id_ed25519.pub` prints the public key. If you don't have one, create it with `ssh-keygen -t ed25519 -C "MacBook"`. Never paste or upload the private key.
+In **Servers → Manage server → SSH access**, add your MacBook's SSH **public** key with a recognizable label. On your Mac, `cat ~/.ssh/id_ed25519.pub` prints the public key. If you don't have one, create it with `ssh-keygen -t ed25519 -C "MacBook"`. Never paste or upload the private key.
 
 Wait for **Managed SSH access applied**, then use the connection command shown in the panel, for example:
 

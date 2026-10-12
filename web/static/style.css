@@ -322,3 +322,11 @@ body[data-design=terminal] .app-action-group .app-remove{color:#d9a1a1}
 @keyframes loading-turn{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.loading-spinner{animation:none}}
 .app-identity{min-width:0;flex:1}.app-identity .domain{display:block;overflow-wrap:anywhere}.card-head .app-icon,.card-head .pill{flex-shrink:0}.domain-status-message{margin-top:8px;color:var(--muted);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.domain-status-message p{margin:0}.domain-status-message small{display:block;margin-top:4px;font-size:11px}
+
+/* Host cards offer entry points; administration lives on the server page. */
+.server-card-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}
+.server-card-actions button{min-height:44px}
+#server-form{max-width:760px}
+#server-removal{max-width:760px;margin-top:40px}
+#server-removal h3{margin-top:0}
+@media(max-width:760px){.server-card-actions{display:grid;grid-template-columns:1fr;gap:12px}.server-card-actions button{width:100%;text-align:center}.server-card-actions button:disabled{cursor:not-allowed}}

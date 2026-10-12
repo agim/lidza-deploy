@@ -7,21 +7,28 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const domainProbePath = "/.well-known/lidza-deploy-host"
+const domainPendingInterval = 10 * time.Second
+const domainReadyInterval = 5 * time.Minute
 
 type DomainStatus struct {
-	Domain  string    `json:"domain"`
-	State   string    `json:"state"`
-	Checked time.Time `json:"checked,omitempty"`
-	Message string    `json:"message,omitempty"`
+	RecheckSeconds int       `json:"recheck_seconds,omitempty"`
+	Domain         string    `json:"domain"`
+	State          string    `json:"state"`
+	Checked        time.Time `json:"checked,omitempty"`
+	Message        string    `json:"message,omitempty"`
 }
 
 func (m *Manager) domainProof(domain string) string {
@@ -33,39 +40,79 @@ func (m *Manager) domainProof(domain string) string {
 // Resolve each address, then prove it serves this agent. This also works with
 // public NAT addresses that are not present on the server's network interfaces.
 func checkDomainRoute(ctx context.Context, domain, proof string, lookup func(context.Context, string, string) ([]net.IP, error), port string) error {
-	ips, err := lookup(ctx, "ip", domain)
+	resolve, stop := context.WithTimeout(ctx, 5*time.Second)
+	ips, err := lookup(resolve, "ip", domain)
+	stop()
 	if err != nil || len(ips) == 0 {
+		var networkError net.Error
+		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout() {
+			return errors.New("DNS lookup timed out; check the hosting server's resolver")
+		}
 		return errors.New("waiting for DNS A/AAAA records")
 	}
 	nonce := newID()
 	expected := challengeProof(proof, nonce)
 	hasA := false
+	unique := map[string]bool{}
+	checks, probeContext := errgroup.WithContext(ctx)
+	checks.SetLimit(4)
 	for _, ip := range ips {
 		if ip.To4() != nil {
 			hasA = true
 		}
-		addr := net.JoinHostPort(ip.String(), port)
-		transport := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
-		}}
-		client := &http.Client{Transport: transport, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		req, _ := http.NewRequestWithContext(ctx, "GET", "http://"+domain+domainProbePath+"?nonce="+nonce, nil)
-		res, err := client.Do(req)
-		if err != nil {
-			transport.CloseIdleConnections()
-			return errors.New("waiting for all DNS addresses to reach this server on port 80")
+		if unique[ip.String()] {
+			continue
 		}
-		body, readErr := io.ReadAll(io.LimitReader(res.Body, 1024))
-		res.Body.Close()
-		transport.CloseIdleConnections()
-		if readErr != nil || res.StatusCode != 200 || !hmac.Equal(body, []byte(expected)) {
-			return errors.New("DNS points elsewhere or the server's HTTP verification route is unavailable")
-		}
+		unique[ip.String()] = true
+		checks.Go(func() error { return checkDomainAddress(probeContext, domain, ip, port, nonce, expected) })
+	}
+	if err := checks.Wait(); err != nil {
+		return err
 	}
 	if !hasA {
 		return errors.New("waiting for a DNS A record pointing to this server")
 	}
 	return nil
+}
+
+func checkDomainAddress(ctx context.Context, domain string, ip net.IP, port, nonce, expected string) error {
+	addr := net.JoinHostPort(ip.String(), port)
+	transport := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
+	}}
+	client := &http.Client{Transport: transport, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, _ := http.NewRequestWithContext(ctx, "GET", "http://"+domain+domainProbePath+"?nonce="+nonce, nil)
+	res, err := client.Do(req)
+	if err != nil {
+		transport.CloseIdleConnections()
+		return fmt.Errorf("HTTP verification failed for %s: %s; check port %s access from the hosting server", addr, domainConnectionError(err), port)
+	}
+	body, readErr := io.ReadAll(io.LimitReader(res.Body, 1024))
+	res.Body.Close()
+	transport.CloseIdleConnections()
+	if readErr != nil || res.StatusCode != 200 || !hmac.Equal(body, []byte(expected)) {
+		return fmt.Errorf("HTTP verification for %s did not match this host (HTTP %d); check DNS and Caddy's verification route", addr, res.StatusCode)
+	}
+	return nil
+}
+
+func domainConnectionError(err error) string {
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return "connection timed out"
+	}
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, syscall.ECONNRESET):
+		return "connection reset"
+	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH):
+		return "address unreachable"
+	case errors.Is(err, io.EOF):
+		return "connection closed"
+	default:
+		return "connection failed"
+	}
 }
 
 func requestDomainCertificate(ctx context.Context, domain, address string) error {
@@ -84,45 +131,95 @@ func verifyDomainCertificate(ctx context.Context, domain, address string, config
 
 func (m *Manager) domainLoop() {
 	defer m.wg.Done()
-	timer := time.NewTimer(0)
-	defer timer.Stop()
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		case <-timer.C:
-		case <-m.domainWake:
+	m.runDomainChecks(m.ctx, time.Second, func(ctx context.Context, a App) {
+		m.checkAppDomainContext(ctx, a, "80", net.DefaultResolver.LookupIP, func(ctx context.Context, domain string) error {
+			return requestDomainCertificate(ctx, domain, m.cfg.TLSListen)
+		})
+	})
+}
+
+// Each host has its own retry clock. An unreachable domain cannot stall the
+// entire fleet; no domain runs overlapping checks, and work remains bounded.
+func (m *Manager) runDomainChecks(ctx context.Context, interval time.Duration, check func(context.Context, App)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	type runningCheck struct {
+		domain string
+		cancel context.CancelFunc
+	}
+	running := map[string]runningCheck{}
+	finished := make(chan string, 8)
+	var pending sync.WaitGroup
+	defer func() {
+		for _, item := range running {
+			item.cancel()
 		}
-		var pending sync.WaitGroup
-		slots := make(chan struct{}, 8)
-		for _, a := range m.Apps() {
+		pending.Wait()
+	}()
+	scan := func() {
+		if ctx.Err() != nil {
+			return
+		}
+		apps := m.Apps()
+		live := map[string]string{}
+		for _, a := range apps {
+			if a.Current != nil && !a.Retiring {
+				live[a.ID] = a.Domain
+			}
+		}
+		for id, item := range running {
+			if live[id] != item.domain {
+				item.cancel()
+			}
+		}
+		for _, a := range apps {
 			if a.Current == nil || a.Retiring {
 				continue
 			}
-			select {
-			case slots <- struct{}{}:
-			case <-m.ctx.Done():
-				pending.Wait()
-				return
+			if _, active := running[a.ID]; active {
+				continue
 			}
+			if len(running) >= 8 {
+				break
+			}
+			m.mu.Lock()
+			status := m.domains[a.ID]
+			m.mu.Unlock()
+			delay := domainPendingInterval
+			if status.State == "ready" {
+				delay = domainReadyInterval
+			}
+			if status.Domain == a.Domain && !status.Checked.IsZero() && time.Since(status.Checked) < delay {
+				continue
+			}
+			work, cancel := context.WithCancel(ctx)
+			running[a.ID] = runningCheck{domain: a.Domain, cancel: cancel}
 			pending.Add(1)
-			go func(a App) {
-				defer pending.Done()
-				defer func() { <-slots }()
-				m.checkAppDomain(a, "80", net.DefaultResolver.LookupIP, func(ctx context.Context, domain string) error {
-					return requestDomainCertificate(ctx, domain, m.cfg.TLSListen)
-				})
-			}(a)
+			go func(a App) { defer pending.Done(); check(work, a); finished <- a.ID }(a)
 		}
-		pending.Wait()
-		timer.Reset(time.Minute)
+	}
+	scan()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case id := <-finished:
+			running[id].cancel()
+			delete(running, id)
+		case <-ticker.C:
+		case <-m.domainWake:
+		}
+		scan()
 	}
 }
 
 func (m *Manager) checkAppDomain(a App, port string, lookup func(context.Context, string, string) ([]net.IP, error), issue func(context.Context, string) error) {
-	ctx, cancel := context.WithTimeout(m.ctx, 90*time.Second)
+	m.checkAppDomainContext(m.ctx, a, port, lookup, issue)
+}
+func (m *Manager) checkAppDomainContext(parent context.Context, a App, port string, lookup func(context.Context, string, string) ([]net.IP, error), issue func(context.Context, string) error) {
+	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
-	status := DomainStatus{Domain: a.Domain, State: "waiting_dns", Checked: time.Now().UTC()}
+	status := DomainStatus{Domain: a.Domain, State: "waiting_dns", Checked: time.Now().UTC(), RecheckSeconds: int(domainPendingInterval / time.Second)}
 	if err := checkDomainRoute(ctx, a.Domain, m.domainProof(a.Domain), lookup, port); err != nil {
 		status.Message = err.Error()
 	} else {
@@ -132,8 +229,13 @@ func (m *Manager) checkAppDomain(a App, port string, lookup func(context.Context
 			status.Message = err.Error()
 		} else {
 			status.State = "ready"
+			status.RecheckSeconds = int(domainReadyInterval / time.Second)
 		}
 	}
+	if parent.Err() != nil {
+		return
+	}
+	status.Checked = time.Now().UTC()
 	m.setDomainStatus(a, status)
 }
 func (m *Manager) setDomainStatus(a App, status DomainStatus) {

@@ -83,11 +83,12 @@ function workspaceSnapshot(){
  if(tab==='settings')return JSON.stringify([tab,status,infrastructure,permissions]);
  return JSON.stringify([tab,['errors','security'].includes(tab)?apps.map(a=>[a.id,a.retiring]):[],permissions]);
 }
+function domainRetryText(status){const seconds=status.recheck_seconds||60;return seconds===60?'Automatically rechecked about every minute.':seconds<60?'Automatically rechecked about every '+seconds+' seconds.':'Automatically rechecked about every '+Math.round(seconds/60)+' minutes.'}
 function card(a){
  const d=latest(a.id),server=servers.find(s=>s.id===a.server_id);
  const state=a.retiring?'removal pending':a.stopped?(d?.kind==='start'&&['queued','building'].includes(d?.status)?'starting':'stopped'):a.agent_error||(['building','queued'].includes(d?.status)?d.status:d?.status==='failed'?'failed':a.current?'live':d?.status);
  return `<article class="app-card" data-app-card="${escape(a.id)}">
-  <div class="card-body"><div class="card-head"><span class="app-icon">${escape(a.id.slice(0,2).toUpperCase())}</span><div class="app-identity"><h3>${escape(a.id)}</h3><span class="domain">${escape(a.domain)}</span>${a.domain_status?.message?`<div class="domain-status-message"><p>${escape(a.domain_status.message)}</p><small>Automatically rechecked about every minute.</small></div>`:''}</div>${pill(state)}</div>
+  <div class="card-body"><div class="card-head"><span class="app-icon">${escape(a.id.slice(0,2).toUpperCase())}</span><div class="app-identity"><h3>${escape(a.id)}</h3><span class="domain">${escape(a.domain)}</span>${a.domain_status?.message?`<div class="domain-status-message"><p>${escape(a.domain_status.message)}</p><small>${escape(domainRetryText(a.domain_status))}</small></div>`:''}</div>${pill(state)}</div>
    <div class="repo"><span>⑂</span>${escape(a.repository)} <b>· ${escape(a.branch)}</b> <code>${escape(a.current?.commit?.slice(0,7)||'')}</code></div>
    <div class="meta-row"><span>${escape(server?.name||a.server_id)}</span><span>${a.auto_deploy?(a.stopped?'Auto-deploy paused · app stopped':'↻ Auto-deploy enabled'):'Manual deploys'} · ${demo?'TLS demo':a.domain_status?({waiting_dns:'Waiting for DNS',requesting_ssl:'Requesting SSL',ready:'HTTPS ready'}[a.domain_status.state]||'Checking HTTPS'):'Auto TLS configured'}</span></div>
   </div>
@@ -151,7 +152,7 @@ function renderReleaseHistory(){
  }
 }
 function renderServers(){
- const content=$('#content'),template=document.createElement('template');template.innerHTML=`<div class="toolbar"><h2>Connected hosts</h2><button data-manage-server="">＋ Connect server</button><span class="badge">${servers.length} configured</span></div><div class="server-grid" data-server-inventory>${servers.map(s=>`<article class="panel" data-server-card="${escape(s.id)}"><span class="server-icon">▤</span><h2>${escape(s.name)}</h2><p>${escape(s.url)}</p><div class="server-apps">${apps.filter(a=>a.server_id===s.id).length} applications · dedicated agent</div><p>${apps.filter(a=>a.server_id===s.id).map(a=>escape(a.domain)).join('<br>')||'Ready for its first application.'}</p><button data-server="${escape(s.id)}">Add application →</button> <button data-manage-server="${escape(s.id)}">Edit</button> <button data-upgrade="${escape(s.id)}">Agent upgrade</button> <button data-ssh-access="${escape(s.id)}">SSH access</button> <button data-remove-server="${escape(s.id)}" ${apps.some(a=>a.server_id===s.id)?'disabled':''}>Remove</button></article>`).join('')||'<div class="empty">No servers connected. Install an agent, then choose Connect server.</div>'}</div><div class="panel"><h2>One server, many domains</h2><p>Each application has a separate container and FQDN. Point DNS at the server; Caddy issues and renews HTTPS certificates for registered domains. Certificate issuance requires reachable ports 80 and 443.</p></div>`;
+ const content=$('#content'),template=document.createElement('template');template.innerHTML=`<div class="toolbar"><h2>Connected hosts</h2><button data-manage-server="">＋ Connect server</button><span class="badge">${servers.length} configured</span></div><div class="server-grid" data-server-inventory>${servers.map(s=>`<article class="panel" data-server-card="${escape(s.id)}"><span class="server-icon">▤</span><h2>${escape(s.name)}</h2><p>${escape(s.url)}</p><div class="server-apps">${apps.filter(a=>a.server_id===s.id).length} application${apps.filter(a=>a.server_id===s.id).length===1?'':'s'} · dedicated agent</div><p>${apps.filter(a=>a.server_id===s.id).map(a=>escape(a.domain)).join('<br>')||'Ready for its first application.'}</p><div class="server-card-actions"><button data-server="${escape(s.id)}">Add application</button><button data-manage-server="${escape(s.id)}">Manage server</button></div></article>`).join('')||'<div class="empty">No servers connected. Install an agent, then choose Connect server.</div>'}</div><div class="panel"><h2>One server, many domains</h2><p>Each application has a separate container and FQDN. Point DNS at the server; Caddy issues and renews HTTPS certificates for registered domains. Certificate issuance requires reachable ports 80 and 443.</p></div>`;
  if(!content.querySelector('[data-server-inventory]')){content.replaceChildren(template.content);return}
  content.querySelector('.toolbar .badge').textContent=servers.length+' configured';
  const grid=content.querySelector('[data-server-inventory]'),fresh=[...template.content.querySelector('[data-server-inventory]').children],keep=new Set();
@@ -159,7 +160,6 @@ function renderServers(){
   let node=[...grid.children].find(e=>e.dataset.serverCard===next.dataset.serverCard);
   if(!node){node=next;grid.insertBefore(node,grid.children[index]||null)}else if(next.dataset.serverCard){
    for(const selector of ['h2','p','.server-apps','p:nth-of-type(2)']){const target=node.querySelector(selector),value=next.querySelector(selector);if(target.innerHTML!==value.innerHTML)target.innerHTML=value.innerHTML}
-   node.querySelector('[data-remove-server]').disabled=next.querySelector('[data-remove-server]').disabled;
   }
   if(grid.children[index]!==node)grid.insertBefore(node,grid.children[index]||null);keep.add(node);
  }
@@ -204,25 +204,36 @@ function dialogError(id, error) { $(id).textContent = error.message; $(id).hidde
 function openServer(id) {
  const server = servers.find(s => s.id === id);
  editingServer = server?.id || null;
- const form = $('#server-form'); form.reset();
+ const form = $('#server-form'); form.reset(); form.querySelector('.form-state')?.remove();
  for (const name of ['id', 'name', 'url']) form.elements[name].value = server?.[name] || '';
  form.elements.id.readOnly = !!server;
  form.elements.token.required = !server;
- $('#server-title').textContent = server ? 'Edit server' : 'Connect server';
- $('#server-error').hidden = true; showWorkspacePage($('#server-dialog'),'server',id||'new');
+ $('#server-title').textContent = server ? server.name+' · Connection' : 'Connect server';
+ updateServerRemoval(server);
+ $('#server-error').hidden = true; showWorkspacePage($('#server-dialog'),'server',id||'new'); renderTeamPermissions();
 }
+function updateServerRemoval(server){
+ const section=$('#server-removal');section.hidden=!server||!isAdmin();
+ if(!server)return;
+ const count=apps.filter(a=>a.server_id===server.id).length,button=section.querySelector('[data-remove-server]');
+ button.dataset.removeServer=server.id;button.disabled=!!count;
+ $('#server-removal-hint').textContent=count?count+' registered application'+(count===1?'':'s')+' must be removed before disconnecting this server.':'Removes this connection from the control panel. Its agent, containers and retained data stay on the host. Reconnect the same agent to manage them again.';
+}
+$('#server-removal').onclick=event=>serverAction(event);
 async function serverAction(event) {
  const edit = event.target.closest('[data-manage-server]');
  if (edit) { openServer(edit.dataset.manageServer); return true; }
  const remove = event.target.closest('[data-remove-server]');
  if (!remove) return false;
+ if(remove.disabled||!isAdmin())return true;
  const id = remove.dataset.removeServer;
  if (!confirm('Remove '+id+' from the control panel? This does not uninstall its agent.')) return true;
+ remove.disabled=true;
  try {
   if (demo) servers = servers.filter(s => s.id !== id);
   else await api('control/servers/'+id, 'DELETE');
-  await refresh(); notice('Server removed.');
- } catch (error) { fail(error); }
+  dirtyForms.delete('server-form');hideWorkspacePage();await navigate('servers');notice('Server disconnected.');
+ } catch (error) { fail(error);updateServerRemoval(servers.find(s=>s.id===id)); }
  return true;
 }
 $('#server-form').onsubmit = async event => {

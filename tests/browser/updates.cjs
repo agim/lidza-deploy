@@ -19,7 +19,7 @@ checkGate=new Promise(resolve=>finishCheck=resolve);const beforeChecks=calls.fil
 await page.locator('#updates-check').click();await page.waitForFunction(()=>document.querySelector('#updates-check').disabled);
 assert.equal(calls.filter(c=>c.path.endsWith('/check')).length,beforeChecks+1);
 await go('servers');await page.locator('[data-server-inventory]').waitFor();assert.equal(await page.locator('#updates-check').count(),0);assert.equal(await page.locator('#title').textContent(),'Servers.');
-await page.evaluate(()=>{window.inventory=document.querySelector('[data-server-inventory]');window.hostButton=inventory.querySelector('[data-ssh-access]');hostButton.focus({preventScroll:true});window.serverY=scrollY;});
+await page.evaluate(()=>{window.inventory=document.querySelector('[data-server-inventory]');window.hostButton=inventory.querySelector('[data-manage-server]');hostButton.focus({preventScroll:true});window.serverY=scrollY;});
 finishCheck();checkGate=null;await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('Release check complete.'));await page.waitForFunction(()=>!updatesLoading);
 assert(await page.evaluate(()=>tab==='servers'&&inventory===document.querySelector('[data-server-inventory]')&&document.activeElement===hostButton&&scrollY===serverY));assert.equal(await page.locator('[data-updates-panel]').count(),0);
 await page.evaluate(()=>refresh({background:true}));assert.equal(await page.locator('[data-server-card]').count(),2);assert.equal(await page.locator('#updates-check').count(),0);

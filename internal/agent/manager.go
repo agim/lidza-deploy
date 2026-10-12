@@ -198,7 +198,7 @@ func (m *Manager) Apps() []App {
 		if m.cfg.TLSListen != "" {
 			status, ok := m.domains[a.ID]
 			if !ok || status.Domain != a.Domain {
-				status = DomainStatus{Domain: a.Domain, State: "waiting_dns"}
+				status = DomainStatus{Domain: a.Domain, State: "waiting_dns", RecheckSeconds: int(domainPendingInterval / time.Second)}
 			}
 			a.DomainStatus = &status
 		}
