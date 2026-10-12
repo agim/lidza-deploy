@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -225,14 +226,16 @@ func (m *Manager) Upsert(a App) error {
 		return errors.New("application has an active deployment")
 	}
 	old, exists := m.data.Apps[a.ID]
-	if m.data.StorageVolumes[a.ID] != "" && !exists {
-		return errors.New("application ID is reserved by retained storage")
+	if m.removing[a.ID] || m.data.Caches[a.ID].Operation {
+		return errors.New("application cleanup or cache operation is active")
 	}
-	if cache := m.data.Caches[a.ID]; cache.Mode != "" && !exists {
-		return errors.New("application ID is reserved by a retained cache resource")
-	}
-	if _, retained := m.data.Databases[a.ID]; retained && !exists {
-		return errors.New("application ID is reserved by a database resource")
+	a.ResourceID = old.ResourceID // Never accept a caller-selected resource identity.
+	if !exists && m.hasRetainedResourcesLocked(a.ID) {
+		prefix := a.ID
+		if len(prefix) > 23 {
+			prefix = strings.TrimRight(prefix[:23], "-")
+		}
+		a.ResourceID = prefix + "-" + newID()
 	}
 	for key := range old.Bindings {
 		if a.Env != nil && a.Env[key] != old.Env[key] {
@@ -264,7 +267,7 @@ func (m *Manager) Upsert(a App) error {
 	a.Maintenance = old.Maintenance
 	a.Stopped = old.Stopped
 	a.Bindings = old.Bindings
-	if m.data.StorageVolumes[a.ID] != "" && a.Env != nil {
+	if exists && m.data.StorageVolumes[a.ID] != "" && a.Env != nil {
 		a.Env = maps.Clone(a.Env)
 		if dir := a.Env["STORAGE_DIR"]; dir != "" && dir != appStorageMount {
 			return errors.New("STORAGE_DIR is managed by the persistent storage attachment")
@@ -274,7 +277,7 @@ func (m *Manager) Upsert(a App) error {
 			a.Env["STORAGE_PROVIDER"] = old.Env["STORAGE_PROVIDER"]
 		}
 	}
-	if c := m.data.Caches[a.ID]; c.Mode != "" {
+	if c := m.data.Caches[a.ID]; exists && c.Mode != "" {
 		if c.Operation {
 			return errors.New("cache operation is active")
 		}
@@ -325,13 +328,13 @@ func (m *Manager) Upsert(a App) error {
 	if err := a.Validate(); err != nil {
 		return err
 	}
+	before := m.resourceSnapshotLocked()
+	if !exists {
+		m.archiveResourcesLocked(a.ID) // Migrate orphaned resources from older removals.
+	}
 	m.data.Apps[a.ID] = a
 	if err := m.save(); err != nil {
-		if exists {
-			m.data.Apps[a.ID] = old
-		} else {
-			delete(m.data.Apps, a.ID)
-		}
+		m.data = before
 		return err
 	}
 	return nil

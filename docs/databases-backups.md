@@ -40,7 +40,23 @@ A local dump is saved first. Off-site copying streams it through Līdza's signed
 
 The control panel schedules checks once a minute through Līdza's persistent jobs pack; the agent performs the actual dump. The first scheduled backup becomes due when provisioning completes. Subsequent successful backups advance the next due time by the selected interval; changing a schedule starts its new interval from the save time. After downtime, a due backup runs once instead of producing a backlog for every missed interval. **The control panel and its job workers must be running** for scheduling and alerts. Manual agent requests still work while the control panel is offline.
 
-Removing an application preserves its databases, volumes, and backups. Scheduled backups stop for resources with no active attachments or current releases; a database still shared with another app keeps its schedule. Retained copies remain listed in **Databases & backups**, and the application ID stays reserved on that agent to prevent accidental reuse. Keep the hosting server registered to retain GUI access. Database destruction and reclamation are intentionally manual; do not run global Docker pruning. Removing a server from the panel does not remove its database data; reconnect the same agent to regain access.
+Removing an application releases its application ID while preserving its databases,
+files, cache and backups separately. Recreating the same ID starts fresh with a new
+resource identity and authentication secret. New local storage, cache and database
+resources do not inherit the removed application's data or credentials. You can
+explicitly attach an existing database through the database settings if you want
+to reuse it.
+
+Scheduled backups stop for resources with no active attachments or current releases;
+a database still shared with another app keeps its schedule. Retained databases and
+backups remain listed in **Databases & backups**. **Retained application data** on
+that page identifies preserved files/cache volumes and their hosting server without
+displaying credentials; file/cache recovery currently requires server access.
+After the hosting agent is upgraded, recreating an ID archives resources retained
+by older removals automatically. Legacy retained resources also appear in the inventory.
+Keep the hosting server registered to retain GUI access. Database destruction and
+reclamation remain manual; do not run global Docker pruning. Removing a server from
+the panel does not remove its data; reconnect the same agent to regain access.
 
 ## Verify recovery
 

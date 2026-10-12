@@ -463,6 +463,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a := input.Application
+	autoDeploy := a.AutoDeploy
 	if a.GitHubInstallation == 0 {
 		if cfg := c.githubApp(); cfg != nil {
 			if id, err := c.cfg.GitHub.RepositoryInstallation(r.Context(), cfg.App, a.Repository); err == nil && cfg.Installations[id] != "" {
@@ -476,9 +477,13 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if autoDeploy && (a.GitHubInstallation <= 0 || !strings.HasPrefix(c.cfg.PublicURL, "https://")) {
+		agent.Fail(w, 400, errors.New("auto-deploy requires a public HTTPS control panel and a repository authorized through the connected GitHub App"))
+		return
+	}
 	a.HookID = 0
 	a.Secret = ""
-	a.AutoDeploy = false
+	a.AutoDeploy = autoDeploy
 	a.Retiring = false
 	a.Generation = random()
 	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, CustomerHosts: a.CustomerHosts, Env: input.Env}
@@ -488,6 +493,10 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if autoDeploy && (c.data.GitHubApp == nil || c.data.GitHubApp.Installations[a.GitHubInstallation] == "") {
+		agent.Fail(w, 409, errors.New("GitHub installation changed; reconnect the repository before enabling auto-deploy"))
+		return
+	}
 	if len(c.data.Apps) >= 500 {
 		agent.Fail(w, 409, errors.New("application limit reached"))
 		return

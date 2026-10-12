@@ -174,8 +174,11 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 	if _, err = os.Stat(path); err != nil {
 		t.Fatal("retirement deleted backup")
 	}
-	if err = m.Upsert(app); err == nil {
-		t.Fatal("retained database ID reused")
+	if err = m.Upsert(app); err != nil {
+		t.Fatal("application ID unavailable after removal", err)
+	}
+	if m.data.Apps[id].resourceID() == id || len(m.data.Apps[id].Bindings) != 0 || len(m.data.Databases[id].Backups) == 0 {
+		t.Fatal("recreated application inherited or lost retained database data")
 	}
 }
 func TestExternalDatabaseValidation(t *testing.T) {

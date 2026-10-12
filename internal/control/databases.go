@@ -17,7 +17,14 @@ type fleetDatabase struct {
 	ServerID string `json:"server_id"`
 }
 
+type fleetRetainedResource struct {
+	agent.RetainedResourceView
+	ServerID string `json:"server_id"`
+}
+
 func (c *Control) databases(w http.ResponseWriter, r *http.Request) {
+	retainedResults := make(chan []fleetResult, 1)
+	go func() { retainedResults <- c.readFleet(r, "/v1/retained-resources") }()
 	list := []fleetDatabase{}
 	unavailable := []string{}
 	unavailableIDs := []string{}
@@ -45,7 +52,26 @@ func (c *Control) databases(w http.ResponseWriter, r *http.Request) {
 	})
 	sort.Strings(unavailable)
 	sort.Strings(unavailableIDs)
-	agent.JSON(w, 200, map[string]any{"databases": list, "unavailable_servers": unavailable, "unavailable_server_ids": unavailableIDs})
+	retained := []fleetRetainedResource{}
+	retainedUnavailable := []string{}
+	for _, result := range <-retainedResults {
+		var rows []agent.RetainedResourceView
+		if result.Err != nil || json.Unmarshal(result.Body, &rows) != nil {
+			retainedUnavailable = append(retainedUnavailable, result.Server.ID)
+			continue
+		}
+		for _, row := range rows {
+			retained = append(retained, fleetRetainedResource{row, result.Server.ID})
+		}
+	}
+	sort.Slice(retained, func(i, j int) bool {
+		if retained[i].ServerID != retained[j].ServerID {
+			return retained[i].ServerID < retained[j].ServerID
+		}
+		return retained[i].ID < retained[j].ID
+	})
+	sort.Strings(retainedUnavailable)
+	agent.JSON(w, 200, map[string]any{"databases": list, "unavailable_servers": unavailable, "unavailable_server_ids": unavailableIDs, "retained_resources": retained, "retained_resources_unavailable_server_ids": retainedUnavailable})
 }
 func (c *Control) configureDatabase(w http.ResponseWriter, r *http.Request) {
 	a, ok := c.app(r.PathValue("id"))

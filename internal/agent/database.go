@@ -146,14 +146,14 @@ func (m *Manager) configureDatabase(appID string, input DatabaseRequest) error {
 	if input.EnvKey == "" {
 		input.EnvKey = "DATABASE_URL"
 	}
-	if input.ID == "" {
-		input.ID = appID
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.data.Apps[appID]
 	if !ok || a.Retiring {
 		return errors.New("application unavailable")
+	}
+	if input.ID == "" {
+		input.ID = a.resourceID()
 	}
 	if m.busy(appID) {
 		return errors.New("wait for deployment or reload")

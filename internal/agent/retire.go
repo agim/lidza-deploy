@@ -76,14 +76,20 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	before := m.resourceSnapshotLocked()
 	for key, t := range m.data.Tasks {
 		if t.AppID == id {
 			delete(m.data.Tasks, key)
 		}
 	}
 	delete(m.data.Apps, id)
+	if m.data.RetiredAppIDs == nil {
+		m.data.RetiredAppIDs = map[string]bool{}
+	}
+	m.data.RetiredAppIDs[id] = true
+	m.archiveResourcesLocked(id)
 	if err := m.save(); err != nil {
-		m.data.Apps[id] = a
+		m.data = before
 		return err
 	}
 	return nil

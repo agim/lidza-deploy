@@ -31,7 +31,7 @@ func (m *Manager) prepareAppStorage(ctx context.Context, a App, cfg *config.Conf
 	}
 	volume := m.data.StorageVolumes[a.ID]
 	if volume == "" {
-		volume = "lidza-storage-" + a.ID
+		volume = "lidza-storage-" + original.resourceID()
 		m.data.StorageVolumes[a.ID] = volume
 		if err := m.save(); err != nil {
 			delete(m.data.StorageVolumes, a.ID)
@@ -40,7 +40,7 @@ func (m *Manager) prepareAppStorage(ctx context.Context, a App, cfg *config.Conf
 		}
 	}
 	m.mu.Unlock()
-	if err := prepareStorageVolume(ctx, a.ID, volume); err != nil {
+	if err := prepareStorageVolume(ctx, original.resourceID(), volume); err != nil {
 		return a, err
 	}
 	m.mu.Lock()

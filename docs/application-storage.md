@@ -21,8 +21,11 @@ does not migrate existing files. Files from older containers are not copied into
 the new volume automatically.
 
 This is single-server storage: it does not replicate across agents, and PostgreSQL
-backup schedules do not include it. Back up the `lidza-storage-<app-id>` Docker
-volume separately, or configure the framework's S3-compatible provider for
-off-server storage. App removal retains the volume and reserves its app ID to
-prevent another app from adopting its files. Restoring a host also requires the
-agent's state and encryption keys, together with the volume's files.
+backup schedules do not include it. Back up the app's Docker volume separately,
+or configure the framework's S3-compatible provider for off-server storage.
+App removal retains the volume separately and releases the application ID.
+Recreating that ID gets a new volume and never adopts the retained files.
+**Databases & backups → Retained application data** lists retained volume names;
+names for recreated apps include an agent-generated resource suffix. Restoring a
+host also requires the agent's state and encryption keys, together with the
+volume's files.

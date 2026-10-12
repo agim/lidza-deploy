@@ -105,7 +105,7 @@ func (m *Manager) reserveCacheLocked(id string, r CacheRequest, automatic bool) 
 			}
 			next.LocalPassword = hex.EncodeToString(b)
 		}
-		next.Network = "lidza-cache-" + id
+		next.Network = "lidza-cache-" + a.resourceID()
 		next.URL = "redis://:" + next.LocalPassword + "@" + next.Network + ":6379/0"
 	} else {
 		next.URL = r.URL

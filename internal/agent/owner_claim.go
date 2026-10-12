@@ -25,7 +25,7 @@ type ownerClaimRuntime interface {
 }
 
 func (d *Docker) ownerClaimDirectory(a App) string {
-	return filepath.Join(d.Root, "owner-claims", a.ID)
+	return filepath.Join(d.Root, "owner-claims", a.resourceID())
 }
 func (d *Docker) prepareOwnerClaim(ctx context.Context, a App) (string, error) {
 	if !idPattern.MatchString(a.ID) {

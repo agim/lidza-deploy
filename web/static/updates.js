@@ -1,5 +1,5 @@
 'use strict';
-let updateView=null,updatesLoading=false;
+let updateView=null,updatesLoading=false,updatesPromise=null;
 function renderUpdates(){
  if(tab!=='updates')return;
  if(!updateView){$('#content').innerHTML='<article class="panel"><h2>Release updates</h2><p>Checking installed versions…</p></article>';loadUpdates().catch(fail);return;}
@@ -25,5 +25,5 @@ function renderUpdates(){
  $('#updates-check').onclick=()=>updateAction('check');$('#updates-install').onclick=()=>updateAction('install');
  $('#updates-auto').onchange=async event=>{const automatic=event.target.checked;try{if(!demo)await api('control/updates','PATCH',{automatic});updateView.settings.automatic=automatic;notice(automatic?'Automatic updates enabled.':'Automatic updates disabled.');await loadUpdates()}catch(e){event.target.checked=!automatic;fail(e)}};
 }
-async function loadUpdates(){if(updatesLoading)return;updatesLoading=true;try{const data=demo?{control_version:'v0.2.14',settings:{latest:'v0.2.15',automatic:false,targets:[]},servers:servers.map(s=>({server_id:s.id,name:s.name,current:'v0.2.14',state:'idle',supported:true,local:s.id==='production'}))}:await api('control/updates');updateView=data;if(tab==='updates')renderUpdates()}catch(e){fail(e)}finally{updatesLoading=false}}
+function loadUpdates(){if(updatesPromise)return updatesPromise;updatesLoading=true;updatesPromise=(async()=>{try{const data=await(demo?{control_version:'v0.2.14',settings:{latest:'v0.2.15',automatic:false,targets:[]},servers:servers.map(s=>({server_id:s.id,name:s.name,current:'v0.2.14',state:'idle',supported:true,local:s.id==='production'}))}:api('control/updates'));updateView=data;if(tab==='updates')renderUpdates()}catch(e){fail(e)}finally{updatesLoading=false;updatesPromise=null}})();return updatesPromise}
 async function updateAction(action){const button=$('#content [data-updates-panel] #updates-'+action);if(tab!=='updates'||!button||button.disabled)return;button.disabled=true;try{if(!demo)await api('control/updates/'+action,'POST',{});notice(action==='check'?'Release check complete.':'Update queued. Follow each server here; the GUI may briefly reconnect while its host restarts.');await loadUpdates()}catch(e){fail(e)}finally{if(button.isConnected){button.disabled=action==='install'&&updateView?.settings.targets.some(t=>['waiting','updating'].includes(t.state));}}}

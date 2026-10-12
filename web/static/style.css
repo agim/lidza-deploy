@@ -313,3 +313,11 @@ body[data-design=terminal] .app-action-group .app-remove{color:#d9a1a1}
 #ui-update-notice{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:1100;display:flex;align-items:center;gap:20px;max-width:calc(100vw - 32px);width:640px;padding:16px 20px;background:var(--surface);color:var(--ink);border:1px solid var(--accent);border-radius:8px;box-shadow:var(--shadow)}
 #ui-update-notice[hidden]{display:none}#ui-update-notice>span{min-width:0;line-height:1.6}#ui-update-notice>button{flex-shrink:0;min-height:44px}
 @media(max-width:600px){#ui-update-notice{flex-direction:column;align-items:stretch;gap:12px}}
+.main-wrap main{position:relative;min-height:calc(100dvh - 80px)}
+.workspace-loading{position:absolute;inset:0;z-index:30;background:var(--bg);padding:24px;text-align:center}
+.workspace-loading[hidden]{display:none}
+[data-retained-resources] code{overflow-wrap:anywhere}
+.workspace-loading>div{position:sticky;top:35vh;max-width:400px;margin:0 auto;color:var(--muted)}
+.loading-spinner{display:inline-block;width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:loading-turn 1s linear infinite}
+@keyframes loading-turn{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.loading-spinner{animation:none}}

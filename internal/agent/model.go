@@ -11,6 +11,7 @@ import (
 )
 
 type App struct {
+	ResourceID         string            `json:"resource_id,omitempty"` // agent-owned incarnation; separates reused app IDs from retained data
 	CustomerHosts      bool              `json:"customer_hosts"`
 	Stopped            bool              `json:"stopped"`
 	DefaultsApplied    bool              `json:"defaults_applied,omitempty"`
@@ -72,17 +73,19 @@ type DeployRequest struct {
 	Key              string            `json:"key,omitempty"`
 }
 type diskState struct {
-	StorageVolumes  map[string]string        `json:"storage_volumes,omitempty"`
-	Caches          map[string]CacheResource `json:"caches,omitempty"`
-	ErrorReporting  *ErrorReporting          `json:"error_reporting,omitempty"`
-	ErrorOutbox     []ConsoleError           `json:"error_outbox,omitempty"`
-	ErrorCursors    map[string]ConsoleCursor `json:"error_cursors,omitempty"`
-	Tasks           map[string]Task          `json:"tasks,omitempty"`
-	BindingsVersion int                      `json:"bindings_version"`
-	Databases       map[string]Database      `json:"databases,omitempty"`
-	BackupStorage   *storage.Config          `json:"backup_storage,omitempty"`
-	Apps            map[string]App           `json:"apps"`
-	Deployments     []Deployment             `json:"deployments"`
+	RetiredAppIDs     map[string]bool             `json:"retired_app_ids,omitempty"`
+	RetainedResources map[string]RetainedResource `json:"retained_resources,omitempty"`
+	StorageVolumes    map[string]string           `json:"storage_volumes,omitempty"`
+	Caches            map[string]CacheResource    `json:"caches,omitempty"`
+	ErrorReporting    *ErrorReporting             `json:"error_reporting,omitempty"`
+	ErrorOutbox       []ConsoleError              `json:"error_outbox,omitempty"`
+	ErrorCursors      map[string]ConsoleCursor    `json:"error_cursors,omitempty"`
+	Tasks             map[string]Task             `json:"tasks,omitempty"`
+	BindingsVersion   int                         `json:"bindings_version"`
+	Databases         map[string]Database         `json:"databases,omitempty"`
+	BackupStorage     *storage.Config             `json:"backup_storage,omitempty"`
+	Apps              map[string]App              `json:"apps"`
+	Deployments       []Deployment                `json:"deployments"`
 }
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)

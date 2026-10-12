@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	gh "github.com/agim/lidza-deploy/internal/providers/github"
 	"github.com/agim/lidza/packs/auth"
+	"github.com/agim/lidza/packs/jobs"
 	"github.com/agim/lidza/pkg/webhook"
 	"net/http"
 	"net/http/httptest"
@@ -116,6 +117,41 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 	}
 	if w := request("GET", "/api/control/github/branches?repository=../bad&installation=7", ""); w.Code != 400 {
 		t.Fatal("unsafe repository accepted", w.Code)
+	}
+	created := request("POST", "/api/control/apps", `{"id":"auto-created","server_id":"one","repository":"acme/portal","branch":"master","domain":"auto-created.example.com","auto_deploy":true}`)
+	if created.Code != 201 {
+		t.Fatal("auto-deploy creation failed", created.Code, created.Body)
+	}
+	auto, ok := c.app("auto-created")
+	if !ok || !auto.AutoDeploy || auto.GitHubInstallation != 7 || auto.HookID != 0 || auto.Secret != "" {
+		t.Fatal("auto-deploy was not enabled through the verified App connection")
+	}
+	for _, branch := range []string{"staging", "master"} {
+		payload := []byte(`{"ref":"refs/heads/` + branch + `","repository":{"full_name":"acme/portal"},"installation":{"id":7}}`)
+		delivery := "creation-push-" + random()
+		r := httptest.NewRequest("POST", "/hooks/github-app", bytes.NewReader(payload)).WithContext(ctx)
+		r.Header.Set("X-GitHub-Event", "push")
+		r.Header.Set("X-GitHub-Delivery", delivery)
+		r.Header.Set("X-Hub-Signature-256", "sha256="+webhook.HMACSignature(app.WebhookSecret, payload))
+		w := httptest.NewRecorder()
+		c.githubAppWebhook(w, r)
+		if w.Code < 200 || w.Code >= 300 {
+			t.Fatal("creation push rejected", w.Code, w.Body)
+		}
+		rows, err := jobs.From(ctx).Recent(ctx, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := 0
+		for _, row := range rows {
+			var job pushJob
+			if row.Kind == "deploy.push" && json.Unmarshal(row.Payload, &job) == nil && job.AppID == auto.ID && job.Delivery == delivery {
+				found++
+			}
+		}
+		if (branch == "master" && found != 1) || (branch != "master" && found != 0) {
+			t.Fatal("creation auto-deploy did not honor the selected branch", branch, found)
+		}
 	}
 	c.mu.Lock()
 	a := c.data.Apps["portal"]
