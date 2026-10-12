@@ -87,7 +87,7 @@ function card(a){
  const d=latest(a.id),server=servers.find(s=>s.id===a.server_id);
  const state=a.retiring?'removal pending':a.stopped?(d?.kind==='start'&&['queued','building'].includes(d?.status)?'starting':'stopped'):a.agent_error||(['building','queued'].includes(d?.status)?d.status:d?.status==='failed'?'failed':a.current?'live':d?.status);
  return `<article class="app-card" data-app-card="${escape(a.id)}">
-  <div class="card-body"><div class="card-head"><span class="app-icon">${escape(a.id.slice(0,2).toUpperCase())}</span><div><h3>${escape(a.id)}</h3><span class="domain">${escape(a.domain)}</span>${a.domain_status?.message?`<small>${escape(a.domain_status.message)}</small>`:''}</div>${pill(state)}</div>
+  <div class="card-body"><div class="card-head"><span class="app-icon">${escape(a.id.slice(0,2).toUpperCase())}</span><div class="app-identity"><h3>${escape(a.id)}</h3><span class="domain">${escape(a.domain)}</span>${a.domain_status?.message?`<div class="domain-status-message"><p>${escape(a.domain_status.message)}</p><small>Automatically rechecked about every minute.</small></div>`:''}</div>${pill(state)}</div>
    <div class="repo"><span>⑂</span>${escape(a.repository)} <b>· ${escape(a.branch)}</b> <code>${escape(a.current?.commit?.slice(0,7)||'')}</code></div>
    <div class="meta-row"><span>${escape(server?.name||a.server_id)}</span><span>${a.auto_deploy?(a.stopped?'Auto-deploy paused · app stopped':'↻ Auto-deploy enabled'):'Manual deploys'} · ${demo?'TLS demo':a.domain_status?({waiting_dns:'Waiting for DNS',requesting_ssl:'Requesting SSL',ready:'HTTPS ready'}[a.domain_status.state]||'Checking HTTPS'):'Auto TLS configured'}</span></div>
   </div>
