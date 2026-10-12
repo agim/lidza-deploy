@@ -33,28 +33,30 @@ type job struct {
 	token       string
 }
 type Manager struct {
-	hostMu            sync.Mutex
-	hostCache         map[string]hostVerdict
-	hostFlights       singleflight.Group
-	hostSlots         chan struct{}
-	lifecycle         map[string]bool
-	cacheProvision    func(context.Context, CacheResource) error
-	reportMu          sync.Mutex
-	reportWake        chan struct{}
-	cpuTotal, cpuIdle float64
-	domainWake        chan struct{}
-	domains           map[string]DomainStatus
-	databaseSlots     chan struct{}
-	mu                sync.Mutex
-	removing          map[string]bool
-	key               []byte
-	cfg               Config
-	data              diskState
-	runtime           Runtime
-	queue             chan job
-	ctx               context.Context
-	cancel            context.CancelFunc
-	wg                sync.WaitGroup
+	clickhouseFlights   singleflight.Group
+	clickhouseProvision func(context.Context, ClickHouseResource) error
+	hostMu              sync.Mutex
+	hostCache           map[string]hostVerdict
+	hostFlights         singleflight.Group
+	hostSlots           chan struct{}
+	lifecycle           map[string]bool
+	cacheProvision      func(context.Context, CacheResource) error
+	reportMu            sync.Mutex
+	reportWake          chan struct{}
+	cpuTotal, cpuIdle   float64
+	domainWake          chan struct{}
+	domains             map[string]DomainStatus
+	databaseSlots       chan struct{}
+	mu                  sync.Mutex
+	removing            map[string]bool
+	key                 []byte
+	cfg                 Config
+	data                diskState
+	runtime             Runtime
+	queue               chan job
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
@@ -92,6 +94,9 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 			t.Error = "agent restarted during command; inspect before retry"
 			m.data.Tasks[key] = t
 		}
+	}
+	if m.data.ClickHouses == nil {
+		m.data.ClickHouses = map[string]ClickHouseResource{}
 	}
 	if m.data.Caches == nil {
 		m.data.Caches = map[string]CacheResource{}
@@ -289,6 +294,15 @@ func (m *Manager) Upsert(a App) error {
 			}
 		}
 	}
+	if c := m.data.ClickHouses[a.ID]; exists && c.Ready && a.Env != nil {
+		a.Env = maps.Clone(a.Env)
+		for key, value := range c.env() {
+			if given := a.Env[key]; given != "" && given != value {
+				return errors.New("ClickHouse connection is managed by the hosting agent")
+			}
+			a.Env[key] = value
+		}
+	}
 	if exists {
 		a.BackupBeforeDeploy = old.BackupBeforeDeploy
 	}
@@ -400,6 +414,9 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 	}
 	var ids []string
 	networks := map[string]bool{}
+	if c := m.data.ClickHouses[a.ID]; c.Ready {
+		networks[c.Network] = true
+	}
 	if c := m.data.Caches[a.ID]; c.Mode != "" {
 		if c.Operation {
 			return Deployment{}, errors.New("wait for cache provisioning")
