@@ -59,8 +59,7 @@ func TestDockerAutomaticCacheDeployReloadAndPersistence(t *testing.T) {
 	a.Env["MAIL_SMTP_URL"] = "smtp://fixture:fixture-password@smtp.example.com:587"
 	// As with the GUI, the application's master key is supplied explicitly.
 	a.Env["LIDZA_MASTER_KEY"] = strings.Repeat("ab", 32)
-	// Reproduce the production failure: local was previously rejected as dev-only.
-	a.Env["STORAGE_PROVIDER"] = "local"
+	// The framework's local default must work without a process-level provider pin.
 	name := "lidza-cache-" + a.ID
 	t.Cleanup(func() {
 		m.Close()
@@ -130,6 +129,68 @@ func TestDockerAutomaticCacheDeployReloadAndPersistence(t *testing.T) {
 	deploy(false)
 	request("/write")
 	request("/storage-write")
+	provider := func(expected string, configure bool) {
+		t.Helper()
+		m.mu.Lock()
+		target := m.data.Apps[a.ID].Current.Port
+		container := m.data.Apps[a.ID].Current.Container
+		m.mu.Unlock()
+		path := "/storage-provider"
+		method := "GET"
+		if configure {
+			path = "/storage-configure?provider=" + expected
+			method = "POST"
+		}
+		req, _ := http.NewRequestWithContext(ctx, method, "http://127.0.0.1:"+target+path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || string(body) != expected {
+			t.Fatalf("saved provider not effective: %d %s", resp.StatusCode, body)
+		}
+		vars, err := command(ctx, "", nil, "docker", "inspect", "--format", `{{range .Config.Env}}{{println .}}{{end}}`, container)
+		if err != nil || strings.Contains(vars, "STORAGE_PROVIDER=") {
+			t.Fatal("deployment pinned storage provider", err)
+		}
+	}
+	provider("local", false)
+	provider("spaces", true)
+	deploy(true)
+	provider("spaces", false) // Saved app settings survive process restarts.
+	provider("local", true)
+	request("/storage-read") // Switching back still uses the retained local files.
+	// Simulate an older deployment override, then remove it through the same
+	// settings API used by the GUI. Both reloads must keep the local attachment.
+	local := "local"
+	for _, value := range []*string{&local, nil} {
+		if err := m.PatchSettings(a.ID, SettingsPatch{Branch: a.Branch, Domain: a.Domain, EnvChanges: map[string]*string{"STORAGE_PROVIDER": value}}); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(90 * time.Second)
+		for {
+			m.mu.Lock()
+			busy := m.busy(a.ID)
+			m.mu.Unlock()
+			if !busy {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("storage settings reload timed out")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		results := m.Deployments()
+		if results[len(results)-1].Status != "live" {
+			t.Fatal("storage settings reload failed", results[len(results)-1].Error)
+		}
+		request("/storage-read")
+	}
+	provider("local", false)
+	provider("spaces", true)
+	provider("local", true)
 	m.mu.Lock()
 	resource := m.data.Caches[a.ID]
 	m.mu.Unlock()

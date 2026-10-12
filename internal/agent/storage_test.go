@@ -19,6 +19,13 @@ func TestLocalStorageRequiresManagedPersistence(t *testing.T) {
 	if err := productionRequirements(cfg, values, true); err != nil {
 		t.Fatal("lasting disk rejected", err)
 	}
+	delete(values, "STORAGE_PROVIDER")
+	if err := productionRequirements(cfg, values, true); err != nil {
+		t.Fatal("framework local default rejected with persistent volume", err)
+	}
+	if err := productionRequirements(cfg, values); err == nil {
+		t.Fatal("unattached framework default accepted")
+	}
 	values["STORAGE_DIR"] = "/tmp/uploads"
 	if err := productionRequirements(cfg, values, true); err == nil {
 		t.Fatal("ephemeral storage accepted")
@@ -63,7 +70,7 @@ func TestStorageVolumeOwnershipAndAutomaticDefaults(t *testing.T) {
 	a = m.data.Apps[id]
 	m.mu.Unlock()
 	prepared, err := m.preflightRuntime(ctx, a, cacheManifest(t, `["lidza/storage"]`))
-	if err != nil || prepared.Env["STORAGE_PROVIDER"] != "local" || prepared.Env["STORAGE_DIR"] != appStorageMount || prepared.StorageVolume != volume {
+	if err != nil || prepared.Env["STORAGE_PROVIDER"] != "" || prepared.Env["STORAGE_DIR"] != appStorageMount || prepared.StorageVolume != volume {
 		t.Fatal("automatic storage defaults not attached", err)
 	}
 	if err = m.PatchSettings(id, SettingsPatch{Branch: a.Branch, Domain: a.Domain, EnvChanges: map[string]*string{"STORAGE_DIR": nil}}); err == nil {
@@ -86,5 +93,44 @@ func TestStorageVolumeOwnershipAndAutomaticDefaults(t *testing.T) {
 	}
 	if args := strings.Join(storageMountArgs(prepared), " "); !strings.Contains(args, "volume-nocopy") || !strings.Contains(args, volume) {
 		t.Fatal("missing volume mount")
+	}
+	prepared.Env["STORAGE_PROVIDER"] = "spaces"
+	if args := strings.Join(storageMountArgs(prepared), " "); !strings.Contains(args, volume) {
+		t.Fatal("changing provider detached retained local files")
+	}
+}
+
+func TestLegacyStorageOverrideCanBeRemovedWithoutLosingVolume(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	a := testApp("legacy-storage")
+	a.Env["STORAGE_PROVIDER"] = "local"
+	if err := m.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.data.StorageVolumes[a.ID] = "lidza-storage-" + a.ID
+	m.mu.Unlock()
+	settings, err := m.Settings(a.ID)
+	if err != nil || !settings.StorageProviderOverride || !settings.AppManagedStorageSupported {
+		t.Fatal("legacy override cannot be reviewed", err)
+	}
+	if err := m.PatchSettings(a.ID, SettingsPatch{Branch: a.Branch, Domain: a.Domain, EnvChanges: map[string]*string{"STORAGE_PROVIDER": nil}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Upsert(testApp(a.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if m.data.Apps[a.ID].Env["STORAGE_PROVIDER"] != "" || m.data.StorageVolumes[a.ID] == "" {
+		t.Fatal("override resurrected or files detached")
+	}
+	a.Env["STORAGE_PROVIDER"] = "local"
+	if err := m.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Upsert(App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain}); err != nil {
+		t.Fatal(err)
+	}
+	if m.data.Apps[a.ID].Env["STORAGE_PROVIDER"] != "local" {
+		t.Fatal("explicit operator override was removed")
 	}
 }

@@ -273,9 +273,6 @@ func (m *Manager) Upsert(a App) error {
 			return errors.New("STORAGE_DIR is managed by the persistent storage attachment")
 		}
 		a.Env["STORAGE_DIR"] = appStorageMount
-		if a.Env["STORAGE_PROVIDER"] == "" {
-			a.Env["STORAGE_PROVIDER"] = old.Env["STORAGE_PROVIDER"]
-		}
 	}
 	if c := m.data.Caches[a.ID]; exists && c.Mode != "" {
 		if c.Operation {

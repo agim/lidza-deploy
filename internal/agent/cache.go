@@ -299,7 +299,7 @@ func (m *Manager) preflightRuntime(ctx context.Context, a App, source string) (A
 	if err != nil {
 		return a, err
 	}
-	if a.StorageVolume != "" && effective["STORAGE_PROVIDER"] == "local" {
+	if a.StorageVolume != "" {
 		commandDiagnostic(ctx, "storage", "Persistent local storage is attached; files are retained across deployments and reloads.")
 	}
 	// Manifest defaults are non-secret production settings. Explicit app env wins.
@@ -357,7 +357,7 @@ func productionRequirements(cfg *config.Config, values map[string]string, persis
 			}
 			for _, setting := range official.Production {
 				v := strings.TrimSpace(values[setting.Name])
-				if enabled == "lidza/storage" && setting.Name == "STORAGE_PROVIDER" && v == "local" && len(persistentLocalStorage) > 0 && persistentLocalStorage[0] && values["STORAGE_DIR"] == appStorageMount {
+				if enabled == "lidza/storage" && setting.Name == "STORAGE_PROVIDER" && (v == "" || v == "local") && len(persistentLocalStorage) > 0 && persistentLocalStorage[0] && values["STORAGE_DIR"] == appStorageMount {
 					continue
 				}
 				if v == "" && !setting.Optional {

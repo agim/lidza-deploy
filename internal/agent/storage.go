@@ -54,7 +54,6 @@ func (m *Manager) prepareAppStorage(ctx context.Context, a App, cfg *config.Conf
 	if updated.Env == nil {
 		updated.Env = map[string]string{}
 	}
-	updated.Env["STORAGE_PROVIDER"] = "local"
 	updated.Env["STORAGE_DIR"] = appStorageMount
 	if err := updated.Validate(); err != nil {
 		return a, err
@@ -66,7 +65,6 @@ func (m *Manager) prepareAppStorage(ctx context.Context, a App, cfg *config.Conf
 	}
 	a.Env = maps.Clone(updated.Env)
 	a.StorageVolume = volume
-	effective["STORAGE_PROVIDER"] = "local"
 	effective["STORAGE_DIR"] = appStorageMount
 	return a, nil
 }
@@ -98,7 +96,7 @@ func prepareStorageVolume(ctx context.Context, id, volume string) error {
 }
 
 func storageMountArgs(a App) []string {
-	if a.StorageVolume == "" || a.Env["STORAGE_PROVIDER"] != "local" {
+	if a.StorageVolume == "" {
 		return nil
 	}
 	return []string{"--mount", "type=volume,src=" + a.StorageVolume + ",dst=" + appStorageMount + ",volume-nocopy", "--env", "STORAGE_DIR=" + appStorageMount}

@@ -9,6 +9,7 @@ import (
 	"github.com/agim/lidza/packs/db"
 	"github.com/agim/lidza/packs/mail"
 	"github.com/agim/lidza/packs/storage"
+	"github.com/agim/lidza/pkg/credentials"
 	"io"
 	"net/http"
 	"os"
@@ -32,6 +33,30 @@ func main() {
 	lidza.Run(lidza.App{Name: "cache-fixture", Packs: []lidza.Pack{db.Pack(), auth.Pack(), mail.Pack(), cache.Pack(), storage.Pack()}, Frontend: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/storage-") {
 			s := storage.From(r.Context())
+			if r.URL.Path == "/storage-configure" {
+				provider := r.URL.Query().Get("provider")
+				if r.Method != "POST" || (provider != "local" && provider != "spaces") {
+					http.Error(w, "invalid fixture configuration", 400)
+					return
+				}
+				store := lidza.Service[credentials.Store](r.Context())
+				for key, value := range map[string]string{"STORAGE_PROVIDER": provider, "STORAGE_BUCKET": "fixture", "STORAGE_REGION": "nyc3", "STORAGE_ACCESS_KEY": "fixture-access", "STORAGE_SECRET_KEY": "fixture-secret-16"} {
+					if err := store.Save(r.Context(), key, value); err != nil {
+						http.Error(w, "cannot save fixture storage", 500)
+						return
+					}
+				}
+				if err := s.Reconfigure(r.Context()); err != nil {
+					http.Error(w, "cannot apply fixture storage", 500)
+					return
+				}
+				w.Write([]byte(s.Provider()))
+				return
+			}
+			if r.URL.Path == "/storage-provider" {
+				w.Write([]byte(s.Provider()))
+				return
+			}
 			if r.URL.Path == "/storage-write" {
 				if _, err := s.Put(r.Context(), "retained.txt", strings.NewReader("persisted"), storage.PutOptions{}); err != nil {
 					http.Error(w, "storage write failed", 503)

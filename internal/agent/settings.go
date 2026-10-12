@@ -18,18 +18,20 @@ type SettingsPatch struct {
 	EnvChanges         map[string]*string `json:"env_changes"`
 }
 type Settings struct {
-	CustomerHosts      bool              `json:"customer_hosts"`
-	Stopped            bool              `json:"stopped"`
-	DefaultsApplied    bool              `json:"defaults_applied"`
-	EnvSources         map[string]string `json:"env_sources"`
-	PersistentStorage  bool              `json:"persistent_storage"`
-	Cache              CacheView         `json:"cache"`
-	BackupBeforeDeploy bool              `json:"backup_before_deploy"`
-	Bindings           map[string]string `json:"database_bindings"`
-	ID                 string            `json:"id"`
-	Branch             string            `json:"branch"`
-	Domain             string            `json:"domain"`
-	EnvKeys            []string          `json:"env_keys"`
+	AppManagedStorageSupported bool              `json:"app_managed_storage_supported"`
+	StorageProviderOverride    bool              `json:"storage_provider_override"`
+	CustomerHosts              bool              `json:"customer_hosts"`
+	Stopped                    bool              `json:"stopped"`
+	DefaultsApplied            bool              `json:"defaults_applied"`
+	EnvSources                 map[string]string `json:"env_sources"`
+	PersistentStorage          bool              `json:"persistent_storage"`
+	Cache                      CacheView         `json:"cache"`
+	BackupBeforeDeploy         bool              `json:"backup_before_deploy"`
+	Bindings                   map[string]string `json:"database_bindings"`
+	ID                         string            `json:"id"`
+	Branch                     string            `json:"branch"`
+	Domain                     string            `json:"domain"`
+	EnvKeys                    []string          `json:"env_keys"`
 }
 
 func (m *Manager) Settings(id string) (Settings, error) {
@@ -39,7 +41,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if !ok {
 		return Settings{}, errors.New("unknown application")
 	}
-	return Settings{CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
+	return Settings{AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
 }
 func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	m.mu.Lock()
