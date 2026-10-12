@@ -172,6 +172,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 		{"POST", "/api/control/team"}, {"PUT", "/api/control/mail"},
 		{"GET", "/api/control/audit"}, {"GET", "/api/control/team"},
 		{"GET", "/api/control/servers/one/databases/portal/backups/snapshot"},
+		{"GET", "/api/control/storage/backups"}, {"POST", "/api/control/servers/one/databases/portal/backups/snapshot/upload"}, {"GET", "/api/control/storage/backups/download?key=databases/portal/snapshot.dump"},
 	} {
 		before := agentCalls
 		if w := call(route.method, route.path, "{}", memberCookies, cfg.PublicURL); w.Code != 403 {

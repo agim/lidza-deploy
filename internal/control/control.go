@@ -69,13 +69,14 @@ type Application struct {
 	Secret             string        `json:"secret,omitempty"`
 }
 type saved struct {
-	ApplicationDefaults map[string]string      `json:"application_defaults"`
-	Updates             UpdateSettings         `json:"updates"`
-	GitHubApp           *githubAppConfig       `json:"github_app,omitempty"`
-	BackupStorage       *storage.Config        `json:"backup_storage,omitempty"`
-	Incidents           map[string]Incident    `json:"incidents,omitempty"`
-	Apps                map[string]Application `json:"apps"`
-	Servers             []Server               `json:"servers"`
+	ApplicationDefaults       map[string]string      `json:"application_defaults"`
+	Updates                   UpdateSettings         `json:"updates"`
+	GitHubApp                 *githubAppConfig       `json:"github_app,omitempty"`
+	BackupStorageLegacyPrefix string                 `json:"backup_storage_legacy_prefix,omitempty"`
+	BackupStorage             *storage.Config        `json:"backup_storage,omitempty"`
+	Incidents                 map[string]Incident    `json:"incidents,omitempty"`
+	Apps                      map[string]Application `json:"apps"`
+	Servers                   []Server               `json:"servers"`
 }
 type Control struct {
 	releaseCheck func(*http.Request) (string, error)
@@ -334,6 +335,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("GET /api/control/servers/{server}/databases/{id}/backups/{backup}", c.downloadBackup)
 	handle("GET /api/control/infrastructure", c.infrastructure)
 	handle("PUT /api/control/storage", c.configureStorage)
+	handle("GET /api/control/storage/backups", c.remoteBackups)
+	handle("GET /api/control/storage/backups/download", c.remoteBackupDownload)
+	handle("POST /api/control/servers/{server}/databases/{id}/backups/{backup}/upload", c.retryBackupUpload)
 	handle("PUT /api/control/mail", c.configureMail)
 	handle("POST /api/control/mail/test", c.testMail)
 	handle("GET /api/control/apps/{id}/settings", c.settings)
@@ -512,7 +516,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 		if input.Database.Backup.Offsite {
 			if c.data.BackupStorage == nil {
 				warning = "Configure S3 storage, then attach the database using Database & backups."
-			} else if err := c.agentCall(r, a.ServerID, "PUT", "/v1/backup-storage", c.data.BackupStorage, nil); err != nil {
+			} else if err := c.agentCall(r, a.ServerID, "PUT", "/v1/backup-storage", backupStorageConfig(*c.data.BackupStorage), nil); err != nil {
 				warning = "Storage could not be sent to the agent. Attach the database using Database & backups."
 			}
 		}

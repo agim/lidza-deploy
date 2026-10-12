@@ -1,12 +1,14 @@
 # Līdza Deploy
 
-A deployment agent and a separate web control panel built with Līdza v0.1.81. One agent hosts multiple Līdza apps, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
+A deployment agent and a separate web control panel built with Līdza v0.1.107. One agent hosts multiple Līdza apps, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
 
 The MonolithCMS agent was copied/adapted into this repository; the original repository was not changed. See [provenance](docs/provenance.md).
 
 The GUI now includes database restore into a new connection, host health and alerts, deployment build history, maintenance mode, PR previews, workers/scheduled jobs, and managed agent upgrades. See [Operations and recovery](docs/operations.md) and [automatic control-panel updates](docs/self-updates.md). Administrator/deployer/viewer team access and durable audit logging use the framework APIs released in [Līdza v0.1.72 (#28)](https://github.com/agim/lidza/issues/28).
 
 See the [deployment readiness review](docs/deployment-readiness.md) for the latest test evidence, fixed findings and production acceptance checklist.
+
+See [Remote backups](docs/remote-backups.md) for saved credential indicators, off-site upload results, bucket inventory and retrying retained local backups.
 
 ## Working features
 

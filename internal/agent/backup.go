@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"errors"
+	"fmt"
 	"github.com/agim/lidza/packs/storage"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 )
 
@@ -85,12 +88,15 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 		record.Kind = kind[0]
 	}
 	if d.Backup.Offsite {
+		record.OffsiteRequested = true
 		if target == nil {
+			record.UploadError = "S3 destination is not configured"
 			return record, errors.New("local backup saved; S3 destination is not configured")
 		}
 		key := backupObjectKey(d.AppID, record)
 		if err = uploadBackup(ctx, *target, path, key, writer.n); err != nil {
-			return record, errors.New("local backup saved; off-site upload failed")
+			record.UploadError = err.Error()
+			return record, errors.New("local backup saved; off-site upload failed: " + record.UploadError)
 		}
 		record.Offsite = true
 		record.ObjectKey = key
@@ -125,10 +131,21 @@ func uploadBackup(ctx context.Context, cfg storage.Config, path, key string, siz
 	if err != nil {
 		return errors.New("upload failed")
 	}
-	res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return errors.New("storage rejected upload")
+		var response struct {
+			Code string `xml:"Code"`
+		}
+		_ = xml.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&response)
+		res.Body.Close()
+		if !regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`).MatchString(response.Code) {
+			response.Code = ""
+		}
+		if response.Code != "" {
+			return fmt.Errorf("storage rejected upload (HTTP %d, %s)", res.StatusCode, response.Code)
+		}
+		return fmt.Errorf("storage rejected upload (HTTP %d)", res.StatusCode)
 	}
+	res.Body.Close()
 	object, err := store.Stat(ctx, key)
 	if err != nil || object.Size != size {
 		return errors.New("uploaded object size verification failed")

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"time"
 )
 
@@ -19,21 +20,32 @@ type fleetDatabase struct {
 func (c *Control) databases(w http.ResponseWriter, r *http.Request) {
 	list := []fleetDatabase{}
 	unavailable := []string{}
+	unavailableIDs := []string{}
 	for _, result := range c.readFleet(r, "/v1/databases") {
 		if result.Err != nil {
 			unavailable = append(unavailable, result.Server.Name)
+			unavailableIDs = append(unavailableIDs, result.Server.ID)
 			continue
 		}
 		var rows []agent.DatabaseView
 		if json.Unmarshal(result.Body, &rows) != nil {
 			unavailable = append(unavailable, result.Server.Name)
+			unavailableIDs = append(unavailableIDs, result.Server.ID)
 			continue
 		}
 		for _, row := range rows {
 			list = append(list, fleetDatabase{row, result.Server.ID})
 		}
 	}
-	agent.JSON(w, 200, map[string]any{"databases": list, "unavailable_servers": unavailable})
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].ServerID != list[j].ServerID {
+			return list[i].ServerID < list[j].ServerID
+		}
+		return list[i].AppID < list[j].AppID
+	})
+	sort.Strings(unavailable)
+	sort.Strings(unavailableIDs)
+	agent.JSON(w, 200, map[string]any{"databases": list, "unavailable_servers": unavailable, "unavailable_server_ids": unavailableIDs})
 }
 func (c *Control) configureDatabase(w http.ResponseWriter, r *http.Request) {
 	a, ok := c.app(r.PathValue("id"))
@@ -116,7 +128,8 @@ func (c *Control) syncBackupStorage(r *http.Request, server string) error {
 	if cfg == nil {
 		return errors.New("configure off-site storage in Integrations first")
 	}
-	return c.agentCall(r, server, "PUT", "/v1/backup-storage", cfg, nil)
+	copy := backupStorageConfig(*cfg)
+	return c.agentCall(r, server, "PUT", "/v1/backup-storage", &copy, nil)
 }
 func (c *Control) downloadBackup(w http.ResponseWriter, r *http.Request) {
 	// Explicit server + app allows retrieval of retained databases after app removal.

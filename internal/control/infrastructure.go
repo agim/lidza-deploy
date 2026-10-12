@@ -11,6 +11,7 @@ import (
 	"github.com/agim/lidza/pkg/env"
 	"net/http"
 	netmail "net/mail"
+	"path"
 	"strconv"
 	"time"
 )
@@ -19,7 +20,7 @@ func (c *Control) infrastructure(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	var store any
 	if cfg := c.data.BackupStorage; cfg != nil {
-		store = map[string]any{"endpoint": cfg.Endpoint, "bucket": cfg.Bucket, "region": cfg.Region, "prefix": cfg.Prefix, "configured": true}
+		store = map[string]any{"endpoint": cfg.Endpoint, "bucket": cfg.Bucket, "region": cfg.Region, "prefix": cfg.Prefix, "configured": true, "access_key_stored": cfg.AccessKey != "", "secret_key_stored": cfg.SecretKey != ""}
 	}
 	incidents := []Incident{}
 	for _, v := range c.data.Incidents {
@@ -46,7 +47,7 @@ func (c *Control) infrastructure(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	agent.JSON(w, 200, map[string]any{"storage": store, "mail": map[string]any{"configured": values["MAIL_PROVIDER"] == "smtp", "host": values["MAIL_SMTP_HOST"], "port": values["MAIL_SMTP_PORT"], "security": values["MAIL_SMTP_SECURITY"], "from": values["MAIL_FROM"], "recipient": c.cfg.User}, "incidents": incidents, "messages": messages})
+	agent.JSON(w, 200, map[string]any{"storage": store, "mail": map[string]any{"configured": values["MAIL_PROVIDER"] == "smtp", "host": values["MAIL_SMTP_HOST"], "port": values["MAIL_SMTP_PORT"], "security": values["MAIL_SMTP_SECURITY"], "from": values["MAIL_FROM"], "recipient": c.cfg.User, "username_stored": values["MAIL_SMTP_USERNAME"] != "", "password_stored": values["MAIL_SMTP_PASSWORD"] != ""}, "incidents": incidents, "messages": messages})
 }
 func (c *Control) configureStorage(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -61,6 +62,10 @@ func (c *Control) configureStorage(w http.ResponseWriter, r *http.Request) {
 		agent.Fail(w, 400, err)
 		return
 	}
+	if (in.Access == "") != (in.Secret == "") {
+		agent.Fail(w, 400, errors.New("enter both access and secret keys to replace credentials, or leave both blank to keep them"))
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	cfg := storage.Config{Provider: "s3", Endpoint: in.Endpoint, Bucket: in.Bucket, Region: in.Region, Prefix: in.Prefix, AccessKey: in.Access, SecretKey: in.Secret, Timeout: 15 * time.Second}
@@ -72,6 +77,7 @@ func (c *Control) configureStorage(w http.ResponseWriter, r *http.Request) {
 		agent.Fail(w, 400, err)
 		return
 	}
+	cfg = backupStorageConfig(cfg)
 	target, _ := storage.New(cfg)
 	key := "connection-check/" + random()
 	if _, err := target.Put(r.Context(), key, bytes.NewReader([]byte("Lidza Deploy storage check")), storage.PutOptions{ContentType: "text/plain"}); err != nil {
@@ -83,9 +89,18 @@ func (c *Control) configureStorage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	old := c.data.BackupStorage
+	oldLegacy := c.data.BackupStorageLegacyPrefix
+	legacy := oldLegacy
+	if old == nil || old.Bucket != cfg.Bucket || old.Prefix != cfg.Prefix || backupStorageConfig(*old).Endpoint != cfg.Endpoint {
+		legacy = ""
+	} else if spacesBucketEndpoint(*old) {
+		legacy = path.Join(old.Bucket, old.Prefix)
+	}
+	c.data.BackupStorageLegacyPrefix = legacy
 	c.data.BackupStorage = &cfg
 	if err := c.save(); err != nil {
 		c.data.BackupStorage = old
+		c.data.BackupStorageLegacyPrefix = oldLegacy
 		agent.Fail(w, 500, errors.New("could not save encrypted storage configuration"))
 		return
 	}

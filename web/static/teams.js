@@ -3,10 +3,11 @@ let teamCursor='',teamPrevious=[],auditCursor='',auditPrevious=[],teamLoading=fa
 function isAdmin(){return demo||status.roles?.includes('admin')}
 function canDeploy(){return isAdmin()||status.roles?.includes('deployer')}
 function renderTeamPermissions(){
- for(const node of document.querySelectorAll('[data-tab=team],[data-tab=audit]'))node.hidden=!isAdmin();
- $('#new-app').hidden=!isAdmin()||tab==='newapp'||tab==='detail';
+ for(const node of document.querySelectorAll('[data-tab=team],[data-tab=audit],[data-tab=remoteBackups]'))node.hidden=!isAdmin();
+ $('#new-app').hidden=!isAdmin()||!['apps','deployments'].includes(tab);
  for(const node of document.querySelectorAll('#defaults-form input,#defaults-form button[type=submit]'))node.disabled=!isAdmin()||!$('#defaults-form').dataset.ready||!!$('#defaults-form').dataset.saving;
  for(const node of document.querySelectorAll('[data-ssh-access],[data-manage-server],[data-remove-server],[data-upgrade],[data-previews],[data-action=remove],[data-action=github-app],#github-config,#connect,#disconnect'))node.hidden=!isAdmin();
+ for(const node of document.querySelectorAll('#server-form input,#server-form button[type=submit],#storage-form input,#storage-form button[type=submit],#mail-form input,#mail-form select,#mail-form button'))node.disabled=!isAdmin();
  if($('#connect'))$('#connect').hidden=!isAdmin()||(!demo&&!status.github_owner);
  if($('#disconnect'))$('#disconnect').hidden=!isAdmin()||(!demo&&!status.github_owner);
  for(const node of document.querySelectorAll('[data-action=deploy],[data-action=reload],[data-action=rollback],[data-action=webhook],[data-action=disable-webhook],[data-app-state],[data-maintenance],[data-tasks],#settings-form button[type=submit]'))node.disabled=!canDeploy()||node.dataset.stopped==='1';
