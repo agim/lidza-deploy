@@ -33,6 +33,14 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	helperMu          sync.Mutex
+	helperMemory      int64
+	resourceStarting  map[string]bool
+	resourceMu        sync.Mutex
+	resourcePending   map[string]resourceLaunch
+	resourceBuilding  bool
+	resourceCached    *ResourceReport
+	resourceChecked   time.Time
 	hostMu            sync.Mutex
 	hostCache         map[string]hostVerdict
 	hostFlights       singleflight.Group
@@ -112,6 +120,15 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	}
 	if d, ok := rt.(*Docker); ok {
 		d.prepareRuntime = m.preflightRuntime
+		d.resourceLaunch = m.prepareResourceLaunch
+		d.resourceBuild = m.prepareResourceBuild
+		d.resourceChanged = func() {
+			m.resourceMu.Lock()
+			defer m.resourceMu.Unlock()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, _ = m.reconcileResources(ctx, nil, nil)
+		}
 		d.runtimeDiagnostics = func(ctx context.Context, a App) context.Context {
 			return m.deploymentDiagnostics(ctx, job{app: a, deployment: deploymentID(ctx)})
 		}
@@ -145,6 +162,19 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 			m.data.Apps[id] = a
 		}
 	}
+	for id, a := range m.data.Apps {
+		if a.Resources == nil {
+			l := defaultAppResources()
+			l.WorkerMemoryMB = 512
+			for _, t := range m.data.Tasks {
+				if t.AppID == id && t.Enabled {
+					l.MemoryMB += 512
+				}
+			}
+			a.Resources = &l
+			m.data.Apps[id] = a
+		}
+	}
 	m.data.BindingsVersion = 1
 	if m.data.Apps == nil {
 		m.data.Apps = map[string]App{}
@@ -161,6 +191,16 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	if err := m.save(); err != nil {
 		cancel()
 		return nil, err
+	}
+	if _, ok := rt.(*Docker); ok {
+		cleanup, stop := context.WithTimeout(ctx, 10*time.Second)
+		ids, e := resourceCommand(cleanup, "ps", "-aq", "--filter", "label=io.lidza.operation=true", "--filter", "label=io.lidza.agent="+resourceBuilderName(cfg.DataDir))
+		if e == nil && ids != "" {
+			_, _ = resourceCommand(cleanup, append([]string{"rm", "-f"}, strings.Fields(ids)...)...)
+		}
+		stop()
+		m.wg.Add(1)
+		go m.resourceLoop()
 	}
 	m.enforceStoppedApps()
 	// Docker can assign new ephemeral host ports after container/daemon restarts.
@@ -226,8 +266,14 @@ func (m *Manager) Upsert(a App) error {
 		return errors.New("application has an active deployment")
 	}
 	old, exists := m.data.Apps[a.ID]
+	if exists && a.Resources != nil && *a.Resources != old.resourceLimits() {
+		return errors.New("use the Resources endpoint to change app CPU/RAM budgets")
+	}
 	if m.removing[a.ID] || m.data.Caches[a.ID].Operation {
 		return errors.New("application cleanup or cache operation is active")
+	}
+	if exists && a.Resources == nil {
+		a.Resources = old.Resources
 	}
 	a.ResourceID = old.ResourceID // Never accept a caller-selected resource identity.
 	if !exists && m.hasRetainedResourcesLocked(a.ID) {
@@ -577,14 +623,27 @@ func (m *Manager) work() {
 			if err != nil && release != nil {
 				_ = m.runtime.Remove(cleanup, release)
 			}
+			if err == nil {
+				if _, ok := m.runtime.(*Docker); ok {
+					if old := m.dataAppSnapshot(j.app.ID); old.Previous != nil {
+						_, _ = resourceCommand(cleanup, "stop", "--time", "10", old.Previous.Container)
+					}
+				}
+			}
 			if err == nil && retired != nil {
 				_ = m.runtime.Remove(cleanup, retired)
 			}
 			stop()
+			if d, ok := m.runtime.(*Docker); ok && d.resourceChanged != nil {
+				d.resourceChanged()
+			}
 		}
 	}
 }
 func (m *Manager) Rollback(ctx context.Context, id string) error {
+	if d, ok := m.runtime.(*Docker); ok && d.resourceLaunch != nil {
+		return m.rollbackResources(ctx, id, d)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.data.Apps[id]
@@ -632,4 +691,10 @@ func (m *Manager) Target(host string) *Release {
 		return nil
 	}
 	return a.Current
+}
+
+func (m *Manager) dataAppSnapshot(id string) App {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.data.Apps[id]
 }

@@ -311,6 +311,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
 	handle("GET /api/control/apps/{id}/tasks/{task}/{action}", c.taskAction)
 	handle("GET /api/control/server-health", c.serverHealth)
+	handle("GET /api/control/servers/{server}/resources", c.resources)
+	handle("PUT /api/control/servers/{server}/resources", c.resources)
+	handle("PUT /api/control/apps/{id}/resources", c.appResources)
 	handle("GET /api/control/updates", c.updates)
 	handle("POST /api/control/updates/{action}", c.updates)
 	handle("PATCH /api/control/updates", c.updates)
@@ -443,8 +446,9 @@ func (c *Control) AuthorizeConnect(ctx context.Context, u *auth.User, provider s
 func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Application
-		Env      map[string]string      `json:"env"`
-		Database *agent.DatabaseRequest `json:"database,omitempty"`
+		Env       map[string]string      `json:"env"`
+		Resources *agent.AppResources    `json:"resources,omitempty"`
+		Database  *agent.DatabaseRequest `json:"database,omitempty"`
 	}
 	if err := agent.Decode(w, r, &input); err != nil {
 		agent.Fail(w, 400, err)
@@ -486,7 +490,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	a.AutoDeploy = autoDeploy
 	a.Retiring = false
 	a.Generation = random()
-	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, CustomerHosts: a.CustomerHosts, Env: input.Env}
+	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, CustomerHosts: a.CustomerHosts, Env: input.Env, Resources: input.Resources}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
 		return

@@ -11,6 +11,7 @@ import (
 )
 
 type App struct {
+	Resources          *AppResources     `json:"resources,omitempty"`
 	ResourceID         string            `json:"resource_id,omitempty"` // agent-owned incarnation; separates reused app IDs from retained data
 	CustomerHosts      bool              `json:"customer_hosts"`
 	Stopped            bool              `json:"stopped"`
@@ -73,6 +74,7 @@ type DeployRequest struct {
 	Key              string            `json:"key,omitempty"`
 }
 type diskState struct {
+	ResourcePolicy    *ResourcePolicy             `json:"resource_policy,omitempty"`
 	RetiredAppIDs     map[string]bool             `json:"retired_app_ids,omitempty"`
 	RetainedResources map[string]RetainedResource `json:"retained_resources,omitempty"`
 	StorageVolumes    map[string]string           `json:"storage_volumes,omitempty"`
@@ -94,6 +96,11 @@ var domainPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 var envPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (a App) Validate() error {
+	if a.Resources != nil {
+		if err := a.Resources.Validate(); err != nil {
+			return err
+		}
+	}
 	if a.PullRequest < 0 || a.PullRequest > 999999999 || a.PullRequest > 0 && !a.Preview {
 		return errors.New("invalid preview pull request")
 	}

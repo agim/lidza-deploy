@@ -112,7 +112,14 @@ func (m *Manager) restoreInto(ctx context.Context, source string, record BackupR
 		return err
 	}
 	env, flags := postgresEnvironment(target.URL)
-	args := []string{"run", "--rm", "--name", "lidza-restore-" + target.AppID, "--network", target.Network, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "512m", "--pids-limit", "128", "-i"}
+	container := "lidza-restore-" + target.AppID + "-" + newID()
+	args := []string{"run", "--rm", "--name", container, "--network", target.Network, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "512m", "--pids-limit", "128", "-i"}
+	operationLimits, releaseOperation, operationErr := m.prepareResourceOperation(ctx, container, 512)
+	if operationErr != nil {
+		return operationErr
+	}
+	defer releaseOperation()
+	args = replaceResourceArgs(args, operationLimits)
 	args = append(args, flags...)
 	args = append(args, databaseImage, "pg_restore", "--dbname=app", "--no-owner", "--no-acl", "--exit-on-error", "--single-transaction")
 	defer func() {

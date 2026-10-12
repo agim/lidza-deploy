@@ -4,6 +4,7 @@ import (
 	"errors"
 	"github.com/agim/lidza-deploy/internal/agent"
 	"net/http"
+	"strings"
 )
 
 func (c *Control) retire(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +58,11 @@ func (c *Control) retire(w http.ResponseWriter, r *http.Request) {
 	delete(c.data.Apps, id)
 	for _, kind := range []string{"database:", "health:", "deploy:", "security-burst:", "security-review:"} {
 		delete(c.data.Incidents, kind+a.ServerID+":"+id)
+	}
+	for key := range c.data.Incidents {
+		if strings.HasPrefix(key, "resource:"+a.ServerID+":"+id+":") {
+			delete(c.data.Incidents, key)
+		}
 	}
 	if err := c.save(); err != nil {
 		c.data.Apps[id] = a

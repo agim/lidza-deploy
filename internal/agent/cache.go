@@ -205,7 +205,12 @@ func (m *Manager) provisionCache(ctx context.Context, c CacheResource) error {
 		return m.cacheProvision(ctx, c)
 	}
 	if c.Mode == "local" {
-		return provisionLocalCache(ctx, c)
+		limits, done, err := m.prepareServiceResources(ctx, c.Network, "cache")
+		if err != nil {
+			return err
+		}
+		defer done()
+		return provisionLocalCacheLimited(ctx, c, limits)
 	}
 	probe, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
