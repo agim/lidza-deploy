@@ -31,5 +31,5 @@ document.addEventListener('click',async event=>{
  const link=event.target.closest('[data-help-topic]');
  if(!link||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey||event.button!==0)return;
  event.preventDefault();
- try{await navigate('help');if(tab!=='help')return;for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();const url=sectionURL('help');url.hash='help/'+link.dataset.helpTopic;if(url.href!==location.href)history.pushState(null,'',url);renderHelp();$('#help-guides').querySelector(`[data-help-guide="${link.dataset.helpTopic}"]`)?.scrollIntoView({block:'start'});}catch(error){fail(error)}
+ try{await navigate('help');if(tab!=='help')return;for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();const topic=link.dataset.helpTopic||'',url=sectionURL('help');url.hash=topic?'help/'+topic:'help';if(url.href!==location.href)history.pushState(null,'',url);renderHelp();[...$('#help-guides').querySelectorAll('[data-help-guide]')].find(guide=>guide.dataset.helpGuide===topic)?.scrollIntoView({block:'start'});}catch(error){fail(error)}
 });

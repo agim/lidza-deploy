@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"github.com/agim/lidza"
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/buildinfo"
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	gh "github.com/agim/lidza-deploy/internal/providers/github"
 	"github.com/agim/lidza/packs/analytics"
@@ -377,7 +378,7 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 	app := c.githubApp()
 	appConfigured := app != nil
 	appConnected := appConfigured && len(app.Installations) > 0
-	agent.JSON(w, 200, map[string]any{"github_public_https": strings.HasPrefix(c.cfg.PublicURL, "https://"), "github_app_configured": appConfigured, "github_app_connected": appConnected, "github_app_slug": func() string {
+	agent.JSON(w, 200, map[string]any{"control_version": buildinfo.Version, "github_public_https": strings.HasPrefix(c.cfg.PublicURL, "https://"), "github_app_configured": appConfigured, "github_app_connected": appConnected, "github_app_slug": func() string {
 		if app != nil {
 			return app.App.Slug
 		}

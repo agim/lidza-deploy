@@ -10,6 +10,29 @@ Remote agents update first, one at a time. The colocated agent on the control-pa
 
 The root helper downloads assets and checksums from the fixed official release repository, verifies the archive and bundled checksums, restarts services and checks readiness. Failed startup restores previous binaries. Hosted application containers continue running. OAuth, operator accounts, database data and application configuration are preserved.
 
+## Browser assets after an update
+
+The embedded interface uses Līdza's released `devserver.Static` handler. HTML and
+unhashed JavaScript/CSS use `Cache-Control: no-cache` and content ETags. Reloading
+revalidates each file: an unchanged file can return 304, while a changed file
+returns its new bytes. Cache invalidation does not clear cookies or browser
+storage, and does not disable OAuth or discard settings.
+
+The regular workspace status response includes the running control-panel version.
+After a version change in an open tab, a **Reload interface** notice appears.
+Reload keeps the current URL; unsaved edits require confirmation before they are
+discarded. The interface does not automatically reload or redraw forms during an
+update. A tab loaded before this behavior was installed needs an initial reload.
+Static responses include `X-Lidza-Deploy-Version` for diagnosing the serving binary.
+
+A fresh response containing older code can also mean the control-panel service
+has not updated. Check **Updates → Control panel**, rather than relying on the
+agent version alone. A hard refresh cannot install a newer server binary.
+
+The optional framework head-hook metadata integration is paused pending
+[Līdza #54](https://github.com/agim/lidza/issues/54), because direct HTML files skip
+the hook in v0.1.107. The cache policy and release-change notice do not depend on it.
+
 A busy or temporarily unreachable server waits and is retried by the framework's durable minute schedule. Unsupported installers and failed upgrades stop the batch before updating remaining servers. Fix that host, then click Update again. Automatic mode does not repeatedly install a failed release; a manual retry or a newer release is required.
 
 Install this release once with the current installer on the GUI host and each hosting server to provision the latest CLI helper. Subsequent updates refresh the verified helper too. Existing **Servers → Agent upgrade** remains available for updating individual hosts.

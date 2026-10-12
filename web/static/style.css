@@ -310,3 +310,6 @@ body[data-design=terminal] .app-action-group .app-remove{color:#d9a1a1}
  .app-more-actions{gap:20px}
 }
 @media(max-width:420px){.app-more-actions{grid-template-columns:minmax(0,1fr)}}
+#ui-update-notice{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:1100;display:flex;align-items:center;gap:20px;max-width:calc(100vw - 32px);width:640px;padding:16px 20px;background:var(--surface);color:var(--ink);border:1px solid var(--accent);border-radius:8px;box-shadow:var(--shadow)}
+#ui-update-notice[hidden]{display:none}#ui-update-notice>span{min-width:0;line-height:1.6}#ui-update-notice>button{flex-shrink:0;min-height:44px}
+@media(max-width:600px){#ui-update-notice{flex-direction:column;align-items:stretch;gap:12px}}
