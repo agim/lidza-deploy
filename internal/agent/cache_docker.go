@@ -14,7 +14,7 @@ const cacheImage = "valkey/valkey:8-alpine"
 func localCacheReady(ctx context.Context, c CacheResource) bool {
 	probe, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	state, err := resourceCommand(probe, "inspect", "--format", `{{index .Config.Labels "io.lidza.cache"}} {{.State.Running}}`, c.Network)
+	state, err := command(probe, "", nil, "docker", "inspect", "--format", `{{index .Config.Labels "io.lidza.cache"}} {{.State.Running}}`, c.Network)
 	if err != nil || state != c.Network+" true" {
 		return false
 	}

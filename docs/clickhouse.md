@@ -35,12 +35,11 @@ Deployment diagnostics identify the failed stage and include bounded, redacted
 Docker output. A first-time image download is reported separately from container
 creation. Readiness failures include the last authenticated query error and
 container status, exit code and OOM flag. The agent's retained password never
-enters the deployment log. Host CPU/RAM budget rejections report the required
-and available capacity rather than a generic connection failure.
+enters the deployment log.
 
 After a failure, keep existing containers and volumes intact. Inspect the
-deployment's specific failure before changing resource budgets or Docker
-connectivity. Retry after correcting that condition; the reserved password and
+deployment's specific failure before changing Docker connectivity. Retry after
+correcting that condition; the reserved password and
 volumes are reused. Download failures require checking Docker's registry access;
 an application redeploy cannot repair a host networking or registry outage.
 

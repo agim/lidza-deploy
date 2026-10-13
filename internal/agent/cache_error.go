@@ -18,9 +18,6 @@ func cacheFailure(stage string, err error, c CacheResource) error {
 func publicCacheFailure(err error) error {
 	var safe *cacheProvisionError
 	if errors.As(err, &safe) {
-		if safe.stage == "host CPU/RAM budget" {
-			return fmt.Errorf("managed cache resource preparation blocked: %w; review Server → Resources; previous release retained", safe)
-		}
 		return fmt.Errorf("managed cache unavailable: %w; check Application → Cache and hosting agent service access; previous release retained", safe)
 	}
 	return errors.New("managed cache unavailable; check Application → Cache and hosting agent service access; previous release retained")

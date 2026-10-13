@@ -15,12 +15,9 @@ does not generate or replace that key.
 
 An owned, running local cache is checked with an authenticated PING before
 provisioning is considered. A healthy service keeps its existing limits and
-credentials; that check does not reserve a new container. Missing or stopped
-services still require resource admission before starting. Deployment failures
-identify host CPU/RAM budget errors separately from cache provisioning/readiness
-errors, without exposing credentials. Review **Server → Resources** when the
-error names a reservation shortfall. Builds and candidate app containers remain
-subject to capacity checks even when the existing cache is healthy.
+credentials. Missing or stopped services are started normally. Deployment
+failures identify cache provisioning and readiness errors without exposing
+credentials.
 
 Open **Applications → Settings → Cache connection → Manage cache** to create
 a local service explicitly, or attach an existing authenticated Redis/Valkey
@@ -37,8 +34,7 @@ next deployment. A failed reload retains the previous running release; check
 deployment logs, correct the connection and reload again.
 
 Local caches run as UID 65532, with a read-only root filesystem, a persistent
-Docker volume, a 128 MiB eviction budget, and a default 256 MiB container memory
-limit (configurable in Server Resources).
+Docker volume, a 128 MiB eviction budget, and a 256 MiB container memory limit.
 Append-only persistence syncs every second. This is a cache, not a replacement
 for database backups or durable application storage. Cache data is not included
 in the PostgreSQL/S3 backup schedule. Switching services does not migrate data.
