@@ -55,6 +55,16 @@ func TestDockerAppResourceBudgetsThrottleAndContainOOM(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "resource-" + newID()[:12]
+	total, cores, hostErr := resourceHost()
+	if hostErr != nil {
+		t.Fatal(hostErr)
+	}
+	strict := defaultResourcePolicy(total, cores)
+	strict.MemoryMode = "strict"
+	strict.BuildMemoryMB = 1024 // Preserve the explicit legacy strict build cap.
+	m.mu.Lock()
+	m.data.ResourcePolicy = &strict
+	m.mu.Unlock()
 	a := testApp(id)
 	limits := AppResources{MemoryMB: 512, WebMemoryMB: 128, WorkerMemoryMB: 64, CPUs: 0.4, Weight: 1024}
 	a.Resources = &limits

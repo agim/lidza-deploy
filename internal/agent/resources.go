@@ -61,6 +61,7 @@ func (l ServiceResources) Validate() error {
 }
 
 type ResourcePolicy struct {
+	MemoryMode        string                      `json:"memory_mode,omitempty"`
 	HostMemoryMB      int64                       `json:"host_memory_mb"`
 	HostCPUs          float64                     `json:"host_cpus"`
 	BuildMemoryMB     int64                       `json:"build_memory_mb"`
@@ -71,9 +72,12 @@ type ResourcePolicy struct {
 }
 
 func defaultResourcePolicy(memory int64, cpus float64) ResourcePolicy {
-	return ResourcePolicy{HostMemoryMB: max(512, (memory/5/128)*128), HostCPUs: max(0.1, cpus/8), BuildMemoryMB: 1024, BuildCPUs: min(1, cpus/3), OperationMemoryMB: 512, OperationCPUs: min(0.5, cpus/4), Services: map[string]ServiceResources{}}
+	return ResourcePolicy{MemoryMode: "automatic", HostMemoryMB: max(512, (memory/5/128)*128), HostCPUs: max(0.1, cpus/8), BuildMemoryMB: max(1024, min(4096, ((memory/4+127)/128)*128)), BuildCPUs: min(1, cpus/3), OperationMemoryMB: 512, OperationCPUs: min(0.5, cpus/4), Services: map[string]ServiceResources{}}
 }
 func (p ResourcePolicy) Validate() error {
+	if p.MemoryMode != "" && p.MemoryMode != "automatic" && p.MemoryMode != "strict" {
+		return errors.New("memory management must be automatic or strict")
+	}
 	if p.OperationMemoryMB < 512 || p.OperationMemoryMB > 1048576 || p.OperationCPUs < 0.1 || p.OperationCPUs > 128 || math.IsNaN(p.OperationCPUs) || math.IsInf(p.OperationCPUs, 0) || p.OperationCPUs*64/float64(p.OperationMemoryMB) < 0.01 {
 		return errors.New("operational headroom requires at least 512 MiB and enough CPU for bounded helper commands")
 	}
@@ -119,6 +123,10 @@ type AppResourceView struct {
 	Containers       []ContainerResource `json:"containers"`
 }
 type ResourceReport struct {
+	CapacityMode      string              `json:"capacity_mode"`
+	HostAvailableMB   *int64              `json:"host_available_mb,omitempty"`
+	PendingMemoryMB   int64               `json:"pending_memory_mb"`
+	StartingWork      bool                `json:"-"`
 	Supported         bool                `json:"supported"`
 	Checked           time.Time           `json:"checked"`
 	Policy            ResourcePolicy      `json:"policy"`
@@ -136,10 +144,13 @@ type resourceLaunch struct {
 	MemoryMB          int64
 }
 type resourceState struct {
-	Apps        map[string]App
-	Tasks       []Task
-	Policy      *ResourcePolicy
-	BuilderName string
+	Apps            map[string]App
+	Tasks           []Task
+	Policy          *ResourcePolicy
+	BuilderName     string
+	HostAvailableMB *int64
+	PendingMemoryMB int64
+	StartingWork    bool
 }
 
 func (m *Manager) resourceState() resourceState {
@@ -369,6 +380,13 @@ func makeResourceReport(state resourceState, containers []ContainerResource, pen
 		policy = *state.Policy
 	}
 	out := ResourceReport{Supported: true, Checked: time.Now().UTC(), Policy: policy, MemoryMB: memory, CPUs: cpus, Building: building, Apps: []AppResourceView{}, Services: []ContainerResource{}, Errors: []string{}}
+	out.CapacityMode = "automatic"
+	if policy.MemoryMode == "strict" {
+		out.CapacityMode = "strict"
+	}
+	out.HostAvailableMB = state.HostAvailableMB
+	out.PendingMemoryMB = state.PendingMemoryMB
+	out.StartingWork = state.StartingWork
 	actualActive := map[string]bool{}
 	for _, c := range containers {
 		if c.Running {
@@ -390,8 +408,10 @@ func makeResourceReport(state resourceState, containers []ContainerResource, pen
 		out.Apps = append(out.Apps, v)
 		if !a.Stopped || actualActive[id] {
 			out.ReservedMemoryMB += l.MemoryMB
-			wanted["app:"+id] = l.CPUs
-			weights["app:"+id] = l.Weight
+			if out.CapacityMode != "automatic" || actualActive[id] {
+				wanted["app:"+id] = l.CPUs
+				weights["app:"+id] = l.Weight
+			}
 		}
 	}
 	for _, c := range containers {
@@ -479,6 +499,13 @@ func makeResourceReport(state resourceState, containers []ContainerResource, pen
 	}
 	slices.SortFunc(out.Apps, func(a, b AppResourceView) int { return strings.Compare(a.ID, b.ID) })
 	out.AvailableMemoryMB = memory - out.ReservedMemoryMB
+	if out.CapacityMode == "automatic" && out.HostAvailableMB != nil {
+		buildHeadroom := int64(0)
+		if out.Building {
+			buildHeadroom = policy.BuildMemoryMB
+		}
+		out.AvailableMemoryMB = *out.HostAvailableMB - policy.HostMemoryMB - buildHeadroom - policy.OperationMemoryMB - out.PendingMemoryMB
+	}
 	if policy.HostCPUs+policy.BuildCPUs+policy.OperationCPUs >= cpus || pool <= 0 {
 		return out, errors.New("CPU reservations leave no capacity for applications")
 	}
@@ -497,8 +524,16 @@ func serviceLimit(p ResourcePolicy, name, kind string) ServiceResources {
 	return ServiceResources{256, 0.5}
 }
 func checkResourceCapacity(report ResourceReport, state resourceState) error {
-	if report.AvailableMemoryMB < 0 {
+	if report.CapacityMode == "strict" && report.AvailableMemoryMB < 0 {
 		return fmt.Errorf("RAM budgets reserve %d MiB but this host has %d MiB; adjust app/service budgets or host/build reservations", report.ReservedMemoryMB, report.MemoryMB)
+	}
+	if report.CapacityMode == "automatic" && report.StartingWork {
+		if report.HostAvailableMB == nil {
+			return errors.New("live host RAM measurement unavailable; cannot safely start new work")
+		}
+		if report.AvailableMemoryMB < 0 {
+			return &resourceMemoryPressure{ShortfallMB: -report.AvailableMemoryMB}
+		}
 	}
 	for _, v := range report.Apps {
 		if v.Stopped && !slices.ContainsFunc(v.Containers, func(c ContainerResource) bool { return c.Running }) {
@@ -529,7 +564,11 @@ func (m *Manager) resourceReport(ctx context.Context, stats bool) (ResourceRepor
 	if stats {
 		statsErr = resourceStats(ctx, containers)
 	}
-	report, err := makeResourceReport(m.resourceState(), containers, m.resourcePending, m.resourceBuilding, memory, cpus)
+	state, err := liveResourceCapacityState(m.resourceState(), containers, m.resourcePending, m.resourceBuilding)
+	if err != nil {
+		return ResourceReport{}, err
+	}
+	report, err := makeResourceReport(state, containers, m.resourcePending, m.resourceBuilding, memory, cpus)
 	if supportErr := resourceControllers(ctx); supportErr != nil {
 		report.Supported = false
 		report.Errors = append(report.Errors, supportErr.Error())
@@ -600,13 +639,17 @@ func (m *Manager) reconcileResourcePlan(ctx context.Context, projected *resource
 			virtual = append(virtual, ContainerResource{Name: p.Name, AppID: p.AppID, Kind: p.Kind, Running: true, MemoryLimit: p.MemoryMB * mib})
 		}
 	}
+	state, err = liveResourceCapacityState(state, containers, pending, m.resourceBuilding)
+	if err != nil {
+		return nil, err
+	}
 	report, err := makeResourceReport(state, virtual, pending, m.resourceBuilding, memory, cpus)
 	if err != nil {
 		return nil, err
 	}
 	if err = checkResourceCapacity(report, state); err != nil && admit {
 		oldReport, oldErr := makeResourceReport(m.resourceState(), containers, pending, m.resourceBuilding, memory, cpus)
-		correcting := projected != nil && extra == nil && oldErr == nil && oldReport.AvailableMemoryMB < 0 && report.ReservedMemoryMB < oldReport.ReservedMemoryMB
+		correcting := report.CapacityMode == "strict" && projected != nil && extra == nil && oldErr == nil && oldReport.CapacityMode == "strict" && oldReport.AvailableMemoryMB < 0 && report.ReservedMemoryMB < oldReport.ReservedMemoryMB
 		if !correcting {
 			return nil, err
 		}
@@ -659,7 +702,7 @@ func (m *Manager) reconcileResourcePlan(ctx context.Context, projected *resource
 	wanted := map[string]float64{}
 	weights := map[string]int64{}
 	for _, v := range report.Apps {
-		if !v.Stopped || v.AllocatedCPUs > 0 {
+		if (report.CapacityMode != "automatic" && !v.Stopped) || v.AllocatedCPUs > 0 {
 			wanted["app:"+v.ID] = v.Limits.CPUs
 			weights["app:"+v.ID] = v.Limits.Weight
 		}
@@ -799,6 +842,11 @@ func (m *Manager) reconcileResourcePlan(ctx context.Context, projected *resource
 	return nil, nil
 }
 func (m *Manager) prepareResourceLaunch(ctx context.Context, a App, name, kind string) ([]string, func(), error) {
+	return waitResourceCapacity(ctx, func(wait context.Context) ([]string, func(), error) {
+		return m.prepareResourceLaunchOnce(wait, a, name, kind)
+	})
+}
+func (m *Manager) prepareResourceLaunchOnce(ctx context.Context, a App, name, kind string) ([]string, func(), error) {
 	m.resourceMu.Lock()
 	defer m.resourceMu.Unlock()
 	l := a.resourceLimits()
@@ -830,6 +878,11 @@ func (m *Manager) prepareResourceLaunch(ctx context.Context, a App, name, kind s
 	}, nil
 }
 func (m *Manager) prepareServiceResources(ctx context.Context, name, kind string) ([]string, func(), error) {
+	return waitResourceCapacity(ctx, func(wait context.Context) ([]string, func(), error) {
+		return m.prepareServiceResourcesOnce(wait, name, kind)
+	})
+}
+func (m *Manager) prepareServiceResourcesOnce(ctx context.Context, name, kind string) ([]string, func(), error) {
 	m.resourceMu.Lock()
 	defer m.resourceMu.Unlock()
 	memory, cpus, err := resourceHost()
@@ -859,6 +912,9 @@ func (m *Manager) prepareServiceResources(ctx context.Context, name, kind string
 	}, nil
 }
 func (m *Manager) prepareResourceBuild(ctx context.Context, a App) (ResourcePolicy, func(), error) {
+	return waitResourceCapacity(ctx, func(wait context.Context) (ResourcePolicy, func(), error) { return m.prepareResourceBuildOnce(wait, a) })
+}
+func (m *Manager) prepareResourceBuildOnce(ctx context.Context, a App) (ResourcePolicy, func(), error) {
 	// The old rollback container can be restarted on rollback; it need not run
 	// alongside the live release and a third candidate throughout compilation.
 	if a.Previous != nil {
@@ -1173,7 +1229,12 @@ func (m *Manager) prepareResourceOperation(ctx context.Context, name string, mem
 			m.helperMu.Unlock()
 			return nil, nil, errors.New("operational RAM pool is too small for this command")
 		}
-		if m.helperMemory+memory <= p.OperationMemoryMB {
+		available, availableErr := availableHostMemory()
+		if availableErr != nil {
+			m.helperMu.Unlock()
+			return nil, nil, availableErr
+		}
+		if m.helperMemory+memory <= p.OperationMemoryMB && (p.MemoryMode == "strict" || available >= p.HostMemoryMB+memory) {
 			m.helperMemory += memory
 			m.helperMu.Unlock()
 			args := resourceLimitsArgs(memory, p.OperationCPUs*float64(memory)/float64(p.OperationMemoryMB), 128)

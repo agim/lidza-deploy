@@ -37,6 +37,9 @@ func TestResourceBudgetIncludesWorkersServicesAndRollout(t *testing.T) {
 	if report.ReservedMemoryMB != expected {
 		t.Fatalf("reserved %d, want %d", report.ReservedMemoryMB, expected)
 	}
+	strict := defaultResourcePolicy(2048, 2)
+	strict.MemoryMode = "strict"
+	state.Policy = &strict
 	report, err = makeResourceReport(state, report.Services, nil, false, 2048, 2)
 	if err != nil {
 		t.Fatal(err)

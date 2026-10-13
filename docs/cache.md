@@ -18,8 +18,8 @@ provisioning is considered. A healthy service keeps its existing limits and
 credentials; that check does not reserve a new container. Missing or stopped
 services still require resource admission before starting. Deployment failures
 identify host CPU/RAM budget errors separately from cache provisioning/readiness
-errors, without exposing credentials. Review **Server → Resources** when the
-error names a reservation shortfall. Builds and candidate app containers remain
+errors, without exposing credentials. Automatic mode waits and retries when actual memory headroom is low.
+Explicit strict mode reports reservation shortfalls in **Server → Resources**. Builds and candidate app containers remain
 subject to capacity checks even when the existing cache is healthy.
 
 Open **Applications → Settings → Cache connection → Manage cache** to create
