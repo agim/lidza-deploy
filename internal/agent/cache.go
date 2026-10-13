@@ -136,7 +136,7 @@ func (m *Manager) finishCache(id string, next, old CacheResource, provisionErr e
 			next = old
 		}
 		next.Operation = false
-		next.Error = "Cache connection/provisioning failed; check the hosting agent and service access. Previous connection is retained."
+		next.Error = publicCacheFailure(provisionErr).Error()
 		m.data.Caches[id] = next
 		if err := m.save(); err != nil {
 			return err
@@ -205,12 +205,20 @@ func (m *Manager) provisionCache(ctx context.Context, c CacheResource) error {
 		return m.cacheProvision(ctx, c)
 	}
 	if c.Mode == "local" {
+		// A health check is not a new container launch. Preserve a healthy
+		// existing service even if legacy host reservations need correction.
+		if localCacheReady(ctx, c) {
+			return nil
+		}
 		limits, done, err := m.prepareServiceResources(ctx, c.Network, "cache")
 		if err != nil {
-			return err
+			return cacheFailure("host CPU/RAM budget", err, c)
 		}
 		defer done()
-		return provisionLocalCacheLimited(ctx, c, limits)
+		if err := provisionLocalCacheLimited(ctx, c, limits); err != nil {
+			return cacheFailure("Valkey provisioning/readiness", err, c)
+		}
+		return nil
 	}
 	probe, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -266,7 +274,9 @@ func (m *Manager) preflightRuntime(ctx context.Context, a App, source string) (A
 	m.mu.Unlock()
 	if needsCache && configured.Ready && configured.Mode == "local" {
 		if err := m.provisionCache(ctx, configured); err != nil {
-			return a, errors.New("managed cache unavailable; check Cache settings before deploying")
+			err = publicCacheFailure(err)
+			commandDiagnostic(ctx, "cache", err.Error())
+			return a, err
 		}
 	}
 	if needsCache && strings.TrimSpace(effective["CACHE_URL"]) == "" {
