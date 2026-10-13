@@ -146,11 +146,7 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 		if json.Unmarshal(result.Body, &report) != nil || !report.Supported {
 			continue
 		}
-		capacityTitle := "RAM reservations exceed server capacity on " + result.Server.Name
-		if report.CapacityMode == "automatic" {
-			capacityTitle = "Available RAM is below deployment headroom on " + result.Server.Name
-		}
-		record(c.observe(ctx, "resource-capacity:"+result.Server.ID, capacityTitle, report.AvailableMemoryMB < 0, 1))
+		record(c.observe(ctx, "resource-capacity:"+result.Server.ID, "RAM reservations exceed server capacity on "+result.Server.Name, report.AvailableMemoryMB < 0, 1))
 		for _, app := range report.Apps {
 			key := "resource:" + result.Server.ID + ":" + app.ID
 			memoryHigh := false

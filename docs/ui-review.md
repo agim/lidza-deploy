@@ -47,6 +47,4 @@ Host cards use two actions, Add application and Manage server. Connection settin
 
 Resource monitoring and budget editing use full pages. Ten-second polls reconcile stable row keys and preserve drafts, focus, errors and scroll. Measurements and configured/applied ceilings have separate labels. `npm run test:resources --prefix tests/browser` exercises these behaviors on desktop and mobile.
 
-Memory management defaults to automatic, using live available RAM rather than the sum of ceilings. The overview displays actual capacity, with optional settings collapsed under Advanced. Old saved policies adopt automatic mode; strict reservations require an explicit choice. Browser checks cover typed mode saves, default adoption, no false ceiling-shortfall warning, and stable expanded controls, drafts and scroll.
-
 Long repository branch names wrap inside the picker without enlarging settings or application-creation fields. Form grid cells can shrink to the available width; inputs remain within their cards. `npm run test:branches --prefix tests/browser` covers direct settings links, long Dependabot names and unbroken names at 320–1440px, picker overflow, exact selection/saving and refresh preservation.

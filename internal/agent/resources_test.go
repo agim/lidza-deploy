@@ -37,9 +37,6 @@ func TestResourceBudgetIncludesWorkersServicesAndRollout(t *testing.T) {
 	if report.ReservedMemoryMB != expected {
 		t.Fatalf("reserved %d, want %d", report.ReservedMemoryMB, expected)
 	}
-	strict := defaultResourcePolicy(2048, 2)
-	strict.MemoryMode = "strict"
-	state.Policy = &strict
 	report, err = makeResourceReport(state, report.Services, nil, false, 2048, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -233,29 +230,5 @@ func TestResourceCPUUpdateSupportsBothDockerControllerModes(t *testing.T) {
 		} else if strings.Contains(args, "--cpus ") || !strings.Contains(args, "--cpu-quota 25000") {
 			t.Fatal("BuildKit CPU controller cannot be updated", args)
 		}
-	}
-}
-
-func TestResourceAccountingIncludesManagedClickHouse(t *testing.T) {
-	a := testApp("one")
-	state := resourceState{Apps: map[string]App{a.ID: a}}
-	containers := []ContainerResource{{Name: "lidza-clickhouse-one", Kind: "clickhouse", Running: true, MemoryLimit: 2048 * mib}}
-	report, err := makeResourceReport(state, containers, nil, false, 8192, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := report.Policy.HostMemoryMB + report.Policy.BuildMemoryMB + report.Policy.OperationMemoryMB + 1024 + 2048
-	if report.ReservedMemoryMB != expected {
-		t.Fatal("ClickHouse RAM not reserved", report.ReservedMemoryMB, expected)
-	}
-	if l := serviceLimit(report.Policy, containers[0].Name, "clickhouse"); l.MemoryMB != 2048 || l.CPUs != 1 {
-		t.Fatal("ClickHouse default limits", l)
-	}
-	policy := report.Policy
-	policy.Services = map[string]ServiceResources{containers[0].Name: {MemoryMB: 1024, CPUs: 0.5}}
-	state.Policy = &policy
-	report, err = makeResourceReport(state, containers, nil, false, 8192, 4)
-	if err != nil || report.ReservedMemoryMB != expected-1024 {
-		t.Fatal("ClickHouse override not accounted", report, err)
 	}
 }

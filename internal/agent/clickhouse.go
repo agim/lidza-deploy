@@ -75,13 +75,7 @@ func (m *Manager) prepareClickHouse(ctx context.Context, a App, effective map[st
 		if m.clickhouseProvision != nil {
 			err = m.clickhouseProvision(probe, c)
 		} else {
-			limits, done, limitErr := m.prepareServiceResources(probe, c.Network, "clickhouse")
-			if limitErr != nil {
-				err = clickhouseFailure("host CPU/RAM budget", limitErr, c.Password)
-			} else {
-				err = provisionLocalClickHouseLimited(probe, c, limits)
-				done()
-			}
+			err = provisionLocalClickHouse(probe, c)
 		}
 		if err != nil {
 			commandDiagnostic(ctx, "clickhouse", publicClickHouseFailure(err).Error())

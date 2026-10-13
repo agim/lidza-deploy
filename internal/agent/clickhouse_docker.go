@@ -12,9 +12,6 @@ import (
 const clickhouseImage = "clickhouse/clickhouse-server:26.8.15.10"
 
 func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
-	return provisionLocalClickHouseLimited(ctx, c, nil)
-}
-func provisionLocalClickHouseLimited(ctx context.Context, c ClickHouseResource, limits []string) error {
 	password, decodeErr := hex.DecodeString(c.Password)
 	if !strings.HasPrefix(c.Network, "lidza-clickhouse-") || !idPattern.MatchString(strings.TrimPrefix(c.Network, "lidza-clickhouse-")) || decodeErr != nil || len(password) != 32 {
 		return errors.New("invalid managed ClickHouse identity")
@@ -55,17 +52,15 @@ func provisionLocalClickHouseLimited(ctx context.Context, c ClickHouseResource, 
 		}
 		commandDiagnostic(ctx, "clickhouse", "Starting private ClickHouse container "+c.Network+".")
 		// Secrets travel in the child environment, never argv or deployment logs.
-		args := []string{"run", "-d", "--name", c.Network, "--label", "io.lidza.clickhouse=" + c.Network, "--network", c.Network,
+		args := []string{
+			"run", "-d", "--name", c.Network, "--label", "io.lidza.clickhouse="+c.Network, "--network", c.Network,
 			"--restart", "unless-stopped", "--memory", "2g", "--pids-limit", "512", "--ulimit", "nofile=262144:262144",
 			"--log-opt", "max-size=10m", "--log-opt", "max-file=3",
-			"--mount", "type=volume,src=" + c.Network + "-data,dst=/var/lib/clickhouse",
-			"--mount", "type=volume,src=" + c.Network + "-logs,dst=/var/log/clickhouse-server",
+			"--mount", "type=volume,src="+c.Network+"-data,dst=/var/lib/clickhouse",
+			"--mount", "type=volume,src="+c.Network+"-logs,dst=/var/log/clickhouse-server",
 			"--env", "CLICKHOUSE_DB", "--env", "CLICKHOUSE_USER", "--env", "CLICKHOUSE_PASSWORD", "--env", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT",
 			"--health-cmd", `clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query 'SELECT 1'`,
 			"--health-interval", "10s", "--health-timeout", "5s", "--health-start-period", "30s", "--health-retries", "6", clickhouseImage}
-		if len(limits) > 0 {
-			args = append(replaceResourceArgs(args[:len(args)-1], limits), clickhouseImage)
-		}
 		_, err = clickhouseDockerCommand(ctx, c, "create/start ClickHouse container", nil, []string{"CLICKHOUSE_DB=telemetry", "CLICKHOUSE_USER=lidza", "CLICKHOUSE_PASSWORD=" + c.Password, "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1"}, args...)
 		if err != nil {
 			return err

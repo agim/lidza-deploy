@@ -37,7 +37,6 @@ func TestDockerExistingCacheHealthDoesNotRequireNewCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := defaultResourcePolicy(memory, cpus)
-	policy.MemoryMode = "strict"
 	policy.HostMemoryMB = memory // Deliberately overcommitted legacy reservations.
 	m.mu.Lock()
 	m.data.ResourcePolicy = &policy
