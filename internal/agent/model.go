@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/agim/lidza/packs/storage"
 	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -125,6 +126,19 @@ func (a App) Validate() error {
 		if strings.HasPrefix(k, "LIDZA_") && k != "LIDZA_MASTER_KEY" {
 			return fmt.Errorf("%s is managed by the agent", k)
 		}
+		if environmentURLKey(k) && !validEnvironmentURL(v) {
+			return fmt.Errorf("%s must be an absolute URL, not an email address or other text", k)
+		}
 	}
 	return nil
+}
+
+func environmentURLKey(key string) bool {
+	upper := strings.ToUpper(key)
+	return strings.HasSuffix(upper, "_URL") || strings.HasSuffix(upper, "_BASE_URL")
+}
+
+func validEnvironmentURL(value string) bool {
+	u, err := url.Parse(value)
+	return err == nil && u.Scheme != "" && u.Host != "" && strings.Contains(value, "://")
 }

@@ -304,8 +304,8 @@ function envEditor(selector,keys,managed=[],origins={}) {
  const rows=document.createElement('div');host.append(rows);
  function add(key='') {
   const row=document.createElement('div');row.className='env-row';row.dataset.saved=key?'1':'0';
-  const nameLabel=document.createElement('label');nameLabel.textContent='Name';const name=document.createElement('input');name.className='env-name';name.value=key;name.readOnly=!!key;name.autocomplete='off';name.spellcheck=false;name.placeholder='DATABASE_URL';nameLabel.append(name);if(key){const source=document.createElement('small');source.textContent=origins[key]==='workspace'?'Workspace default':origins[key]==='built-in'?'Built-in default':'App setting';nameLabel.append(source)}
-  const valueLabel=document.createElement('label');valueLabel.textContent='Value';const value=document.createElement('input');value.className='env-value';value.type='password';value.autocomplete='new-password';value.spellcheck=false;value.placeholder=key?'Saved value stays unchanged':'Enter value';valueLabel.append(value);
+  const nameLabel=document.createElement('label');nameLabel.textContent='Name';const name=document.createElement('input');name.className='env-name';name.name='application-environment-key';name.setAttribute('form','environment-editor-controls');name.value=key;name.readOnly=!!key;name.autocomplete='off';name.spellcheck=false;name.placeholder='DATABASE_URL';nameLabel.append(name);if(key){const source=document.createElement('small');source.textContent=origins[key]==='workspace'?'Workspace default':origins[key]==='built-in'?'Built-in default':'App setting';nameLabel.append(source)}
+  const valueLabel=document.createElement('label');valueLabel.textContent='Value';const value=document.createElement('input');value.className='env-value';value.name='application-environment-content';value.setAttribute('form','environment-editor-controls');value.type='password';value.autocomplete='new-password';value.spellcheck=false;value.placeholder=key?'Saved value stays unchanged':'Enter value';valueLabel.append(value);
   const actionLabel=document.createElement('label');actionLabel.textContent='Action';const action=document.createElement('select');action.className='env-action';
   for(const [v,text] of (key?[['keep','Keep saved value'],['set','Replace value'],['delete','Delete variable']]:[['set','Set value'],['discard','Discard row']])){const o=document.createElement('option');o.value=v;o.textContent=text;action.append(o)}
   value.oninput=()=>{action.value='set'};action.onchange=()=>{value.disabled=action.value!=='set';if(value.disabled)value.value=''};actionLabel.append(action);row.append(nameLabel,valueLabel,actionLabel);rows.append(row);
@@ -325,8 +325,11 @@ function readEnv(selector,base,allowDelete) {
   if(Object.hasOwn(changes,key))throw Error('Variable '+key+' also appears in the JSON changes.');
   changes[key]=action==='delete'?null:row.querySelector('.env-value').value;
  }
+ for(const [key,value] of Object.entries(changes))if(value!==null&&environmentURLKey(key)&&!validEnvironmentURL(value))throw Error(key+' must be an absolute URL, not an email address or other text.');
  return changes;
 }
+function environmentURLKey(key){const upper=key.toUpperCase();return upper.endsWith('_URL')||upper.endsWith('_BASE_URL')}
+function validEnvironmentURL(value){try{const parsed=new URL(value);return value.includes('://')&&!!parsed.protocol&&!!parsed.host}catch{return false}}
 $('#settings-dialog').addEventListener('close',()=>$('#settings-env-editor').replaceChildren());
 $('#create-database-fields').innerHTML=databaseFields();
 $('#database-dialog').addEventListener('close',()=>$('#database-content').replaceChildren());

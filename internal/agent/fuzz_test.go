@@ -10,6 +10,7 @@ func FuzzAppEnvironment(f *testing.F) {
 	f.Add("DATABASE_URL", "postgres://user:password@database/app")
 	f.Add("LIDZA_ADDR", "0.0.0.0:3000")
 	f.Add("APP_SECRET", "value\x00injected")
+	f.Add("LLM_BASE_URL", "operator@example.com")
 	f.Fuzz(func(t *testing.T, key, value string) {
 		a := testApp("fuzz")
 		a.Env = map[string]string{key: value}
@@ -19,6 +20,9 @@ func FuzzAppEnvironment(f *testing.F) {
 			}
 			if strings.HasPrefix(key, "LIDZA_") && key != "LIDZA_MASTER_KEY" {
 				t.Fatal("accepted agent-owned environment")
+			}
+			if environmentURLKey(key) && !validEnvironmentURL(value) {
+				t.Fatal("accepted non-URL address environment")
 			}
 		}
 	})

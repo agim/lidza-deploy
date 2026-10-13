@@ -9,7 +9,7 @@ function databaseFields() {
 }
 function wireDatabaseFields(form) {
  const select=form.elements.database_mode;
- const update=()=>{const mode=select.value;form.querySelector('[data-db-options]').hidden=!['local','external'].includes(mode);form.querySelector('[data-db-external]').hidden=mode!=='external';form.querySelector('[data-db-local]').hidden=mode!=='local';form.elements.database_url.required=mode==='external';form.elements.backup_keep.required=['local','external'].includes(mode);};
+ const update=()=>{const mode=select.value,hasDatabase=['local','external'].includes(mode);setFieldGroupEnabled(form.querySelector('[data-db-options]'),hasDatabase);setFieldGroupEnabled(form.querySelector('[data-db-external]'),mode==='external');form.querySelector('[data-db-local]').hidden=mode!=='local';form.elements.database_url.required=mode==='external';form.elements.backup_keep.required=hasDatabase;};
  select.onchange=update;update();
 }
 function takeDatabase(value) {
