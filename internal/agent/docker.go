@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -362,4 +364,13 @@ func clone(ctx context.Context, a App, source, token string) error {
 		return fmt.Errorf("clone: %w", err)
 	}
 	return nil
+}
+
+// v0.2.49-v0.2.53 used a private Buildx daemon with CPU/RAM quotas. Remove
+// that exact agent-owned builder during upgrade; normal builds use Docker's
+// default builder again. Application images and containers are untouched.
+func removeLegacyBoundedBuilder(ctx context.Context, root string) {
+	digest := sha256.Sum256([]byte(root))
+	name := "lidza-" + hex.EncodeToString(digest[:6])
+	_, _ = command(ctx, "", nil, "docker", "buildx", "rm", name)
 }

@@ -167,6 +167,11 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
+	if _, ok := rt.(*Docker); ok {
+		cleanup, stop := context.WithTimeout(ctx, 30*time.Second)
+		removeLegacyBoundedBuilder(cleanup, cfg.DataDir)
+		stop()
+	}
 	m.enforceStoppedApps()
 	// Docker can assign new ephemeral host ports after container/daemon restarts.
 	m.reconcileRoutes()
