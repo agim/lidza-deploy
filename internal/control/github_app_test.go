@@ -153,6 +153,10 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 			t.Fatal("creation auto-deploy did not honor the selected branch", branch, found)
 		}
 	}
+	deliveries := request("GET", "/api/control/deliveries", "")
+	if deliveries.Code != 200 || !strings.Contains(deliveries.Body.String(), `"AppID":"auto-created"`) || strings.Contains(deliveries.Body.String(), `"Payload"`) {
+		t.Fatal("push delivery inventory is not application-filterable", deliveries.Code, deliveries.Body)
+	}
 	c.mu.Lock()
 	a := c.data.Apps["portal"]
 	a.Repository = "acme/portal"

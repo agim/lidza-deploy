@@ -3,10 +3,10 @@ let securityApp='',securityBusy=false,securityVersion=0,securityFetched=0;
 function renderSecurityActivity(){
  if(!apps.some(a=>a.id===securityApp&&!a.retiring))securityApp=apps.find(a=>!a.retiring)?.id||'';
  if(!document.querySelector('#security-dashboard')){
- $('#content').innerHTML='<section id="security-dashboard"><div class="toolbar"><label>Application<select id="security-app"></select></label><button id="security-refresh">Refresh activity</button></div><p class="hint">Suspected probes collected from structured app request logs, separate from application errors. A 2xx response needs review; it may be a fallback page. Redirects do not establish compromise. Client addresses are not inferred from untrusted headers.</p><p id="security-error" role="alert" hidden></p><div id="security-result" aria-live="polite"></div></section>';
- $('#security-app').onchange=e=>{securityApp=e.target.value;securityVersion++;$('#security-result').replaceChildren();loadSecurityActivity()};$('#security-refresh').onclick=loadSecurityActivity;loadSecurityActivity();
+ $('#content').innerHTML='<section id="security-dashboard"><div class="toolbar fleet-filter-toolbar">'+applicationPickerMarkup('security-app')+'<button id="security-refresh">Refresh activity</button></div><p class="hint">Suspected probes collected from structured app request logs, separate from application errors. A 2xx response needs review; it may be a fallback page. Redirects do not establish compromise. Client addresses are not inferred from untrusted headers.</p><p id="security-error" role="alert" hidden></p><div id="security-result" aria-live="polite"></div></section>';
+ $('#security-refresh').onclick=loadSecurityActivity;loadSecurityActivity();
  }
- const options=apps.filter(a=>!a.retiring).map(a=>`<option value="${escape(a.id)}">${escape(a.id)}</option>`).join('');if($('#security-app').innerHTML!==options)$('#security-app').innerHTML=options;$('#security-app').value=securityApp;
+ const ids=apps.filter(a=>!a.retiring).map(a=>a.id);syncApplicationPicker('security-app',ids,securityApp,next=>{securityApp=next;securityVersion++;$('#security-result').replaceChildren();loadSecurityActivity()});
  if(securityApp&&!securityBusy&&Date.now()-securityFetched>30000)loadSecurityActivity();
 }
 async function loadSecurityActivity(){

@@ -331,3 +331,19 @@ body[data-design=terminal] .app-action-group .app-remove{color:#d9a1a1}
 #server-removal{max-width:760px;margin-top:40px}
 #server-removal h3{margin-top:0}
 @media(max-width:760px){.server-card-actions{display:grid;grid-template-columns:1fr;gap:12px}.server-card-actions button{width:100%;text-align:center}.server-card-actions button:disabled{cursor:not-allowed}}
+
+/* Fleet pages show one application's records at a time. The native datalist
+   keeps the chooser searchable without replacing it during live refreshes. */
+.fleet-filter-toolbar{align-items:flex-end}
+.fleet-filter-toolbar>div:first-child{display:grid;gap:10px}
+.application-picker{width:min(100%,360px);margin:0;font-size:13px}
+.application-picker input{min-height:44px;margin-top:7px}
+.application-picker small{display:block;margin:7px 0 0;color:var(--muted);font-weight:400}
+.remote-backup-controls{display:flex;align-items:flex-end;gap:12px}.remote-backup-controls label{width:min(320px,55vw);margin:0}.remote-backup-controls button{min-height:44px;margin-bottom:0}
+.error-filters .application-picker{min-width:220px}
+#database-inventory:empty{display:none}
+@media(max-width:760px){
+ .fleet-filter-toolbar{display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch}
+ .fleet-filter-toolbar .application-picker{width:100%;max-width:none}
+ .remote-backup-controls{display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch}.remote-backup-controls label{width:100%}.remote-backup-controls button{width:100%}
+}

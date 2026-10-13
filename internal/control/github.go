@@ -183,5 +183,24 @@ func (c *Control) deliveries(w http.ResponseWriter, r *http.Request) {
 		agent.Fail(w, 500, err)
 		return
 	}
-	agent.JSON(w, 200, rows)
+	type deliveryView struct {
+		ID          string
+		State       string
+		Attempts    int
+		MaxAttempts int
+		LastError   *string
+		AppID       string
+	}
+	result := make([]deliveryView, 0, len(rows))
+	for _, row := range rows {
+		if row.Kind != "deploy.push" {
+			continue
+		}
+		var push pushJob
+		if json.Unmarshal(row.Payload, &push) != nil || push.AppID == "" {
+			continue
+		}
+		result = append(result, deliveryView{ID: row.ID, State: row.State, Attempts: row.Attempts, MaxAttempts: row.MaxAttempts, LastError: row.LastError, AppID: push.AppID})
+	}
+	agent.JSON(w, 200, result)
 }

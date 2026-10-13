@@ -23,6 +23,7 @@ function applyRepositoryBranch(){const form=$('#app-form');const branch=reposito
 $('#app-form').elements.branch.addEventListener('input',()=>branchEdited=true);
 $('#app-form').elements.repository.addEventListener('input',applyRepositoryBranch);
 let apps=[],servers=[],deployments=[],deliveries=[],status={},filter='',poll,unavailableServers=[],refreshing=false,refreshingDone;
+const applicationSelections={deployments:'',backups:''};
 const dirtyForms=new Set();let lastRefresh=0,refreshFailures=0;
 function clearFormDraft(id){dirtyForms.delete(id);const form=document.getElementById(id);if(form?.tagName==='FORM')showFormState(form,'Saved','saved')}
 function captureFormDrafts(){return [...dirtyForms].map(id=>{const node=document.getElementById(id);return {id,fields:node?[...node.querySelectorAll('input,select,textarea')].filter(e=>e.name).map(e=>({name:e.name,value:e.value,checked:e.checked})):[],value:node?.tagName==='INPUT'?node.value:undefined}})}
@@ -47,6 +48,17 @@ function notificationTarget(error=false){const dialog=document.querySelector('di
 function notice(s){clearTimeout(noticeTimer);const target=notificationTarget();showNotice(target,s);const expire=()=>{noticeTimer=setTimeout(()=>target.hidden=true,8000)};target.onpointerenter=()=>clearTimeout(noticeTimer);target.onpointerleave=expire;target.onfocusin=()=>clearTimeout(noticeTimer);target.onfocusout=expire;expire()}
 function fail(e,source='action'){if(source==='action')clearTimeout(noticeTimer);const target=source==='action'?notificationTarget(true):$('#error');if(source==='refresh'&&!target.hidden&&target.dataset.source==='action')return;target.onpointerenter=target.onpointerleave=target.onfocusin=target.onfocusout=null;target.dataset.source=source;showNotice(target,e.message||String(e))}
 function byID(a,b){return a.id<b.id?-1:a.id>b.id?1:0}
+function applicationChoiceIDs(extra=[]){return [...new Set([...apps.filter(a=>!a.retiring).map(a=>a.id),...extra].filter(Boolean))].sort()}
+function selectedApplication(section,ids){if(!ids.includes(applicationSelections[section]))applicationSelections[section]=ids[0]||'';return applicationSelections[section]}
+function applicationPickerMarkup(id){return `<label class="application-picker">Application<input id="${id}" type="search" list="${id}-options" autocomplete="off" placeholder="Search or choose an application" aria-describedby="${id}-hint"><datalist id="${id}-options"></datalist><small id="${id}-hint">Type to search, then choose an application.</small></label>`}
+function syncApplicationPicker(id,ids,value,onSelect){
+ const input=document.getElementById(id),list=document.getElementById(id+'-options');if(!input||!list)return;
+ const labels=new Map(ids.map(appID=>{const app=apps.find(a=>a.id===appID);return [appID,app?.domain?appID+' · '+app.domain:appID]}));
+ const options=ids.map(appID=>`<option value="${escape(appID)}" label="${escape(labels.get(appID))}"></option>`).join('');if(list.innerHTML!==options)list.innerHTML=options;
+ if(document.activeElement!==input&&input.value!==value)input.value=value;
+ const choose=()=>{const query=input.value.trim().toLowerCase(),exact=ids.find(appID=>appID.toLowerCase()===query),matches=ids.filter(appID=>labels.get(appID).toLowerCase().includes(query));const next=exact||(matches.length===1?matches[0]:'');if(next&&next!==value)onSelect(next);else if(!next&&document.activeElement!==input)input.value=value};
+ input.oninput=()=>{const exact=ids.find(appID=>appID.toLowerCase()===input.value.trim().toLowerCase());if(exact&&exact!==value)onSelect(exact)};input.onchange=choose;input.onblur=choose;
+}
 async function api(path,method='GET',body){const finish=method==='GET'&&(!initialWorkspaceReady||workspaceLoads.size)?beginWorkspaceLoad(initialWorkspaceReady?'Loading page…':'Loading workspace…'):()=>{};try{const res=await fetch('/api/'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(res.status===401){location.href='/login.html?next='+encodeURIComponent(location.pathname+location.search+location.hash);throw Error('Please sign in.')}let data;try{data=await res.json()}catch{data={}}if(!res.ok)throw Error(data.error?.message||data.error||'Request failed ('+res.status+')');return data}finally{finish()}}
 function initDemo(){servers=[{id:'eu-1',name:'Frankfurt · production',url:'https://agent-eu.example.com'},{id:'us-1',name:'Virginia · staging',url:'https://agent-us.example.com'}];apps=[{id:'customer-portal',repository:'acme/customer-portal',domain:'portal.example.com',branch:'main',server_id:'eu-1',auto_deploy:true},{id:'content-studio',repository:'acme/content-studio',domain:'studio.example.com',branch:'main',server_id:'eu-1',auto_deploy:true},{id:'documentation',repository:'acme/docs',domain:'docs.example.com',branch:'main',server_id:'us-1',auto_deploy:false}];deployments=apps.map((a,i)=>({id:'demo-'+i,app_id:a.id,status:'live',commit:['a6b92fe','8f129bc','319fa27'][i],created:new Date(Date.now()-(i+1)*3600000).toISOString()}));apps.forEach(a=>a.current={commit:latest(a.id).commit});status={github_connected:true,github_configured:true};$('#demo-banner').hidden=false;$('#mode').textContent='Interactive preview'}
 async function refresh({background=false}={}) {
@@ -130,10 +142,12 @@ function renderApplications(){
 }
 function renderReleaseHistory(){
  const content=$('#content');
- if(!content.querySelector('#release-table'))content.innerHTML='<div class="toolbar"><h2>Release history</h2><span class="badge"></span></div><div class="table-wrap" id="release-table"><table><thead><tr><th>Application</th><th>Status</th><th>Commit</th><th>Started</th><th>Result</th></tr></thead><tbody></tbody></table></div>';
- content.querySelector('.toolbar .badge').textContent='Latest '+deployments.length+' releases';
+ if(!content.querySelector('#release-table'))content.innerHTML='<div class="toolbar fleet-filter-toolbar"><div><h2>Release history</h2><span class="badge"></span></div>'+applicationPickerMarkup('deployments-app-filter')+'</div><div class="table-wrap" id="release-table"><table><thead><tr><th>Application</th><th>Status</th><th>Commit</th><th>Started</th><th>Result</th></tr></thead><tbody></tbody></table></div>';
+ const ids=applicationChoiceIDs(deployments.map(d=>d.app_id)),selected=selectedApplication('deployments',ids),visible=deployments.filter(d=>d.app_id===selected);
+ syncApplicationPicker('deployments-app-filter',ids,selected,next=>{applicationSelections.deployments=next;renderReleaseHistory()});
+ content.querySelector('.toolbar .badge').textContent=selected?visible.length+' release'+(visible.length===1?'':'s')+' for '+selected:'No applications';
  const body=content.querySelector('#release-table tbody'),retained=new Set();
- for(const [index,d] of [...deployments].sort((a,b)=>new Date(b.created)-new Date(a.created)).entries()){
+ for(const [index,d] of [...visible].sort((a,b)=>new Date(b.created)-new Date(a.created)).entries()){
   let row=[...body.children].find(e=>e.dataset.release===d.id);
   if(!row){row=document.createElement('tr');row.dataset.release=d.id;row.innerHTML='<td data-label="Application"><strong></strong></td><td data-label="Status"></td><td data-label="Commit"><code></code></td><td data-label="Started"></td><td data-label="Result"><span></span> <button>Details & build logs</button></td>';row.querySelector('button').dataset.history=d.id;body.insertBefore(row,body.children[index]||null)}
   const cells=row.cells,values=[d.app_id,pill(d.status),d.commit?.slice(0,8)||'pending',new Date(d.created).toLocaleString(),Math.round(d.duration_seconds||0)+'s · '+(d.error||d.commit_message||'—')];
@@ -141,8 +155,8 @@ function renderReleaseHistory(){
   if(body.children[index]!==row)body.insertBefore(row,body.children[index]||null);retained.add(row);
  }
  for(const row of [...body.children])if(!retained.has(row))row.remove();
- if(!deployments.length)body.innerHTML='<tr><td colspan="5">No deployments yet. Deploy an application to see its release history.</td></tr>';
- const active=deliveries.filter(d=>d.State!=='done'),completed=deliveries.filter(d=>d.State==='done');
+ if(!visible.length)body.innerHTML=`<tr><td colspan="5">${selected?'No deployments recorded for '+escape(selected)+'.':'No applications available.'}</td></tr>`;
+ const related=deliveries.filter(d=>!d.AppID||d.AppID===selected),active=related.filter(d=>d.State!=='done'),completed=related.filter(d=>d.State==='done');
  for(const [kind,rows] of [['pending',active],['completed',completed]]){
   let panel=content.querySelector('[data-deliveries="'+kind+'"]');
   // Keep the same wrappers and completed disclosure even as deliveries change state.
@@ -152,7 +166,7 @@ function renderReleaseHistory(){
  }
 }
 function renderServers(){
- const content=$('#content'),template=document.createElement('template');template.innerHTML=`<div class="toolbar"><h2>Connected hosts</h2><button data-manage-server="">＋ Connect server</button><span class="badge">${servers.length} configured</span></div><div class="server-grid" data-server-inventory>${servers.map(s=>`<article class="panel" data-server-card="${escape(s.id)}"><span class="server-icon">▤</span><h2>${escape(s.name)}</h2><p>${escape(s.url)}</p><div class="server-apps">${apps.filter(a=>a.server_id===s.id).length} application${apps.filter(a=>a.server_id===s.id).length===1?'':'s'} · dedicated agent</div><p>${apps.filter(a=>a.server_id===s.id).map(a=>escape(a.domain)).join('<br>')||'Ready for its first application.'}</p><div class="server-card-actions"><button data-server="${escape(s.id)}">Add application</button><button data-manage-server="${escape(s.id)}">Manage server</button></div></article>`).join('')||'<div class="empty">No servers connected. Install an agent, then choose Connect server.</div>'}</div><div class="panel"><h2>One server, many domains</h2><p>Each application has a separate container and FQDN. Point DNS at the server; Caddy issues and renews HTTPS certificates for registered domains. Certificate issuance requires reachable ports 80 and 443.</p></div>`;
+ const content=$('#content'),template=document.createElement('template');template.innerHTML=`<div class="toolbar"><h2>Connected hosts</h2><button data-manage-server="">＋ Connect server</button><span class="badge">${servers.length} configured</span></div><div class="server-grid" data-server-inventory>${servers.map(s=>{const hosted=apps.filter(a=>a.server_id===s.id),shown=hosted.slice(0,5);return `<article class="panel" data-server-card="${escape(s.id)}"><span class="server-icon">▤</span><h2>${escape(s.name)}</h2><p>${escape(s.url)}</p><div class="server-apps">${hosted.length} application${hosted.length===1?'':'s'} · dedicated agent</div><p>${shown.map(a=>escape(a.domain)).join('<br>')||'Ready for its first application.'}${hosted.length>shown.length?`<br><span class="hint">＋ ${hosted.length-shown.length} more applications</span>`:''}</p><div class="server-card-actions"><button data-server="${escape(s.id)}">Add application</button><button data-manage-server="${escape(s.id)}">Manage server</button></div></article>`}).join('')||'<div class="empty">No servers connected. Install an agent, then choose Connect server.</div>'}</div><div class="panel"><h2>One server, many domains</h2><p>Each application has a separate container and FQDN. Point DNS at the server; Caddy issues and renews HTTPS certificates for registered domains. Certificate issuance requires reachable ports 80 and 443.</p></div>`;
  if(!content.querySelector('[data-server-inventory]')){content.replaceChildren(template.content);return}
  content.querySelector('.toolbar .badge').textContent=servers.length+' configured';
  const grid=content.querySelector('[data-server-inventory]'),fresh=[...template.content.querySelector('[data-server-inventory]').children],keep=new Set();

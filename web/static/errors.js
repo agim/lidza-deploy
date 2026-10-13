@@ -17,7 +17,7 @@ function renderErrors() {
   if (!available.some(a => a.id === errorView.app)) resetErrorApp(available[0]?.id || '');
   if (!$('#error-dashboard')) {
     $('#content').innerHTML = `<section id="error-dashboard"><div class="form-row error-filters">
-      <label>Application<select id="errors-app"></select></label>
+      ${applicationPickerMarkup('errors-app')}
       <label>Search errors<input id="errors-search" type="search" placeholder="Message, route, stack or request ID"></label>
       <label>Capture<select id="errors-mode"><option value="console">Agent console errors</option><option value="analytics">Optional app analytics</option></select></label>
       <label>Source<select id="errors-source"><option value="">All sources</option><option value="server">Server</option><option value="client">Frontend</option></select></label>
@@ -28,7 +28,6 @@ function renderErrors() {
     $('#errors-source').value = errorView.source;
     $('#errors-mode').value=errorView.mode;
     $('#errors-mode').onchange=e=>{errorView.mode=e.target.value;errorView.source='';$('#errors-source').value='';resetErrorApp(errorView.app);renderErrors();};
-    $('#errors-app').onchange = e => { resetErrorApp(e.target.value); renderErrors(); };
     $('#errors-search').oninput = e => { errorView.query = e.target.value; paintErrors(); };
     $('#errors-source').onchange = e => { errorView.source = e.target.value; paintErrors(); };
     $('#errors-refresh').onclick = () => loadAppErrors();
@@ -37,9 +36,7 @@ function renderErrors() {
       if (button) showErrorDetail(button.dataset.errorDetail);
     };
   }
-  const options = available.map(a => `<option value="${escape(a.id)}">${escape(a.id)}</option>`).join('') || '<option value="">No applications</option>';
-  if ($('#errors-app').innerHTML !== options) $('#errors-app').innerHTML = options;
-  $('#errors-app').value = errorView.app;
+  syncApplicationPicker('errors-app',available.map(a=>a.id),errorView.app,next=>{resetErrorApp(next);renderErrors()});
   paintErrors();
   if (errorView.app && !errorView.loading && Date.now() - errorView.fetched > 30000) loadAppErrors();
 }
