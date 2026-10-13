@@ -141,7 +141,6 @@ if [[ -z "$stage" ]]; then
  fi
  getent group lidza-agent >/dev/null || groupadd --system lidza-agent
  id lidza-agent >/dev/null 2>&1 || useradd --system --gid lidza-agent --home-dir /var/lib/lidza-agent --shell /usr/sbin/nologin lidza-agent
- usermod -aG docker lidza-agent
  if $with_control; then
   getent group lidza-control >/dev/null || groupadd --system lidza-control
   id lidza-control >/dev/null 2>&1 || useradd --system --gid lidza-control --home-dir /var/lib/lidza-control --shell /usr/sbin/nologin lidza-control
@@ -236,8 +235,9 @@ mv "$config" /etc/caddy/Caddyfile
 fi
 systemctl daemon-reload
 systemctl enable --now docker
-# Verify access with the actual service account before claiming readiness.
-runuser -u lidza-agent -- docker info >/dev/null
+# The root host-management service must be able to reach Docker before the
+# installer claims readiness. Its API remains private and token-authenticated.
+docker info >/dev/null
 systemctl enable lidza-agent
 if $public_host; then systemctl enable caddy;fi
 systemctl enable --now lidza-agent-upgrade.path

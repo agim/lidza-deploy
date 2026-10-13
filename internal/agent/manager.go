@@ -183,6 +183,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	go m.consoleLoop()
 	m.wg.Add(1)
 	go m.swapLoop()
+	m.migrateConsoleService()
 	if cfg.TLSListen != "" {
 		m.wg.Add(1)
 		go m.domainLoop()

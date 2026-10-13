@@ -35,6 +35,9 @@ config=(root/'etc/caddy/Caddyfile').read_text()
 assert (root/'usr/local/libexec/lidza-agent-upgrade').is_file()
 assert (root/'etc/systemd/system/lidza-agent-upgrade.path').is_file()
 assert (root/'etc/systemd/system/lidza-agent-upgrade.service').is_file()
+service=(root/'etc/systemd/system/lidza-agent.service').read_text()
+assert 'User=root' in service and 'Group=root' in service
+assert 'User=lidza-agent' not in service and 'ProtectSystem=strict' not in service
 assert 'ask http://127.0.0.1:9090/tls/allow' in config
 assert 'handle /.well-known/lidza-deploy-host' in config
 assert 'redir https://{host}{uri} permanent' in config

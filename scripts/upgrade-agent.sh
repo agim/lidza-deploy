@@ -76,6 +76,38 @@ if [[ "$version" == ssh-keys ]]; then
 fi
 mkdir -p "$upgrade_dir"
 report(){ status_tmp=$(mktemp /var/tmp/lidza-upgrade-status.XXXXXX);printf '{"state":"%s","message":"%s"}\n' "$1" "$2" > "$status_tmp";chown lidza-agent:lidza-agent "$status_tmp";chmod 0600 "$status_tmp";mv -T "$status_tmp" "$upgrade_dir/status.json"; }
+# lidza-console-root-v1
+# Migrate agents installed before the MFA-gated root console existed. A fixed
+# systemd override is used so no command or path supplied by a caller reaches
+# this privileged helper.
+if [[ "$version" == console-root ]];then
+ service_dir=/etc/systemd/system/lidza-agent.service.d
+ override=$service_dir/20-root-console.conf
+ mkdir -p "$service_dir"
+ override_tmp=$(mktemp "$service_dir/.20-root-console.XXXXXX")
+ printf '%s\n' '[Service]' 'User=root' 'Group=root' 'SupplementaryGroups=' 'ProtectSystem=false' 'ProtectHome=false' 'PrivateTmp=false' > "$override_tmp"
+ chmod 0644 "$override_tmp"
+ mv -T "$override_tmp" "$override"
+ systemctl daemon-reload
+ systemctl restart lidza-agent
+ healthy=false
+ for attempt in {1..60};do
+  if curl --max-time 2 -fsS http://127.0.0.1:9090/health >/dev/null;then healthy=true;break;fi
+  sleep 1
+ done
+ if ! $healthy;then
+  rm -f "$override"
+  systemctl daemon-reload
+  systemctl restart lidza-agent || true
+  report failed 'Root console service migration failed and was rolled back.'
+  exit 1
+ fi
+ # The retained state owner no longer runs the service and does not need the
+ # root-equivalent Docker group after the migration.
+ gpasswd -d lidza-agent docker >/dev/null 2>&1 || true
+ report succeeded 'Root console service enabled; MFA is required for every unlock.'
+ exit 0
+fi
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { report failed 'Invalid release version';exit 1; }
 case $(uname -m) in x86_64) arch=amd64;;aarch64|arm64) arch=arm64;;*) report failed 'Unsupported architecture';exit 1;;esac
 report upgrading 'Downloading and verifying official release'
@@ -87,6 +119,7 @@ rollback(){
   install -m 0755 /usr/local/bin/lidza-agent.previous /usr/local/bin/lidza-agent.rollback
   mv /usr/local/bin/lidza-agent.rollback /usr/local/bin/lidza-agent
   if $control;then install -m 0755 /usr/local/bin/lidza-control.previous /usr/local/bin/lidza-control.rollback;mv /usr/local/bin/lidza-control.rollback /usr/local/bin/lidza-control;fi
+  if [[ -f /etc/systemd/system/lidza-agent.service.previous ]];then install -m 0644 /etc/systemd/system/lidza-agent.service.previous /etc/systemd/system/lidza-agent.service;systemctl daemon-reload;fi
   systemctl restart lidza-agent || true
   if $control;then systemctl restart lidza-control || true;fi
  fi
@@ -110,11 +143,14 @@ tar --no-same-owner -xzf "$upgrade_tmp/$asset" -C "$upgrade_tmp/bundle"
 [[ $("$upgrade_tmp/bundle/bin/lidza-control" -version) == "$version" ]]
 install -m 0755 /usr/local/bin/lidza-agent /usr/local/bin/lidza-agent.previous
 if systemctl is-enabled --quiet lidza-control;then control=true;install -m 0755 /usr/local/bin/lidza-control /usr/local/bin/lidza-control.previous;fi
+if [[ -f /etc/systemd/system/lidza-agent.service ]];then install -m 0644 /etc/systemd/system/lidza-agent.service /etc/systemd/system/lidza-agent.service.previous;fi
 install -m 0755 "$upgrade_tmp/bundle/bin/lidza-agent" /usr/local/bin/lidza-agent.next
 if $control;then install -m 0755 "$upgrade_tmp/bundle/bin/lidza-control" /usr/local/bin/lidza-control.next;fi
+if [[ -f "$upgrade_tmp/bundle/deploy/lidza-agent.service" ]];then install -m 0644 "$upgrade_tmp/bundle/deploy/lidza-agent.service" /etc/systemd/system/lidza-agent.service.next;fi
 changed=true
 mv /usr/local/bin/lidza-agent.next /usr/local/bin/lidza-agent
 if $control;then mv /usr/local/bin/lidza-control.next /usr/local/bin/lidza-control;fi
+if [[ -f /etc/systemd/system/lidza-agent.service.next ]];then mv /etc/systemd/system/lidza-agent.service.next /etc/systemd/system/lidza-agent.service;systemctl daemon-reload;fi
 systemctl restart lidza-agent
 if $control;then
  # Retired self-update credentials have no role in GUI-driven release checks.

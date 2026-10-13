@@ -3,9 +3,11 @@ Description=Lidza deployment agent
 After=network-online.target docker.service
 Requires=docker.service
 [Service]
-User=lidza-agent
-Group=lidza-agent
-SupplementaryGroups=docker
+# The agent is a privileged host-management service. The web control plane
+# still requires its private agent token, an administrator session and a
+# server-bound MFA unlock before it exposes the root console.
+User=root
+Group=root
 EnvironmentFile=/etc/lidza-agent/agent.env
 ExecStart=/usr/local/bin/lidza-agent -config /etc/lidza-agent/config.json
 Restart=on-failure
@@ -13,9 +15,5 @@ RestartSec=5
 StateDirectory=lidza-agent
 UMask=0077
 NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-ReadWritePaths=/var/lib/lidza-agent
 [Install]
 WantedBy=multi-user.target
