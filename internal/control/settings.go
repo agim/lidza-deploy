@@ -3,7 +3,10 @@ package control
 import (
 	"errors"
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza/packs/auth"
+	"github.com/agim/lidza/pkg/router"
 	"net/http"
+	"net/url"
 )
 
 func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
@@ -18,6 +21,35 @@ func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent.JSON(w, 200, out)
+}
+
+func (c *Control) revealCredential(w http.ResponseWriter, r *http.Request) {
+	a, ok := c.app(r.PathValue("id"))
+	if !ok || a.Retiring {
+		http.NotFound(w, r)
+		return
+	}
+	key := r.PathValue("key")
+	if key == "" {
+		agent.Fail(w, http.StatusBadRequest, errors.New("environment variable is required"))
+		return
+	}
+	target := a.ID + "/" + key
+	if err := auth.AuthorizeStepUp(r.Context(), r, "credential.reveal", target); err != nil {
+		router.WriteError(w, r, err)
+		return
+	}
+	var out struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	path := "/v1/apps/" + url.PathEscape(a.ID) + "/environment/" + url.PathEscape(key)
+	if err := c.agentCall(r, a.ServerID, "GET", path, nil, &out); err != nil {
+		agent.Fail(w, http.StatusBadGateway, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	agent.JSON(w, http.StatusOK, out)
 }
 func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var input agent.SettingsPatch
@@ -41,6 +73,21 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		if id != old.ID && a.Domain == input.Domain {
 			agent.Fail(w, 409, errors.New("domain already registered"))
 			return
+		}
+	}
+	if len(input.EnvKindChanges) > 0 {
+		var current agent.Settings
+		if err := c.agentCall(r, old.ServerID, "GET", "/v1/apps/"+old.ID+"/settings", nil, &current); err != nil {
+			agent.Fail(w, 502, errors.New("current environment classifications unavailable"))
+			return
+		}
+		for _, entry := range current.Environment {
+			if entry.Kind == agent.EnvironmentCredential && input.EnvKindChanges[entry.Key] == agent.EnvironmentSetting {
+				if err := auth.AuthorizeStepUp(r.Context(), r, "credential.reveal", old.ID+"/"+entry.Key); err != nil {
+					router.WriteError(w, r, err)
+					return
+				}
+			}
 		}
 	}
 	if c.data.BackupStorage != nil {

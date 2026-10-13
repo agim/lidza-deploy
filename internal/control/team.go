@@ -51,13 +51,15 @@ func routePermission(pattern string) string {
 		return "team.manage"
 	case "GET /api/control/servers/{server}/ssh-access":
 		return "infrastructure.manage"
+	case "GET /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console":
+		return "infrastructure.manage"
 	case "GET /api/control/audit":
 		return "audit.read"
 	case "GET /api/control/storage/backups", "GET /api/control/storage/backups/download", "GET /api/control/servers/{server}/databases/{id}/backups/{backup}":
 		return "infrastructure.manage"
 	case "GET /api/control/github/repos", "GET /api/control/github/branches":
 		return "deploy.repositories"
-	case "POST /api/control/apps/{id}/owner-claim":
+	case "POST /api/control/apps/{id}/owner-claim", "POST /api/control/apps/{id}/environment/{key}/reveal":
 		return "deploy.secrets"
 	case "PATCH /api/control/apps/{id}/settings",
 		"PUT /api/control/apps/{id}/{feature}", "PUT /api/control/apps/{id}/tasks/{task}",
@@ -98,7 +100,7 @@ func (w *auditResponse) Write(b []byte) (int, error) {
 func (c *Control) protectedRoute(pattern string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mutates := r.Method != "GET" && r.Method != "HEAD"
-		if pattern == "POST /api/control/apps/{id}/owner-claim" {
+		if pattern == "POST /api/control/apps/{id}/owner-claim" || pattern == "POST /api/control/apps/{id}/environment/{key}/reveal" {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		// Fixed registered route only: no URL query, raw path or request data.
@@ -124,7 +126,7 @@ func (c *Control) protectedRoute(pattern string, next http.HandlerFunc) http.Han
 			return
 		}
 		// Identifier metadata is from matched path values, never secrets or bodies.
-		for _, k := range []string{"id", "server", "task", "subject"} {
+		for _, k := range []string{"id", "key", "server", "task", "subject"} {
 			if v := r.PathValue(k); len(v) > 0 && len(v) <= 64 && safeAuditID(v) {
 				event.Meta[k] = v
 			}

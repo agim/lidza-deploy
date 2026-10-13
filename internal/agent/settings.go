@@ -2,12 +2,14 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
+	"unicode/utf8"
 )
 
-// Environment values are write-only over the settings API. Omitted keys survive;
-// null deletes a key, including secrets that the browser has never received.
+// Environment settings are editable; credentials stay masked unless a separate,
+// purpose-bound step-up request reveals one. Omitted keys survive and null deletes.
 type SettingsPatch struct {
 	CustomerHosts      *bool              `json:"customer_hosts,omitempty"`
 	FromDefaults       bool               `json:"from_defaults,omitempty"`
@@ -16,22 +18,32 @@ type SettingsPatch struct {
 	Branch             string             `json:"branch"`
 	Domain             string             `json:"domain"`
 	EnvChanges         map[string]*string `json:"env_changes"`
+	EnvKindChanges     map[string]string  `json:"env_kind_changes,omitempty"`
+}
+type EnvironmentEntry struct {
+	Key     string `json:"key"`
+	Kind    string `json:"kind"`
+	Value   string `json:"value,omitempty"`
+	Preview string `json:"preview,omitempty"`
+	Length  int    `json:"length,omitempty"`
+	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
-	AppManagedStorageSupported bool              `json:"app_managed_storage_supported"`
-	StorageProviderOverride    bool              `json:"storage_provider_override"`
-	CustomerHosts              bool              `json:"customer_hosts"`
-	Stopped                    bool              `json:"stopped"`
-	DefaultsApplied            bool              `json:"defaults_applied"`
-	EnvSources                 map[string]string `json:"env_sources"`
-	PersistentStorage          bool              `json:"persistent_storage"`
-	Cache                      CacheView         `json:"cache"`
-	BackupBeforeDeploy         bool              `json:"backup_before_deploy"`
-	Bindings                   map[string]string `json:"database_bindings"`
-	ID                         string            `json:"id"`
-	Branch                     string            `json:"branch"`
-	Domain                     string            `json:"domain"`
-	EnvKeys                    []string          `json:"env_keys"`
+	AppManagedStorageSupported bool               `json:"app_managed_storage_supported"`
+	StorageProviderOverride    bool               `json:"storage_provider_override"`
+	CustomerHosts              bool               `json:"customer_hosts"`
+	Stopped                    bool               `json:"stopped"`
+	DefaultsApplied            bool               `json:"defaults_applied"`
+	EnvSources                 map[string]string  `json:"env_sources"`
+	PersistentStorage          bool               `json:"persistent_storage"`
+	Cache                      CacheView          `json:"cache"`
+	BackupBeforeDeploy         bool               `json:"backup_before_deploy"`
+	Bindings                   map[string]string  `json:"database_bindings"`
+	ID                         string             `json:"id"`
+	Branch                     string             `json:"branch"`
+	Domain                     string             `json:"domain"`
+	EnvKeys                    []string           `json:"env_keys"`
+	Environment                []EnvironmentEntry `json:"environment"`
 }
 
 func (m *Manager) Settings(id string) (Settings, error) {
@@ -41,7 +53,47 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if !ok {
 		return Settings{}, errors.New("unknown application")
 	}
-	return Settings{AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: slices.Sorted(maps.Keys(a.Env))}, nil
+	kinds := normalizeEnvironmentKinds(a.Env, a.EnvKinds)
+	keys := slices.Sorted(maps.Keys(a.Env))
+	environment := make([]EnvironmentEntry, 0, len(keys))
+	for _, key := range keys {
+		value, kind := a.Env[key], kinds[key]
+		entry := EnvironmentEntry{Key: key, Kind: kind, Source: a.EnvSources[key]}
+		if kind == EnvironmentCredential {
+			entry.Length = utf8.RuneCountInString(value)
+			runes := []rune(value)
+			if len(runes) > 4 {
+				runes = runes[:4]
+			} else if len(runes) > 0 {
+				runes = runes[:len(runes)-1]
+			}
+			entry.Preview = string(runes)
+			if entry.Length > 0 {
+				entry.Preview += "…"
+			}
+		} else {
+			entry.Value = value
+		}
+		environment = append(environment, entry)
+	}
+	return Settings{AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
+}
+
+func (m *Manager) RevealCredential(id, key string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.data.Apps[id]
+	if !ok || a.Retiring {
+		return "", errors.New("unknown application")
+	}
+	value, ok := a.Env[key]
+	if !ok {
+		return "", errors.New("unknown environment variable")
+	}
+	if normalizeEnvironmentKinds(a.Env, a.EnvKinds)[key] != EnvironmentCredential {
+		return "", errors.New("environment variable is a setting and does not require reveal")
+	}
+	return value, nil
 }
 func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	m.mu.Lock()
@@ -82,6 +134,7 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	a.Branch = p.Branch
 	a.Domain = p.Domain
 	a.Env = maps.Clone(old.Env)
+	a.EnvKinds = normalizeEnvironmentKinds(old.Env, old.EnvKinds)
 	if a.Env == nil {
 		a.Env = map[string]string{}
 	}
@@ -114,9 +167,22 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		}
 		if v == nil {
 			delete(a.Env, k)
+			delete(a.EnvKinds, k)
 		} else {
 			a.Env[k] = *v
+			if _, exists := a.EnvKinds[k]; !exists {
+				a.EnvKinds[k] = environmentKind(k, *v)
+			}
 		}
+	}
+	for key, kind := range p.EnvKindChanges {
+		if kind != EnvironmentSetting && kind != EnvironmentCredential {
+			return fmt.Errorf("invalid environment classification for %q", key)
+		}
+		if _, ok := a.Env[key]; !ok {
+			return fmt.Errorf("cannot classify missing environment variable %q", key)
+		}
+		a.EnvKinds[key] = kind
 	}
 	if err := a.Validate(); err != nil {
 		return err

@@ -17,6 +17,7 @@ type App struct {
 	Stopped            bool              `json:"stopped"`
 	DefaultsApplied    bool              `json:"defaults_applied,omitempty"`
 	EnvSources         map[string]string `json:"env_sources,omitempty"`
+	EnvKinds           map[string]string `json:"env_kinds,omitempty"`
 	StorageVolume      string            `json:"-"`
 	Preview            bool              `json:"preview,omitempty"`
 	PullRequest        int               `json:"pull_request,omitempty"`
@@ -36,6 +37,42 @@ type App struct {
 	Current            *Release          `json:"current,omitempty"`
 	Previous           *Release          `json:"previous,omitempty"`
 }
+
+const (
+	EnvironmentSetting    = "setting"
+	EnvironmentCredential = "credential"
+)
+
+func environmentKind(key, value string) string {
+	upper := strings.ToUpper(key)
+	for _, part := range strings.FieldsFunc(upper, func(r rune) bool { return r == '_' || r == '-' }) {
+		switch part {
+		case "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "CREDENTIAL", "PRIVATE":
+			return EnvironmentCredential
+		}
+	}
+	if environmentURLKey(key) {
+		if parsed, err := url.Parse(value); err == nil && parsed.User != nil {
+			if _, present := parsed.User.Password(); present {
+				return EnvironmentCredential
+			}
+		}
+	}
+	return EnvironmentSetting
+}
+
+func normalizeEnvironmentKinds(env map[string]string, kinds map[string]string) map[string]string {
+	out := make(map[string]string, len(env))
+	for key, value := range env {
+		kind := kinds[key]
+		if kind != EnvironmentSetting && kind != EnvironmentCredential {
+			kind = environmentKind(key, value)
+		}
+		out[key] = kind
+	}
+	return out
+}
+
 type Release struct {
 	CommitMessage string    `json:"commit_message,omitempty"`
 	DatabaseIDs   []string  `json:"database_ids,omitempty"`
@@ -128,6 +165,14 @@ func (a App) Validate() error {
 		}
 		if environmentURLKey(k) && !validEnvironmentURL(v) {
 			return fmt.Errorf("%s must be an absolute URL, not an email address or other text", k)
+		}
+	}
+	for k, kind := range a.EnvKinds {
+		if _, ok := a.Env[k]; !ok {
+			return fmt.Errorf("environment classification references missing variable %q", k)
+		}
+		if kind != EnvironmentSetting && kind != EnvironmentCredential {
+			return fmt.Errorf("invalid environment classification for %q", k)
 		}
 	}
 	return nil

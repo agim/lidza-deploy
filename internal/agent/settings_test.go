@@ -30,8 +30,8 @@ func TestSettingsPreserveSecretsAndRejectBusyChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := json.Marshal(settings)
-	if strings.Contains(string(data), value) || strings.Contains(string(data), "runtime-secret") {
-		t.Fatal("leaked secret")
+	if !strings.Contains(string(data), value) || strings.Contains(string(data), "runtime-secret") {
+		t.Fatal("settings should return ordinary values and mask credentials")
 	}
 	patch.EnvChanges = map[string]*string{"APP_SECRET": nil}
 	if err := m.PatchSettings("one", patch); err != nil {
@@ -67,6 +67,64 @@ func TestSettingsPreserveSecretsAndRejectBusyChanges(t *testing.T) {
 	if _, exists := a.Env["APP_SECRET"]; exists || a.Env["NEW"] != value {
 		t.Fatal("persisted patch incorrect")
 	}
+}
+
+func TestEnvironmentClassificationPreviewAndReveal(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	a := testApp("classified")
+	a.Env["LOG_LEVEL"] = "debug"
+	a.Env["DATABASE_URL"] = "postgres://user:password@db.example.com/app"
+	a.Env["SHORT_KEY"] = "abcd"
+	if err := m.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := m.Settings(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := map[string]EnvironmentEntry{}
+	for _, entry := range settings.Environment {
+		entries[entry.Key] = entry
+	}
+	if got := entries["LOG_LEVEL"]; got.Kind != EnvironmentSetting || got.Value != "debug" {
+		t.Fatalf("ordinary setting not readable: %#v", got)
+	}
+	for _, key := range []string{"APP_SECRET", "DATABASE_URL"} {
+		got := entries[key]
+		if got.Kind != EnvironmentCredential || got.Value != "" || got.Preview == "" || got.Length == 0 {
+			t.Fatalf("credential not masked: %s %#v", key, got)
+		}
+		if revealed, err := m.RevealCredential(a.ID, key); err != nil || revealed != a.Env[key] {
+			t.Fatalf("credential reveal: %q %v", revealed, err)
+		}
+	}
+	if got := entries["SHORT_KEY"]; got.Preview == a.Env["SHORT_KEY"] || got.Value != "" || got.Length != 4 {
+		t.Fatalf("short credential was not masked: %#v", got)
+	}
+	if _, err := m.RevealCredential(a.ID, "LOG_LEVEL"); err == nil {
+		t.Fatal("ordinary setting accepted by credential reveal")
+	}
+	if err := m.PatchSettings(a.ID, SettingsPatch{Branch: a.Branch, Domain: a.Domain, EnvKindChanges: map[string]string{"LOG_LEVEL": EnvironmentCredential}}); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ = m.Settings(a.ID)
+	for _, entry := range settings.Environment {
+		if entry.Key == "LOG_LEVEL" && (entry.Kind != EnvironmentCredential || entry.Value != "") {
+			t.Fatalf("explicit classification not applied: %#v", entry)
+		}
+	}
+}
+
+func FuzzEnvironmentKind(f *testing.F) {
+	f.Add("API_TOKEN", "secret")
+	f.Add("DATABASE_URL", "postgres://user:pass@example.com/db")
+	f.Add("LOG_LEVEL", "debug")
+	f.Fuzz(func(t *testing.T, key, value string) {
+		kind := environmentKind(key, value)
+		if kind != EnvironmentSetting && kind != EnvironmentCredential {
+			t.Fatalf("unexpected classification %q", kind)
+		}
+	})
 }
 
 func TestSettingsAutomaticallyReloadAndRetainHealthyRelease(t *testing.T) {

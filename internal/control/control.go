@@ -180,7 +180,7 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(71924161)"); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable+analytics.Tables+consoleTable); err != nil {
+	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+auth.FactorTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable+analytics.Tables+consoleTable); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -327,6 +327,8 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/servers", c.addServer)
 	handle("PUT /api/control/servers/{id}", c.editServer)
 	handle("DELETE /api/control/servers/{id}", c.removeServer)
+	handle("GET /api/control/servers/{server}/console", c.consoleStatus)
+	handle("POST /api/control/servers/{server}/console", c.runConsole)
 	handle("GET /api/control/apps/{id}/cache", c.cacheSettings)
 	handle("POST /api/control/apps/{id}/cache", c.cacheSettings)
 	handle("GET /api/control/databases", c.databases)
@@ -343,6 +345,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/mail/test", c.testMail)
 	handle("GET /api/control/apps/{id}/settings", c.settings)
 	handle("PATCH /api/control/apps/{id}/settings", c.updateSettings)
+	handle("POST /api/control/apps/{id}/environment/{key}/reveal", c.revealCredential)
 	handle("DELETE /api/control/apps/{id}/webhook", c.disableHook)
 	handle("GET /api/control/apps", c.apps)
 	handle("POST /api/control/apps", c.create)
@@ -444,6 +447,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Application
 		Env      map[string]string      `json:"env"`
+		EnvKinds map[string]string      `json:"env_kinds,omitempty"`
 		Database *agent.DatabaseRequest `json:"database,omitempty"`
 	}
 	if err := agent.Decode(w, r, &input); err != nil {
@@ -486,7 +490,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	a.AutoDeploy = autoDeploy
 	a.Retiring = false
 	a.Generation = random()
-	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, CustomerHosts: a.CustomerHosts, Env: input.Env}
+	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
 		return

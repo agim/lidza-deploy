@@ -113,6 +113,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	for _, endpoint := range []struct{ method, path string }{
 		{"POST", "/api/control/servers"}, {"PUT", "/api/control/servers/one"},
 		{"DELETE", "/api/control/servers/one"}, {"PATCH", "/api/control/apps/portal/settings"}, {"POST", "/api/control/apps/portal/cache"},
+		{"POST", "/api/control/apps/portal/environment/SECRET/reveal"}, {"POST", "/api/control/servers/one/console"},
 		{"DELETE", "/api/control/apps/portal/webhook"},
 		{"DELETE", "/api/control/apps/portal"},
 	} {
@@ -171,6 +172,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 		{"POST", "/api/control/apps/portal/deploy"}, {"PATCH", "/api/control/apps/portal/settings"}, {"POST", "/api/control/apps/portal/cache"},
 		{"POST", "/api/control/team"}, {"PUT", "/api/control/mail"},
 		{"GET", "/api/control/audit"}, {"GET", "/api/control/team"},
+		{"GET", "/api/control/servers/one/console"}, {"POST", "/api/control/servers/one/console"}, {"POST", "/api/control/apps/portal/environment/SECRET/reveal"},
 		{"GET", "/api/control/servers/one/databases/portal/backups/snapshot"},
 		{"GET", "/api/control/storage/backups"}, {"POST", "/api/control/servers/one/databases/portal/backups/snapshot/upload"}, {"GET", "/api/control/storage/backups/download?key=databases/portal/snapshot.dump"},
 	} {

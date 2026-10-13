@@ -1,0 +1,53 @@
+'use strict';
+
+function factorCodeDialog(title, explanation) {
+ return new Promise(resolve=>{
+  const dialog=document.createElement('dialog');dialog.className='factor-dialog';dialog.innerHTML=`<form method="dialog"><div class="dialog-title"><h2>${escape(title)}</h2><button value="cancel" aria-label="Cancel">×</button></div><p>${escape(explanation)}</p><label>Authenticator or recovery code<input name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus></label><p class="error" hidden></p><div class="dialog-actions"><button value="cancel">Cancel</button><button value="verify" class="primary">Verify</button></div></form>`;
+  document.body.append(dialog);dialog.addEventListener('close',()=>{const code=dialog.returnValue==='verify'?dialog.querySelector('[name=code]').value.trim():'';dialog.remove();resolve(code)},{once:true});dialog.showModal();dialog.querySelector('[name=code]').focus();
+ });
+}
+
+function showRecoveryCodes(page, codes) {
+ page.innerHTML=`<div class="dialog-title"><h2>Two-factor authentication</h2><button type="button">← Back</button></div><section aria-label="Recovery codes"><h3>Save these recovery codes now</h3><p>Each code works once. They will not be shown again.</p><pre class="recovery-codes">${escape(codes.join('\n'))}</pre><button type="button" class="primary" id="recovery-done">I saved them</button></section>`;
+ page.querySelector('.dialog-title button').onclick=()=>page.close();page.querySelector('#recovery-done').onclick=()=>openTwoFactor();
+}
+
+async function openTwoFactor() {
+ $('#account-menu').open=false;
+ const status=demo?{enabled:false,backupCodesLeft:0}:await api('v1/auth/two-factor');
+ const page=featurePage('Two-factor authentication',status.enabled?`<section aria-label="Two-factor status"><h3>Authenticator enabled</h3><p>Your account requires an authenticator or recovery code at sign-in and before sensitive operations.</p><p><strong>${Number(status.backupCodesLeft)||0}</strong> recovery codes remain.</p></section><section aria-label="Recovery codes"><h3>Recovery codes</h3><form id="recovery-form"><label>Current authenticator or recovery code<input name="code" autocomplete="one-time-code" inputmode="numeric" required></label><button type="submit">Generate new recovery codes</button></form></section><section aria-label="Disable two-factor"><h3>Disable two-factor</h3><form id="disable-factor-form"><label>Current authenticator or recovery code<input name="code" autocomplete="one-time-code" inputmode="numeric" required></label><button type="submit">Disable two-factor authentication</button></form></section>`:`<section aria-label="Enable two-factor"><h3>Protect your account</h3><p>Use any TOTP authenticator. Sensitive actions such as credential reveal and the root server console require a fresh code.</p><button type="button" class="primary" id="factor-setup">Set up authenticator</button></section>`,'two-factor','account');
+ if(!status.enabled){page.querySelector('#factor-setup').onclick=async()=>{try{const setup=await api('v1/auth/two-factor/setup','POST',{});page.querySelector('section').innerHTML=`<h3>Add Līdza Deploy to your authenticator</h3><p><a class="button" href="${escape(setup.otpauthUrl)}">Open authenticator app</a></p><label>Manual setup key<input readonly value="${escape(setup.secret)}"></label><form id="factor-enable"><label>Six-digit code<input name="code" inputmode="numeric" autocomplete="one-time-code" required></label><button class="primary" type="submit">Verify & enable</button></form>`;page.querySelector('#factor-enable').onsubmit=async event=>{event.preventDefault();try{const result=await api('v1/auth/two-factor/enable','POST',{code:event.target.elements.code.value.trim()});showRecoveryCodes(page,result.codes||[])}catch(error){featureError(error)}}}catch(error){featureError(error)}};return page}
+ page.querySelector('#recovery-form').onsubmit=async event=>{event.preventDefault();try{const result=await api('v1/auth/two-factor/backup-codes','POST',{code:event.target.elements.code.value.trim()});showRecoveryCodes(page,result.codes||[])}catch(error){featureError(error)}};
+ page.querySelector('#disable-factor-form').onsubmit=async event=>{event.preventDefault();if(!confirm('Disable two-factor authentication for this account?'))return;try{await api('v1/auth/two-factor/disable','POST',{code:event.target.elements.code.value.trim()});notice('Two-factor authentication disabled.');await openTwoFactor()}catch(error){featureError(error)}};
+ return page;
+}
+
+async function revealCredential(app, key, input, button) {
+ const path=`control/apps/${encodeURIComponent(app)}/environment/${encodeURIComponent(key)}/reveal`;
+ button.disabled=true;
+ try {
+  let result;
+  try { result=await api(path,'POST',{}) }
+  catch(error){
+   if(error.code!=='step_up_required')throw error;
+   const code=await factorCodeDialog('Verify credential access',`Enter a fresh code to reveal ${key} for ${app}.`);if(!code)return;
+   try{await api('v1/auth/step-up','POST',{code,purpose:'credential.reveal',target:app+'/'+key})}catch(stepError){if(stepError.code==='factor_setup_required'){await openTwoFactor();return}throw stepError}
+   result=await api(path,'POST',{});
+  }
+  input.type='text';input.value=result.value;button.textContent='Hide';button.onclick=()=>{input.value='';input.type='password';button.textContent='Reveal';button.onclick=()=>revealCredential(app,key,input,button)};
+ } catch(error){dialogError('#settings-error',error)} finally{button.disabled=false}
+}
+
+async function openServerConsole(id) {
+ const server=servers.find(item=>item.id===id);if(!server)throw Error('Unknown server.');
+ const status=demo?{two_factor_enabled:true,unlocked:false}:await api(`control/servers/${encodeURIComponent(id)}/console`);
+ const page=featurePage(server.name+' · root console',`<section aria-label="Console security"><h3>Just-in-time root access</h3><p>${status.two_factor_enabled?'This console is unlocked only for this server for 15 minutes after verification. Verify again at any time to extend the window.':'Two-factor authentication must be enabled before this console can be used.'}</p>${status.two_factor_enabled?`<form id="console-unlock"><label>Authenticator or recovery code<input name="code" autocomplete="one-time-code" inputmode="numeric" required></label><button type="submit">${status.unlocked?'Extend access':'Unlock for 15 minutes'}</button></form><p id="console-expiry" role="status">${status.unlocked?'Access is currently unlocked.':''}</p>`:'<button type="button" id="console-enable-factor">Set up two-factor authentication</button>'}</section><section aria-label="Root command"><form id="console-command"><label>Command<textarea name="command" rows="10" spellcheck="false" required placeholder="docker ps\n\ndocker exec -i lidza-db-app sh -c 'exec psql -X -U &quot;$POSTGRES_USER&quot; -d &quot;$POSTGRES_DB&quot;' &lt;&lt;'SQL'\nSELECT now();\nSQL"></textarea></label><p class="hint">Runs as root on ${escape(server.name)}. Maximum runtime: 2 minutes. Output is capped at 1 MiB. Command text and output are not copied into the audit log.</p><button class="primary" type="submit" ${status.unlocked?'':'disabled'}>Run command</button></form><pre id="console-output" aria-live="polite">${status.unlocked?'Ready.':'Locked.'}</pre></section>`,'console',id);
+ if(!status.two_factor_enabled){page.querySelector('#console-enable-factor').onclick=()=>openTwoFactor();return page}
+ const commandForm=page.querySelector('#console-command'),unlockForm=page.querySelector('#console-unlock');
+ unlockForm.onsubmit=async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{const grant=await api('v1/auth/step-up','POST',{code:event.target.elements.code.value.trim(),purpose:'server.console',target:id});event.target.reset();commandForm.querySelector('button').disabled=false;button.textContent='Extend access';page.querySelector('#console-expiry').textContent='Unlocked until '+new Date(grant.expiresAt).toLocaleTimeString()+'.';notice('Root console unlocked for this server.')}catch(error){featureError(error)}finally{button.disabled=false}};
+ commandForm.onsubmit=async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;page.querySelector('#console-output').textContent='Running…';try{const result=await api(`control/servers/${encodeURIComponent(id)}/console`,'POST',{command:event.target.elements.command.value});page.querySelector('#console-output').textContent=(result.output||'(no output)')+`\n\n[exit ${result.exit_code} · ${Number(result.duration_seconds).toFixed(2)}s]`}catch(error){page.querySelector('#console-output').textContent=error.message;if(error.code==='step_up_required'){commandForm.querySelector('button').disabled=true;page.querySelector('#console-expiry').textContent='Access expired. Verify again to continue.'}}finally{if(!page.querySelector('#console-expiry').textContent.startsWith('Access expired'))button.disabled=false}};
+ return page;
+}
+
+const accountActions=document.querySelector('#account-menu .account-actions');
+if(accountActions&&!document.querySelector('#two-factor')){const button=document.createElement('button');button.type='button';button.id='two-factor';button.textContent='Two-factor authentication';button.onclick=()=>openTwoFactor().catch(fail);accountActions.insertBefore(button,document.querySelector('#logout'))}

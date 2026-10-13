@@ -23,6 +23,7 @@
    if (control.closest('form[data-browser-autofill="allow"]')) continue;
    mark(control);
    if (control.tagName === 'TEXTAREA') control.autocomplete = 'off';
+   else if (control.autocomplete === 'one-time-code') {}
    else if (control.type === 'password') control.autocomplete = 'new-password';
    else if (!['button', 'checkbox', 'file', 'hidden', 'radio', 'range', 'reset', 'submit'].includes(control.type)) control.autocomplete = 'off';
   }

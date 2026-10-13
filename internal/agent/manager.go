@@ -204,6 +204,7 @@ func (m *Manager) Apps() []App {
 	out := make([]App, 0, len(m.data.Apps))
 	for _, a := range m.data.Apps {
 		a.Env = nil
+		a.EnvKinds = nil
 		a.DomainStatus = nil
 		if m.cfg.TLSListen != "" {
 			status, ok := m.domains[a.ID]
@@ -316,6 +317,9 @@ func (m *Manager) Upsert(a App) error {
 	if a.Env == nil {
 		a.Env = old.Env
 	}
+	if a.EnvKinds == nil {
+		a.EnvKinds = old.EnvKinds
+	}
 	// New applications apply their committed schema before startup. Existing
 	// applications keep their migration policy, including an explicit opt-out.
 	if _, supplied := a.Env["DB_MIGRATE"]; !supplied {
@@ -341,6 +345,7 @@ func (m *Manager) Upsert(a App) error {
 	if err != nil {
 		return err
 	}
+	a.EnvKinds = normalizeEnvironmentKinds(a.Env, a.EnvKinds)
 	if err := a.Validate(); err != nil {
 		return err
 	}

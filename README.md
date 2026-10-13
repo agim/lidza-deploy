@@ -19,6 +19,8 @@ See [Remote backups](docs/remote-backups.md) for saved credential indicators, of
 - Separate host routing per app; DNS verification and proactive Caddy certificate issuance on deployment and FQDN edits, with periodic retries. See [Domains and automatic HTTPS](docs/domains-ssl.md).
 - Deployment history, runtime logs, and rollback to the previous healthy release.
 - Application Errors dashboard: automatic agent console collection, central storage, grouping/search and masked stack details; optional framework analytics reports.
+- Classified application environment: ordinary settings remain editable, credentials are masked with a short preview and require a fresh purpose-bound two-factor check to reveal.
+- A per-server root console requires administrator access, enrolled two-factor authentication and a renewable 15-minute just-in-time unlock for that specific server; executions are audited without storing commands or output in the audit log.
 - The selected **Signal** interface uses Līdza’s released dark brand palette. Standalone HTML previews remain available.
 - GUI server inventory, branch/domain settings, write-only environment edits, and retryable app removal.
 

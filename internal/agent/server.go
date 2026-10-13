@@ -91,6 +91,19 @@ func Handler(m *Manager) http.Handler {
 	m.upgradeRoutes(private)
 	private.HandleFunc("DELETE /v1/previews/{id}", m.previewRoute)
 	private.HandleFunc("GET /v1/apps", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.Apps()) })
+	private.HandleFunc("POST /v1/console", func(w http.ResponseWriter, r *http.Request) {
+		var input ConsoleRequest
+		if err := Decode(w, r, &input); err != nil {
+			Fail(w, 400, err)
+			return
+		}
+		out, err := runConsole(r.Context(), input.Command)
+		if err != nil {
+			Fail(w, 409, err)
+			return
+		}
+		JSON(w, 200, out)
+	})
 	private.HandleFunc("PUT /v1/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var a App
 		if err := Decode(w, r, &a); err != nil {
@@ -111,6 +124,15 @@ func Handler(m *Manager) http.Handler {
 			return
 		}
 		JSON(w, 200, out)
+	})
+	private.HandleFunc("GET /v1/apps/{id}/environment/{key}", func(w http.ResponseWriter, r *http.Request) {
+		value, err := m.RevealCredential(r.PathValue("id"), r.PathValue("key"))
+		if err != nil {
+			Fail(w, 404, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		JSON(w, 200, map[string]string{"key": r.PathValue("key"), "value": value})
 	})
 	private.HandleFunc("PATCH /v1/apps/{id}/settings", func(w http.ResponseWriter, r *http.Request) {
 		var p SettingsPatch
