@@ -100,18 +100,6 @@ func (m *Manager) putTask(appID string, t Task) error {
 	if !ok || a.Retiring || a.Restoring || m.busy(appID) {
 		return errors.New("application unavailable or busy")
 	}
-	prospective := []Task{}
-	for _, existing := range m.data.Tasks {
-		if existing.AppID != appID || existing.ID != t.ID {
-			prospective = append(prospective, existing)
-		}
-	}
-	candidate := t
-	candidate.AppID = appID
-	prospective = append(prospective, candidate)
-	if required := appRequiredMemory(a, prospective); required > a.resourceLimits().MemoryMB {
-		return fmt.Errorf("app needs %d MiB including this worker and deployment headroom; increase its Resources budget first", required)
-	}
 	key := taskKey(appID, t.ID)
 	old, exists := m.data.Tasks[key]
 	if old.Running && old.Mode == "schedule" {
@@ -277,12 +265,6 @@ func (m *Manager) startTaskContainer(ctx context.Context, a App, t Task, old str
 		return "", "", err
 	}
 	args := []string{"create", "--name", name, "--label", "io.lidza.task=" + a.ID, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65532:65532", "--memory", "512m", "--cpus", "1", "--pids-limit", "256", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", envfile, "--entrypoint", t.Command[0]}
-	limits, releaseResources, resourceErr := m.prepareResourceLaunch(ctx, a, name, "worker")
-	if resourceErr != nil {
-		return "", "", resourceErr
-	}
-	defer releaseResources()
-	args = replaceResourceArgs(args, limits)
 	if t.Mode == "worker" {
 		args = append(args, "--restart", "unless-stopped")
 	}

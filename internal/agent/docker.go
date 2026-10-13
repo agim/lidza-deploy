@@ -3,8 +3,6 @@ package agent
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,15 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
 
 type Docker struct {
-	resourceLaunch     func(context.Context, App, string, string) ([]string, func(), error)
-	resourceBuild      func(context.Context, App) (ResourcePolicy, func(), error)
-	resourceChanged    func()
 	prepareRuntime     func(context.Context, App, string) (App, error)
 	runtimeDiagnostics func(context.Context, App) context.Context
 	Root               string
@@ -131,34 +125,7 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 		return nil, err
 	}
 	image := "lidza/" + a.ID + ":" + id
-	buildArgs := []string{"build", "--progress=plain", "--tag", image, "."}
-	if d.resourceBuild != nil {
-		policy, done, e := d.resourceBuild(ctx, a)
-		if e != nil {
-			return nil, e
-		}
-		defer done()
-		builder := resourceBuilderName(d.Root)
-		// Never select or replace the operator's default builder. A dedicated,
-		// bounded BuildKit container applies limits to compiler child processes.
-		if _, e = command(ctx, "", nil, "docker", "buildx", "inspect", builder); e != nil {
-			opts := "memory=" + strconv.FormatInt(policy.BuildMemoryMB, 10) + "m,memory-swap=" + strconv.FormatInt(policy.BuildMemoryMB*2, 10) + "m,cpu-period=100000,cpu-quota=" + strconv.FormatInt(int64(policy.BuildCPUs*100000), 10)
-			if _, e = command(ctx, "", nil, "docker", "buildx", "create", "--name", builder, "--driver", "docker-container", "--driver-opt", opts); e != nil {
-				return nil, errors.New("could not prepare the bounded build service; Docker Buildx is required")
-			}
-		}
-		if ids, e := resourceCommand(ctx, "ps", "-aq", "--filter", "name=^/buildx_buildkit_"+builder+"0$"); e != nil {
-			return nil, e
-		} else if ids != "" {
-			args := append([]string{"update"}, resourceUpdateArgs(ContainerResource{CPUPeriod: 100000}, policy.BuildMemoryMB, policy.BuildCPUs, 256)...)
-			args = append(args, strings.Fields(ids)...)
-			if _, e = resourceCommand(ctx, args...); e != nil {
-				return nil, errors.New("could not update bounded build service limits")
-			}
-		}
-		buildArgs = []string{"buildx", "build", "--builder", builder, "--load", "--progress=plain", "--tag", image, "."}
-	}
-	if _, err = command(ctx, source, nil, "docker", buildArgs...); err != nil {
+	if _, err = command(ctx, source, nil, "docker", "build", "--progress=plain", "--tag", image, "."); err != nil {
 		return nil, fmt.Errorf("image build: %w", err)
 	}
 	release, err = d.runImage(ctx, a, id, image, commit)
@@ -172,13 +139,6 @@ func (d *Docker) Reload(ctx context.Context, a App, id string) (*Release, error)
 		return nil, errors.New("no deployed image to reload")
 	}
 	image := "lidza/" + a.ID + ":" + id
-	if d.resourceBuild != nil {
-		_, done, err := d.resourceBuild(ctx, a)
-		if err != nil {
-			return nil, err
-		}
-		defer done()
-	}
 	if _, err := command(ctx, "", nil, "docker", "tag", a.Current.Image, image); err != nil {
 		return nil, err
 	}
@@ -224,14 +184,6 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 		return nil, err
 	}
 	runArgs := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--label", "io.lidza.app=" + a.ID, "--restart", "unless-stopped", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--memory", "512m", "--cpus", "1", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile, "--env", "LIDZA_ADDR=0.0.0.0:3000", "--env", "LIDZA_MODE=production"}
-	if d.resourceLaunch != nil {
-		limits, done, e := d.resourceLaunch(ctx, a, name, "web")
-		if e != nil {
-			return nil, e
-		}
-		defer done()
-		runArgs = replaceResourceArgs(runArgs, limits)
-	}
 	runArgs = append(runArgs, storageMountArgs(a)...)
 	if a.Env["AUTH_OWNER_CLAIM"] == "true" {
 		claimDir, e := d.prepareOwnerClaim(ctx, a)
@@ -352,9 +304,6 @@ func (d *Docker) probeReady(ctx context.Context, r *Release) (string, error) {
 }
 
 func (d *Docker) Remove(ctx context.Context, r *Release) error {
-	if d.resourceChanged != nil {
-		defer d.resourceChanged()
-	}
 	if r == nil {
 		return nil
 	}
@@ -413,9 +362,4 @@ func clone(ctx context.Context, a App, source, token string) error {
 		return fmt.Errorf("clone: %w", err)
 	}
 	return nil
-}
-
-func resourceBuilderName(root string) string {
-	digest := sha256.Sum256([]byte(root))
-	return "lidza-" + hex.EncodeToString(digest[:6])
 }

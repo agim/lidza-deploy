@@ -206,16 +206,11 @@ func (m *Manager) provisionCache(ctx context.Context, c CacheResource) error {
 	}
 	if c.Mode == "local" {
 		// A health check is not a new container launch. Preserve a healthy
-		// existing service even if legacy host reservations need correction.
+		// existing service before attempting any provisioning work.
 		if localCacheReady(ctx, c) {
 			return nil
 		}
-		limits, done, err := m.prepareServiceResources(ctx, c.Network, "cache")
-		if err != nil {
-			return cacheFailure("host CPU/RAM budget", err, c)
-		}
-		defer done()
-		if err := provisionLocalCacheLimited(ctx, c, limits); err != nil {
+		if err := provisionLocalCache(ctx, c); err != nil {
 			return cacheFailure("Valkey provisioning/readiness", err, c)
 		}
 		return nil

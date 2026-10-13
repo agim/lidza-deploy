@@ -39,7 +39,6 @@ func TestScheduledBackupsAndDurableAlerts(t *testing.T) {
 		t.Fatal(err)
 	}
 	failed := true
-	resourceHot := false
 	dispatched := 0
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -61,19 +60,6 @@ func TestScheduledBackupsAndDurableAlerts(t *testing.T) {
 			json.NewEncoder(w).Encode([]agent.AppHealth{{AppID: "ops-fixture", State: state}})
 		case "/v1/server-health":
 			json.NewEncoder(w).Encode(agent.ServerHealth{CPUs: 4, MemoryTotal: 8 << 30, MemoryAvailable: 4 << 30, Disks: []agent.DiskHealth{{Path: "/data", Available: 10 << 30}}})
-		case "/v1/resources":
-			used, cpu := int64(0), float64(0)
-			available := int64(1024)
-			if resourceHot {
-				used = 120 << 20
-				cpu = 95
-				available = -128
-			}
-			restarts := int64(0)
-			if resourceHot {
-				restarts = 6
-			}
-			json.NewEncoder(w).Encode(agent.ResourceReport{Supported: true, AvailableMemoryMB: available, Apps: []agent.AppResourceView{{ID: "ops-fixture", Limits: agent.AppResources{MemoryMB: 1024}, AllocatedCPUs: 2, MemoryBytes: &used, CPUPercent: &cpu, Containers: []agent.ContainerResource{{Running: true, MemoryLimit: 128 << 20, MemoryBytes: &used, CPUQuota: 1, CPUPercent: &cpu, Restarts: restarts, OOMKilled: resourceHot}}}}})
 		case "/v1/tasks":
 			io.WriteString(w, `[]`)
 		case "/v1/deployments":
@@ -150,38 +136,6 @@ func TestScheduledBackupsAndDurableAlerts(t *testing.T) {
 	}
 	if count() != 5 {
 		t.Fatal("recovery emails missing", count())
-	}
-	resourceHot = true
-	for i := 0; i < 5; i++ {
-		if err = c2.operationsTick(ctx, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if count() != 10 {
-		t.Fatal("resource alerts missing or duplicated", count())
-	}
-	for _, key := range []string{"resource-capacity:ops-host", "resource:ops-host:ops-fixture:memory", "resource:ops-host:ops-fixture:cpu", "resource:ops-host:ops-fixture:oom", "resource:ops-host:ops-fixture:restarts"} {
-		if !c2.data.Incidents[key].Active {
-			t.Fatal("resource incident not active", key)
-		}
-	}
-	c3, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c3.cfg.User = c.cfg.User
-	if err = c3.operationsTick(ctx, nil); err != nil {
-		t.Fatal(err)
-	}
-	if count() != 10 {
-		t.Fatal("restart duplicated resource alerts", count())
-	}
-	resourceHot = false
-	if err = c3.operationsTick(ctx, nil); err != nil {
-		t.Fatal(err)
-	}
-	if count() != 15 {
-		t.Fatal("resource recoveries missing", count())
 	}
 	if w := call(c.infrastructure, "GET", ""); w.Code != 200 || strings.Contains(w.Body.String(), "fixture-smtp-secret") {
 		t.Fatal("infrastructure exposes credentials")

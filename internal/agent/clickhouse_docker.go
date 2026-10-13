@@ -53,11 +53,11 @@ func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
 		commandDiagnostic(ctx, "clickhouse", "Starting private ClickHouse container "+c.Network+".")
 		// Secrets travel in the child environment, never argv or deployment logs.
 		args := []string{
-			"run", "-d", "--name", c.Network, "--label", "io.lidza.clickhouse="+c.Network, "--network", c.Network,
+			"run", "-d", "--name", c.Network, "--label", "io.lidza.clickhouse=" + c.Network, "--network", c.Network,
 			"--restart", "unless-stopped", "--memory", "2g", "--pids-limit", "512", "--ulimit", "nofile=262144:262144",
 			"--log-opt", "max-size=10m", "--log-opt", "max-file=3",
-			"--mount", "type=volume,src="+c.Network+"-data,dst=/var/lib/clickhouse",
-			"--mount", "type=volume,src="+c.Network+"-logs,dst=/var/log/clickhouse-server",
+			"--mount", "type=volume,src=" + c.Network + "-data,dst=/var/lib/clickhouse",
+			"--mount", "type=volume,src=" + c.Network + "-logs,dst=/var/log/clickhouse-server",
 			"--env", "CLICKHOUSE_DB", "--env", "CLICKHOUSE_USER", "--env", "CLICKHOUSE_PASSWORD", "--env", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT",
 			"--health-cmd", `clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query 'SELECT 1'`,
 			"--health-interval", "10s", "--health-timeout", "5s", "--health-start-period", "30s", "--health-retries", "6", clickhouseImage}

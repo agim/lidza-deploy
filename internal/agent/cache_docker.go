@@ -23,9 +23,6 @@ func localCacheReady(ctx context.Context, c CacheResource) bool {
 }
 
 func provisionLocalCache(ctx context.Context, c CacheResource) error {
-	return provisionLocalCacheLimited(ctx, c, nil)
-}
-func provisionLocalCacheLimited(ctx context.Context, c CacheResource, limits []string) error {
 	for _, kind := range []string{"network", "volume"} {
 		name := c.Network
 		if kind == "volume" {
@@ -58,11 +55,7 @@ func provisionLocalCacheLimited(ctx context.Context, c CacheResource, limits []s
 		if err = dockerStream(ctx, strings.NewReader(cfg), io.Discard, nil, seed...); err != nil {
 			return errors.New("could not initialize cache configuration")
 		}
-		args := []string{"run", "-d", "--name", c.Network, "--label", "io.lidza.cache=" + c.Network, "--network", c.Network, "--restart", "unless-stopped", "--user", "65532:65532", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "256m", "--cpus", "0.5", "--pids-limit", "64", "--log-opt", "max-size=5m", "--log-opt", "max-file=2", "--mount", "type=volume,src=" + c.Network + "-data,dst=/data", cacheImage, "valkey-server", "/data/lidza.conf"}
-		if len(limits) > 0 {
-			args = append(replaceResourceArgs(args[:len(args)-3], limits), args[len(args)-3:]...)
-		}
-		_, err = command(ctx, "", nil, "docker", args...)
+		_, err = command(ctx, "", nil, "docker", "run", "-d", "--name", c.Network, "--label", "io.lidza.cache="+c.Network, "--network", c.Network, "--restart", "unless-stopped", "--user", "65532:65532", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "256m", "--cpus", "0.5", "--pids-limit", "64", "--log-opt", "max-size=5m", "--log-opt", "max-file=2", "--mount", "type=volume,src="+c.Network+"-data,dst=/data", cacheImage, "valkey-server", "/data/lidza.conf")
 		if err != nil {
 			return errors.New("could not start private Valkey container")
 		}

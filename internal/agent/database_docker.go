@@ -58,14 +58,7 @@ func (m *Manager) provisionDatabase(ctx context.Context, d Database) error {
 			return err
 		}
 		if found == "" {
-			args := []string{"run", "-d", "--name", d.Network, "--label", "io.lidza.database=" + d.AppID, "--network", d.Network, "--restart", "unless-stopped", "--memory", "1g", "--pids-limit", "256", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=volume,src=" + d.Network + "-data,dst=/var/lib/postgresql/data", "--env", "POSTGRES_PASSWORD", databaseImage}
-			limits, done, e := m.prepareServiceResources(ctx, d.Network, "database")
-			if e != nil {
-				return e
-			}
-			defer done()
-			args = append(replaceResourceArgs(args[:len(args)-1], limits), databaseImage)
-			err = dockerStream(ctx, nil, io.Discard, []string{"POSTGRES_PASSWORD=" + d.AdminPassword}, args...)
+			err = dockerStream(ctx, nil, io.Discard, []string{"POSTGRES_PASSWORD=" + d.AdminPassword}, "run", "-d", "--name", d.Network, "--label", "io.lidza.database="+d.AppID, "--network", d.Network, "--restart", "unless-stopped", "--memory", "1g", "--pids-limit", "256", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=volume,src="+d.Network+"-data,dst=/var/lib/postgresql/data", "--env", "POSTGRES_PASSWORD", databaseImage)
 			if err != nil {
 				return errors.New("could not start PostgreSQL container")
 			}

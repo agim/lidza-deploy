@@ -56,12 +56,6 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 		args = append(args, "--network", d.Network)
 	}
 	environment, flags := postgresEnvironment(d.URL)
-	operationLimits, releaseOperation, operationErr := m.prepareResourceOperation(ctx, container, 512)
-	if operationErr != nil {
-		return BackupRecord{}, operationErr
-	}
-	defer releaseOperation()
-	args = replaceResourceArgs(args, operationLimits)
 	args = append(args, flags...)
 	args = append(args, databaseImage, "pg_dump", "--format=custom", "--no-owner", "--no-acl")
 	if err = dockerStream(ctx, nil, writer, environment, args...); err != nil {

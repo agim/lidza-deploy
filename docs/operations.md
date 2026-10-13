@@ -79,7 +79,3 @@ Use **Errors** in the workspace or on an app card. Paired hosting agents automat
 Host cards provide two actions: **Add application** selects that host in the new application page; **Manage server** opens its connection settings. The server page has **Connection**, **SSH access** and **Agent upgrade** navigation. These administration controls require an administrator. Saved agent tokens are not returned to the browser; a blank token keeps the current credential.
 
 **Disconnect server** is a separate section on the Connection page, disabled while applications remain registered on that server. Confirmation removes the control panel connection only. It does not uninstall the agent or delete retained data. Reconnecting the same agent restores access to that host’s retained resources.
-
-## CPU and RAM per application
-
-Use Application → Resources or Servers → Resources for live measurements, app budgets and server/service reservations. The agent accounts for workers, rollout overlap, retained services and bounded build/maintenance pools. See [Application resources](resources.md) for enforcement, defaults, migration and alerts.

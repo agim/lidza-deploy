@@ -138,44 +138,6 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 			record(c.observe(ctx, "load:"+result.Server.ID, "CPU load is high on "+result.Server.Name, h.Load1 > float64(h.CPUs)*2, 5))
 		}
 	}
-	for _, result := range c.readFleet(request, "/v1/resources") {
-		if result.Err != nil {
-			continue
-		}
-		var report agent.ResourceReport
-		if json.Unmarshal(result.Body, &report) != nil || !report.Supported {
-			continue
-		}
-		record(c.observe(ctx, "resource-capacity:"+result.Server.ID, "RAM reservations exceed server capacity on "+result.Server.Name, report.AvailableMemoryMB < 0, 1))
-		for _, app := range report.Apps {
-			key := "resource:" + result.Server.ID + ":" + app.ID
-			memoryHigh := false
-			cpuHigh := false
-			for _, container := range app.Containers {
-				if container.Running {
-					if container.MemoryBytes != nil && container.MemoryLimit > 0 && float64(*container.MemoryBytes) >= float64(container.MemoryLimit)*0.9 {
-						memoryHigh = true
-					}
-					if container.CPUPercent != nil && container.CPUQuota > 0 && *container.CPUPercent >= container.CPUQuota*90 {
-						cpuHigh = true
-					}
-				}
-			}
-			if app.MemoryBytes != nil {
-				record(c.observe(ctx, key+":memory", "Application "+app.ID+" is near a container RAM limit", memoryHigh || float64(*app.MemoryBytes) >= float64(app.Limits.MemoryMB*(1<<20))*0.9, 3))
-			}
-			if app.CPUPercent != nil && app.AllocatedCPUs > 0 {
-				record(c.observe(ctx, key+":cpu", "Application "+app.ID+" is near an allocated CPU ceiling", cpuHigh || *app.CPUPercent >= app.AllocatedCPUs*90, 5))
-			}
-			oom, restarts := false, false
-			for _, container := range app.Containers {
-				oom = oom || container.OOMKilled
-				restarts = restarts || container.Restarts >= 5
-			}
-			record(c.observe(ctx, key+":oom", "Application "+app.ID+" had a container killed for exceeding memory", oom, 1))
-			record(c.observe(ctx, key+":restarts", "Application "+app.ID+" has repeated container restarts", restarts, 2))
-		}
-	}
 	for _, result := range c.readFleet(request, "/v1/app-health") {
 		if result.Err != nil {
 			continue

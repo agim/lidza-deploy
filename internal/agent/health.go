@@ -134,15 +134,6 @@ func (m *Manager) serverHealth(parent context.Context) ServerHealth {
 			if d.Network != "" {
 				args = append(args, "--network", d.Network)
 			}
-			operationLimits, releaseOperation, operationErr := m.prepareResourceOperation(ctx, name, 128)
-			if operationErr != nil {
-				mu.Lock()
-				out.Errors = append(out.Errors, "database size unavailable: "+d.AppID)
-				mu.Unlock()
-				return
-			}
-			defer releaseOperation()
-			args = replaceResourceArgs(args, operationLimits)
 			args = append(args, flags...)
 			args = append(args, databaseImage, "psql", "-X", "-tAc", "SELECT pg_database_size(current_database())")
 			var b limitedBuffer
