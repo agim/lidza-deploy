@@ -77,14 +77,15 @@ func (m *Manager) prepareClickHouse(ctx context.Context, a App, effective map[st
 		} else {
 			limits, done, limitErr := m.prepareServiceResources(probe, c.Network, "clickhouse")
 			if limitErr != nil {
-				err = limitErr
+				err = clickhouseFailure("host CPU/RAM budget", limitErr, c.Password)
 			} else {
 				err = provisionLocalClickHouseLimited(probe, c, limits)
 				done()
 			}
 		}
 		if err != nil {
-			return nil, errors.New("managed ClickHouse provisioning failed; check Docker access, available memory and resource ownership on the hosting agent; previous release retained")
+			commandDiagnostic(ctx, "clickhouse", publicClickHouseFailure(err).Error())
+			return nil, publicClickHouseFailure(err)
 		}
 		m.mu.Lock()
 		defer m.mu.Unlock()

@@ -31,6 +31,19 @@ or erases data to fix a failed deployment. Service/authentication failure preven
 candidate activation and retains the previous release. App rollback does not
 roll back ClickHouse schema or data.
 
+Deployment diagnostics identify the failed stage and include bounded, redacted
+Docker output. A first-time image download is reported separately from container
+creation. Readiness failures include the last authenticated query error and
+container status, exit code and OOM flag. The agent's retained password never
+enters the deployment log. Host CPU/RAM budget rejections report the required
+and available capacity rather than a generic connection failure.
+
+After a failure, keep existing containers and volumes intact. Inspect the
+deployment's specific failure before changing resource budgets or Docker
+connectivity. Retry after correcting that condition; the reserved password and
+volumes are reused. Download failures require checking Docker's registry access;
+an application redeploy cannot repair a host networking or registry outage.
+
 An explicit external `CLICKHOUSE_URL`, including sealed application credentials,
 takes precedence before any managed service is created. Partial connection
 settings without a URL are rejected; remove them to request automatic setup.
