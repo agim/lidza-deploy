@@ -29,9 +29,9 @@ A fresh response containing older code can also mean the control-panel service
 has not updated. Check **Updates → Control panel**, rather than relying on the
 agent version alone. A hard refresh cannot install a newer server binary.
 
-The optional framework head-hook metadata integration is paused pending
-[Līdza #54](https://github.com/agim/lidza/issues/54), because direct HTML files skip
-the hook in v0.1.107. The cache policy and release-change notice do not depend on it.
+[Līdza #54](https://github.com/agim/lidza/issues/54) was fixed in v0.1.109:
+the framework head hook now applies to named HTML files as well. Deploy uses
+v0.1.113; its cache policy and release-change notice remain independent of that hook.
 
 A busy or temporarily unreachable server waits and is retried by the framework's durable minute schedule. Unsupported installers and failed upgrades stop the batch before updating remaining servers. Fix that host, then click Update again. Automatic mode does not repeatedly install a failed release; a manual retry or a newer release is required.
 

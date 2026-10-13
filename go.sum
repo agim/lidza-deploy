@@ -1,5 +1,5 @@
-github.com/agim/lidza v0.1.107 h1:YpKx5W/jnE1HcyU+sWOpNDheBfHR0cCsH5unUWAtJUU=
-github.com/agim/lidza v0.1.107/go.mod h1:H13kN+HnDoU5N8Qj8NZhwG9wI6XMQZvaBTffHqV5d2w=
+github.com/agim/lidza v0.1.113 h1:J3+F8SCxOczOlDhxzujdaqny1I8MefLAkxYiC4ha6hk=
+github.com/agim/lidza v0.1.113/go.mod h1:H13kN+HnDoU5N8Qj8NZhwG9wI6XMQZvaBTffHqV5d2w=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
