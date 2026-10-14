@@ -1,4 +1,4 @@
-import { Activity, BookOpen, CheckCircle2, ClipboardList, KeyRound, Plus, RefreshCw, Search, Settings2, ShieldCheck, Smartphone, Trash2, Users } from 'lucide-react';
+import { Activity, BookOpen, CheckCircle2, ClipboardList, KeyRound, Plus, RefreshCw, Search, Settings2, ShieldCheck, Smartphone, Trash2, UploadCloud, Users } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
 import { del, get, patch, post, put } from '../lib/api';
 import { formatDate } from '../lib/format';
@@ -13,11 +13,88 @@ export function DefaultsPage() {
   return <><PageHeader eyebrow="Workspace defaults" title="Application defaults" description="Shared variables copied once, before each new application’s first deployment." actions={<Button variant="primary" onClick={save} disabled={busy}>Save defaults</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card className="form-card"><SectionHeader title="Environment variables" description="App-specific values take precedence. Existing applications never change when these defaults change." actions={<Button onClick={() => { let name = 'VARIABLE'; let index = 2; while (Object.hasOwn(values, name)) name = `VARIABLE_${index++}`; setValues(current => ({ ...current, [name]: '' })); }}><Plus size={16} />Add variable</Button>} /><div className="key-value-list">{Object.entries(values).map(([key, value]) => <div key={key}><input aria-label="Variable name" value={key} onChange={event => { const next = { ...values }; delete next[key]; next[event.target.value] = value; setValues(next); }} /><input aria-label={`${key} value`} type="password" value={value} onChange={event => setValues(current => ({ ...current, [key]: event.target.value }))} autoComplete="new-password" /><Button variant="ghost" size="icon" aria-label={`Remove ${key}`} onClick={() => { const next = { ...values }; delete next[key]; setValues(next); }}><Trash2 size={17} /></Button></div>)}{!Object.keys(values).length && <p className="muted-copy">No workspace defaults. Add only variables that every new application should receive.</p>}</div></Card></>;
 }
 
+type UpdateTarget = { server_id: string; name?: string; state: string; message?: string };
+type UpdateSettings = { automatic?: boolean; latest?: string; checked?: string; check_error?: string; version?: string; targets?: UpdateTarget[] };
+type UpdateServer = { server_id: string; name?: string; current?: string; state?: string; message?: string; supported?: boolean; error?: string };
+type UpdatesData = { control_version?: string; latest?: string; settings?: UpdateSettings; servers?: UpdateServer[] };
+
 export function UpdatesPage() {
-  const [data, setData] = useState<Record<string, any>>(), [error, setError] = useState(''), [busy, setBusy] = useState(false); const notify = useToast();
-  const load = async (check = false) => { setBusy(true); try { const value = check ? await post<Record<string, any>>('control/updates/check') : await get<Record<string, any>>('control/updates'); setData(value); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); } };
-  useEffect(() => { void load(); }, []);
-  return <><PageHeader eyebrow="Release management" title="Updates" description="Keep the control panel and hosting agents current without interrupting running apps." actions={<Button onClick={() => load(true)} disabled={busy}><RefreshCw className={busy ? 'spin' : ''} size={16} />Check now</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}{!data ? <Loading /> : <div className="settings-stack"><Card><SectionHeader title="Control panel" description={`Installed ${data.control_version || 'unknown'} · Latest stable ${data.settings?.latest || data.latest || 'unknown'}`} actions={<Badge tone={(data.control_version && data.settings?.latest && data.control_version === data.settings.latest) ? 'success' : 'warning'}>{data.control_version === data.settings?.latest ? 'Current' : 'Update available'}</Badge>} /></Card><Card><SectionHeader title="Hosting agents" description="Updates are installed one host at a time. A failed host stops the batch." /><div className="simple-list">{(data.servers || []).map((server: any) => <div key={server.server_id}><div><strong>{server.name || server.server_id}</strong><small>{server.current || 'unknown'} · {server.state || 'idle'}</small></div><Button size="sm" disabled={!server.supported} onClick={async () => { await post(`control/servers/${server.server_id}/upgrade`, { version: data.settings?.latest }); notify('Agent upgrade queued.'); }}>Upgrade</Button></div>)}</div></Card></div>}</>;
+  const [data, setData] = useState<UpdatesData>();
+  const [error, setError] = useState('');
+  const [checking, setChecking] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const notify = useToast();
+
+  const refresh = async (background = false) => {
+    if (!background) setChecking(true);
+    try {
+      const value = await get<UpdatesData>('control/updates');
+      setData(value);
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (!background) setChecking(false);
+    }
+  };
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh(true); }, 5_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const check = async () => {
+    setChecking(true); setError('');
+    try {
+      await post<UpdateSettings>('control/updates/check');
+      await refresh(true);
+      notify('Release check complete.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setChecking(false); }
+  };
+  const install = async () => {
+    setInstalling(true); setError('');
+    try {
+      const settings = await post<UpdateSettings>('control/updates/install');
+      setData(current => current ? { ...current, settings } : current);
+      notify('Update queued. Busy servers will continue automatically when active operations finish.');
+      window.setTimeout(() => void refresh(true), 1_000);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setInstalling(false); }
+  };
+  const setAutomatic = async (automatic: boolean) => {
+    setPolicyBusy(true); setError('');
+    const previous = Boolean(data?.settings?.automatic);
+    setData(current => current ? { ...current, settings: { ...current.settings, automatic } } : current);
+    try {
+      const settings = await patch<UpdateSettings>('control/updates', { automatic });
+      setData(current => current ? { ...current, settings } : current);
+      notify(automatic ? 'Automatic stable updates enabled.' : 'Automatic stable updates disabled.');
+    } catch (reason) {
+      setData(current => current ? { ...current, settings: { ...current.settings, automatic: previous } } : current);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setPolicyBusy(false); }
+  };
+
+  const settings = data?.settings || {};
+  const latest = settings.latest || data?.latest || '';
+  const targets = settings.targets || [];
+  const inProgress = targets.some(target => target.state === 'waiting' || target.state === 'updating');
+  const panelCurrent = Boolean(latest && data?.control_version === latest);
+  const allCurrent = panelCurrent && (data?.servers || []).every(server => server.current === latest);
+  const targetByServer = new Map(targets.map(target => [target.server_id, target]));
+
+  return <>
+    <PageHeader eyebrow="Release management" title="Updates" description="Keep the control panel and hosting agents current without interrupting running apps." actions={<div className="sticky-actions"><Button onClick={check} disabled={checking || installing}><RefreshCw className={checking ? 'spin' : ''} size={16} />{checking ? 'Checking…' : 'Check now'}</Button><Button variant="primary" onClick={install} disabled={!latest || allCurrent || inProgress || installing || checking}><UploadCloud size={16} />{installing ? 'Queuing…' : inProgress ? 'Update queued' : 'Install update'}</Button></div>} />
+    {error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
+    {!data ? <Loading /> : <div className="settings-stack">
+      <Card><SectionHeader title="Control panel" description={`Installed ${data.control_version || 'unknown'} · Latest stable ${latest || 'unknown'}`} actions={<Badge tone={panelCurrent ? 'success' : 'warning'}>{panelCurrent ? 'Current' : 'Update available'}</Badge>} />{inProgress && <p className="muted-copy">The control panel host is updated last, after every remote host passes its health checks.</p>}</Card>
+      <Card><SectionHeader title="Hosting agents" description="The durable queue waits for deployments, backups, restores and scheduled commands to finish, then updates one host at a time." /><div className="simple-list">{(data.servers || []).map(server => { const target = targetByServer.get(server.server_id); const state = target?.state || server.state || (server.current === latest ? 'current' : 'idle'); const message = target?.message || server.message || server.error; return <div key={server.server_id}><div><strong>{server.name || server.server_id}</strong><small>{server.current || 'unknown'} · {state}{message ? ` · ${message}` : ''}</small></div><Badge tone={state === 'succeeded' || state === 'current' ? 'success' : state === 'failed' || Boolean(server.error) ? 'danger' : state === 'waiting' || state === 'updating' ? 'warning' : 'neutral'}>{state}</Badge></div>; })}</div><label className="check-row"><input type="checkbox" checked={Boolean(settings.automatic)} disabled={policyBusy || inProgress} onChange={event => void setAutomatic(event.target.checked)} /><span><strong>Automatically install stable releases</strong><small>Uses the same durable queue and never interrupts deployments, backups or restores.</small></span></label></Card>
+    </div>}
+  </>;
 }
 
 export function TeamPage({ audit = false }: { audit?: boolean }) {
