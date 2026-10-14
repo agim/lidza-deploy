@@ -6,6 +6,7 @@ import (
 	"github.com/agim/lidza/packs/auth"
 	"github.com/agim/lidza/pkg/router"
 	"net/http"
+	"time"
 )
 
 const serverConsolePurpose = "server.console"
@@ -33,7 +34,7 @@ func (c *Control) consoleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	unlocked := enabled && auth.From(r.Context()).CheckStepUp(r.Context(), serverConsolePurpose, server.ID) == nil
 	w.Header().Set("Cache-Control", "no-store")
-	agent.JSON(w, http.StatusOK, map[string]bool{"two_factor_enabled": enabled, "unlocked": unlocked})
+	agent.JSON(w, http.StatusOK, map[string]any{"two_factor_enabled": enabled, "unlocked": unlocked, "max_runtime_seconds": int(agent.ConsoleTimeout.Seconds()), "max_output_bytes": agent.ConsoleMaxOutput})
 }
 
 func (c *Control) runConsole(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +63,7 @@ func (c *Control) runConsole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out agent.ConsoleResult
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(agent.ConsoleResponseTimeout + 15*time.Second))
 	if err := c.agentCall(r, server.ID, "POST", "/v1/console", input, &out); err != nil {
 		agent.Fail(w, http.StatusBadGateway, err)
 		return

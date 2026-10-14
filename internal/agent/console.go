@@ -12,9 +12,13 @@ import (
 )
 
 const (
-	consoleTimeout   = 2 * time.Minute
-	consoleMaxInput  = 64 << 10
-	consoleMaxOutput = 1 << 20
+	ConsoleTimeout = 10 * time.Minute
+	// Allow the HTTP response to finish after the command deadline expires.
+	ConsoleResponseTimeout = ConsoleTimeout + 30*time.Second
+	consoleMaxInput        = 64 << 10
+	ConsoleMaxOutput       = 8 << 20
+	// JSON may escape each output byte as six characters (for example, NUL).
+	ConsoleMaxResponse = 6*ConsoleMaxOutput + 64<<10
 )
 
 type ConsoleRequest struct {
@@ -34,7 +38,7 @@ type cappedConsoleBuffer struct {
 
 func (b *cappedConsoleBuffer) Write(p []byte) (int, error) {
 	original := len(p)
-	remaining := consoleMaxOutput - b.Len()
+	remaining := ConsoleMaxOutput - b.Len()
 	if remaining <= 0 {
 		b.truncated = true
 		return original, nil
@@ -54,7 +58,7 @@ func runConsole(ctx context.Context, command string) (ConsoleResult, error) {
 	if strings.TrimSpace(command) == "" || len(command) > consoleMaxInput || strings.IndexByte(command, 0) >= 0 {
 		return ConsoleResult{}, errors.New("command must contain 1 to 65536 bytes")
 	}
-	ctx, cancel := context.WithTimeout(ctx, consoleTimeout)
+	ctx, cancel := context.WithTimeout(ctx, ConsoleTimeout)
 	defer cancel()
 	started := time.Now()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", command)
@@ -72,11 +76,15 @@ func runConsole(ctx context.Context, command string) (ConsoleResult, error) {
 	err := cmd.Run()
 	result := ConsoleResult{Output: output.String(), Duration: time.Since(started).Seconds()}
 	if output.truncated {
-		result.Output += "\n[output truncated at 1 MiB]\n"
+		result.Output += "\n[output truncated at 8 MiB]\n"
 	}
 	if ctx.Err() != nil {
 		result.ExitCode = 124
-		return result, errors.New("command timed out after 2 minutes")
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			result.Output += "\n[command runtime limit reached; process terminated]\n"
+			return result, nil
+		}
+		return result, ctx.Err()
 	}
 	if err == nil {
 		return result, nil

@@ -27,6 +27,7 @@ import (
 	"github.com/agim/lidza/pkg/env"
 	"github.com/jackc/pgx/v5"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -264,6 +265,11 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 	req.Header.Set("Authorization", "Bearer "+target.Token)
 	req.Header.Set("Content-Type", "application/json")
 	client := c.client
+	if path == "/v1/console" {
+		copy := *client
+		copy.Timeout = agent.ConsoleResponseTimeout
+		client = &copy
+	}
 	if strings.HasSuffix(path, "/state") {
 		copy := *client
 		copy.Timeout = 110 * time.Second
@@ -271,6 +277,13 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 	}
 	res, err := client.Do(req)
 	if err != nil {
+		if path == "/v1/console" {
+			var timeout net.Error
+			if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) {
+				return errors.New("console response timed out; command outcome is unknown. Check the server before running the command again")
+			}
+			return errors.New("hosting agent connection interrupted; command outcome is unknown. Check agent connectivity before running the command again")
+		}
 		return errors.New("agent unavailable")
 	}
 	defer res.Body.Close()
@@ -284,7 +297,11 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 	if out == nil {
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(out)
+	maxResponse := int64(4 << 20)
+	if path == "/v1/console" {
+		maxResponse = agent.ConsoleMaxResponse
+	}
+	return json.NewDecoder(io.LimitReader(res.Body, maxResponse)).Decode(out)
 }
 func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux := http.NewServeMux()

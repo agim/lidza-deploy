@@ -93,6 +93,7 @@ func Handler(m *Manager) http.Handler {
 	private.HandleFunc("DELETE /v1/previews/{id}", m.previewRoute)
 	private.HandleFunc("GET /v1/apps", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.Apps()) })
 	private.HandleFunc("POST /v1/console", func(w http.ResponseWriter, r *http.Request) {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(ConsoleResponseTimeout))
 		var input ConsoleRequest
 		if err := Decode(w, r, &input); err != nil {
 			Fail(w, 400, err)
