@@ -56,7 +56,16 @@ func run() error {
 	var closeApp func(context.Context) error
 	_, tokenErr := os.Stat(filepath.Join(dir, "setup-token"))
 	_, doneErr := os.Stat(filepath.Join(dir, "setup-complete.json"))
-	if os.IsNotExist(tokenErr) && os.IsNotExist(doneErr) && values["PUBLIC_URL"] != "" && values["CONTROL_USER"] != "" {
+	legacyConfigured := os.IsNotExist(tokenErr) && os.IsNotExist(doneErr) && values["PUBLIC_URL"] != "" && values["CONTROL_USER"] != ""
+	if doneErr == nil || legacyConfigured {
+		recoverCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		err = onboarding.RecoverManagedDatabase(recoverCtx, dir)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	if legacyConfigured {
 		booted, err := webapp.Boot(ctx)
 		if err != nil {
 			return err

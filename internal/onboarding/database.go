@@ -35,6 +35,33 @@ func docker(ctx context.Context, args ...string) (string, error) {
 	}
 	return strings.TrimSpace(string(data)), nil
 }
+
+// RecoverManagedDatabase starts and verifies the control panel's own database
+// before the application framework tries to connect to it. External databases
+// are never touched: SETUP_DB_PASSWORD exists only for installer-managed
+// PostgreSQL. managedDatabase also verifies the installation label before it
+// starts an existing container and retains its named volume when recreating it.
+func RecoverManagedDatabase(ctx context.Context, dir string) error {
+	saved, err := credentials.Read(dir)
+	if err != nil {
+		return errors.New("could not read managed database state")
+	}
+	if _, managed := saved["SETUP_DB_PASSWORD"]; !managed {
+		return nil
+	}
+	s := &Setup{opts: Options{Dir: dir}}
+	dsn, err := s.managedDatabase(ctx)
+	if err != nil {
+		return fmt.Errorf("managed database recovery failed: %w", err)
+	}
+	if saved["DATABASE_URL"] != dsn {
+		if err = credentials.Set(dir, map[string]string{"DATABASE_URL": dsn}); err != nil {
+			return errors.New("could not save the recovered managed database address")
+		}
+	}
+	return nil
+}
+
 func (s *Setup) managedDatabase(ctx context.Context) (string, error) {
 	sum := sha256.Sum256([]byte(s.opts.Dir))
 	id := hex.EncodeToString(sum[:6])

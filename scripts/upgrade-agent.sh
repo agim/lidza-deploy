@@ -108,6 +108,44 @@ if [[ "$version" == console-root ]];then
  report succeeded 'Root console service enabled; MFA is required for every unlock.'
  exit 0
 fi
+# lidza-control-boot-v1
+# Hosts upgrading from an older helper do not receive the new control unit on
+# that first upgrade. The newly installed agent queues this fixed drop-in after
+# the new helper is present, closing that one-release migration gap.
+if [[ "$version" == control-boot ]];then
+ unit=/etc/systemd/system/lidza-control.service
+ service_dir=/etc/systemd/system/lidza-control.service.d
+ override=$service_dir/20-boot.conf
+ [[ -f "$unit" && ! -L "$unit" ]] || { report failed 'Control panel service is not installed.';exit 1; }
+ mkdir -p "$service_dir"
+ [[ ! -L "$service_dir" ]] || { report failed 'Control panel service override directory is unsafe.';exit 1; }
+ previous=false
+ if [[ -f "$override" && ! -L "$override" ]];then cp -p "$override" "$override.previous";previous=true
+ elif [[ -e "$override" ]];then report failed 'Control panel boot override path is unsafe.';exit 1
+ fi
+ override_tmp=$(mktemp "$service_dir/.20-boot.XXXXXX")
+ printf '%s\n' '# lidza-control-boot-v1' '[Unit]' 'Wants=docker.service' 'After=docker.service' 'StartLimitIntervalSec=0' '[Service]' 'Restart=always' 'RestartSec=5' > "$override_tmp"
+ chmod 0644 "$override_tmp"
+ mv -T "$override_tmp" "$override"
+ systemctl daemon-reload
+ systemctl enable lidza-control
+ systemctl restart lidza-control
+ healthy=false
+ for attempt in {1..120};do
+  if curl --max-time 2 -fsS http://127.0.0.1:3000/readyz >/dev/null;then healthy=true;break;fi
+  sleep 1
+ done
+ if ! $healthy;then
+  if $previous;then mv -T "$override.previous" "$override";else rm -f "$override";fi
+  systemctl daemon-reload
+  systemctl restart lidza-control || true
+  report failed 'Control panel boot migration failed and was rolled back; inspect journalctl -u lidza-control.'
+  exit 1
+ fi
+ rm -f "$override.previous"
+ report succeeded 'Control panel now waits for Docker and automatically recovers after reboot.'
+ exit 0
+fi
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { report failed 'Invalid release version';exit 1; }
 case $(uname -m) in x86_64) arch=amd64;;aarch64|arm64) arch=arm64;;*) report failed 'Unsupported architecture';exit 1;;esac
 report upgrading 'Downloading and verifying official release'
@@ -119,7 +157,10 @@ rollback(){
   install -m 0755 /usr/local/bin/lidza-agent.previous /usr/local/bin/lidza-agent.rollback
   mv /usr/local/bin/lidza-agent.rollback /usr/local/bin/lidza-agent
   if $control;then install -m 0755 /usr/local/bin/lidza-control.previous /usr/local/bin/lidza-control.rollback;mv /usr/local/bin/lidza-control.rollback /usr/local/bin/lidza-control;fi
-  if [[ -f /etc/systemd/system/lidza-agent.service.previous ]];then install -m 0644 /etc/systemd/system/lidza-agent.service.previous /etc/systemd/system/lidza-agent.service;systemctl daemon-reload;fi
+  units_restored=false
+  if [[ -f /etc/systemd/system/lidza-agent.service.previous ]];then install -m 0644 /etc/systemd/system/lidza-agent.service.previous /etc/systemd/system/lidza-agent.service;units_restored=true;fi
+  if $control && [[ -f /etc/systemd/system/lidza-control.service.previous ]];then install -m 0644 /etc/systemd/system/lidza-control.service.previous /etc/systemd/system/lidza-control.service;units_restored=true;fi
+  if $units_restored;then systemctl daemon-reload;fi
   systemctl restart lidza-agent || true
   if $control;then systemctl restart lidza-control || true;fi
  fi
@@ -144,13 +185,18 @@ tar --no-same-owner -xzf "$upgrade_tmp/$asset" -C "$upgrade_tmp/bundle"
 install -m 0755 /usr/local/bin/lidza-agent /usr/local/bin/lidza-agent.previous
 if systemctl is-enabled --quiet lidza-control;then control=true;install -m 0755 /usr/local/bin/lidza-control /usr/local/bin/lidza-control.previous;fi
 if [[ -f /etc/systemd/system/lidza-agent.service ]];then install -m 0644 /etc/systemd/system/lidza-agent.service /etc/systemd/system/lidza-agent.service.previous;fi
+if $control && [[ -f /etc/systemd/system/lidza-control.service ]];then install -m 0644 /etc/systemd/system/lidza-control.service /etc/systemd/system/lidza-control.service.previous;fi
 install -m 0755 "$upgrade_tmp/bundle/bin/lidza-agent" /usr/local/bin/lidza-agent.next
 if $control;then install -m 0755 "$upgrade_tmp/bundle/bin/lidza-control" /usr/local/bin/lidza-control.next;fi
 if [[ -f "$upgrade_tmp/bundle/deploy/lidza-agent.service" ]];then install -m 0644 "$upgrade_tmp/bundle/deploy/lidza-agent.service" /etc/systemd/system/lidza-agent.service.next;fi
+if $control && [[ -f "$upgrade_tmp/bundle/deploy/lidza-control.service" ]];then install -m 0644 "$upgrade_tmp/bundle/deploy/lidza-control.service" /etc/systemd/system/lidza-control.service.next;fi
 changed=true
 mv /usr/local/bin/lidza-agent.next /usr/local/bin/lidza-agent
 if $control;then mv /usr/local/bin/lidza-control.next /usr/local/bin/lidza-control;fi
-if [[ -f /etc/systemd/system/lidza-agent.service.next ]];then mv /etc/systemd/system/lidza-agent.service.next /etc/systemd/system/lidza-agent.service;systemctl daemon-reload;fi
+units_changed=false
+if [[ -f /etc/systemd/system/lidza-agent.service.next ]];then mv /etc/systemd/system/lidza-agent.service.next /etc/systemd/system/lidza-agent.service;units_changed=true;fi
+if $control && [[ -f /etc/systemd/system/lidza-control.service.next ]];then mv /etc/systemd/system/lidza-control.service.next /etc/systemd/system/lidza-control.service;units_changed=true;fi
+if $units_changed;then systemctl daemon-reload;fi
 systemctl restart lidza-agent
 if $control;then
  # Retired self-update credentials have no role in GUI-driven release checks.

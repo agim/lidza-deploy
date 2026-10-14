@@ -12,8 +12,11 @@ cp "$scratch/release/bin/lidza-agent" "$scratch/release/bin/lidza-control"
 chmod +x "$scratch/release/bin/"*
 cp scripts/upgrade-agent.sh "$scratch/release/deploy/upgrade-agent.sh"
 cp deploy/lidza-agent.service "$scratch/release/deploy/lidza-agent.service"
+cp deploy/lidza-control.service "$scratch/release/deploy/lidza-control.service"
+cp deploy/lidza-agent.service "$scratch/etc/systemd/system/lidza-agent.service"
+cp deploy/lidza-control.service "$scratch/etc/systemd/system/lidza-control.service"
 printf "%s\n" "LIDZA_SELF_UPDATE_SECRET=retired-secret" "LIDZA_SELF_UPDATE_SERVER=local" "AUTH_CONNECT=github" > "$scratch/etc/lidza-control/control.env"
-(cd "$scratch/release" && sha256sum bin/lidza-agent bin/lidza-control deploy/upgrade-agent.sh deploy/lidza-agent.service > SHA256SUMS)
+(cd "$scratch/release" && sha256sum bin/lidza-agent bin/lidza-control deploy/upgrade-agent.sh deploy/lidza-agent.service deploy/lidza-control.service > SHA256SUMS)
 tar -C "$scratch/release" -czf "$scratch/lidza-agent-linux-amd64.tar.gz" .
 (cd "$scratch" && sha256sum lidza-agent-linux-amd64.tar.gz > checksum)
 cat > "$scratch/mock/curl" <<'MOCK'
@@ -51,12 +54,19 @@ old
 rg -q "^AUTH_CONNECT=github$" "$scratch/etc/lidza-control/control.env"
 cmp scripts/upgrade-agent.sh "$scratch/usr/local/libexec/lidza-agent-upgrade"
 cmp deploy/lidza-agent.service "$scratch/etc/systemd/system/lidza-agent.service"
+cmp deploy/lidza-control.service "$scratch/etc/systemd/system/lidza-control.service"
+rg -q '^Wants=.*docker.service' "$scratch/etc/systemd/system/lidza-control.service"
+rg -q '^After=.*docker.service' "$scratch/etc/systemd/system/lidza-control.service"
+rg -q '^StartLimitIntervalSec=0$' "$scratch/etc/systemd/system/lidza-control.service"
+rg -q '^Restart=always$' "$scratch/etc/systemd/system/lidza-control.service"
+rg -q '^restart lidza-control$' "$scratch/service-actions"
 rg -q 'succeeded' "$scratch/var/lib/lidza-agent/upgrade/status.json"
 old
 touch "$scratch/bad-health"
 if "$scratch/helper";then echo 'Unhealthy upgrade was accepted' >&2;exit 1;fi
 [[ $("$scratch/usr/local/bin/lidza-agent" -version) == old-version ]]
 [[ $("$scratch/usr/local/bin/lidza-control") == old-version ]]
+cmp deploy/lidza-control.service "$scratch/etc/systemd/system/lidza-control.service"
 rg -q 'previous managed binaries restored' "$scratch/var/lib/lidza-agent/upgrade/status.json"
 rm "$scratch/bad-health"
 old
@@ -78,6 +88,21 @@ rg -q '^ProtectSystem=false$' "$override"
 rg -q '^restart lidza-agent$' "$scratch/service-actions"
 rg -q 'Root console service enabled' "$scratch/var/lib/lidza-agent/upgrade/status.json"
 echo 'PASS: fixed root-console service migration'
+
+# The post-upgrade agent can repair an older control unit even when the old
+# updater did not install the unit bundled in the release.
+cp deploy/lidza-control.service "$scratch/etc/systemd/system/lidza-control.service"
+sed -i '/lidza-control-boot-v1/d;/Wants=.*docker.service/d;/After=.*docker.service/d;/StartLimitIntervalSec=0/d;s/Restart=always/Restart=on-failure/' "$scratch/etc/systemd/system/lidza-control.service"
+printf 'control-boot\n' > "$scratch/var/lib/lidza-agent/upgrade/request"
+"$scratch/helper"
+control_override="$scratch/etc/systemd/system/lidza-control.service.d/20-boot.conf"
+rg -q 'lidza-control-boot-v1' "$control_override"
+rg -q '^Wants=docker.service$' "$control_override"
+rg -q '^After=docker.service$' "$control_override"
+rg -q '^Restart=always$' "$control_override"
+rg -q '^enable lidza-control$' "$scratch/service-actions"
+rg -q 'automatically recovers after reboot' "$scratch/var/lib/lidza-agent/upgrade/status.json"
+echo 'PASS: fixed control-panel boot migration'
 
 # SSH changes dispatch only to the fixed privileged operation.
 cat > "$scratch/usr/local/bin/lidza-agent" <<'BIN'

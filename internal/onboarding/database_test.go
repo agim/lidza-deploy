@@ -58,6 +58,24 @@ func TestManagedDatabaseReinstallRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Close(ctx)
+	if err := credentials.Set(dir, map[string]string{"DATABASE_URL": "postgres://stale"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docker(ctx, "stop", name); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverManagedDatabase(ctx, dir); err != nil {
+		t.Fatal("boot recovery failed", err)
+	}
+	saved, err := credentials.Read(dir)
+	if err != nil || saved["DATABASE_URL"] == "postgres://stale" {
+		t.Fatal("boot recovery did not refresh database address", err)
+	}
+	c, err = pgx.Connect(ctx, saved["DATABASE_URL"])
+	if err != nil {
+		t.Fatal("recovered database is not reachable", err)
+	}
+	c.Close(ctx)
 	verify := func() {
 		t.Helper()
 		c := connect()
@@ -96,6 +114,25 @@ func TestManagedDatabaseReinstallRecovery(t *testing.T) {
 	}
 	if _, err := s.managedDatabase(ctx); err == nil || !strings.Contains(err.Error(), "docker rename "+name) {
 		t.Fatal("unmanaged container not refused", err)
+	}
+}
+
+func TestRecoverManagedDatabaseSkipsExternalDatabase(t *testing.T) {
+	cleanSetupEnv(t)
+	dir := t.TempDir()
+	if _, err := credentials.Generate(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.Set(dir, map[string]string{"DATABASE_URL": "postgres://external.example/control"}); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(bin+"/docker", []byte("#!/bin/sh\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if err := RecoverManagedDatabase(context.Background(), dir); err != nil {
+		t.Fatal("external database was treated as managed", err)
 	}
 }
 
