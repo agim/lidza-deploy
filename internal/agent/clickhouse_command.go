@@ -68,7 +68,7 @@ func clickhouseDockerCommand(ctx context.Context, c ClickHouseResource, stage st
 func clickhouseContainerState(ctx context.Context, c ClickHouseResource) string {
 	probe, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	state, err := clickhouseDockerCommand(probe, c, "inspect container state", nil, nil, "inspect", "--format", `status={{.State.Status}} OOMKilled={{.State.OOMKilled}} exit={{.State.ExitCode}} error={{.State.Error}}`, c.Network)
+	state, err := clickhouseDockerCommand(probe, c, "inspect container state", nil, nil, "inspect", "--format", `status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} OOMKilled={{.State.OOMKilled}} exit={{.State.ExitCode}} error={{.State.Error}}`, c.Network)
 	if err != nil {
 		return "container state unavailable"
 	}

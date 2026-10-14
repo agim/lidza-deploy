@@ -80,16 +80,30 @@ func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
 	commandDiagnostic(ctx, "clickhouse", "Authenticating with the retained agent credential and ensuring the telemetry database exists.")
 	var lastErr error
 	lastProgress := time.Now()
+	restarted := false
 	for {
 		// Authenticate using the agent's retained secret (not a health check using
 		// the container's own env), so stale/mismatched credentials fail closed.
 		// Do not select telemetry before creating it: an interrupted first start can
 		// leave a valid server and user on the retained volume without that database.
 		query := `<clickhouse><user>lidza</user><password>` + c.Password + `</password></clickhouse>`
-		if _, err := clickhouseDockerCommand(ctx, c, "authenticated ClickHouse query", strings.NewReader(query), nil, "exec", "-i", c.Network, "sh", "-c", `umask 077; f=$(mktemp); trap 'rm -f "$f"' EXIT; cat > "$f"; clickhouse-client --config-file "$f" --multiquery --query 'CREATE DATABASE IF NOT EXISTS telemetry; SELECT 1'`); err == nil {
+		queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := clickhouseDockerCommand(queryCtx, c, "authenticated ClickHouse query", strings.NewReader(query), nil, "exec", "-i", c.Network, "sh", "-c", `umask 077; f=$(mktemp); trap 'rm -f "$f"' EXIT; cat > "$f"; clickhouse-client --host 127.0.0.1 --connect_timeout 3 --receive_timeout 5 --send_timeout 5 --config-file "$f" --multiquery --query 'CREATE DATABASE IF NOT EXISTS telemetry; SELECT 1'`)
+		probeTimedOut := errors.Is(queryCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		cancel()
+		if err == nil {
 			return nil
-		} else {
-			lastErr = err
+		}
+		lastErr = err
+		// A client blocked inside a running container is not normal warm-up. Restart
+		// this owned service once, preserving its volumes and retained credential.
+		if probeTimedOut && !restarted {
+			commandDiagnostic(ctx, "clickhouse", "ClickHouse is running but not answering a bounded local query; restarting the managed container once.")
+			if _, restartErr := clickhouseDockerCommand(ctx, c, "restart unresponsive ClickHouse container", nil, nil, "restart", "--time", "10", c.Network); restartErr != nil {
+				return restartErr
+			}
+			restarted = true
+			lastProgress = time.Now()
 		}
 		if time.Since(lastProgress) >= 15*time.Second {
 			commandDiagnostic(ctx, "clickhouse", "Still waiting for authenticated ClickHouse readiness: "+boundedErrorText(lastErr.Error(), 500))

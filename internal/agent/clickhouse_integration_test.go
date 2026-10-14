@@ -141,6 +141,20 @@ func TestDockerAutomaticClickHouseDeployReloadAndPersistence(t *testing.T) {
 	if after != stable {
 		t.Fatal("redeploy rotated credentials")
 	}
+	// A running container whose server process is frozen reproduces a Docker exec
+	// that otherwise consumes the whole readiness deadline. Provisioning restarts
+	// the owned service once and retains both data and credentials.
+	if _, err := command(ctx, "", nil, "docker", "kill", "--signal", "STOP", name); err != nil {
+		t.Fatal(err)
+	}
+	deploy(false)
+	request("/read")
+	m.mu.Lock()
+	if m.data.ClickHouses[a.ID] != stable {
+		m.mu.Unlock()
+		t.Fatal("unresponsive-service recovery rotated credentials")
+	}
+	m.mu.Unlock()
 	current := *m.Current(a.ID)
 	m.clickhouseProvision = func(context.Context, ClickHouseResource) error { return fmt.Errorf("private diagnostic") }
 	d, err := m.Enqueue(a.ID, DeployRequest{})
