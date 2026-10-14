@@ -11,6 +11,45 @@ import (
 
 const clickhouseImage = "clickhouse/clickhouse-server:26.8.15.10"
 
+func createManagedClickHouseContainer(ctx context.Context, c ClickHouseResource, stage string) error {
+	image, err := clickhouseDockerCommand(ctx, c, "inspect ClickHouse image", nil, nil, "image", "ls", "--quiet", "--filter", "reference="+clickhouseImage)
+	if err != nil {
+		return err
+	}
+	if image == "" {
+		commandDiagnostic(ctx, "clickhouse", "Downloading "+clickhouseImage+" before container creation.")
+		if _, err := clickhouseDockerCommand(ctx, c, "download ClickHouse image", nil, nil, "pull", clickhouseImage); err != nil {
+			return err
+		}
+	}
+	args := []string{
+		"run", "-d", "--name", c.Network, "--label", "io.lidza.clickhouse=" + c.Network, "--network", c.Network,
+		"--restart", "unless-stopped", "--memory", "2g", "--pids-limit", "512", "--ulimit", "nofile=262144:262144",
+		"--log-opt", "max-size=10m", "--log-opt", "max-file=3",
+		"--mount", "type=volume,src=" + c.Network + "-data,dst=/var/lib/clickhouse",
+		"--mount", "type=volume,src=" + c.Network + "-logs,dst=/var/log/clickhouse-server",
+		"--env", "CLICKHOUSE_DB", "--env", "CLICKHOUSE_USER", "--env", "CLICKHOUSE_PASSWORD", "--env", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT",
+		"--health-cmd", `clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query 'SELECT 1'`,
+		"--health-interval", "10s", "--health-timeout", "5s", "--health-start-period", "30s", "--health-retries", "6", clickhouseImage}
+	_, err = clickhouseDockerCommand(ctx, c, stage, nil, []string{"CLICKHOUSE_DB=telemetry", "CLICKHOUSE_USER=lidza", "CLICKHOUSE_PASSWORD=" + c.Password, "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1"}, args...)
+	return err
+}
+
+func replaceManagedClickHouseContainer(ctx context.Context, c ClickHouseResource) error {
+	if _, err := clickhouseDockerCommand(ctx, c, "remove unhealthy ClickHouse container", nil, nil, "rm", "--force", c.Network); err != nil {
+		return err
+	}
+	return createManagedClickHouseContainer(ctx, c, "recreate unhealthy ClickHouse container")
+}
+
+func clickhouseUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "context deadline exceeded") || strings.Contains(text, "connection refused") || strings.Contains(text, "cannot connect") || strings.Contains(text, "network_error")
+}
+
 func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
 	password, decodeErr := hex.DecodeString(c.Password)
 	if !strings.HasPrefix(c.Network, "lidza-clickhouse-") || !idPattern.MatchString(strings.TrimPrefix(c.Network, "lidza-clickhouse-")) || decodeErr != nil || len(password) != 32 {
@@ -40,29 +79,9 @@ func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
 		return err
 	}
 	if found == "" {
-		image, err := clickhouseDockerCommand(ctx, c, "inspect ClickHouse image", nil, nil, "image", "ls", "--quiet", "--filter", "reference="+clickhouseImage)
-		if err != nil {
-			return err
-		}
-		if image == "" {
-			commandDiagnostic(ctx, "clickhouse", "Downloading "+clickhouseImage+" before container creation.")
-			if _, err := clickhouseDockerCommand(ctx, c, "download ClickHouse image", nil, nil, "pull", clickhouseImage); err != nil {
-				return err
-			}
-		}
 		commandDiagnostic(ctx, "clickhouse", "Starting private ClickHouse container "+c.Network+".")
 		// Secrets travel in the child environment, never argv or deployment logs.
-		args := []string{
-			"run", "-d", "--name", c.Network, "--label", "io.lidza.clickhouse=" + c.Network, "--network", c.Network,
-			"--restart", "unless-stopped", "--memory", "2g", "--pids-limit", "512", "--ulimit", "nofile=262144:262144",
-			"--log-opt", "max-size=10m", "--log-opt", "max-file=3",
-			"--mount", "type=volume,src=" + c.Network + "-data,dst=/var/lib/clickhouse",
-			"--mount", "type=volume,src=" + c.Network + "-logs,dst=/var/log/clickhouse-server",
-			"--env", "CLICKHOUSE_DB", "--env", "CLICKHOUSE_USER", "--env", "CLICKHOUSE_PASSWORD", "--env", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT",
-			"--health-cmd", `clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query 'SELECT 1'`,
-			"--health-interval", "10s", "--health-timeout", "5s", "--health-start-period", "30s", "--health-retries", "6", clickhouseImage}
-		_, err = clickhouseDockerCommand(ctx, c, "create/start ClickHouse container", nil, []string{"CLICKHOUSE_DB=telemetry", "CLICKHOUSE_USER=lidza", "CLICKHOUSE_PASSWORD=" + c.Password, "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1"}, args...)
-		if err != nil {
+		if err = createManagedClickHouseContainer(ctx, c, "create/start ClickHouse container"); err != nil {
 			return err
 		}
 	} else {
@@ -81,6 +100,9 @@ func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
 	var lastErr error
 	lastProgress := time.Now()
 	restarted := false
+	restartAt := time.Time{}
+	recreated := false
+	unavailableSince := time.Time{}
 	for {
 		// Authenticate using the agent's retained secret (not a health check using
 		// the container's own env), so stale/mismatched credentials fail closed.
@@ -95,14 +117,35 @@ func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
 			return nil
 		}
 		lastErr = err
+		if clickhouseUnavailable(lastErr) {
+			if unavailableSince.IsZero() {
+				unavailableSince = time.Now()
+			}
+		} else {
+			unavailableSince = time.Time{}
+		}
 		// A client blocked inside a running container is not normal warm-up. Restart
 		// this owned service once, preserving its volumes and retained credential.
-		if probeTimedOut && !restarted {
+		if !restarted && (probeTimedOut || !unavailableSince.IsZero() && time.Since(unavailableSince) >= 15*time.Second) {
 			commandDiagnostic(ctx, "clickhouse", "ClickHouse is running but not answering a bounded local query; restarting the managed container once.")
 			if _, restartErr := clickhouseDockerCommand(ctx, c, "restart unresponsive ClickHouse container", nil, nil, "restart", "--time", "10", c.Network); restartErr != nil {
 				return restartErr
 			}
 			restarted = true
+			restartAt = time.Now()
+			lastProgress = time.Now()
+		}
+		// Older or interrupted agent releases can leave an owned container whose
+		// entrypoint/configuration no longer starts the server. A restart cannot
+		// repair that container definition. Replace it once with the current,
+		// known-good definition while retaining the owned data/log volumes and
+		// credential. Authentication failures are intentionally excluded.
+		if restarted && !recreated && time.Since(restartAt) >= 15*time.Second && clickhouseUnavailable(lastErr) {
+			commandDiagnostic(ctx, "clickhouse", "The retained ClickHouse container still has no local listener; recreating its container definition while preserving data and credentials.")
+			if replaceErr := replaceManagedClickHouseContainer(ctx, c); replaceErr != nil {
+				return replaceErr
+			}
+			recreated = true
 			lastProgress = time.Now()
 		}
 		if time.Since(lastProgress) >= 15*time.Second {

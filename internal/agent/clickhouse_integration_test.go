@@ -155,6 +155,17 @@ func TestDockerAutomaticClickHouseDeployReloadAndPersistence(t *testing.T) {
 		t.Fatal("unresponsive-service recovery rotated credentials")
 	}
 	m.mu.Unlock()
+	// A retained container can have a broken entrypoint/configuration even though
+	// its data volumes and ownership are valid. Provisioning must replace only
+	// that container definition and preserve the application data.
+	if _, err := command(ctx, "", nil, "docker", "rm", "--force", name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := command(ctx, "", nil, "docker", "run", "--detach", "--name", name, "--label", "io.lidza.clickhouse="+name, "--network", name, "--restart", "unless-stopped", "--mount", "type=volume,src="+name+"-data,dst=/var/lib/clickhouse", "--mount", "type=volume,src="+name+"-logs,dst=/var/log/clickhouse-server", "--entrypoint", "sleep", clickhouseImage, "infinity"); err != nil {
+		t.Fatal(err)
+	}
+	deploy(false)
+	request("/read")
 	current := *m.Current(a.ID)
 	m.clickhouseProvision = func(context.Context, ClickHouseResource) error { return fmt.Errorf("private diagnostic") }
 	d, err := m.Enqueue(a.ID, DeployRequest{})

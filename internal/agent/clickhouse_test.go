@@ -124,3 +124,14 @@ func TestClickHouseFailureRetryAndExternalConnection(t *testing.T) {
 		t.Fatal("partial connection replaced")
 	}
 }
+
+func TestClickHouseUnavailableClassificationExcludesAuthentication(t *testing.T) {
+	for _, message := range []string{"context deadline exceeded", "Cannot connect to 127.0.0.1:9000", "NETWORK_ERROR: Connection refused"} {
+		if !clickhouseUnavailable(errors.New(message)) {
+			t.Fatalf("availability failure not recognized: %s", message)
+		}
+	}
+	if clickhouseUnavailable(errors.New("AUTHENTICATION_FAILED: wrong password")) {
+		t.Fatal("credential failure would replace retained container")
+	}
+}
