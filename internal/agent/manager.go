@@ -554,6 +554,7 @@ func (m *Manager) work() {
 			}
 			ctx, cancel := context.WithTimeout(m.ctx, 2*time.Hour)
 			ctx = m.deploymentDiagnostics(ctx, j)
+			commandDiagnostic(ctx, "deployment", "Preparing deployment prerequisites.")
 			var release *Release
 			if j.app.BackupBeforeDeploy == nil || *j.app.BackupBeforeDeploy {
 				err = m.backupBeforeRelease(ctx, j.backupIDs)

@@ -35,6 +35,7 @@ export interface Application {
 export interface Deployment {
   id: ID;
   app_id: ID;
+  server_id?: ID;
   status: string;
   kind?: string;
   commit?: string;

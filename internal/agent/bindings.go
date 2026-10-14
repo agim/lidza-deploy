@@ -67,6 +67,7 @@ func (m *Manager) bindDatabaseLocked(appID, key, id string) error {
 // a candidate. Include the previous primary database when switching connections.
 func (m *Manager) backupBeforeRelease(ctx context.Context, ids []string) error {
 	for _, id := range ids {
+		commandDiagnostic(ctx, "backup", "Creating the required pre-deployment backup for "+id+". The image build starts after this completes.")
 		m.mu.Lock()
 		d, ok := m.data.Databases[id]
 		if !ok || !d.Ready || d.Operation != "" {
@@ -120,6 +121,7 @@ func (m *Manager) backupBeforeRelease(ctx context.Context, ids []string) error {
 		if saveErr != nil {
 			return errors.New("pre-deployment backup could not be finalized; current release retained")
 		}
+		commandDiagnostic(ctx, "backup", "Pre-deployment backup completed for "+id+".")
 	}
 	return nil
 }

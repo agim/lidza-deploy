@@ -61,7 +61,7 @@ export function LogPage({ kind, id }: { kind: 'build-logs' | 'runtime-logs'; id:
     const load = async () => {
       try {
         if (kind === 'build-logs') {
-          const value = await get<{ deployments?: Deployment[] } | Deployment[]>('control/deployments');
+          const value = await get<{ deployments?: Deployment[]; unavailable_servers?: string[] } | Deployment[]>('control/deployments');
           const rows = Array.isArray(value) ? value : value.deployments || [];
           const current = rows.find(item => item.id === id);
           if (!active) return;
@@ -74,7 +74,13 @@ export function LogPage({ kind, id }: { kind: 'build-logs' | 'runtime-logs'; id:
             schedule(!['queued', 'building'].includes(current.status));
             return;
           }
-          setError('');
+          const unavailable = Array.isArray(value) ? [] : value.unavailable_servers || [];
+          if (unavailable.length) {
+            const affected = deployment?.server_id ? unavailable.includes(deployment.server_id) : true;
+            setError(affected ? `Live refresh unavailable: hosting agent ${deployment?.server_id || unavailable.join(', ')} is offline. Retrying…` : '');
+          } else {
+            setError('Deployment is no longer available in retained agent history.');
+          }
         } else {
           const value = await get<{ logs?: string }>(`control/apps/${encodeURIComponent(id)}/logs`);
           if (!active) return;
