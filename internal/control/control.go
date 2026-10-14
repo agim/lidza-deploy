@@ -305,6 +305,8 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	}
 	handle("GET /api/control/servers/{server}/upgrade", c.upgradeServer)
 	handle("POST /api/control/servers/{server}/upgrade", c.upgradeServer)
+	handle("GET /api/control/servers/{server}/containers", c.serverContainers)
+	handle("POST /api/control/servers/{server}/containers/restart", c.serverContainers)
 	handle("PUT /api/control/apps/{id}/previews", c.previewConfig)
 	handle("GET /api/control/tasks", c.tasks)
 	handle("PUT /api/control/apps/{id}/tasks/{task}", c.taskAction)
