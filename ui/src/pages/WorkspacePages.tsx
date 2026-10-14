@@ -1,10 +1,10 @@
-import { Activity, BookOpen, CheckCircle2, ClipboardList, KeyRound, Plus, RefreshCw, Search, Settings2, ShieldCheck, Smartphone, Trash2, UploadCloud, Users } from 'lucide-react';
+import { Activity, BookOpen, CheckCircle2, ChevronDown, ClipboardList, Clock3, KeyRound, Plus, RefreshCw, Route as RouteIcon, Search, Server, Settings2, ShieldCheck, Smartphone, Trash2, UploadCloud, Users } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
 import { del, get, patch, post, put } from '../lib/api';
 import { formatDate } from '../lib/format';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
-import { Badge, Button, Card, EmptyState, ErrorBanner, Field, Loading, PageHeader, SearchField, SectionHeader } from '../components/ui';
+import { Badge, Button, Card, CopyButton, EmptyState, ErrorBanner, Field, Loading, Notice, PageHeader, SearchField, SectionHeader } from '../components/ui';
 
 export function DefaultsPage() {
   const [values, setValues] = useState<Record<string, string>>({}), [error, setError] = useState(''), [busy, setBusy] = useState(false); const notify = useToast();
@@ -111,11 +111,169 @@ function AddMember({ onSaved, onError }: { onSaved: () => void; onError: (value:
   return <Card className="form-card"><SectionHeader title="Add member or change role" /><form onSubmit={submit}><div className="form-grid three"><Field label="Email"><input name="email" type="email" required /></Field><Field label="Name"><input name="name" /></Field><Field label="Role"><select name="role"><option value="viewer">Viewer</option><option value="deployer">Deployer</option><option value="admin">Admin</option></select></Field></div><Button variant="primary">Save member</Button></form></Card>;
 }
 
+type ActivityItem = {
+  id?: string;
+  source?: string;
+  message?: string;
+  error?: string;
+  detail?: string;
+  stack?: string;
+  route?: string;
+  path?: string;
+  method?: string;
+  requestId?: string;
+  request_id?: string;
+  fingerprint?: string;
+  createdAt?: string;
+  created_at?: string;
+  created?: string;
+  last_seen?: string;
+  timestamp?: string;
+  title?: string;
+  name?: string;
+  kind?: string;
+  status?: string | number;
+  level?: string;
+  count?: number;
+  app_id?: string;
+  container?: string;
+  release?: string;
+  commit?: string;
+  security?: { category?: string; status?: number; outcome?: string };
+};
+
+type ActivityResponse = {
+  errors?: ActivityItem[];
+  items?: ActivityItem[];
+  probes?: ActivityItem[];
+  status?: string;
+  truncated?: boolean;
+  last_received?: string;
+  collection_error?: string;
+};
+
+type ActivityGroup = { key: string; items: ActivityItem[]; latest: ActivityItem; first: ActivityItem; count: number };
+
+function activityTime(item: ActivityItem) {
+  return item.createdAt || item.created_at || item.created || item.last_seen || item.timestamp;
+}
+
+function activityTimeValue(item: ActivityItem) {
+  const value = activityTime(item);
+  if (!value) return 0;
+  const time = new Date(value).valueOf();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function activityGroups(items: ActivityItem[]) {
+  const sorted = [...items].sort((a, b) => activityTimeValue(b) - activityTimeValue(a));
+  const groups = new Map<string, ActivityItem[]>();
+  sorted.forEach((item, index) => {
+    const key = item.fingerprint || item.id || `activity-${index}`;
+    groups.set(key, [...(groups.get(key) || []), item]);
+  });
+  return [...groups.entries()].map(([key, rows]): ActivityGroup => ({
+    key,
+    items: rows,
+    latest: rows[0],
+    first: rows[rows.length - 1],
+    count: Math.max(rows.length, Number(rows[0].count) || 0),
+  }));
+}
+
+function activityTitle(item: ActivityItem, security: boolean) {
+  if (security && item.security?.category) return item.security.category.replaceAll('-', ' ');
+  return item.title || item.name || item.message || item.error || item.path || item.kind || (security ? 'Security event' : 'Application error');
+}
+
+function ActivityGroupCard({ group, security }: { group: ActivityGroup; security: boolean }) {
+  const item = group.latest;
+  const occurredAt = activityTime(item);
+  const route = item.route || item.path;
+  const status = item.security?.status || item.status;
+  const message = item.message || item.error || item.detail;
+  const title = activityTitle(item, security);
+  return <article className="activity-card">
+    <div className="activity-card-summary">
+      <div className="activity-card-heading">
+        <strong>{title}</strong>
+        <Badge tone={security && item.security?.outcome === 'review-response' ? 'warning' : 'neutral'}>{group.count} {group.count === 1 ? 'occurrence' : 'occurrences'}</Badge>
+      </div>
+      <div className="activity-meta">
+        <span><Clock3 size={14} aria-hidden="true" /><span><b>Last seen</b> <time dateTime={occurredAt}>{formatDate(occurredAt)}</time></span></span>
+        {(item.method || route) && <span><RouteIcon size={14} aria-hidden="true" /><span>{item.method && <b>{item.method}</b>} {route || 'Unknown route'}{status ? ` · HTTP ${status}` : ''}</span></span>}
+        {(item.source || item.container) && <span><Server size={14} aria-hidden="true" /><span>{[item.source, item.container].filter(Boolean).join(' · ')}</span></span>}
+      </div>
+      {message && message !== title && <p>{message}</p>}
+    </div>
+    <details className="activity-details">
+      <summary><span>View details</span><ChevronDown size={16} aria-hidden="true" /></summary>
+      <div className="activity-details-body">
+        <dl className="activity-facts">
+          <div><dt>First seen</dt><dd><time dateTime={activityTime(group.first)}>{formatDate(activityTime(group.first))}</time></dd></div>
+          <div><dt>Last seen</dt><dd><time dateTime={occurredAt}>{formatDate(occurredAt)}</time></dd></div>
+          <div><dt>Source</dt><dd>{item.source || 'Unknown'}</dd></div>
+          <div><dt>Request</dt><dd>{[item.method, route].filter(Boolean).join(' ') || 'Not reported'}</dd></div>
+          {security && <div><dt>Classification</dt><dd>{[item.security?.category, item.security?.outcome].filter(Boolean).join(' · ') || 'Not reported'}</dd></div>}
+          {item.container && <div><dt>Container</dt><dd>{item.container}</dd></div>}
+          {item.release && <div><dt>Release</dt><dd>{item.release}</dd></div>}
+          {item.commit && <div><dt>Commit</dt><dd>{item.commit}</dd></div>}
+        </dl>
+        {message && <section className="activity-detail-section"><h3>Message</h3><pre>{message}</pre></section>}
+        {item.stack && <section className="activity-detail-section"><h3>Stack trace</h3><pre>{item.stack}</pre></section>}
+        <section className="activity-detail-section">
+          <h3>Recent occurrences</h3>
+          <div className="activity-occurrences">
+            {group.items.slice(0, 20).map((occurrence, index) => {
+              const occurrenceRequestID = occurrence.requestId || occurrence.request_id;
+              return <div className="activity-occurrence" key={occurrence.id || `${activityTime(occurrence)}-${index}`}>
+                <time dateTime={activityTime(occurrence)}>{formatDate(activityTime(occurrence))}</time>
+                {occurrenceRequestID ? <><code>{occurrenceRequestID}</code><CopyButton value={occurrenceRequestID} label="Copy ID" /></> : <span className="muted-copy">No request ID</span>}
+              </div>;
+            })}
+          </div>
+        </section>
+      </div>
+    </details>
+  </article>;
+}
+
 export function ActivityPage({ security = false, selectedID }: { security?: boolean; selectedID?: string }) {
-  const { apps } = useWorkspace(); const [appID, setAppID] = useState(selectedID || apps[0]?.id || ''), [items, setItems] = useState<any[]>([]), [error, setError] = useState(''), [loading, setLoading] = useState(false);
-  const load = async (id = appID) => { if (!id) return; setLoading(true); try { const value = await get<any>(`control/apps/${encodeURIComponent(id)}/${security ? 'security' : 'errors'}`); setItems(Array.isArray(value) ? value : value.items || value.errors || value.probes || []); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
-  useEffect(() => { if (appID) load(); }, [appID, security]);
-  return <><PageHeader eyebrow="Application diagnostics" title={security ? 'Security activity' : 'Errors'} description={security ? 'Suspicious and rejected traffic reported by hosted applications.' : 'Application failures grouped into a searchable operational view.'} actions={<Button onClick={() => load()}><RefreshCw size={16} />Refresh</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card><SectionHeader title={security ? 'Security events' : 'Error groups'} actions={<Field label="Application" className="toolbar-filter"><select value={appID} onChange={event => setAppID(event.target.value)}>{apps.map(app => <option key={app.id}>{app.id}</option>)}</select></Field>} />{loading ? <Loading /> : <div className="simple-list">{items.map((item, index) => <div key={item.id || item.fingerprint || index}><div><strong>{item.title || item.name || item.path || item.kind || (security ? 'Security event' : 'Application error')}</strong><small>{formatDate(item.created || item.last_seen || item.timestamp)} · {item.status || item.level || ''}</small><p>{item.message || item.error || item.detail || ''}</p></div>{item.count && <Badge>{item.count}</Badge>}</div>)}{!items.length && <EmptyState icon={security ? <ShieldCheck /> : <Activity />} title={security ? 'No security events' : 'No application errors'} description="Nothing requiring attention was reported for this application." />}</div>}</Card></>;
+  const { apps } = useWorkspace();
+  const [appID, setAppID] = useState(selectedID || apps[0]?.id || '');
+  const [response, setResponse] = useState<ActivityResponse>();
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState('');
+  useEffect(() => { if (!appID && apps[0]?.id) setAppID(apps[0].id); }, [appID, apps]);
+  const load = async (id = appID) => {
+    if (!id) return;
+    setLoading(true);
+    try {
+      const value = await get<ActivityResponse | ActivityItem[]>(`control/apps/${encodeURIComponent(id)}/${security ? 'security' : 'errors'}`);
+      setResponse(Array.isArray(value) ? { items: value } : value);
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { if (appID) void load(); }, [appID, security]);
+  const items = response?.items || response?.errors || response?.probes || [];
+  const groups = activityGroups(items).filter(group => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return true;
+    return group.items.some(item => [item.message, item.error, item.detail, item.stack, item.route, item.path, item.method, item.requestId, item.request_id, item.source, item.container, item.release, item.commit, item.security?.category, item.security?.outcome].some(value => String(value || '').toLowerCase().includes(needle)));
+  });
+  const collectorStatus = response?.status?.replaceAll('_', ' ');
+  return <>
+    <PageHeader eyebrow="Application diagnostics" title={security ? 'Security activity' : 'Errors'} description={security ? 'Suspicious and rejected traffic reported by hosted applications.' : 'Application failures grouped into a searchable operational view.'} actions={<Button onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? 'spin' : ''} size={16} />Refresh</Button>} />
+    {error && <ErrorBanner>{error}</ErrorBanner>}
+    {response?.collection_error && <Notice><strong>Collector warning:</strong>&nbsp; {response.collection_error}</Notice>}
+    <Card>
+      <SectionHeader title={security ? 'Security events' : 'Error groups'} description={`${groups.length} ${groups.length === 1 ? 'group' : 'groups'}${collectorStatus ? ` · collector ${collectorStatus}` : ''}${response?.last_received ? ` · last report ${formatDate(response.last_received)}` : ''}${response?.truncated ? ' · newest 500 occurrences shown' : ''}`} actions={<div className="activity-filters"><SearchField value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${security ? 'security events' : 'errors'}…`} /><Field label="Application" className="toolbar-filter"><select value={appID} onChange={event => setAppID(event.target.value)}>{apps.map(app => <option key={app.id} value={app.id}>{app.id}</option>)}</select></Field></div>} />
+      {loading ? <Loading /> : <div className="activity-list">{groups.map(group => <ActivityGroupCard key={group.key} group={group} security={security} />)}{!groups.length && <EmptyState icon={security ? <ShieldCheck /> : <Activity />} title={query ? 'No matching activity' : security ? 'No security events' : 'No application errors'} description={query ? 'Try a different message, route, request ID, release or container.' : 'Nothing requiring attention was reported for this application.'} />}</div>}
+    </Card>
+  </>;
 }
 
 export function HelpPage() {

@@ -221,7 +221,8 @@ input:read-only { color: var(--muted); background: var(--surface-2); }
 .env-value-control:has(.env-reveal) .env-value { padding-right: 46px; }
 .env-value-control .env-reveal { position: relative; z-index: 1; width: 40px; height: 40px; min-height: 40px; margin: 0 2px 0 0; align-self: center; justify-self: end; border: 0; background: transparent; }
 .env-value-control .env-reveal:hover:not(:disabled) { transform: none; }
-.env-row .button-icon { margin-top: 25px; }
+/* Only the row's remove action needs label alignment. A descendant selector also catches the credential eye button and makes its field 25px taller. */
+.env-row>.button-icon { margin-top: 25px; }
 .env-help, .security-note, .inline-guidance { margin: 16px 0 0; padding: 12px 14px; display: flex; align-items: flex-start; gap: 10px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; font-size: .76rem; line-height: 1.55; }
 .env-help p, .security-note { margin-bottom: 0; }
 .env-help svg, .security-note svg, .inline-guidance svg { flex: 0 0 auto; color: var(--accent-strong); }
@@ -277,6 +278,38 @@ input:read-only { color: var(--muted); background: var(--surface-2); }
 .simple-list small { color: var(--muted); }
 .simple-list p { margin: 3px 0 0; color: var(--muted); }
 .simple-list code { overflow-wrap: anywhere; color: var(--muted); font-size: .72rem; }
+.activity-filters { min-width: min(620px, 52vw); display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, .72fr); align-items: end; gap: 10px; }
+.activity-filters .search-field { width: 100%; }
+.activity-list { display: grid; gap: 12px; }
+.activity-card { min-width: 0; overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: 9px; }
+.activity-card-summary { min-width: 0; padding: 17px 18px; display: grid; gap: 11px; }
+.activity-card-summary>p { margin: 0; color: var(--muted); line-height: 1.55; overflow-wrap: anywhere; }
+.activity-card-heading { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.activity-card-heading strong { min-width: 0; font-size: .9rem; line-height: 1.4; overflow-wrap: anywhere; }
+.activity-card-heading .badge { flex: 0 0 auto; }
+.activity-meta { display: flex; flex-wrap: wrap; gap: 7px 18px; color: var(--muted); font-size: .73rem; }
+.activity-meta>span { min-width: 0; display: inline-flex; align-items: flex-start; gap: 6px; }
+.activity-meta svg { margin-top: 1px; flex: 0 0 auto; color: var(--accent-strong); }
+.activity-meta b { color: var(--text); font-weight: 650; }
+.activity-details { border-top: 1px solid var(--border); }
+.activity-details>summary { min-height: 46px; padding: 0 18px; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text); font-size: .78rem; font-weight: 650; cursor: pointer; list-style: none; }
+.activity-details>summary::-webkit-details-marker { display: none; }
+.activity-details>summary:hover { background: var(--surface-2); }
+.activity-details>summary svg { color: var(--muted); transition: transform .16s ease; }
+.activity-details[open]>summary svg { transform: rotate(180deg); }
+.activity-details-body { padding: 0 18px 18px; display: grid; gap: 18px; }
+.activity-facts { margin: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; overflow: hidden; background: var(--border); border: 1px solid var(--border); border-radius: 8px; }
+.activity-facts>div { min-width: 0; padding: 12px; display: grid; gap: 4px; background: var(--surface); }
+.activity-facts dt { color: var(--subtle); font-size: .62rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.activity-facts dd { margin: 0; color: var(--text); font-size: .74rem; overflow-wrap: anywhere; }
+.activity-detail-section { min-width: 0; }
+.activity-detail-section h3 { margin: 0 0 8px; font-size: .78rem; }
+.activity-detail-section pre { max-height: 340px; margin: 0; padding: 13px; overflow: auto; color: var(--text); background: #030604; border: 1px solid var(--border); border-radius: 7px; font-size: .72rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.activity-occurrences { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; }
+.activity-occurrence { min-width: 0; min-height: 48px; padding: 8px 10px 8px 12px; display: grid; grid-template-columns: minmax(180px, .7fr) minmax(180px, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); font-size: .72rem; }
+.activity-occurrence:last-child { border: 0; }
+.activity-occurrence time { color: var(--muted); }
+.activity-occurrence code { min-width: 0; overflow-wrap: anywhere; }
 .help-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
 .help-grid .card>svg { margin-bottom: 20px; color: var(--accent-strong); }
 .help-grid p { margin-bottom: 0; color: var(--muted); line-height: 1.6; }
@@ -353,6 +386,7 @@ input:read-only { color: var(--muted); background: var(--surface-2); }
   .resource-row>div { padding: 0; display: grid; gap: 5px; }
   .resource-row>div::before { content: attr(data-label); color: var(--subtle); font-size: .61rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
   .resource-settings-grid { grid-template-columns: 1fr; }
+  .activity-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 620px) {
@@ -383,6 +417,18 @@ input:read-only { color: var(--muted); background: var(--surface-2); }
   .section-header { flex-direction: column; }
   .section-actions { width: 100%; }
   .section-actions .button { flex: 1; }
+  .activity-filters { min-width: 0; width: 100%; grid-template-columns: 1fr; }
+  .activity-card-summary { padding: 15px; }
+  .activity-card-heading { align-items: flex-start; flex-direction: column; gap: 9px; }
+  .activity-card-heading .badge { order: -1; }
+  .activity-meta { display: grid; gap: 9px; }
+  .activity-meta>span { line-height: 1.45; }
+  .activity-details>summary { padding: 0 15px; }
+  .activity-details-body { padding: 0 15px 15px; }
+  .activity-facts { grid-template-columns: 1fr; }
+  .activity-occurrence { padding: 12px; grid-template-columns: minmax(0, 1fr) auto; }
+  .activity-occurrence time { grid-column: 1 / -1; }
+  .activity-occurrence .muted-copy { grid-column: 1 / -1; }
   .env-row { padding: 14px; grid-template-columns: 1fr; }
   .env-row>.field:nth-of-type(4), .env-row>.button-icon { grid-column: auto; grid-row: auto; }
   .env-row>.button-icon { margin-top: 0; justify-self: end; }
