@@ -77,16 +77,23 @@ func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
 			return err
 		}
 	}
-	commandDiagnostic(ctx, "clickhouse", "Waiting for an authenticated SELECT 1 using the retained agent credential.")
+	commandDiagnostic(ctx, "clickhouse", "Authenticating with the retained agent credential and ensuring the telemetry database exists.")
 	var lastErr error
+	lastProgress := time.Now()
 	for {
 		// Authenticate using the agent's retained secret (not a health check using
 		// the container's own env), so stale/mismatched credentials fail closed.
+		// Do not select telemetry before creating it: an interrupted first start can
+		// leave a valid server and user on the retained volume without that database.
 		query := `<clickhouse><user>lidza</user><password>` + c.Password + `</password></clickhouse>`
-		if _, err := clickhouseDockerCommand(ctx, c, "authenticated ClickHouse query", strings.NewReader(query), nil, "exec", "-i", c.Network, "sh", "-c", `umask 077; f=$(mktemp); trap 'rm -f "$f"' EXIT; cat > "$f"; clickhouse-client --config-file "$f" --database telemetry --query 'SELECT 1'`); err == nil {
+		if _, err := clickhouseDockerCommand(ctx, c, "authenticated ClickHouse query", strings.NewReader(query), nil, "exec", "-i", c.Network, "sh", "-c", `umask 077; f=$(mktemp); trap 'rm -f "$f"' EXIT; cat > "$f"; clickhouse-client --config-file "$f" --multiquery --query 'CREATE DATABASE IF NOT EXISTS telemetry; SELECT 1'`); err == nil {
 			return nil
 		} else {
 			lastErr = err
+		}
+		if time.Since(lastProgress) >= 15*time.Second {
+			commandDiagnostic(ctx, "clickhouse", "Still waiting for authenticated ClickHouse readiness: "+boundedErrorText(lastErr.Error(), 500))
+			lastProgress = time.Now()
 		}
 		select {
 		case <-ctx.Done():

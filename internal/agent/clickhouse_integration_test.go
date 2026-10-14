@@ -118,6 +118,9 @@ func TestDockerAutomaticClickHouseDeployReloadAndPersistence(t *testing.T) {
 	}
 	deploy(false)
 	request("/write")
+	if _, err := command(ctx, "", nil, "docker", "exec", name, "clickhouse-client", "--user", "lidza", "--password", m.data.ClickHouses[a.ID].Password, "--query", "EXISTS DATABASE telemetry"); err != nil {
+		t.Fatal("managed telemetry database was not ensured", err)
+	}
 	m.mu.Lock()
 	stable := m.data.ClickHouses[a.ID]
 	m.mu.Unlock()
