@@ -282,8 +282,14 @@ input:read-only { color: var(--muted); background: var(--surface-2); }
 .console-output-heading { margin-top: 24px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .console-output-heading h3 { margin: 0; }
 .console-output, .log-card pre { max-width: 100%; min-height: 180px; margin: 10px 0 0; padding: 18px; overflow: auto; color: #e9dfe3; background: #100d0e; border: 1px solid var(--border); border-radius: 8px; font-size: .76rem; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.log-status-card { margin-bottom: 14px; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.log-status-card>div { min-width: 0; display: flex; align-items: center; gap: 12px; }
+.log-status-card strong { font-size: .82rem; }
+.log-status-card>div>span:last-child { color: var(--muted); font-size: .78rem; }
+.log-follow-control { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: .8rem; white-space: nowrap; cursor: pointer; }
+.log-follow-control input { width: 16px; height: 16px; min-height: auto; margin: 0; padding: 0; accent-color: var(--accent-strong); }
 .log-card { padding: 0; overflow: hidden; }
-.log-card pre { min-height: 440px; margin: 0; border: 0; border-radius: 0; }
+.log-card pre { height: clamp(440px, 65vh, 760px); min-height: 440px; margin: 0; border: 0; border-radius: 0; }
 .danger-zone { max-width: 850px; border-color: #633a3a; }
 
 .alert { margin-bottom: 18px; padding: 13px 14px; display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--border); border-radius: 8px; line-height: 1.45; font-size: .82rem; }
@@ -383,6 +389,9 @@ input:read-only { color: var(--muted); background: var(--surface-2); }
   .row-result { align-items: start; flex-direction: column; }
   .factor-setup { grid-template-columns: 1fr; }
   .factor-setup img { max-width: 270px; justify-self: center; }
+  .log-status-card { align-items: flex-start; flex-direction: column; }
+  .log-status-card>div { align-items: flex-start; flex-wrap: wrap; }
+  .log-card pre { height: 55vh; min-height: 55vh; }
   .help-grid { grid-template-columns: 1fr; }
   .toast-region { right: 16px; bottom: 16px; }
   #main-content>footer { flex-direction: column; gap: 6px; }

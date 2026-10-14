@@ -1,8 +1,8 @@
-import { AlertTriangle, Boxes, Cpu, KeyRound, MemoryStick, Play, RefreshCw, Server, TerminalSquare } from 'lucide-react';
-import { type FormEvent, useEffect, useState } from 'react';
+import { AlertTriangle, Boxes, Cpu, KeyRound, MemoryStick, Pause, Play, RefreshCw, Server, TerminalSquare } from 'lucide-react';
+import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { del, get, post, put } from '../lib/api';
 import { formatBytes } from '../lib/format';
-import type { ContainerInfo, Server as ServerType } from '../lib/types';
+import type { ContainerInfo, Deployment, Server as ServerType } from '../lib/types';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
 import { Button, Card, ConfirmAction, CopyButton, ErrorBanner, Field, Loading, PageHeader, ProgressBar, SectionHeader, StatusBadge } from '../components/ui';
@@ -39,7 +39,65 @@ export function ServerConsolePage({ serverID }: { serverID: string }) {
 }
 
 export function LogPage({ kind, id }: { kind: 'build-logs' | 'runtime-logs'; id: string }) {
-  const { deployments } = useWorkspace(); const [output, setOutput] = useState(''), [error, setError] = useState(''), [loading, setLoading] = useState(true);
-  useEffect(() => { if (kind === 'build-logs') { const deployment = deployments.find(item => item.id === id); setOutput(deployment?.log || deployment?.error || 'No build output recorded.'); setLoading(false); return; } get<{ logs?: string }>(`control/apps/${encodeURIComponent(id)}/logs`).then(value => setOutput(value.logs || 'No runtime output recorded.')).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoading(false)); }, [kind, id, deployments]);
-  return <><PageHeader eyebrow={kind === 'build-logs' ? 'Deployment output' : 'Application output'} title={kind === 'build-logs' ? `Build ${id.slice(0, 12)}` : `${id} runtime logs`} description="Output remains selectable and does not move while new workspace data arrives." back={kind === 'build-logs' ? '#deployments' : '#applications'} actions={<CopyButton value={output} label="Copy logs" />} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card className="log-card">{loading ? <Loading /> : <pre>{output}</pre>}</Card></>;
+  const { deployments } = useWorkspace();
+  const initial = deployments.find(item => item.id === id);
+  const [deployment, setDeployment] = useState<Deployment | undefined>(initial);
+  const [output, setOutput] = useState(initial?.log || initial?.error || '');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [paused, setPaused] = useState(false);
+  const [follow, setFollow] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const outputRef = useRef<HTMLPreElement>(null);
+  const terminal = kind === 'build-logs' && !!deployment && !['queued', 'building'].includes(deployment.status);
+
+  useEffect(() => {
+    let active = true;
+    let timer: number | undefined;
+    const schedule = (finished = false) => {
+      if (active && !paused && !finished) timer = window.setTimeout(load, 1_500);
+    };
+    const load = async () => {
+      try {
+        if (kind === 'build-logs') {
+          const value = await get<{ deployments?: Deployment[] } | Deployment[]>('control/deployments');
+          const rows = Array.isArray(value) ? value : value.deployments || [];
+          const current = rows.find(item => item.id === id);
+          if (!active) return;
+          if (current) {
+            setDeployment(current);
+            const latest = current.log || current.error;
+            if (latest) setOutput(latest);
+            setError('');
+            setLoading(false);
+            schedule(!['queued', 'building'].includes(current.status));
+            return;
+          }
+          setError('');
+        } else {
+          const value = await get<{ logs?: string }>(`control/apps/${encodeURIComponent(id)}/logs`);
+          if (!active) return;
+          if (value.logs) setOutput(value.logs);
+          setError('');
+        }
+      } catch (reason) {
+        if (!active) return;
+        setError(`Live refresh failed: ${reason instanceof Error ? reason.message : String(reason)}. Retrying…`);
+      }
+      if (active) setLoading(false);
+      schedule(false);
+    };
+    load();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [kind, id, paused, refreshKey]);
+
+  useEffect(() => {
+    const element = outputRef.current;
+    if (follow && element) element.scrollTop = element.scrollHeight;
+  }, [output, follow]);
+
+  const visibleOutput = output || (terminal ? 'No build output was recorded.' : kind === 'build-logs' ? 'Waiting for build output…' : 'Waiting for runtime output…');
+  const stateLabel = kind === 'runtime-logs' ? `${paused ? 'Paused' : 'Live'} · runtime` : terminal ? `Finished · ${deployment?.status}` : paused ? `Paused · ${deployment?.status || 'waiting'}` : `Live · ${deployment?.status || 'waiting'}`;
+  const status = kind === 'runtime-logs' ? loading ? 'connecting' : 'running' : deployment?.status || (loading ? 'connecting' : 'waiting');
+  return <><PageHeader eyebrow={kind === 'build-logs' ? 'Deployment output' : 'Application output'} title={kind === 'build-logs' ? `Build ${id.slice(0, 12)}` : `${id} runtime logs`} description={terminal ? 'This deployment has finished. Its complete output remains available below.' : 'New output appears here automatically without replacing the page or moving your reading position.'} back={kind === 'build-logs' ? '#deployments' : '#applications'} actions={<div className="sticky-actions"><CopyButton value={visibleOutput} label="Copy logs" /><Button id="log-pause" onClick={() => setPaused(value => !value)} disabled={terminal}>{paused ? <Play size={15} /> : <Pause size={15} />}{paused ? 'Resume live output' : 'Pause live output'}</Button><Button size="sm" onClick={() => setRefreshKey(value => value + 1)}><RefreshCw size={15} />Refresh</Button></div>} />{error && <div id="deployment-refresh-error"><ErrorBanner>{error}</ErrorBanner></div>}<Card className="log-status-card"><div><StatusBadge status={status} /><strong id="deployment-state" aria-live="polite">{stateLabel}</strong>{deployment && <span>{Math.round(deployment.duration_seconds || 0)} seconds</span>}</div><label className="log-follow-control"><input id="log-follow" type="checkbox" checked={follow} onChange={event => setFollow(event.target.checked)} /><span>Follow latest output</span></label></Card><Card className="log-card">{loading && !output ? <Loading label={`Connecting to live ${kind === 'build-logs' ? 'build' : 'runtime'} output…`} /> : <pre id="deployment-output" ref={outputRef} onScroll={event => { const element = event.currentTarget; if (follow && element.scrollHeight - element.scrollTop - element.clientHeight > 28) setFollow(false); }}>{visibleOutput}</pre>}</Card></>;
 }
