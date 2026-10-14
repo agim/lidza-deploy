@@ -212,6 +212,26 @@ Docker, images, stopped containers, database volumes and Caddy remain installed.
 
 ## Development
 
+### Web console
+
+The management console is a React + TypeScript application in `ui/`, built with Vite and embedded in the Go binary from `web/static/`.
+
+```bash
+npm ci
+npm run typecheck
+npm run test:ui
+npm run build
+```
+
+The interface follows one component system rather than page-specific markup:
+
+- `ui/src/components/` contains the responsive application shell, cards, fields, action menus, confirmation dialogs, resource lists, loading states, and notifications.
+- `ui/src/pages/` composes those primitives into full-page workflows. Content that needs scrolling is a routed page; overlays are reserved for short confirmations.
+- `ui/src/state/WorkspaceContext.tsx` owns stable polling and shared inventory state so background updates do not replace focused forms or reorder page structure.
+- `lucide-react` is the single icon set. New pages should not add inline one-off SVGs or Unicode action symbols.
+
+`npm run build` removes only the previous hashed console assets, then writes `web/static/console.html` and `web/static/assets/console/`. The release workflow rebuilds and type-checks this output before Go validation.
+
 Requires Go 1.27.1+, Git, Docker Engine, and Python 3 for the local setup helper. The web assets need no build step.
 
 ```sh

@@ -28,6 +28,15 @@ jobs:
         with:
           go-version: '1.27.1'
           cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Build responsive React console
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm run build
       - name: Validate version and source
         shell: bash
         run: |
