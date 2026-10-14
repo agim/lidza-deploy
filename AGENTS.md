@@ -5,7 +5,7 @@
 - If a missing capability is reusable across applications, open an issue in agim/lidza describing the gap, proposed behavior, acceptance tests, and required release. Pause dependent application work until the framework change is deployed/released. Verify the release and upgrade the dependency before resuming. Do not implement a local substitute to bypass that gate.
 - Product-specific deployment orchestration, host inventory, domain assignments, and repository webhook behavior belong here.
 - Each host must support multiple apps, each with its own FQDN and automatically renewed HTTPS certificate.
-- The user approved Signal with the exact released Līdza dark brand palette. Use it as the live default; retain alternatives only as previews.
+- The user approved Signal's layout with a restrained Matrix-green production palette: near-black and graphite-green surfaces, phosphor-green interaction accents, neutral readable text, amber warnings, and red failures. Use it as the live default; retain alternatives only as previews.
 - Continue authorized implementation and validation autonomously; leave nonblocking questions until the end.
 - Use existing isolated cloud checkouts; do not create Git worktrees unless asked.
 

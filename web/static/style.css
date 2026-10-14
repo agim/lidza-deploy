@@ -9,9 +9,14 @@ body{min-height:100vh;min-height:100dvh}
 
 body:is([data-design=terminal],[data-design=walnut]) .primary:hover{background:#ddbd80;color:#191a18}body:is([data-design=terminal],[data-design=walnut]) .pill.failed{background:#392b27;color:#d4a298}body:is([data-design=terminal],[data-design=walnut]) .notice{background:#252620;border-color:#696b5c;color:#b9b9ad}
 
-/* Signal layout with the released Līdza v0.1.66 admin dark palette.
-   Source: github.com/agim/lidza/packs/admin/templates/theme.css */
-body[data-design=terminal]{--bg:#171214;--surface:#201a1d;--ink:#eee7e3;--muted:#a89a93;--line:#372d32;--accent:oklch(76% 0.1 345);--accent-fg:#221519;--soft:#2a2226;--sidebar:#241821;--green:#9bc3a6;--green-bg:#203027;--shadow:none;font-size:13px}
+/* Signal layout with the approved Matrix-green operations palette. */
+body[data-design=terminal]{--bg:#070b08;--surface:#0d1510;--ink:#e8f0ea;--muted:#8fa395;--line:#203329;--accent:#39ff88;--accent-fg:#031108;--soft:#17251c;--sidebar:#09120d;--green:#5dde8b;--green-bg:#14301f;--shadow:0 18px 60px #0008;font-size:13px;color-scheme:dark}
+body[data-design=terminal] pre{background:#030604;color:#9ef5bb}
+body[data-design=terminal] .error,body[data-design=terminal] .pill.failed{background:#351b1b;color:#ff9b94}
+body[data-design=terminal] .toast{background:#17251c;color:#e8f0ea;border:1px solid #355342}
+body[data-design=terminal] dialog::backdrop{background:#020503c7}
+body[data-design=terminal] input::placeholder,body[data-design=terminal] textarea::placeholder{color:#66776c}
+body[data-design=terminal] #login-error{color:#ff9b94}
 body:is([data-design=terminal],[data-design=walnut]) .sidebar{width:208px;padding:25px 16px}
 body:is([data-design=terminal],[data-design=walnut]) .brand{font-size:26px;letter-spacing:-1px}
 body:is([data-design=terminal],[data-design=walnut]) .workspace{margin:28px 0 25px;padding:14px 0;border-top:0}
@@ -51,7 +56,8 @@ body:is([data-design=terminal],[data-design=walnut]) .card-actions{padding:12px 
 body:is([data-design=terminal],[data-design=walnut]) .card-actions button{font-size:11px;padding:7px 9px;background:transparent;border-color:var(--line);color:var(--ink)}
 body:is([data-design=terminal],[data-design=walnut]) .card-actions .deploy{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);margin-left:4px}
 body:is([data-design=terminal],[data-design=walnut]) .pill{font-size:10px;border-radius:4px}
-body:is([data-design=terminal],[data-design=walnut]) .pill.failed{background:#352222;color:#d9a1a1}
+body[data-design=terminal] .pill.failed{background:#351b1b;color:#ff9b94}
+body[data-design=walnut] .pill.failed{background:#352222;color:#d9a1a1}
 body:is([data-design=terminal],[data-design=walnut]) footer{margin-top:28px;border-top:0;color:var(--muted)}
 body:is([data-design=terminal],[data-design=walnut]) input,body:is([data-design=terminal],[data-design=walnut]) textarea,body:is([data-design=terminal],[data-design=walnut]) select{border-radius:5px}
 @media(max-width:1100px){body:is([data-design=terminal],[data-design=walnut]) .card-body{display:flex;flex-wrap:wrap}body:is([data-design=terminal],[data-design=walnut]) .repo{margin:0}body:is([data-design=terminal],[data-design=walnut]) .card-actions{border-top:1px solid var(--line);justify-content:flex-end}}
@@ -303,7 +309,7 @@ body:is([data-design=terminal],[data-design=walnut]) .app-primary-actions .deplo
 .app-action-group h4{font-size:12px;font-weight:600;color:var(--muted);margin:0 0 4px}
 body:is([data-design=terminal],[data-design=walnut]) .app-action-group button{text-align:left;justify-content:flex-start;padding:10px 12px;font-weight:500;border-color:transparent;background:transparent}
 body:is([data-design=terminal],[data-design=walnut]) .app-action-group button:hover{background:var(--soft);border-color:var(--line)}
-body[data-design=terminal] .app-action-group .app-remove{color:#d9a1a1}
+body[data-design=terminal] .app-action-group .app-remove{color:#ff9b94}
 @media(max-width:1100px){.app-more-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:760px){
  body:is([data-design=terminal],[data-design=walnut]) .app-card{grid-template-columns:minmax(0,1fr)}
