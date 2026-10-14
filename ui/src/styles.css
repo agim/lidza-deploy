@@ -208,6 +208,9 @@ input:read-only { color: var(--muted); background: var(--surface-2); }
 
 .env-list { display: grid; gap: 10px; }
 .env-row { min-width: 0; padding: 14px; display: grid; grid-template-columns: minmax(150px, .85fr) minmax(120px, .55fr) minmax(210px, 1.3fr) minmax(150px, .8fr) auto; align-items: start; gap: 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 9px; }
+.env-value-control { position: relative; min-width: 0; }
+.env-value-control:has(.env-reveal) .env-value { padding-right: 46px; }
+.env-value-control .env-reveal { position: absolute; top: 2px; right: 2px; width: 40px; min-height: 40px; margin: 0; border: 0; background: transparent; }
 .env-row .button-icon { margin-top: 25px; }
 .env-help, .security-note, .inline-guidance { margin: 16px 0 0; padding: 12px 14px; display: flex; align-items: flex-start; gap: 10px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; font-size: .76rem; line-height: 1.55; }
 .env-help p, .security-note { margin-bottom: 0; }
