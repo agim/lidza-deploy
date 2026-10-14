@@ -2,10 +2,10 @@ import { AlertTriangle, Boxes, Cpu, KeyRound, MemoryStick, Pause, Play, RefreshC
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { del, get, post, put } from '../lib/api';
 import { formatBytes } from '../lib/format';
-import type { ContainerInfo, Deployment, Server as ServerType } from '../lib/types';
+import type { ContainerInfo, ContainerInventory, Deployment, Server as ServerType } from '../lib/types';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
-import { Button, Card, ConfirmAction, CopyButton, ErrorBanner, Field, Loading, PageHeader, ProgressBar, SectionHeader, StatusBadge } from '../components/ui';
+import { Button, Card, ConfirmAction, CopyButton, ErrorBanner, Field, Loading, Notice, PageHeader, ProgressBar, SectionHeader, StatusBadge } from '../components/ui';
 import { ResourceList, type Column } from '../components/ResourceList';
 
 export function ServerSettingsPage({ serverID }: { serverID: string }) {
@@ -15,18 +15,19 @@ export function ServerSettingsPage({ serverID }: { serverID: string }) {
 }
 
 export function ContainersPage({ serverID }: { serverID: string }) {
-  const { servers } = useWorkspace(); const server = servers.find(item => item.id === serverID); const [containers, setContainers] = useState<ContainerInfo[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const notify = useToast();
-  const load = async () => { try { const value = await get<ContainerInfo[] | { containers?: ContainerInfo[] }>(`control/servers/${encodeURIComponent(serverID)}/containers`); setContainers(Array.isArray(value) ? value : value.containers || []); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
+  const { servers } = useWorkspace(); const server = servers.find(item => item.id === serverID); const [containers, setContainers] = useState<ContainerInfo[]>([]); const [checkedAt, setCheckedAt] = useState(''); const [warning, setWarning] = useState(''); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const notify = useToast();
+  const load = async () => { try { const value = await get<ContainerInfo[] | ContainerInventory>(`control/servers/${encodeURIComponent(serverID)}/containers`); setContainers(Array.isArray(value) ? value : value.containers || []); setCheckedAt(Array.isArray(value) ? '' : value.checked_at || ''); setWarning(Array.isArray(value) ? '' : value.warning || ''); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
   useEffect(() => { load(); const timer = setInterval(load, 10_000); return () => clearInterval(timer); }, [serverID]);
   const restart = async (name: string) => { try { await post(`control/servers/${encodeURIComponent(serverID)}/containers/restart`, { name }); notify(`${name} restart requested.`); await load(); } catch (reason) { notify(reason instanceof Error ? reason.message : String(reason), true); } };
+  const percent = (value?: string | number) => { const parsed = typeof value === 'number' ? value : Number.parseFloat(value || ''); return Number.isFinite(parsed) ? parsed : 0; };
   const columns: Column<ContainerInfo>[] = [
-    { id: 'container', label: 'Container', render: row => <div className="container-name"><Boxes size={17} /><div><strong>{row.name}</strong><small>{row.app_id ? `Application · ${row.app_id}` : row.service ? `Service · ${row.service}` : row.image}</small></div></div> },
+    { id: 'container', label: 'Container', render: row => <div className="container-name"><Boxes size={17} /><div><strong>{row.name}</strong><small>{row.app_id ? `${row.app_id}${row.role ? ` · ${row.role}` : ''}` : row.service ? `Service · ${row.service}` : row.role || row.image}</small></div></div> },
     { id: 'status', label: 'Status', render: row => <StatusBadge status={row.health || row.state || row.status || 'unknown'} /> },
-    { id: 'cpu', label: 'CPU', render: row => <div className="usage-cell"><span>{Number(row.cpu_percent || 0).toFixed(1)}%</span><ProgressBar value={row.cpu_percent || 0} /></div> },
-    { id: 'memory', label: 'Memory', render: row => <div className="usage-cell"><span>{formatBytes(row.memory_bytes)} / {formatBytes(row.memory_limit_bytes)}</span><ProgressBar value={row.memory_percent || (row.memory_limit_bytes ? (row.memory_bytes || 0) / row.memory_limit_bytes * 100 : 0)} tone={(row.memory_percent || 0) > 90 ? 'danger' : 'accent'} /></div> },
-    { id: 'actions', label: 'Actions', render: row => <ConfirmAction title={`Restart ${row.name}?`} description="Docker will stop and start this container. The application or managed service may be briefly unavailable." confirmLabel="Restart container" onConfirm={() => restart(row.name)}><Button size="sm"><RefreshCw size={15} />Restart</Button></ConfirmAction> },
+    { id: 'cpu', label: 'CPU', render: row => { const usage = percent(row.cpu ?? row.cpu_percent); return <div className="usage-cell"><span>{row.cpu || `${usage.toFixed(1)}%`}</span><ProgressBar value={usage} /></div>; } },
+    { id: 'memory', label: 'Memory', render: row => { const usage = percent(row.memory_percent) || (row.memory_limit_bytes ? (row.memory_bytes || 0) / row.memory_limit_bytes * 100 : 0); return <div className="usage-cell"><span>{row.memory || `${formatBytes(row.memory_bytes)} / ${formatBytes(row.memory_limit_bytes)}`}</span><ProgressBar value={usage} tone={usage > 90 ? 'danger' : 'accent'} /></div>; } },
+    { id: 'actions', label: 'Actions', render: row => row.restartable === false ? <span className="muted-copy">Protected</span> : <ConfirmAction title={`Restart ${row.name}?`} description="Docker will stop and start this container. The application or managed service may be briefly unavailable." confirmLabel="Restart container" onConfirm={() => restart(row.name)}><Button size="sm"><RefreshCw size={15} />Restart</Button></ConfirmAction> },
   ];
-  return <><PageHeader eyebrow="Server containers" title={server?.name || serverID} description="Live process usage sampled by the hosting agent. Rows stay in a stable order while values update." back="#servers" actions={<Button onClick={load}><RefreshCw size={16} />Refresh</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card><SectionHeader title="Containers & resource usage" description="Restart only containers that are unhealthy or stuck. Persistent volumes are not removed." />{loading ? <Loading label="Loading containers…" /> : <ResourceList rows={containers} columns={columns} rowKey={row => row.id || row.name} />}</Card></>;
+  return <><PageHeader eyebrow="Server containers" title={server?.name || serverID} description="Live process usage sampled by the hosting agent. Rows stay in a stable order while values update." back="#servers" actions={<Button onClick={load}><RefreshCw size={16} />Refresh</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}{warning && <Notice>{warning}</Notice>}<Card><SectionHeader title="Containers & resource usage" description={`Restart only containers that are unhealthy or stuck. Persistent volumes are not removed.${checkedAt ? ` Sampled ${new Date(checkedAt).toLocaleTimeString()}.` : ''}`} />{loading ? <Loading label="Loading containers…" /> : <ResourceList rows={containers} columns={columns} rowKey={row => row.id || row.name} />}</Card></>;
 }
 
 export function ServerConsolePage({ serverID }: { serverID: string }) {

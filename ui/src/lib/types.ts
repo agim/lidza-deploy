@@ -85,12 +85,26 @@ export interface ContainerInfo {
   health?: string;
   app_id?: string;
   service?: string;
+  role?: string;
+  cpu?: string;
+  memory?: string;
+  memory_percent?: string;
+  network_io?: string;
+  block_io?: string;
+  pids?: string;
+  restartable?: boolean;
+  needs_attention?: boolean;
   cpu_percent?: number;
   memory_bytes?: number;
   memory_limit_bytes?: number;
-  memory_percent?: number;
   restart_count?: number;
   [key: string]: unknown;
+}
+
+export interface ContainerInventory {
+  checked_at?: string;
+  containers?: ContainerInfo[];
+  warning?: string;
 }
 
 export interface WorkspaceData {
