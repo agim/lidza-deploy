@@ -20,7 +20,21 @@ func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
 		agent.Fail(w, 502, err)
 		return
 	}
-	agent.JSON(w, 200, out)
+	if out.ID == "" {
+		out.ID = a.ID
+	}
+	if out.Branch == "" {
+		out.Branch = a.Branch
+	}
+	if out.Domain == "" {
+		out.Domain = a.Domain
+	}
+	agent.JSON(w, 200, struct {
+		agent.Settings
+		ServerID           string `json:"server_id"`
+		Repository         string `json:"repository"`
+		GitHubInstallation int64  `json:"github_installation,omitempty"`
+	}{Settings: out, ServerID: a.ServerID, Repository: a.Repository, GitHubInstallation: a.GitHubInstallation})
 }
 
 func (c *Control) revealCredential(w http.ResponseWriter, r *http.Request) {
