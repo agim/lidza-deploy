@@ -1,7 +1,7 @@
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { AlertTriangle, Check, ChevronDown, Copy, LoaderCircle, MoreHorizontal, Search, X } from 'lucide-react';
-import { type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, useEffect, useState } from 'react';
+import { type ButtonHTMLAttributes, type FormEvent, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, useEffect, useId, useState } from 'react';
 
 export function cx(...values: Array<string | false | null | undefined>) { return values.filter(Boolean).join(' '); }
 
@@ -74,6 +74,40 @@ export function ConfirmAction({ title, description, confirmLabel, destructive = 
   const [busy, setBusy] = useState(false);
   const confirm = async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } };
   return <AlertDialog.Root><AlertDialog.Trigger asChild>{children}</AlertDialog.Trigger><AlertDialog.Portal><AlertDialog.Overlay className="dialog-overlay" /><AlertDialog.Content className="dialog"><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description>{description}</AlertDialog.Description><div className="dialog-actions"><AlertDialog.Cancel asChild><Button>Cancel</Button></AlertDialog.Cancel><AlertDialog.Action asChild><Button variant={destructive ? 'danger' : 'primary'} onClick={confirm} disabled={busy}>{busy && <LoaderCircle className="spin" size={16} />}{confirmLabel}</Button></AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
+}
+
+export function PromptDialog({ open, title, description, label, value, submitLabel, inputProps, onValueChange, onOpenChange, onSubmit }: {
+  open: boolean;
+  title: string;
+  description: ReactNode;
+  label: string;
+  value: string;
+  submitLabel: string;
+  inputProps?: Omit<InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>;
+  onValueChange: (value: string) => void;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (value: string) => void | Promise<void>;
+}) {
+  const inputID = useId();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => { if (!open) { setBusy(false); setError(''); } }, [open]);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const nextValue = value.trim();
+    if (!nextValue || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await onSubmit(nextValue);
+      onOpenChange(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <AlertDialog.Root open={open} onOpenChange={onOpenChange}><AlertDialog.Portal><AlertDialog.Overlay className="dialog-overlay" /><AlertDialog.Content className="dialog"><form className="dialog-form" onSubmit={submit}><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description>{description}</AlertDialog.Description><label className="field" htmlFor={inputID}><span className="field-label">{label}</span><input {...inputProps} id={inputID} value={value} onChange={event => onValueChange(event.target.value)} autoFocus required disabled={busy} /></label>{error && <div className="dialog-error" role="alert"><AlertTriangle size={17} /><span>{error}</span></div>}<div className="dialog-actions"><AlertDialog.Cancel asChild><Button type="button" disabled={busy}>Cancel</Button></AlertDialog.Cancel><Button type="submit" variant="primary" disabled={busy || !value.trim()}>{busy && <LoaderCircle className="spin" size={16} />}{submitLabel}</Button></div></form></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
 }
 
 export function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {

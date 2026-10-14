@@ -4,7 +4,7 @@ import { get, post } from '../lib/api';
 import { formatBytes, formatDate } from '../lib/format';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
-import { Badge, Button, Card, EmptyState, ErrorBanner, Field, Loading, PageHeader, SearchField, SectionHeader, StatusBadge, Toolbar } from '../components/ui';
+import { Badge, Button, Card, EmptyState, ErrorBanner, Field, Loading, PageHeader, PromptDialog, SearchField, SectionHeader, StatusBadge, Toolbar } from '../components/ui';
 import { ResourceList, type Column } from '../components/ResourceList';
 
 interface Backup { id: string; created: string; size?: number; kind?: string; offsite?: boolean; offsite_requested?: boolean; upload_error?: string; object_key?: string; sha256?: string }
@@ -20,10 +20,18 @@ export function DatabasesPage() {
 }
 
 export function DatabaseDetailPage({ appID }: { appID: string }) {
-  const [database, setDatabase] = useState<DatabaseItem>(), [loading, setLoading] = useState(true), [error, setError] = useState(''); const notify = useToast();
+  const [database, setDatabase] = useState<DatabaseItem>(), [loading, setLoading] = useState(true), [error, setError] = useState('');
+  const [restoreBackup, setRestoreBackup] = useState<Backup>();
+  const [restoreTarget, setRestoreTarget] = useState('');
+  const notify = useToast();
   const load = async () => { try { const value = await get<{ databases?: DatabaseItem[] } | DatabaseItem[]>('control/databases'); const list = Array.isArray(value) ? value : value.databases || []; setDatabase(list.find(item => item.app_id === appID || item.attachments?.some(attachment => attachment.app_id === appID))); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
   useEffect(() => { load(); }, [appID]);
   const backup = async () => { if (!database) return; try { await post(`control/apps/${encodeURIComponent(appID)}/database/backup`); notify('Backup queued.'); await load(); } catch (reason) { notify(reason instanceof Error ? reason.message : String(reason), true); } };
+  const restore = async (target: string) => {
+    if (!database || !restoreBackup) return;
+    await post(`control/apps/${encodeURIComponent(appID)}/restore`, { source: database.app_id, backup: restoreBackup.id, target, env_key: 'DATABASE_URL' });
+    notify('Restore queued into a new database.');
+  };
   if (loading) return <Loading overlay label="Loading database…" />;
   if (!database) return <><PageHeader title={`${appID} database`} back="#databases" /><EmptyState icon={<Database />} title="No database attached" description="Attach a private or external PostgreSQL database from application settings." /></>;
   const columns: Column<Backup>[] = [
@@ -31,9 +39,9 @@ export function DatabaseDetailPage({ appID }: { appID: string }) {
     { id: 'purpose', label: 'Purpose', render: row => row.kind === 'predeployment' ? 'Pre-deployment' : 'Scheduled / manual' },
     { id: 'size', label: 'Size', render: row => formatBytes(row.size) },
     { id: 'copies', label: 'Copies', render: row => <div><strong>{row.offsite ? 'Local + S3 verified' : row.upload_error ? 'Local · upload failed' : row.offsite_requested ? 'Local · upload pending' : 'Local only'}</strong>{row.upload_error && <small className="text-danger">{row.upload_error}</small>}{row.object_key && <code className="object-key">{row.object_key}</code>}</div> },
-    { id: 'actions', label: 'Actions', render: row => <div className="row-actions"><a className="button button-secondary button-sm" download href={`/api/control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backups/${encodeURIComponent(row.id)}`}><Download size={15} />Download</a><Button size="sm" onClick={async () => { const target = window.prompt('New database ID for this restore:', `restore-${Date.now().toString(36)}`); if (!target) return; await post(`control/apps/${encodeURIComponent(appID)}/restore`, { source: database.app_id, backup: row.id, target, env_key: 'DATABASE_URL' }); notify('Restore queued into a new database.'); }}><RotateCcw size={15} />Restore</Button>{!row.offsite && <Button size="sm" onClick={async () => { await post(`control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backups/${encodeURIComponent(row.id)}/upload`); notify('Off-site upload queued.'); }}><Cloud size={15} />Upload</Button>}</div> },
+    { id: 'actions', label: 'Actions', render: row => <div className="row-actions"><a className="button button-secondary button-sm" download href={`/api/control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backups/${encodeURIComponent(row.id)}`}><Download size={15} />Download</a><Button size="sm" onClick={() => { setRestoreBackup(row); setRestoreTarget(`restore-${Date.now().toString(36)}`); }}><RotateCcw size={15} />Restore</Button>{!row.offsite && <Button size="sm" onClick={async () => { await post(`control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backups/${encodeURIComponent(row.id)}/upload`); notify('Off-site upload queued.'); }}><Cloud size={15} />Upload</Button>}</div> },
   ];
-  return <><PageHeader eyebrow="Database & backups" title={appID} description={`${database.mode === 'external' ? 'External' : 'Private'} PostgreSQL · ${database.server_id}`} back="#databases" actions={<Button variant="primary" onClick={backup}>Back up now</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card><SectionHeader title="Backup history" description="Each row explicitly shows whether the off-site object was verified." /><ResourceList rows={[...(database.backups || [])].sort((a, b) => +new Date(b.created) - +new Date(a.created))} columns={columns} rowKey={row => row.id} empty={<EmptyState icon={<HardDrive />} title="No backups yet" description="Create one now or wait for the next scheduled run." />} /></Card></>;
+  return <><PageHeader eyebrow="Database & backups" title={appID} description={`${database.mode === 'external' ? 'External' : 'Private'} PostgreSQL · ${database.server_id}`} back="#databases" actions={<Button variant="primary" onClick={backup}>Back up now</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card><SectionHeader title="Backup history" description="Each row explicitly shows whether the off-site object was verified." /><ResourceList rows={[...(database.backups || [])].sort((a, b) => +new Date(b.created) - +new Date(a.created))} columns={columns} rowKey={row => row.id} empty={<EmptyState icon={<HardDrive />} title="No backups yet" description="Create one now or wait for the next scheduled run." />} /></Card><PromptDialog open={Boolean(restoreBackup)} title="Restore backup into a new database" description={<>Restore backup <strong>{restoreBackup?.id}</strong> from <strong>{database.app_id}</strong>. The existing database will not be overwritten.</>} label="New database ID" value={restoreTarget} submitLabel="Start restore" inputProps={{ autoComplete: 'off', spellCheck: false, maxLength: 48, pattern: '[a-z][a-z0-9-]{0,47}', title: 'Use lowercase letters, numbers, and hyphens; begin with a letter.' }} onValueChange={setRestoreTarget} onOpenChange={open => { if (!open) { setRestoreBackup(undefined); setRestoreTarget(''); } }} onSubmit={restore} /></>;
 }
 
 export function RemoteBackupsPage() {
