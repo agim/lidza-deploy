@@ -178,6 +178,8 @@ h3 { margin-bottom: 4px; }
 .database-policy strong { color: var(--text); font-size: .82rem; }
 
 .form-card { margin-bottom: 18px; }
+.form-card > form, .form-card .factor-setup form { display: grid; gap: 16px; }
+.form-card > form > .security-note { margin: 0; }
 .narrow-form { max-width: 850px; }
 .form-grid { display: grid; gap: 16px; }
 .form-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }

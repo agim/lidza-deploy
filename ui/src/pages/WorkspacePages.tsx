@@ -30,7 +30,7 @@ export function TeamPage({ audit = false }: { audit?: boolean }) {
 }
 
 function AddMember({ onSaved, onError }: { onSaved: () => void; onError: (value: string) => void }) {
-  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); try { await post('control/team', Object.fromEntries(new FormData(event.currentTarget))); event.currentTarget.reset(); onSaved(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } };
+  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = event.currentTarget; try { await post('control/team', Object.fromEntries(new FormData(form))); form.reset(); onSaved(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } };
   return <Card className="form-card"><SectionHeader title="Add member or change role" /><form onSubmit={submit}><div className="form-grid three"><Field label="Email"><input name="email" type="email" required /></Field><Field label="Name"><input name="name" /></Field><Field label="Role"><select name="role"><option value="viewer">Viewer</option><option value="deployer">Deployer</option><option value="admin">Admin</option></select></Field></div><Button variant="primary">Save member</Button></form></Card>;
 }
 
