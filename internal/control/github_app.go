@@ -214,6 +214,17 @@ func (c *Control) tokenFor(ctx context.Context, a Application) (string, error) {
 	}
 	return c.cfg.GitHub.InstallationToken(ctx, cfg.App, a.GitHubInstallation, a.Repository)
 }
+func (c *Control) validateGitHubAccess(ctx context.Context, a Application) error {
+	if a.GitHubInstallation == 0 {
+		_, err := c.token(ctx)
+		return err
+	}
+	cfg := c.githubApp()
+	if cfg == nil || cfg.Installations[a.GitHubInstallation] == "" {
+		return errors.New("GitHub installation is disconnected")
+	}
+	return c.cfg.GitHub.ValidateInstallationAccess(ctx, cfg.App, a.GitHubInstallation, a.Repository)
+}
 func (c *Control) deploymentCredentials(ctx context.Context, a Application, key string) (out agent.DeployRequest, err error) {
 	defer func() {
 		if err == nil {
@@ -226,7 +237,7 @@ func (c *Control) deploymentCredentials(ctx context.Context, a Application, key 
 	}
 	// Validate access now for feedback, but mint checkout credentials after the
 	// agent's queue/backup wait. The one-use ticket carries no GitHub credentials.
-	if _, err := c.tokenFor(ctx, a); err != nil {
+	if err := c.validateGitHubAccess(ctx, a); err != nil {
 		return agent.DeployRequest{}, err
 	}
 	subject, _ := json.Marshal(checkoutClaim{AppID: a.ID, Generation: a.Generation, ServerID: a.ServerID, Repository: a.Repository, Installation: a.GitHubInstallation})
@@ -280,8 +291,35 @@ func (c *Control) checkoutToken(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := c.tokenFor(ctx, a)
 	if err != nil {
-		agent.Fail(w, 409, errors.New("GitHub access unavailable; verify installation and repository access"))
+		status, message := githubCheckoutFailure(err)
+		agent.Fail(w, status, errors.New(message))
 		return
 	}
 	agent.JSON(w, 200, map[string]string{"token": token})
+}
+
+func githubCheckoutFailure(err error) (int, string) {
+	var apiErr *gh.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.Status {
+		case http.StatusNotFound:
+			return http.StatusConflict, "GitHub no longer grants this installation access to the repository; reconnect the repository in application Settings"
+		case http.StatusUnauthorized:
+			return http.StatusConflict, "GitHub rejected the App credentials; reconnect GitHub in Integrations"
+		case http.StatusForbidden:
+			return http.StatusConflict, "GitHub refused the installation permissions or repository selection; review the GitHub App installation"
+		case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return http.StatusServiceUnavailable, "GitHub is temporarily unavailable while authorizing checkout; redeploy to retry"
+		}
+	}
+	switch err.Error() {
+	case "GitHub installation is disconnected":
+		return http.StatusConflict, "GitHub installation is disconnected; reconnect the repository in application Settings"
+	case "repository is not in this installation":
+		return http.StatusConflict, "GitHub no longer grants this installation access to the repository; reconnect the repository in application Settings"
+	case "GitHub API unavailable":
+		return http.StatusServiceUnavailable, "GitHub is temporarily unavailable while authorizing checkout; redeploy to retry"
+	default:
+		return http.StatusConflict, "GitHub access unavailable; verify the installation and repository selection in application Settings"
+	}
 }

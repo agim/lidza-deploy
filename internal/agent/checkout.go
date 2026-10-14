@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -43,7 +45,15 @@ func (m *Manager) checkoutCredential(ctx context.Context, in DeployRequest) (str
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		return "", errors.New("GitHub checkout authorization refused; check installation access and redeploy")
+		var out struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(res.Body, 8192)).Decode(&out)
+		reason := strings.TrimSpace(out.Error)
+		if reason == "" || len(reason) > 500 || strings.ContainsAny(reason, "\r\n\x00") {
+			reason = fmt.Sprintf("control panel returned HTTP %d", res.StatusCode)
+		}
+		return "", fmt.Errorf("GitHub checkout authorization failed: %s", reason)
 	}
 	var out struct {
 		Token string `json:"token"`

@@ -120,11 +120,33 @@ func (c *Client) RepositoryInstallation(ctx context.Context, a App, repo string)
 	}
 	return in.ID, nil
 }
+
+// ValidateInstallationAccess checks the stored installation and repository
+// selection without minting an access token. Token creation is deliberately
+// deferred until checkout actually starts so queued deployments do not create
+// credentials they never use.
+func (c *Client) ValidateInstallationAccess(ctx context.Context, a App, id int64, repo string) error {
+	if _, err := c.Installation(ctx, a, id); err != nil {
+		return err
+	}
+	if repo == "" {
+		return nil
+	}
+	found, err := c.RepositoryInstallation(ctx, a, repo)
+	if err != nil {
+		return err
+	}
+	if found != id {
+		return errors.New("repository is not in this installation")
+	}
+	return nil
+}
+
 func (c *Client) InstallationToken(ctx context.Context, a App, id int64, repo string) (string, error) {
 	// API destination is part of the key so tests/different clients cannot share tokens.
 	key := fmt.Sprintf("%s:%d:%d:%s", c.api(), a.ID, id, repo)
 	value, err, _ := appMints.Do(key, func() (any, error) {
-		if _, err := c.Installation(ctx, a, id); err != nil {
+		if err := c.ValidateInstallationAccess(ctx, a, id, repo); err != nil {
 			return "", err
 		}
 		jwt, err := a.JWT()
@@ -133,10 +155,6 @@ func (c *Client) InstallationToken(ctx context.Context, a App, id int64, repo st
 		}
 		body := map[string]any{"permissions": map[string]string{"contents": "read", "pull_requests": "read"}}
 		if repo != "" {
-			found, err := c.RepositoryInstallation(ctx, a, repo)
-			if err != nil || found != id {
-				return "", errors.New("repository is not in this installation")
-			}
 			_, name, ok := cutRepository(repo)
 			if !ok {
 				return "", errors.New("invalid repository")

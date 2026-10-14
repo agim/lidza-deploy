@@ -67,3 +67,15 @@ func TestCheckoutAuthorizationRejectsUnsafeOriginsAndMixedSecrets(t *testing.T) 
 		}
 	}
 }
+
+func TestCheckoutAuthorizationPreservesSafeControlReason(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Fail(w, http.StatusConflict, context.Canceled)
+	}))
+	defer server.Close()
+	_, err := m.checkoutCredential(context.Background(), DeployRequest{CredentialURL: server.URL + "/api/agent/checkout-token", CredentialTicket: strings.Repeat("t", 64), CredentialServer: "hosting"})
+	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatal("control-panel checkout reason was lost", err)
+	}
+}

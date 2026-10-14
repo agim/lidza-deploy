@@ -18,6 +18,14 @@ type Client struct {
 	API  string
 }
 
+// APIError preserves GitHub's status code without copying a response body that
+// could contain implementation details into operator-facing errors.
+type APIError struct {
+	Status int
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("GitHub API returned %d", e.Status) }
+
 func (c *Client) client() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
@@ -55,7 +63,7 @@ func (c *Client) Request(ctx context.Context, token, method, path string, body, 
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("GitHub API returned %d", res.StatusCode)
+		return &APIError{Status: res.StatusCode}
 	}
 	if out == nil {
 		return nil

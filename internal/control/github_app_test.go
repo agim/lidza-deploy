@@ -200,12 +200,16 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 	c.mu.Lock()
 	c.data.ApplicationDefaults = map[string]string{"ADMIN_USERS": "shared@example.com", "DB_MIGRATE": "true"}
 	c.mu.Unlock()
+	beforeCredentials := minted
 	credentials, err := c.deploymentCredentials(ctx, a, "queued-deploy")
 	if credentials.Defaults["ADMIN_USERS"] != "shared@example.com" {
 		t.Fatal("checkout request omitted workspace defaults")
 	}
 	if err != nil || credentials.Token != "" || credentials.CredentialTicket == "" {
 		t.Fatal("queue received a token instead of a ticket", err)
+	}
+	if minted != beforeCredentials {
+		t.Fatal("deployment preflight minted a checkout token before checkout started")
 	}
 	issue := func(token, server string) *httptest.ResponseRecorder {
 		body, _ := json.Marshal(map[string]string{"ticket": credentials.CredentialTicket})
