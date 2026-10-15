@@ -36,6 +36,7 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run typecheck
+          npm run test:ui
           npm run build
       - name: Validate version and source
         shell: bash
