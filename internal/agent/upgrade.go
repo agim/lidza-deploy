@@ -94,6 +94,15 @@ func (m *Manager) upgradeRoutes(mux *http.ServeMux) {
 		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		for _, job := range m.consoleJobs {
+			job.mu.Lock()
+			running := job.state == "running"
+			job.mu.Unlock()
+			if running {
+				Fail(w, 409, errors.New("wait for the console command before upgrading"))
+				return
+			}
+		}
 		if m.data.Maintenance != nil && m.data.Maintenance.Running {
 			Fail(w, 409, errors.New("wait for server cleanup before upgrading"))
 			return

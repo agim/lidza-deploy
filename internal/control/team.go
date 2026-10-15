@@ -51,7 +51,7 @@ func routePermission(pattern string) string {
 		return "team.manage"
 	case "GET /api/control/servers/{server}/ssh-access":
 		return "infrastructure.manage"
-	case "GET /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console":
+	case "GET /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console/jobs", "GET /api/control/servers/{server}/console/jobs/{job}":
 		return "infrastructure.manage"
 	case "GET /api/control/audit":
 		return "audit.read"

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -52,12 +53,28 @@ func (b *cappedConsoleBuffer) Write(p []byte) (int, error) {
 }
 
 func runConsole(ctx context.Context, command string) (ConsoleResult, error) {
+	var output cappedConsoleBuffer
+	result, err := runConsoleOutput(ctx, command, &output)
+	result.Output = output.String()
+	if output.truncated {
+		result.Output += "\n[output truncated at 8 MiB]\n"
+	}
+	return result, err
+}
+
+func runConsoleOutput(ctx context.Context, command string, output io.Writer) (ConsoleResult, error) {
 	if os.Geteuid() != 0 {
 		return ConsoleResult{}, errors.New("hosting agent must run as root to use the server console")
 	}
 	if strings.TrimSpace(command) == "" || len(command) > consoleMaxInput || strings.IndexByte(command, 0) >= 0 {
 		return ConsoleResult{}, errors.New("command must contain 1 to 65536 bytes")
 	}
+	return executeConsoleCommand(ctx, command, output)
+}
+
+// The caller checks root access. Keeping process execution separate lets tests
+// exercise real subprocesses without granting the test runner root privileges.
+func executeConsoleCommand(ctx context.Context, command string, output io.Writer) (ConsoleResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, ConsoleTimeout)
 	defer cancel()
 	started := time.Now()
@@ -70,18 +87,15 @@ func runConsole(ctx context.Context, command string) (ConsoleResult, error) {
 		}
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
-	var output cappedConsoleBuffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	cmd.WaitDelay = 3 * time.Second
+	cmd.Stdout = output
+	cmd.Stderr = output
 	err := cmd.Run()
-	result := ConsoleResult{Output: output.String(), Duration: time.Since(started).Seconds()}
-	if output.truncated {
-		result.Output += "\n[output truncated at 8 MiB]\n"
-	}
+	result := ConsoleResult{Duration: time.Since(started).Seconds()}
 	if ctx.Err() != nil {
 		result.ExitCode = 124
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			result.Output += "\n[command runtime limit reached; process terminated]\n"
+			_, _ = io.WriteString(output, "\n[command runtime limit reached; process terminated]\n")
 			return result, nil
 		}
 		return result, ctx.Err()

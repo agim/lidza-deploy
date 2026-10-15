@@ -41,7 +41,7 @@ function RouteView({ route }: { route: Route }) {
     if (route.detail === 'server') return <ServerSettingsPage serverID={route.id} />;
     if (route.detail === 'cleanup') return <ServerCleanupPage serverID={route.id} />;
     if (route.detail === 'containers') return <ContainersPage serverID={route.id} />;
-    if (route.detail === 'console') return <ServerConsolePage serverID={route.id} />;
+    if (route.detail === 'console') return <ServerConsolePage key={route.id} serverID={route.id} />;
     if (route.detail === 'database') return <DatabaseDetailPage appID={route.id} />;
     if (route.detail === 'cache') return <CachePage appID={route.id} />;
     if (route.detail === 'build-logs' || route.detail === 'runtime-logs') return <LogPage kind={route.detail} id={route.id} />;

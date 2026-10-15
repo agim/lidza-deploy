@@ -57,6 +57,7 @@ func Handler(m *Manager) http.Handler {
 	private := http.NewServeMux()
 	m.sshRoutes(private)
 	m.containerRoutes(private)
+	m.consoleJobRoutes(private)
 	private.HandleFunc("PUT /v1/error-reporting", m.configureErrorReporting)
 	private.HandleFunc("GET /v1/server-health", m.healthRoute)
 	private.HandleFunc("POST /v1/apps/{id}/restore", m.restoreRoute)

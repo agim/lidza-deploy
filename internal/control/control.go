@@ -249,6 +249,16 @@ func (c *Control) agentCall(r *http.Request, serverID, method, path string, body
 	}
 	return c.agentRequest(r, *target, method, path, body, out)
 }
+
+type agentHTTPError struct {
+	status  int
+	message string
+}
+
+func (e *agentHTTPError) Error() string {
+	return fmt.Sprintf("agent returned %d: %s", e.status, e.message)
+}
+
 func (c *Control) agentRequest(r *http.Request, target Server, method, path string, body, out any) error {
 	var b []byte
 	if body != nil {
@@ -292,7 +302,7 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 			Error string `json:"error"`
 		}
 		_ = json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&e)
-		return fmt.Errorf("agent returned %d: %s", res.StatusCode, e.Error)
+		return &agentHTTPError{status: res.StatusCode, message: e.Error}
 	}
 	if out == nil {
 		return nil
@@ -351,6 +361,8 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("DELETE /api/control/servers/{id}", c.removeServer)
 	handle("GET /api/control/servers/{server}/console", c.consoleStatus)
 	handle("POST /api/control/servers/{server}/console", c.runConsole)
+	handle("POST /api/control/servers/{server}/console/jobs", c.startConsoleJob)
+	handle("GET /api/control/servers/{server}/console/jobs/{job}", c.consoleJobOutput)
 	handle("GET /api/control/apps/{id}/cache", c.cacheSettings)
 	handle("POST /api/control/apps/{id}/cache", c.cacheSettings)
 	handle("GET /api/control/databases", c.databases)

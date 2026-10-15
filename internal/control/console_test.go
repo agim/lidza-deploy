@@ -47,3 +47,33 @@ func TestConsoleTransportTimeoutIsNotRetried(t *testing.T) {
 		t.Fatalf("unsafe or misleading timeout handling: calls=%d err=%v", calls, err)
 	}
 }
+
+func TestConsoleJobsUseShortRequestsAndProtectedReads(t *testing.T) {
+	for _, pattern := range []string{"POST /api/control/servers/{server}/console/jobs", "GET /api/control/servers/{server}/console/jobs/{job}"} {
+		if routePermission(pattern) != "infrastructure.manage" {
+			t.Fatal("console job exposed to viewers", pattern)
+		}
+	}
+	c := &Control{client: &http.Client{Timeout: 25 * time.Second, Transport: updateTransport(func(r *http.Request) (*http.Response, error) {
+		deadline, ok := r.Context().Deadline()
+		if !ok || time.Until(deadline) > 30*time.Second {
+			t.Fatal("job request waits for command completion")
+		}
+		return &http.Response{StatusCode: 202, Body: io.NopCloser(strings.NewReader(`{"id":"console-request-01","state":"running"}`)), Header: make(http.Header)}, nil
+	})}}
+	var job agent.ConsoleJobView
+	if err := c.agentRequest(httptest.NewRequest("POST", "/", nil), Server{URL: "http://agent.example"}, "POST", "/v1/console/jobs", agent.ConsoleJobRequest{ID: "console-request-01", Owner: "operator", Command: "fixture"}, &job); err != nil || job.State != "running" {
+		t.Fatal(job, err)
+	}
+	for _, status := range []int{404, 409, 500} {
+		w := httptest.NewRecorder()
+		consoleJobError(w, &agentHTTPError{status: status, message: "fixture"})
+		expected := status
+		if status == 500 {
+			expected = 502
+		}
+		if w.Code != expected {
+			t.Fatal("lost actionable job status", status, w.Code)
+		}
+	}
+}
