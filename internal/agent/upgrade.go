@@ -94,6 +94,10 @@ func (m *Manager) upgradeRoutes(mux *http.ServeMux) {
 		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		if m.data.Maintenance != nil && m.data.Maintenance.Running {
+			Fail(w, 409, errors.New("wait for server cleanup before upgrading"))
+			return
+		}
 		if m.upgradePending() {
 			Fail(w, 409, errors.New("upgrade already queued or running"))
 			return

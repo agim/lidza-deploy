@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestRollingBackupIndependentRetention(t *testing.T) {
+func TestLatestLocalBackupAcrossAllKinds(t *testing.T) {
 	m := testManager(t, &fakeRuntime{})
 	id := "rolling"
 	if err := os.MkdirAll(m.backupDir(id), 0700); err != nil {
@@ -23,11 +23,11 @@ func TestRollingBackupIndependentRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := m.data.Databases[id].Backups
-	if len(got) != 2 || got[0].ID != "manual-new" || got[1].ID != "pre-new" {
+	if len(got) != 1 || got[0].ID != "pre-new" {
 		t.Fatalf("retention: %+v", got)
 	}
 	files, _ := filepath.Glob(filepath.Join(m.backupDir(id), "*.dump"))
-	if len(files) != 2 {
+	if len(files) != 1 {
 		t.Fatalf("files: %v", files)
 	}
 	for _, b := range []BackupRecord{records[1], records[3]} {
@@ -48,6 +48,9 @@ func TestRollingBackupPruneFailureReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(oldPath, "block"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(m.backupDir(id), "new.dump"), []byte("valid"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	m.data.Databases[id] = Database{AppID: id, Backup: BackupPolicy{Keep: 1}, Backups: []BackupRecord{{ID: "old", Kind: predeploymentBackup}, {ID: "new", Kind: predeploymentBackup}}}

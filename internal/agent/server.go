@@ -85,6 +85,7 @@ func Handler(m *Manager) http.Handler {
 		}
 		JSON(w, 200, in)
 	})
+	m.maintenanceRoutes(private)
 	m.databaseRoutes(private)
 	m.cacheRoutes(private)
 	m.retainedRoutes(private)

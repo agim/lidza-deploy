@@ -1,13 +1,15 @@
 const app = { id: 'portal', repository: 'acme/portal', branch: 'main', domain: 'portal.example.com', server_id: 'local', github_installation: 42, auto_deploy: true, current: { commit: 'abcdef1234567' }, domain_status: { state: 'ready' } };
 const now = '2026-10-15T14:00:00Z';
 async function mockConsole(page) {
-  const state = { apps: [app, { ...app, id: 'api', repository: 'acme/api', domain: 'api.example.com', auto_deploy: false, stopped: true }], calls: [], granted: false, consoleGranted: false, offline: false, unknown: [] };
+  const state = { apps: [app, { ...app, id: 'api', repository: 'acme/api', domain: 'api.example.com', auto_deploy: false, stopped: true }], calls: [], granted: false, consoleGranted: false, offline: false, unknown: [], maintenance: { policy: { enabled: true, interval_hours: 24, build_cache: true, logs: true, older_than_days: 7 }, running: false, next_run: '2099-10-15T14:00:00Z', next_backup_cleanup: '2099-10-15T14:00:00Z', messages: [] } };
   await page.addInitScript(() => { window.consoleCopied = ''; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.consoleCopied = value; } } }); });
   await page.route('**/api/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname.replace('/api/', ''), method = request.method();
     const body = request.postData() ? request.postDataJSON() : undefined;
     state.calls.push({ path, method, body });
     const send = json => route.fulfill({ json });
+    if (path === 'control/servers/local/maintenance') { if (method === 'PATCH') state.maintenance.policy = body; if (state.maintenance.running && Date.now() - state.maintenanceStarted > 100) { state.maintenance.running = false; state.maintenance.messages = ['Removed 2 older local backups.', 'Total reclaimed space: 2 GB']; state.maintenance.last_run = now; } return send(state.maintenance); }
+    if (path === 'control/servers/local/maintenance/run') { state.maintenance.running = true; state.maintenanceStarted = Date.now(); return send(state.maintenance); }
     if (path === 'control/status') return send({ roles: ['admin'], github_app_connected: true, github_app_configured: true, github_public_https: true });
     if (path === 'control/apps') { if (method === 'POST') { state.apps.push({ ...app, ...body }); return send({ id: body.id }); } return send(state.apps); }
     if (path === 'control/servers') return send([{ id: 'local', name: 'Production', url: 'http://127.0.0.1:9090' }]);

@@ -322,6 +322,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	}
 	handle("GET /api/control/servers/{server}/upgrade", c.upgradeServer)
 	handle("POST /api/control/servers/{server}/upgrade", c.upgradeServer)
+	for _, pattern := range []string{"GET /api/control/servers/{server}/maintenance", "PATCH /api/control/servers/{server}/maintenance", "POST /api/control/servers/{server}/maintenance/run"} {
+		handle(pattern, c.serverMaintenance)
+	}
 	handle("GET /api/control/servers/{server}/containers", c.serverContainers)
 	handle("POST /api/control/servers/{server}/containers/restart", c.serverContainers)
 	handle("PUT /api/control/apps/{id}/previews", c.previewConfig)

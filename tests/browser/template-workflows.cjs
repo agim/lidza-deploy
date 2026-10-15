@@ -24,7 +24,6 @@ const go = async (page, route) => { await page.goto(`${base}/console.html#${rout
    await page.locator('[name=domain]').fill('new.example.com');
    await page.locator('[name=database_mode]').selectOption('external');
    await page.locator('[name=database_url]').fill('postgres://fixture.example/db?sslmode=require');
-   await page.locator('[name=backup_keep]').fill('9');
    await page.locator('[name=backup_offsite]').check();
    await page.getByRole('switch', { name: 'Serve approved customer hostnames' }).click();
    await page.getByRole('button', { name: 'Continue', exact: true }).click();
@@ -42,7 +41,7 @@ const go = async (page, route) => { await page.goto(`${base}/console.html#${rout
    assert.equal(created.id, 'new-portal'); assert.equal(created.repository, 'acme/portal'); assert.equal(created.github_installation, 42);
    assert.equal(created.branch, 'main'); assert.equal(created.domain, 'new.example.com'); assert.equal(created.server_id, 'local');
    assert.equal(created.auto_deploy, true); assert.equal(created.customer_hosts, true);
-   assert.deepEqual(created.database, { mode: 'external', url: 'postgres://fixture.example/db?sslmode=require', backup: { hours: 24, keep: 9, offsite: true } });
+   assert.deepEqual(created.database, { mode: 'external', url: 'postgres://fixture.example/db?sslmode=require', backup: { hours: 24, keep: 1, offsite: true } });
    assert.deepEqual(created.env, { MAIL_API_KEY: 'fixture-only-secret' }); assert.deepEqual(created.env_kinds, { MAIL_API_KEY: 'credential' });
    await go(page, 'page/settings/portal');
    await page.getByRole('tab', { name: 'Environment', exact: true }).click();

@@ -2,7 +2,7 @@ const { chromium } = require('playwright');
 const assert = require('node:assert/strict');
 const { mockConsole } = require('./fixtures/console.cjs');
 const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
-const routes = ['applications', 'deployments', 'servers', 'databases', 'remote-backups', 'integrations', 'defaults', 'updates', 'team', 'audit', 'errors', 'security', 'help', 'new-application', 'page/settings/portal', 'page/server/local', 'page/server/new', 'page/containers/local', 'page/console/local', 'page/database/portal', 'page/cache/portal', 'page/build-logs/build-one', 'page/runtime-logs/portal', 'page/ssh/local', 'page/upgrade/local', 'page/two-factor/account'];
+const routes = ['applications', 'deployments', 'servers', 'databases', 'remote-backups', 'integrations', 'defaults', 'updates', 'team', 'audit', 'errors', 'security', 'help', 'new-application', 'page/settings/portal', 'page/server/local', 'page/server/new', 'page/containers/local', 'page/cleanup/local', 'page/console/local', 'page/database/portal', 'page/cache/portal', 'page/build-logs/build-one', 'page/runtime-logs/portal', 'page/ssh/local', 'page/upgrade/local', 'page/two-factor/account'];
 async function noOverflow(page, context) {
   const overflow = await page.evaluate(() => ({ viewport: innerWidth, page: document.documentElement.scrollWidth, controls: [...document.querySelectorAll('#main-content input:not([type=hidden]), #main-content select, #main-content textarea, #main-content button')].filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden').map(e => ({ label: e.getAttribute('aria-label') || e.name || e.textContent.trim().slice(0, 40), x: e.getBoundingClientRect().x, right: e.getBoundingClientRect().right })).filter(r => r.x < -1 || r.right > innerWidth + 1) }));
   assert(overflow.page <= overflow.viewport + 1, `${context}: page overflow ${JSON.stringify(overflow)}`);
@@ -55,7 +55,7 @@ async function noOverflow(page, context) {
       assert.deepEqual(state.unknown, [], 'Unmocked production API reads');
       assert.deepEqual(errors, []);
       await page.close();
-      console.log(`PASS: 26 routes, filters, grid/list, menus and navigation at ${width}px`);
+      console.log(`PASS: 27 routes, filters, grid/list, menus and navigation at ${width}px`);
     }
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exit(1); });
