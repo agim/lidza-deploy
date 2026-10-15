@@ -37,6 +37,7 @@ describe('ServersPage resources', () => {
     expect(await screen.findByText(/These measurements are stale/)).toBeInTheDocument();
     expect(screen.getByText('16.3%')).toBeInTheDocument();
     expect(container.querySelector('[data-server-card="local"]')).toBe(card);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh resources' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Refresh resources' }));
     expect(await screen.findByText('0.0%')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText(/These measurements are stale/)).not.toBeInTheDocument());

@@ -99,6 +99,13 @@ h3 { margin-bottom: 4px; }
 .button:hover:not(:disabled) { border-color: var(--muted); transform: translateY(-1px); }
 .button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .button:disabled { opacity: .45; cursor: not-allowed; }
+.button { position: relative; }
+.button[data-pending] { opacity: 1; cursor: progress; }
+.button-progress { position: absolute; inset: auto 3px 2px; height: 3px; overflow: hidden; border-radius: 3px; pointer-events: none; background: rgb(93 222 139 / .15); }
+.button-progress>span { display: block; width: 45%; height: 100%; background: var(--accent); border-radius: inherit; animation: button-progress 1s ease-in-out infinite alternate; }
+.button-primary .button-progress { background: rgb(0 0 0 / .12); }
+.button-primary .button-progress>span { background: var(--accent-ink); }
+@keyframes button-progress { from { transform: translateX(0); } to { transform: translateX(125%); } }
 .button-primary { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
 .button-primary:hover:not(:disabled) { color: var(--accent-ink); background: #6dffa6; border-color: transparent; }
 .button-secondary { background: transparent; }

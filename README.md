@@ -230,6 +230,8 @@ The interface follows one component system rather than page-specific markup:
 - `ui/src/state/WorkspaceContext.tsx` owns stable polling and shared inventory state so background updates do not replace focused forms or reorder page structure.
 - `lucide-react` is the single icon set. New pages should not add inline one-off SVGs or Unicode action symbols.
 
+Async actions use the shared `Button`, `MenuItem`, and `ActionForm` feedback. Return the request promise from click/select handlers so the control stays busy until the action settles; do not discard it with `void`. A progress indicator remains visible for at least 650 ms without delaying requests or data updates, and duplicate clicks/submissions are blocked while busy. Effect-driven actions such as log refresh pass `feedback` and their actual `pending` state to `Button`. Navigation and immediate state toggles keep their normal behavior. Rejected operations show error feedback, and failed confirmations remain open for retry.
+
 `npm run build` removes only the previous hashed console assets, then writes `web/static/console.html` and `web/static/assets/console/`. The release workflow rebuilds and type-checks this output before Go validation.
 
 Requires Go 1.27.1+, Git, Docker Engine, and Python 3 for the local setup helper. The web assets need no build step.

@@ -3,7 +3,7 @@ import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { APIError, get, patch, post } from '../lib/api';
 import type { AppSettings, EnvironmentEntry } from '../lib/types';
 import { useToast } from '../components/ToastProvider';
-import { Badge, Button, Card, ErrorBanner, Field, Loading, PageHeader, PromptDialog, SectionHeader, Tabs } from '../components/ui';
+import { ActionForm, Badge, Button, Card, ErrorBanner, Field, Loading, PageHeader, PromptDialog, SectionHeader, Tabs } from '../components/ui';
 
 type Action = 'keep' | 'set' | 'delete';
 type Row = EnvironmentEntry & { rowID: string; action: Action; revealed?: boolean; saved: boolean };
@@ -59,7 +59,7 @@ export function AppSettingsPage({ appID }: { appID: string }) {
   const managed = useMemo(() => new Set([...Object.keys(settings?.database_bindings || {}), ...(settings?.cache?.managed ? ['CACHE_URL'] : []), ...(settings?.persistent_storage ? ['STORAGE_DIR'] : [])]), [settings]);
   if (!settings && !error) return <Loading overlay label="Loading application settings…" />;
   if (!settings) return <><PageHeader title={`${appID} settings`} back="#applications" /><ErrorBanner>{error}</ErrorBanner></>;
-  return <><form id="settings-form" onSubmit={save}>
+  return <><ActionForm id="settings-form" onSubmit={save}>
     <PageHeader eyebrow="Application settings" title={appID} description={`${settings.repository} · ${settings.server_id}`} back="#applications" actions={<div className="sticky-actions"><Button type="button" onClick={() => { location.hash = 'applications'; }}>Cancel</Button><Button type="submit" variant="primary" disabled={saving}>{saving ? 'Saving…' : <><Save size={16} />Save changes</>}</Button></div>} />
     {error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
     <Tabs active={tab} onChange={setTab} items={[{ id: 'general', label: 'General' }, { id: 'environment', label: 'Environment' }, { id: 'resources', label: 'Data & storage' }]} />
@@ -74,5 +74,5 @@ export function AppSettingsPage({ appID }: { appID: string }) {
         {!saved && <Button type="button" size="icon" variant="ghost" aria-label="Remove row" onClick={() => setRows(current => current.filter(item => item.rowID !== row.rowID))}><X size={17} /></Button>}
       </div>; })}</div><div className="env-help"><KeyRound size={18} /><p>Credentials are encrypted on the hosting agent. Their saved values are never returned in normal page data.</p></div></Card>}
     {tab === 'resources' && <div className="resource-settings-grid"><Card className="resource-setting"><Database size={23} /><div><h2>Database</h2><p>{settings.database_bindings?.DATABASE_URL ? `Attached: ${settings.database_bindings.DATABASE_URL}` : settings.env_keys?.includes('DATABASE_URL') ? 'DATABASE_URL is set manually.' : 'No primary database attached.'}</p></div><Button type="button" onClick={() => { location.hash = `page/database/${encodeURIComponent(appID)}`; }}>Manage database</Button></Card><Card className="resource-setting"><HardDrive size={23} /><div><h2>Cache</h2><p>{settings.cache?.managed ? 'Private managed Valkey is attached.' : 'Automatic managed cache or external Redis/Valkey.'}</p></div><Button type="button" onClick={() => { location.hash = `page/cache/${encodeURIComponent(appID)}`; }}>Manage cache</Button></Card></div>}
-  </form><PromptDialog open={Boolean(revealTarget)} title="Verify to reveal credential" description={<>Enter a fresh authenticator or recovery code to reveal <strong>{revealTarget?.key}</strong>. This verification is used only for this protected action.</>} label="Authenticator or recovery code" value={verificationCode} submitLabel="Verify & reveal" inputProps={{ type: 'password', autoComplete: 'one-time-code', spellCheck: false }} onValueChange={setVerificationCode} onOpenChange={open => { if (!open) { setRevealTarget(undefined); setVerificationCode(''); } }} onSubmit={verifyAndReveal} /></>;
+  </ActionForm><PromptDialog open={Boolean(revealTarget)} title="Verify to reveal credential" description={<>Enter a fresh authenticator or recovery code to reveal <strong>{revealTarget?.key}</strong>. This verification is used only for this protected action.</>} label="Authenticator or recovery code" value={verificationCode} submitLabel="Verify & reveal" inputProps={{ type: 'password', autoComplete: 'one-time-code', spellCheck: false }} onValueChange={setVerificationCode} onOpenChange={open => { if (!open) { setRevealTarget(undefined); setVerificationCode(''); } }} onSubmit={verifyAndReveal} /></>;
 }

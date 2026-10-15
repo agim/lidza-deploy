@@ -1,12 +1,34 @@
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { AlertTriangle, Check, ChevronDown, Copy, LoaderCircle, MoreHorizontal, Search, X } from 'lucide-react';
-import { type ButtonHTMLAttributes, type FormEvent, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, useEffect, useId, useState } from 'react';
+import { createContext, type ButtonHTMLAttributes, type FormEvent, type FormHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type MouseEvent, type ReactNode, useContext, useEffect, useId, useState } from 'react';
+import { useActionFeedback } from './useActionFeedback';
 
 export function cx(...values: Array<string | false | null | undefined>) { return values.filter(Boolean).join(' '); }
 
-export function Button({ variant = 'secondary', size = 'md', className, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger'; size?: 'sm' | 'md' | 'icon' }) {
-  return <button className={cx('button', `button-${variant}`, `button-${size}`, className)} {...props}>{children}</button>;
+const FormPendingContext = createContext(false);
+
+export function Button({ variant = 'secondary', size = 'md', className, children, onClick, disabled, pending = false, feedback = false, ...props }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick'> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger'; size?: 'sm' | 'md' | 'icon'; onClick?: (event: MouseEvent<HTMLButtonElement>) => unknown; pending?: boolean; feedback?: boolean }) {
+  const action = useActionFeedback();
+  const formPending = useContext(FormPendingContext);
+  const busy = pending || action.pending || (props.type !== 'button' && formPending);
+  const click = (event: MouseEvent<HTMLButtonElement>) => {
+    if (busy || action.active.current || disabled) { event.preventDefault(); return; }
+    try {
+      const result = onClick?.(event);
+      if (result && typeof (result as PromiseLike<unknown>).then === 'function') void action.run(() => result);
+      else if (feedback) void action.run(() => undefined);
+    } catch (reason) { void action.run(() => { throw reason; }); }
+  };
+  return <button className={cx('button', `button-${variant}`, `button-${size}`, className)} {...props} disabled={disabled || busy} aria-busy={busy || undefined} data-pending={busy || undefined} onClick={click}>{children}{busy && <span className="button-progress" aria-hidden="true"><span /></span>}</button>;
+}
+
+export function ActionForm({ onSubmit, children, ...props }: Omit<FormHTMLAttributes<HTMLFormElement>, 'onSubmit'> & { onSubmit: (event: FormEvent<HTMLFormElement>) => unknown }) {
+  const action = useActionFeedback();
+  return <FormPendingContext.Provider value={action.pending}><form {...props} aria-busy={action.pending || undefined} onSubmit={event => {
+    event.preventDefault();
+    if (!action.active.current) void action.run(() => onSubmit(event));
+  }}>{children}</form></FormPendingContext.Provider>;
 }
 
 export function IconButton({ label, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
@@ -59,21 +81,36 @@ export function ErrorBanner({ children, onDismiss }: { children: ReactNode; onDi
 
 export function Notice({ children }: { children: ReactNode }) { return <div className="alert alert-info" role="status">{children}</div>; }
 
+const CloseMenuContext = createContext(() => undefined as void);
+
 export function ActionMenu({ label = 'More actions', children }: { label?: string; children: ReactNode }) {
-  return <DropdownMenu.Root><DropdownMenu.Trigger asChild><Button variant="secondary" size="sm"><MoreHorizontal size={16} />{label}<ChevronDown size={14} /></Button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="menu-content" align="end" sideOffset={7}>{children}</DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>;
+  const [open, setOpen] = useState(false);
+  return <CloseMenuContext.Provider value={() => setOpen(false)}><DropdownMenu.Root open={open} onOpenChange={setOpen}><DropdownMenu.Trigger asChild><Button variant="secondary" size="sm"><MoreHorizontal size={16} />{label}<ChevronDown size={14} /></Button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="menu-content" align="end" sideOffset={7}>{children}</DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></CloseMenuContext.Provider>;
 }
 
-export function MenuItem({ icon, danger, children, onSelect }: { icon?: ReactNode; danger?: boolean; children: ReactNode; onSelect?: () => void }) {
-  return <DropdownMenu.Item className={cx('menu-item', danger && 'menu-danger')} onSelect={onSelect}>{icon}{children}</DropdownMenu.Item>;
+export function MenuItem({ icon, danger, children, onSelect }: { icon?: ReactNode; danger?: boolean; children: ReactNode; onSelect?: () => unknown }) {
+  const action = useActionFeedback();
+  const close = useContext(CloseMenuContext);
+  return <DropdownMenu.Item className={cx('menu-item', danger && 'menu-danger')} disabled={action.pending} aria-busy={action.pending || undefined} onSelect={event => {
+    if (action.active.current) { event.preventDefault(); return; }
+    try {
+      const result = onSelect?.();
+      if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+        event.preventDefault();
+        void action.run(() => result).then(succeeded => { if (succeeded) close(); });
+      }
+    } catch (reason) { event.preventDefault(); void action.run(() => { throw reason; }); }
+  }}>{action.pending ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : icon}{children}</DropdownMenu.Item>;
 }
 
 export function MenuLabel({ children }: { children: ReactNode }) { return <DropdownMenu.Label className="menu-label">{children}</DropdownMenu.Label>; }
 export function MenuSeparator() { return <DropdownMenu.Separator className="menu-separator" />; }
 
 export function ConfirmAction({ title, description, confirmLabel, destructive = false, children, onConfirm }: { title: string; description: ReactNode; confirmLabel: string; destructive?: boolean; children: ReactNode; onConfirm: () => void | Promise<void> }) {
-  const [busy, setBusy] = useState(false);
-  const confirm = async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } };
-  return <AlertDialog.Root><AlertDialog.Trigger asChild>{children}</AlertDialog.Trigger><AlertDialog.Portal><AlertDialog.Overlay className="dialog-overlay" /><AlertDialog.Content className="dialog"><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description>{description}</AlertDialog.Description><div className="dialog-actions"><AlertDialog.Cancel asChild><Button>Cancel</Button></AlertDialog.Cancel><AlertDialog.Action asChild><Button variant={destructive ? 'danger' : 'primary'} onClick={confirm} disabled={busy}>{busy && <LoaderCircle className="spin" size={16} />}{confirmLabel}</Button></AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
+  const [open, setOpen] = useState(false);
+  const action = useActionFeedback();
+  const confirm = async () => { if (await action.run(onConfirm)) setOpen(false); };
+  return <AlertDialog.Root open={open} onOpenChange={value => { if (!action.pending) setOpen(value); }}><AlertDialog.Trigger asChild>{children}</AlertDialog.Trigger><AlertDialog.Portal><AlertDialog.Overlay className="dialog-overlay" /><AlertDialog.Content className="dialog"><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description>{description}</AlertDialog.Description><div className="dialog-actions"><AlertDialog.Cancel asChild><Button type="button" disabled={action.pending}>Cancel</Button></AlertDialog.Cancel><Button type="button" variant={destructive ? 'danger' : 'primary'} onClick={confirm} pending={action.pending}>{confirmLabel}</Button></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
 }
 
 export function PromptDialog({ open, title, description, label, value, submitLabel, inputProps, onValueChange, onOpenChange, onSubmit }: {
@@ -107,7 +144,7 @@ export function PromptDialog({ open, title, description, label, value, submitLab
       setBusy(false);
     }
   };
-  return <AlertDialog.Root open={open} onOpenChange={onOpenChange}><AlertDialog.Portal><AlertDialog.Overlay className="dialog-overlay" /><AlertDialog.Content className="dialog"><form className="dialog-form" onSubmit={submit}><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description>{description}</AlertDialog.Description><label className="field" htmlFor={inputID}><span className="field-label">{label}</span><input {...inputProps} id={inputID} value={value} onChange={event => onValueChange(event.target.value)} autoFocus required disabled={busy} /></label>{error && <div className="dialog-error" role="alert"><AlertTriangle size={17} /><span>{error}</span></div>}<div className="dialog-actions"><AlertDialog.Cancel asChild><Button type="button" disabled={busy}>Cancel</Button></AlertDialog.Cancel><Button type="submit" variant="primary" disabled={busy || !value.trim()}>{busy && <LoaderCircle className="spin" size={16} />}{submitLabel}</Button></div></form></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
+  return <AlertDialog.Root open={open} onOpenChange={onOpenChange}><AlertDialog.Portal><AlertDialog.Overlay className="dialog-overlay" /><AlertDialog.Content className="dialog"><ActionForm className="dialog-form" onSubmit={submit}><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description>{description}</AlertDialog.Description><label className="field" htmlFor={inputID}><span className="field-label">{label}</span><input {...inputProps} id={inputID} value={value} onChange={event => onValueChange(event.target.value)} autoFocus required disabled={busy} /></label>{error && <div className="dialog-error" role="alert"><AlertTriangle size={17} /><span>{error}</span></div>}<div className="dialog-actions"><AlertDialog.Cancel asChild><Button type="button" disabled={busy}>Cancel</Button></AlertDialog.Cancel><Button type="submit" variant="primary" disabled={busy || !value.trim()}>{busy && <LoaderCircle className="spin" size={16} />}{submitLabel}</Button></div></ActionForm></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
 }
 
 export function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
