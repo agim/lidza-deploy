@@ -199,34 +199,62 @@ func (m *Manager) consoleTick(ctx context.Context) {
 		return
 	}
 	m.mu.Unlock()
-	count := min(20, len(outbox))
-	batch := ConsoleBatch{Errors: outbox[:count], CollectionError: collectionError}
-	body, _ := json.Marshal(batch)
-	req, err := http.NewRequestWithContext(ctx, "POST", cfg.URL, bytes.NewReader(body))
-	if err != nil {
-		return
+	m.deliverConsole(ctx, cfg, outbox, collectionError)
+}
+
+// The collector may read many containers per tick. Draining just one 20-record
+// batch per tick cannot keep up with even a modest multi-app scanner burst.
+// Bound catch-up by both batch count and elapsed time, preserving every record
+// until an authenticated acknowledgement has been durably applied.
+func (m *Manager) deliverConsole(parent context.Context, cfg ErrorReporting, outbox []ConsoleError, collectionError string) {
+	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for attempt := 0; attempt < 16; attempt++ {
+		count := min(20, len(outbox))
+		body, _ := json.Marshal(ConsoleBatch{Errors: outbox[:count], CollectionError: collectionError})
+		// The receiving API caps the entire JSON body at 256 KiB. Escaped log
+		// text can be much larger on the wire than its unescaped field sizes.
+		for len(body) > 240<<10 && count > 1 {
+			count /= 2
+			body, _ = json.Marshal(ConsoleBatch{Errors: outbox[:count], CollectionError: collectionError})
+		}
+		if len(body) > 240<<10 {
+			return
+		}
+		req, err := http.NewRequestWithContext(ctx, "POST", cfg.URL, bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+m.cfg.APIKey)
+		req.Header.Set("X-Lidza-Server", cfg.Server)
+		res, err := client.Do(req)
+		if err != nil {
+			return
+		}
+		var ack struct {
+			Status string `json:"status"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&ack)
+		res.Body.Close()
+		if res.StatusCode != 200 || decodeErr != nil || ack.Status != "stored" {
+			return
+		}
+		m.mu.Lock()
+		m.data.ErrorOutbox = outbox[count:]
+		if err := m.save(); err != nil {
+			m.data.ErrorOutbox = outbox
+			m.mu.Unlock()
+			return
+		}
+		m.mu.Unlock()
+		outbox = outbox[count:]
+		if len(outbox) == 0 {
+			return
+		}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+m.cfg.APIKey)
-	req.Header.Set("X-Lidza-Server", cfg.Server)
-	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	res, err := client.Do(req)
-	if err != nil {
-		return
-	}
-	defer res.Body.Close()
-	var ack struct {
-		Status string `json:"status"`
-	}
-	if res.StatusCode != 200 || json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&ack) != nil || ack.Status != "stored" {
-		return
-	}
-	m.mu.Lock()
-	m.data.ErrorOutbox = outbox[count:]
-	if err := m.save(); err != nil {
-		m.data.ErrorOutbox = outbox
-	}
-	m.mu.Unlock()
+
 }
 
 func parseConsole(text string, app App, release Release, generation string, cursor ConsoleCursor, capacity int) ([]ConsoleError, ConsoleCursor) {

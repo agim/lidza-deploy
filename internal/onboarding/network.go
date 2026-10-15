@@ -180,9 +180,17 @@ func configureCaddy(ctx context.Context, domain, email string) error {
 	routeID := "lidza-control-panel"
 	routes, _ := target["routes"].([]any)
 	kept := []any{}
+	guards := []any{}
 	for _, raw := range routes {
-		if m, ok := raw.(map[string]any); ok && m["@id"] == routeID {
-			continue
+		if m, ok := raw.(map[string]any); ok {
+			id, _ := m["@id"].(string)
+			if id == routeID {
+				continue
+			}
+			if strings.HasPrefix(id, "lidza-scanner-guard:") || strings.HasPrefix(id, "lidza-scanner-skip-default-logging:") {
+				guards = append(guards, raw)
+				continue
+			}
 		}
 		kept = append(kept, raw)
 	}
@@ -190,7 +198,8 @@ func configureCaddy(ctx context.Context, domain, email string) error {
 		map[string]any{"match": []any{map[string]any{"path": []string{"/metrics", "/readyz", "/healthz"}}}, "handle": []any{map[string]any{"handler": "static_response", "status_code": 404}}, "terminal": true},
 		map[string]any{"handle": []any{map[string]any{"handler": "reverse_proxy", "upstreams": []any{map[string]any{"dial": "127.0.0.1:3000"}}}}},
 	}}}}
-	target["routes"] = append([]any{route}, kept...)
+	// Host-wide scanner policy must run before the control-panel host route too.
+	target["routes"] = append(append(guards, route), kept...)
 	tls := object(apps, "tls")
 	certs := object(tls, "certificates")
 	automate, _ := certs["automate"].([]any)

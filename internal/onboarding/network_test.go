@@ -14,7 +14,7 @@ type transportFunc func(*http.Request) (*http.Response, error)
 
 func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 func TestCaddyPreservesAppRoutingAndRetries(t *testing.T) {
-	cfg := `{"apps":{"http":{"servers":{"https":{"listen":[":443"],"routes":[{"@id":"app-routing","handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:8081"}]}]}]}}},"tls":{"automation":{"policies":[{"on_demand":true}]}}}}`
+	cfg := `{"apps":{"http":{"servers":{"https":{"listen":[":443"],"routes":[{"@id":"lidza-scanner-guard:https","terminal":true},{"@id":"lidza-scanner-skip-default-logging:https"},{"@id":"app-routing","handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:8081"}]}]}]}}},"tls":{"automation":{"policies":[{"on_demand":true}]}}}}`
 	old := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = old })
 	loads := 0
@@ -42,6 +42,12 @@ func TestCaddyPreservesAppRoutingAndRetries(t *testing.T) {
 	}
 	if loads != 2 || strings.Count(cfg, `"@id":"lidza-control-panel"`) != 1 || strings.Count(cfg, `"@id":"app-routing"`) != 1 || !strings.Contains(cfg, `"on_demand":true`) {
 		t.Fatal("lost or duplicated app/control routing")
+	}
+	routes := parsed["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["https"].(map[string]any)["routes"].([]any)
+	for i, id := range []string{"lidza-scanner-guard:https", "lidza-scanner-skip-default-logging:https", "lidza-control-panel", "app-routing"} {
+		if routes[i].(map[string]any)["@id"] != id {
+			t.Fatal("scanner policy must precede all application/control routes")
+		}
 	}
 	if !strings.Contains(cfg, `"dial":"127.0.0.1:3000"`) || !strings.Contains(cfg, `"subjects":["deploy.example.com"]`) {
 		t.Fatal("missing control route/certificate")

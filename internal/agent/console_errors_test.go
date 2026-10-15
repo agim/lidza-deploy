@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -110,5 +112,57 @@ func TestConsoleOutboxSurvivesRestartAndRetriesWithoutDuplication(t *testing.T) 
 	reopened.mu.Unlock()
 	if delivered.Load() != 1 || remaining != 0 {
 		t.Fatal("restart replay or delivery retry failed", delivered.Load(), remaining)
+	}
+}
+
+func TestConsoleBacklogDrainsMultipleBoundedBatches(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	queued := make([]ConsoleError, 100)
+	for i := range queued {
+		queued[i].ID = fmt.Sprint(i)
+		queued[i].Message = strings.Repeat("\x00", 2048)
+		stack := strings.Repeat("\x00", 4096)
+		queued[i].Stack = &stack
+	}
+	m.data.ErrorOutbox = queued
+	seen := map[string]bool{}
+	calls := 0
+	var unavailable atomic.Bool
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unavailable.Load() {
+			w.WriteHeader(503)
+			return
+		}
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		if len(body) > 240<<10 {
+			t.Error("batch exceeds API body limit", len(body))
+		}
+		var batch ConsoleBatch
+		if err := json.Unmarshal(body, &batch); err != nil {
+			t.Error(err)
+		}
+		if len(batch.Errors) > 20 {
+			t.Error("too many records in a batch")
+		}
+		for _, e := range batch.Errors {
+			if seen[e.ID] {
+				t.Error("duplicate record in acknowledged batches", e.ID)
+			}
+			seen[e.ID] = true
+		}
+		JSON(w, 200, map[string]string{"status": "stored"})
+	}))
+	defer remote.Close()
+	cfg := ErrorReporting{URL: remote.URL, Server: "local"}
+	m.deliverConsole(context.Background(), cfg, queued, "backlog full")
+	if calls != 16 || len(seen) <= 20 || len(m.data.ErrorOutbox) != len(queued)-len(seen) {
+		t.Fatalf("bounded catch-up failed: calls=%d delivered=%d remaining=%d", calls, len(seen), len(m.data.ErrorOutbox))
+	}
+	unavailable.Store(true)
+	remaining := len(m.data.ErrorOutbox)
+	m.deliverConsole(context.Background(), cfg, m.data.ErrorOutbox, "")
+	if len(m.data.ErrorOutbox) != remaining {
+		t.Fatal("unacknowledged reports were discarded")
 	}
 }

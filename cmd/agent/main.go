@@ -19,9 +19,19 @@ func main() {
 	path := flag.String("config", "/etc/lidza-agent/config.json", "configuration file")
 	version := flag.Bool("version", false, "print release version")
 	applySSH := flag.Bool("apply-ssh-keys", false, "apply queued managed SSH access (root helper only)")
+	scannerFirewall := flag.String("scanner-firewall", "", "prepare, enable or disable Caddy scanner rejection and 90-day Fail2ban bans")
+	scannerOutput := flag.String("scanner-firewall-output", "", "directory for reviewable scanner firewall configuration (prepare mode)")
+	scannerAllow := flag.String("scanner-firewall-allow", "", "comma-separated operator/monitoring IPs or CIDRs exempt from scanner bans")
+	directTraffic := flag.Bool("direct-public-traffic", false, "confirm public traffic reaches Caddy directly without a CDN/load balancer")
 	flag.Parse()
 	if *version {
 		fmt.Println(buildinfo.Version)
+		return
+	}
+	if *scannerFirewall != "" {
+		if err := agent.ConfigureScannerFirewall(context.Background(), *scannerFirewall, *scannerOutput, *scannerAllow, *directTraffic); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 	if *applySSH {
