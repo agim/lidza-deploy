@@ -35,7 +35,7 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
   const { apps, loading, refreshing, updatedAt, error, unavailableServers, status } = useWorkspace();
   const notify = useToast();
   useEffect(() => setOpen(false), [route.page, route.detail, route.id]);
-  const activePage = route.page === 'detail' ? (['server', 'containers', 'console', 'ssh', 'upgrade'].includes(route.detail || '') ? 'servers' : route.detail === 'database' ? 'databases' : 'applications') : route.page;
+  const activePage = route.page === 'detail' ? (['server', 'containers', 'cleanup', 'console', 'ssh', 'upgrade'].includes(route.detail || '') ? 'servers' : route.detail === 'database' ? 'databases' : 'applications') : route.page;
   const navigation = <><a className="brand" href="#applications" aria-label="Līdza Deploy home"><strong>līdza<ArrowUpRight size={20} strokeWidth={1.3} /></strong><span>deploy</span></a>
     <div className="workspace"><span className="workspace-avatar">L</span><div><strong>Your workspace</strong><span>Deployment control</span></div><ChevronDown size={13} /></div>
     <nav aria-label="Workspace navigation">{groups.map(group => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map(item => { const Icon = item.icon; const active = activePage === item.page; return <a key={item.page} href={`#${item.page}`} onClick={() => setOpen(false)} className={active ? 'active' : ''} aria-current={active ? 'page' : undefined}><Icon size={17} strokeWidth={1.7} /><span>{item.label}</span>{item.page === 'applications' && <span className="nav-count">{apps.length}</span>}</a>; })}</div>)}</nav>

@@ -242,3 +242,10 @@ button[data-slot=switch] { cursor: pointer; }
   .dialog-actions .button { flex: 1; }
   #main-content > .page-footer { font-size: 8px; margin-top: 38px; }
 }
+
+.maintenance-actions { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 10px; }
+.maintenance-options { display: grid; gap: 8px; }
+.maintenance-options .check-row { margin-top: 0; }
+.maintenance-options .check-row > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-foreground); }
+.maintenance-next { display: flex; align-items: center; gap: 8px; margin: 20px 0 0; font-size: 11px; }
+.maintenance-report { padding: 18px; background: var(--background); border: 1px solid var(--border); border-radius: 8px; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }

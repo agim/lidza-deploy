@@ -8,6 +8,7 @@ import { DeploymentsPage } from './pages/DeploymentsPage';
 import { ServersPage } from './pages/ServersPage';
 import { AppSettingsPage } from './pages/AppSettingsPage';
 import { NewApplicationPage } from './pages/NewApplicationPage';
+import { ServerCleanupPage } from './pages/ServerCleanupPage';
 import { ContainersPage, LogPage, ServerConsolePage, ServerSettingsPage } from './pages/ServerDetailPages';
 import { DatabaseDetailPage, DatabasesPage, RemoteBackupsPage } from './pages/DataPages';
 import { IntegrationsPage } from './pages/IntegrationsPage';
@@ -38,6 +39,7 @@ function RouteView({ route }: { route: Route }) {
   if (route.page === 'detail' && route.id) {
     if (route.detail === 'settings') return <AppSettingsPage appID={route.id} />;
     if (route.detail === 'server') return <ServerSettingsPage serverID={route.id} />;
+    if (route.detail === 'cleanup') return <ServerCleanupPage serverID={route.id} />;
     if (route.detail === 'containers') return <ContainersPage serverID={route.id} />;
     if (route.detail === 'console') return <ServerConsolePage serverID={route.id} />;
     if (route.detail === 'database') return <DatabaseDetailPage appID={route.id} />;

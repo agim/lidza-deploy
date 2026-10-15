@@ -187,6 +187,7 @@ func (m *Manager) configureDatabase(appID string, input DatabaseRequest) error {
 	if input.Backup.Offsite && m.data.BackupStorage == nil {
 		return errors.New("configure S3 storage first")
 	}
+	input.Backup.Keep = 1 // Local retention is fixed independently of S3 history.
 	d := Database{AppID: id, Mode: input.Mode, URL: input.URL, Backup: input.Backup}
 	if exists {
 		d.Backups = previous.Backups
@@ -358,6 +359,7 @@ func (m *Manager) setBackupPolicy(id string, p BackupPolicy) error {
 		return errors.New("configure S3 storage first")
 	}
 	old := d
+	p.Keep = 1
 	d.Backup = p
 	d.NextBackup = time.Now().UTC().Add(time.Duration(p.Hours) * time.Hour)
 	m.data.Databases[id] = d

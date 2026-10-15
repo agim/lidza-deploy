@@ -33,6 +33,8 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	maintenanceOnce     sync.Once
+	maintenanceRun      func(context.Context, string, ...string) (string, error)
 	clickhouseFlights   singleflight.Group
 	clickhouseProvision func(context.Context, ClickHouseResource) error
 	hostMu              sync.Mutex
@@ -125,6 +127,8 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		m.data.Databases = map[string]Database{}
 	}
 	for id, d := range m.data.Databases {
+		d.Backup.Keep = 1
+		m.data.Databases[id] = d
 		if d.Operation != "" {
 			d.Operation = ""
 			d.Error = "agent restarted during database operation; retry"
@@ -163,6 +167,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 			d.Finished = &now
 		}
 	}
+	if m.data.Maintenance == nil {
+		m.data.Maintenance = &MaintenanceState{Policy: defaultMaintenancePolicy()}
+	}
+	m.data.Maintenance.Running = false
 	if err := m.save(); err != nil {
 		cancel()
 		return nil, err

@@ -111,6 +111,7 @@ type DeployRequest struct {
 	Key              string            `json:"key,omitempty"`
 }
 type diskState struct {
+	Maintenance       *MaintenanceState             `json:"maintenance,omitempty"`
 	ClickHouses       map[string]ClickHouseResource `json:"clickhouses,omitempty"`
 	RetiredAppIDs     map[string]bool               `json:"retired_app_ids,omitempty"`
 	RetainedResources map[string]RetainedResource   `json:"retained_resources,omitempty"`

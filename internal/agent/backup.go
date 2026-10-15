@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -166,19 +167,30 @@ func backupObjectKey(id string, record BackupRecord) string {
 func (m *Manager) pruneBackupsLocked(id string) error {
 	d := m.data.Databases[id]
 	old := d
-	// Walk newest first: scheduled/manual retention is independent of the rolling copy.
+	// A dump is eligible only after it was finalized and is still a regular,
+	// nonempty local file. Never delete a usable older copy just because the
+	// newest inventory entry refers to a missing or incomplete file.
+	if d.Operation != "" {
+		return nil
+	}
 	keepIDs := make(map[string]bool)
-	regular, pre := 0, 0
-	for i := len(d.Backups) - 1; i >= 0; i-- {
-		b := d.Backups[i]
-		if b.Kind == predeploymentBackup {
-			pre++
-			keepIDs[b.ID] = pre == 1
-		} else {
-			regular++
-			keepIDs[b.ID] = regular <= d.Backup.Keep
+	newest := -1
+	for i, b := range d.Backups {
+		if b.ID == "" || filepath.Base(b.ID) != b.ID || strings.Contains(b.ID, "..") {
+			return errors.New("invalid backup identity; local cleanup refused")
+		}
+		info, err := os.Lstat(filepath.Join(m.backupDir(id), b.ID+".dump"))
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			continue
+		}
+		if newest < 0 || !b.Created.Before(d.Backups[newest].Created) {
+			newest = i
 		}
 	}
+	if newest < 0 {
+		return nil
+	}
+	keepIDs[d.Backups[newest].ID] = true
 	var retained []BackupRecord
 	var pruneErr error
 	for _, b := range d.Backups {
