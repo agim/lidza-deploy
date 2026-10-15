@@ -76,6 +76,8 @@ Use **Errors** in the workspace or on an app card. Paired hosting agents automat
 
 ## Server connections
 
+Each server card shows host CPU usage and load, core count, used/available RAM, swap, disk usage/free space and expandable database sizes. Measurements refresh every 15 seconds while the page is visible; **Refresh** requests a fresh sample immediately. Each card shows its sample time. An unavailable agent retains the last successful measurements with an explicit stale warning, and missing metrics are never displayed as zero usage. The first CPU sample may say **Sampling…** until the next measurement.
+
 Host cards provide **Add application**, **Containers & usage**, and **Manage server** actions. The container page lists live CPU, memory, network/disk I/O, process count, state and health for application releases, workers, PostgreSQL, Valkey and ClickHouse containers owned by the agent. Search and application/state filters remain in place while measurements update every ten seconds. Unrelated Docker workloads are excluded, and the API never returns container environment, mounts or labels.
 
 Viewers and deployers may inspect managed container usage. Administrators can restart an active app, worker or managed-service container after confirmation; each request and result is audited. The agent validates the requested name against its encrypted resource state before invoking Docker, so the endpoint cannot restart an arbitrary host container. Rollback releases and scheduled commands remain read-only. A restart retains volumes and network configuration and briefly interrupts that process; use deploy/reload to replace code.

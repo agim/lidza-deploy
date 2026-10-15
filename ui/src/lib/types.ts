@@ -6,6 +6,27 @@ export interface Server {
   url: string;
 }
 
+export interface ServerHealth {
+  server_id: ID;
+  checked?: string;
+  cpus?: number;
+  cpu_percent?: number | null;
+  load1?: number;
+  memory_total?: number;
+  memory_available?: number;
+  swap_total?: number;
+  swap_free?: number;
+  swap_provisioning?: { state?: string; message?: string };
+  disks?: Array<{ path: string; total?: number; available?: number; used_percent?: number }>;
+  database_bytes?: Record<string, number>;
+  errors?: string[];
+}
+
+export interface ServerHealthResponse {
+  servers: ServerHealth[];
+  unavailable_servers?: string[];
+}
+
 export interface DomainStatus {
   state?: string;
   message?: string;
