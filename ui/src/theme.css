@@ -1,0 +1,45 @@
+/* Import after your shadcn theme. Includes exact Līdza Deploy dark tokens. */
+/* Exact Līdza Deploy palette, mapped to shadcn semantic tokens. */
+:root,
+.dark {
+  color-scheme: dark;
+  --background: #070b08;
+  --foreground: #e8f0ea;
+  --card: #0d1510;
+  --card-foreground: #e8f0ea;
+  --popover: #111c15;
+  --popover-foreground: #e8f0ea;
+  --primary: #39ff88;
+  --primary-foreground: #031108;
+  --secondary: #111c15;
+  --secondary-foreground: #e8f0ea;
+  --muted: #111c15;
+  --muted-foreground: #8fa395;
+  --accent: #17251c;
+  --accent-foreground: #6dffa6;
+  --destructive: #ff9b94;
+  --border: #203329;
+  --input: #355342;
+  --ring: #39ff88;
+  --chart-1: #39ff88;
+  --chart-2: #6dffa6;
+  --chart-3: #5dde8b;
+  --chart-4: #f0c36e;
+  --chart-5: #8fa395;
+  --radius: 12px;
+  --sidebar: #09120d;
+  --sidebar-foreground: #e8f0ea;
+  --sidebar-primary: #39ff88;
+  --sidebar-primary-foreground: #031108;
+  --sidebar-accent: #17251c;
+  --sidebar-accent-foreground: #6dffa6;
+  --sidebar-border: #203329;
+  --sidebar-ring: #39ff88;
+  --success: #5dde8b;
+  --success-bg: #14301f;
+  --warning: #f0c36e;
+  --warning-bg: #3b2d16;
+  --danger-bg: #351b1b;
+  --border-strong: #355342;
+}
+

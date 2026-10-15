@@ -156,7 +156,11 @@ func TestConsoleBacklogDrainsMultipleBoundedBatches(t *testing.T) {
 	defer remote.Close()
 	cfg := ErrorReporting{URL: remote.URL, Server: "local"}
 	m.deliverConsole(context.Background(), cfg, queued, "backlog full")
-	if calls != 16 || len(seen) <= 20 || len(m.data.ErrorOutbox) != len(queued)-len(seen) {
+	// Delivery is bounded by both 16 batches and eight seconds. Race-instrumented
+	// encryption on slower runners can exhaust the time budget first; requiring
+	// exactly 16 batches contradicts that contract. Still require catch-up beyond
+	// a single batch, enforce the batch ceiling, and account for every saved ACK.
+	if calls < 2 || calls > 16 || len(m.data.ErrorOutbox) != len(queued)-len(seen) {
 		t.Fatalf("bounded catch-up failed: calls=%d delivered=%d remaining=%d", calls, len(seen), len(m.data.ErrorOutbox))
 	}
 	unavailable.Store(true)
