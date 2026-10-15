@@ -38,6 +38,8 @@ In **Integrations → S3-compatible storage**, enter an HTTPS endpoint, bucket, 
 
 A local dump is saved first. Off-site copying streams it through Līdza's signed PUT API and verifies the uploaded size. If S3 fails, the local copy is retained and the operation reports the failure. Scheduled failures retry after 15 minutes. Manual-only backups require another manual attempt. Changing the storage profile affects subsequent backups; old objects remain at the old destination. Blank credential fields preserve saved keys.
 
+Removed or retiring applications do not produce new backups. Their retained databases report no active backup schedule, and the agent rejects stale backup requests even after restart or application ID reuse. A shared database continues backing up while another active application uses it. Existing local and S3 backups remain subject to their retention rules.
+
 The control panel schedules checks once a minute through Līdza's persistent jobs pack; the agent performs the actual dump. The first scheduled backup becomes due when provisioning completes. Subsequent successful backups advance the next due time by the selected interval; changing a schedule starts its new interval from the save time. After downtime, a due backup runs once instead of producing a backlog for every missed interval. **The control panel and its job workers must be running** for scheduling and alerts. Manual agent requests still work while the control panel is offline.
 
 Removing an application releases its application ID while preserving its databases,

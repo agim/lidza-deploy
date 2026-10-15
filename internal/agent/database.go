@@ -123,16 +123,36 @@ func (m *Manager) databaseViews() []DatabaseView {
 	out := []DatabaseView{}
 	for id, d := range m.data.Databases {
 		attachments := m.attachmentsLocked(id)
-		live := len(attachments) > 0
-		for _, a := range m.data.Apps {
-			if a.Current != nil && slices.Contains(a.Current.DatabaseIDs, id) {
-				live = true
-			}
+		live := m.databaseInUseLocked(id)
+		policy, next := d.Backup, d.NextBackup
+		if !live {
+			policy.Hours = 0
+			next = time.Time{}
 		}
-		out = append(out, DatabaseView{Attachments: attachments, AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: d.Backup, NextBackup: d.NextBackup, Backups: slices.Clone(d.Backups), Retained: !live})
+		out = append(out, DatabaseView{Attachments: attachments, AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: policy, NextBackup: next, Backups: slices.Clone(d.Backups), Retained: !live})
 	}
 	return out
 }
+
+// A retained database's owner ID may be reused by a fresh application. Only
+// actual bindings or a live release establish that it still needs backups.
+func (m *Manager) databaseInUseLocked(id string) bool {
+	for _, a := range m.data.Apps {
+		if a.Retiring {
+			continue
+		}
+		for _, dbID := range a.Bindings {
+			if dbID == id {
+				return true
+			}
+		}
+		if a.Current != nil && slices.Contains(a.Current.DatabaseIDs, id) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) configureDatabase(appID string, input DatabaseRequest) error {
 	if m.upgradePending() {
 		return errors.New("agent upgrade in progress")
@@ -233,6 +253,9 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 	d, ok := m.data.Databases[id]
 	if !ok {
 		return errors.New("no database configured")
+	}
+	if action == "backup" && !m.databaseInUseLocked(id) {
+		return errors.New("backups are disabled for databases without an active application")
 	}
 
 	if d.Operation != "" {
