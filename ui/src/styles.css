@@ -101,6 +101,7 @@ h3 { margin-bottom: 4px; }
 .button:disabled { opacity: .45; cursor: not-allowed; }
 .button { position: relative; }
 .button[data-pending] { opacity: 1; cursor: progress; }
+.button[data-pending]>.lucide-refresh-cw { animation: spin .85s linear infinite; }
 .button-progress { position: absolute; inset: auto 3px 2px; height: 3px; overflow: hidden; border-radius: 3px; pointer-events: none; background: rgb(93 222 139 / .15); }
 .button-progress>span { display: block; width: 45%; height: 100%; background: var(--accent); border-radius: inherit; animation: button-progress 1s ease-in-out infinite alternate; }
 .button-primary .button-progress { background: rgb(0 0 0 / .12); }

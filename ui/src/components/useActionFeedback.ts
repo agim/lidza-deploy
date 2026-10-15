@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useToast } from './toast-context';
 
-export const ACTION_FEEDBACK_MS = 650;
+export const ACTION_FEEDBACK_MS = 1950;
 
 // Only the indicator is held open. Requests start immediately and their results
 // render immediately; fast responses still receive perceptible acknowledgement.
