@@ -51,7 +51,7 @@ func routePermission(pattern string) string {
 		return "team.manage"
 	case "GET /api/control/servers/{server}/ssh-access":
 		return "infrastructure.manage"
-	case "GET /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console/jobs", "GET /api/control/servers/{server}/console/jobs/{job}":
+	case "POST /api/control/servers/{server}/console/jobs/{job}/cancel", "GET /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console/jobs", "GET /api/control/servers/{server}/console/jobs/{job}":
 		return "infrastructure.manage"
 	case "GET /api/control/audit":
 		return "audit.read"
@@ -126,7 +126,7 @@ func (c *Control) protectedRoute(pattern string, next http.HandlerFunc) http.Han
 			return
 		}
 		// Identifier metadata is from matched path values, never secrets or bodies.
-		for _, k := range []string{"id", "key", "server", "task", "subject"} {
+		for _, k := range []string{"id", "key", "server", "task", "subject", "job"} {
 			if v := r.PathValue(k); len(v) > 0 && len(v) <= 64 && safeAuditID(v) {
 				event.Meta[k] = v
 			}

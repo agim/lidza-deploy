@@ -28,3 +28,12 @@ must be checked before rerunning it; it does not silently retry execution.
 
 Upgrade both the control panel and hosting agent for background console support.
 The old synchronous endpoint remains available for older control panels.
+
+Use **Cancel command** or **Ctrl+C** (with no text selected) to interrupt the
+active command. Ctrl+C retains its normal Copy behavior when text is selected.
+Cancellation requires the same administrator and a current server MFA unlock,
+and is audited. The agent sends SIGINT to the command's process group, then
+force-stops processes that do not exit within three seconds. Output remains
+available with a cancelled status and exit code 130. Repeating Cancel is safe;
+it never starts a new command. Stopping a client command cannot undo operations
+already applied or necessarily stop work delegated to Docker or other services.

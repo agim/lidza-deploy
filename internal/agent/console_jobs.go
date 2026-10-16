@@ -33,7 +33,10 @@ type ConsoleJobView struct {
 	Error      string  `json:"error,omitempty"`
 }
 
+var errConsoleCancelled = errors.New("cancelled by operator")
+
 type consoleJob struct {
+	cancel                    context.CancelCauseFunc
 	evicted                   bool
 	mu                        sync.Mutex
 	id, owner, state, failure string
@@ -142,18 +145,23 @@ func (m *Manager) queueConsoleJob(input ConsoleJobRequest, execute func(context.
 		oldest.mu.Unlock()
 	}
 
-	j := &consoleJob{id: input.ID, owner: input.Owner, digest: digest, state: "running", started: time.Now()}
+	jobCtx, cancel := context.WithCancelCause(m.ctx)
+	j := &consoleJob{cancel: cancel, id: input.ID, owner: input.Owner, digest: digest, state: "running", started: time.Now()}
 	m.consoleJobs[input.ID] = j
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		result, err := execute(m.ctx, input.Command, j)
+		defer cancel(nil)
+		result, err := execute(jobCtx, input.Command, j)
 		j.mu.Lock()
 		defer j.mu.Unlock()
 		j.result = result
 		j.finished = time.Now()
 		j.state = "finished"
-		if err != nil {
+		if err != nil && errors.Is(context.Cause(jobCtx), errConsoleCancelled) {
+			j.state = "cancelled"
+			j.result.ExitCode = 130
+		} else if err != nil {
 			j.state = "interrupted"
 			j.failure = "Command interrupted: " + err.Error()
 		}
@@ -162,6 +170,29 @@ func (m *Manager) queueConsoleJob(input ConsoleJobRequest, execute func(context.
 }
 
 func (m *Manager) consoleJobRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /v1/console/jobs/{job}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		var input struct {
+			Owner string `json:"owner"`
+		}
+		if err := Decode(w, r, &input); err != nil {
+			Fail(w, 400, err)
+			return
+		}
+		m.mu.Lock()
+		j := m.consoleJobs[r.PathValue("job")]
+		m.mu.Unlock()
+		if j == nil || input.Owner == "" || j.owner != input.Owner {
+			Fail(w, 404, errors.New("console job unavailable"))
+			return
+		}
+		j.mu.Lock()
+		if j.state == "running" {
+			j.cancel(errConsoleCancelled)
+		}
+		j.mu.Unlock()
+		JSON(w, 202, map[string]string{"status": "cancellation requested"})
+	})
 	mux.HandleFunc("POST /v1/console/jobs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		var input ConsoleJobRequest

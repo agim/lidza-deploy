@@ -134,3 +134,17 @@ func consoleJobError(w http.ResponseWriter, err error) {
 	}
 	agent.Fail(w, 502, err)
 }
+
+func (c *Control) cancelConsoleJob(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	server, ok := c.consoleAccess(w, r)
+	if !ok {
+		return
+	}
+	input := map[string]string{"owner": auth.CurrentUser(r.Context()).ID}
+	if err := c.agentCall(r, server.ID, "POST", "/v1/console/jobs/"+url.PathEscape(r.PathValue("job"))+"/cancel", input, nil); err != nil {
+		consoleJobError(w, err)
+		return
+	}
+	agent.JSON(w, 202, map[string]string{"status": "cancellation requested"})
+}

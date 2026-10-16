@@ -362,6 +362,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("GET /api/control/servers/{server}/console", c.consoleStatus)
 	handle("POST /api/control/servers/{server}/console", c.runConsole)
 	handle("POST /api/control/servers/{server}/console/jobs", c.startConsoleJob)
+	handle("POST /api/control/servers/{server}/console/jobs/{job}/cancel", c.cancelConsoleJob)
 	handle("GET /api/control/servers/{server}/console/jobs/{job}", c.consoleJobOutput)
 	handle("GET /api/control/apps/{id}/cache", c.cacheSettings)
 	handle("POST /api/control/apps/{id}/cache", c.cacheSettings)

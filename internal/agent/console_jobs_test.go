@@ -211,3 +211,62 @@ func TestConsoleHistoryEvictsOutputWithoutReexecutingCommands(t *testing.T) {
 		t.Fatal("expired output available", w.Code)
 	}
 }
+
+func TestConsoleCancelPreservesOutputAndRequiresOwner(t *testing.T) {
+	for _, command := range []string{"printf started; sleep 30", "trap '' INT; printf started; sleep 30"} {
+		t.Run(command, func(t *testing.T) {
+			m := testManager(t, &fakeRuntime{})
+			j, err := m.queueConsoleJob(ConsoleJobRequest{ID: "console-cancel-owner-01", Owner: "operator", Command: command}, executeConsoleCommand)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for j.view(0).Output == "" && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			request := func(owner string, authenticated bool) int {
+				r := httptest.NewRequest("POST", "/v1/console/jobs/"+j.id+"/cancel", strings.NewReader(`{"owner":"`+owner+`"}`))
+				if authenticated {
+					r.Header.Set("Authorization", "Bearer "+m.cfg.APIKey)
+				}
+				w := httptest.NewRecorder()
+				Handler(m).ServeHTTP(w, r)
+				return w.Code
+			}
+			if status := request("operator", false); status != 401 {
+				t.Fatal("unauthenticated cancellation accepted", status)
+			}
+			if status := request("someone-else", true); status != 404 {
+				t.Fatal("another operator cancelled command", status)
+			}
+			if j.view(0).State != "running" {
+				t.Fatal("unauthorized request stopped command")
+			}
+			started := time.Now()
+			if status := request("operator", true); status != 202 {
+				t.Fatal(status)
+			}
+			if status := request("operator", true); status != 202 {
+				t.Fatal("repeat cancel failed", status)
+			}
+			deadline = time.Now().Add(7 * time.Second)
+			for j.view(0).State == "running" && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			view := j.view(0)
+			if view.State != "cancelled" || view.ExitCode != 130 || view.Output != "started" || view.Error != "" {
+				t.Fatalf("cancel result lost: %#v", view)
+			}
+			if time.Since(started) > 6*time.Second {
+				t.Fatal("ignored interrupt was not force-stopped")
+			}
+			if status := request("operator", true); status != 202 {
+				t.Fatal("cancel after completion failed", status)
+			}
+			// Cancelling releases the host slot for the next command.
+			if _, err := m.queueConsoleJob(ConsoleJobRequest{ID: "console-after-cancel-01", Owner: "operator", Command: "printf next"}, executeConsoleCommand); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

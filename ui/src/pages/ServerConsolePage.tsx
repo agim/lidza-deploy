@@ -1,5 +1,5 @@
-import { type FormEvent, useEffect, useRef, useState } from 'react';
-import { KeyRound, Play } from 'lucide-react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { KeyRound, Play, Square } from 'lucide-react';
 import { Input } from '../components/primitives/input';
 import { ActionForm, Button, Card, CopyButton, ErrorBanner, Field, Loading, PageHeader, SectionHeader } from '../components/ui';
 import { APIError, api, get, post } from '../lib/api';
@@ -22,6 +22,9 @@ export function ServerConsolePage({ serverID }: { serverID: string }) {
  const [output, setOutput] = useState('Locked.');
  const [jobID, setJobID] = useState(() => savedJob(serverID));
  const [submitting, setSubmitting] = useState(false);
+ const [cancelling, setCancelling] = useState(false);
+ const cancelLock = useRef('');
+ const [cancelError,setCancelError] = useState('');
  const submitLock = useRef(false);
  const [progress, setProgress] = useState('');
  const [error, setError] = useState('');
@@ -45,13 +48,13 @@ export function ServerConsolePage({ serverID }: { serverID: string }) {
     text += job.output; offset = job.next_offset;
     const finished = job.state !== 'running' && offset >= job.output_size;
     setOutput(text + (finished ? `${job.truncated ? '\n[output truncated at 8 MiB]' : ''}\n\n[exit ${job.exit_code} · ${job.duration_seconds.toFixed(2)}s]` : ''));
-    setProgress(finished ? (job.error || 'Command finished.') : `Running · ${Math.floor(job.duration_seconds)} seconds`);
-    if (finished) { if(job.error) setError(job.error); setJobID(''); return; }
+    setProgress(finished ? (job.state === 'cancelled' ? 'Command cancelled.' : job.error || 'Command finished.') : cancelLock.current ? 'Stopping command…' : `Running · ${Math.floor(job.duration_seconds)} seconds`);
+    if (finished) { setCancelError(''); setCancelling(false); cancelLock.current=''; if(job.error) setError(job.error); setJobID(''); return; }
     if (offset < job.output_size) delay = 50;
    } catch (reason) {
     if (cancelled) return;
     if (reason instanceof APIError && reason.status === 404) {
-     setError(message(reason)); setProgress('Result unavailable. Check the server before rerunning.'); saveJob(serverID, ''); setJobID(''); return;
+     setCancelling(false); cancelLock.current=''; setError(message(reason)); setProgress('Result unavailable. Check the server before rerunning.'); saveJob(serverID, ''); setJobID(''); return;
     }
     if (reason instanceof APIError && reason.status === 403) {
      setStatus(current => current && ({ ...current, unlocked: false }));
@@ -65,19 +68,43 @@ export function ServerConsolePage({ serverID }: { serverID: string }) {
   void poll();
   return () => { cancelled = true; clearTimeout(timer); };
  }, [endpoint, jobID, serverID, status?.unlocked]);
+ const cancelCommand = useCallback(async () => {
+  if (!jobID || !status?.unlocked || cancelLock.current) return;
+  cancelLock.current=jobID; setCancelling(true); setError(''); setCancelError(''); setProgress('Stopping command…');
+  try {
+   await api(`${endpoint}/jobs/${encodeURIComponent(jobID)}/cancel`, { method:'POST', body:'{}', signal:AbortSignal.timeout(15000) });
+  } catch(reason) {
+   if(cancelLock.current!==jobID) return;
+   cancelLock.current=''; setCancelling(false);
+   setCancelError(`Cancellation was not confirmed: ${message(reason)}. Output monitoring continues; you can retry Cancel.`);
+   if(reason instanceof APIError && reason.status===403) setStatus(current=>current && ({...current, unlocked:false}));
+  }
+ }, [endpoint,jobID,status?.unlocked]);
+ useEffect(() => {
+  const interrupt = (event: KeyboardEvent) => {
+   if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.key.toLowerCase()!=='c' || event.repeat || !jobID || !status?.unlocked) return;
+   // Preserve normal copying when text is selected in either output or a field.
+   if (window.getSelection()?.toString()) return;
+   const field = document.activeElement;
+   if ((field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) && field.selectionStart!==field.selectionEnd) return;
+   event.preventDefault(); void cancelCommand();
+  };
+  document.addEventListener('keydown', interrupt);
+  return () => document.removeEventListener('keydown', interrupt);
+ }, [cancelCommand,jobID,status?.unlocked]);
  const unlock = async (event: FormEvent<HTMLFormElement>) => {
   event.preventDefault(); const form = event.currentTarget;
   try {
    const result = await post<{ expiresAt: string }>('v1/auth/step-up', { code: String(new FormData(form).get('code') || ''), purpose: 'server.console', target: serverID });
-   setStatus(current => ({ ...current, two_factor_enabled: true, unlocked: true })); setError(''); form.reset();
+   setStatus(current => ({ ...current, two_factor_enabled: true, unlocked: true })); setError(''); setCancelError(''); form.reset();
    notify(`Root console unlocked until ${new Date(result.expiresAt).toLocaleTimeString()}.`);
   } catch (reason) { setError(message(reason)); }
  };
  const run = async (event: FormEvent<HTMLFormElement>) => {
   event.preventDefault(); if (submitLock.current || busy || !status?.unlocked) return;
-  submitLock.current = true; setSubmitting(true); setError('');
+  submitLock.current = true; setSubmitting(true); setError(''); setCancelError('');
   const submitted = command, id = crypto.randomUUID();
-  setCommand(''); setOutput(''); setProgress('Starting command…'); saveJob(serverID, id);
+  setCommand(''); setOutput(''); setCancelling(false); cancelLock.current=''; setProgress('Starting command…'); saveJob(serverID, id);
   try {
    await api<Job>(`${endpoint}/jobs`, { method: 'POST', body: JSON.stringify({ id, command: submitted }), signal: AbortSignal.timeout(15000) }); setJobID(id);
   } catch (reason) {
@@ -89,5 +116,5 @@ export function ServerConsolePage({ serverID }: { serverID: string }) {
   } finally { setSubmitting(false); submitLock.current = false; }
  };
  if (!status && !error) return <Loading overlay label="Checking console access…" />;
-  return <><PageHeader eyebrow="Protected operation" title={`${server?.name || serverID} root console`} description="Just-in-time root access is scoped to this server and recorded in the audit log." back="#servers" />{error && <ErrorBanner>{error}</ErrorBanner>}<div className="console-grid"><Card className="form-card"><SectionHeader title="Security unlock" description={status?.two_factor_enabled ? 'Verify to unlock this server for 15 minutes. Verify again to extend access.' : 'Enable two-factor authentication before using the root console.'} />{status?.two_factor_enabled ? <ActionForm id="console-unlock" onSubmit={unlock}><Field label="Authenticator or recovery code"><Input name="code" inputMode="numeric" autoComplete="one-time-code" required /></Field><Button type="submit"><KeyRound size={16} />{status.unlocked ? 'Extend access' : 'Unlock for 15 minutes'}</Button></ActionForm> : <Button onClick={() => { location.hash = 'page/two-factor/account'; }}>Set up two-factor authentication</Button>}</Card><Card className="form-card"><SectionHeader title="Run command" description={`Maximum runtime: ${Math.round((status?.max_runtime_seconds ?? 600) / 60)} minutes. Output updates live and reconnects after connection loss. Output is capped at ${formatBytes(status?.max_output_bytes ?? 1048576)}.`} /><ActionForm id="console-command" onSubmit={run}><Field label="Command"><textarea rows={10} required spellCheck={false} value={command} onChange={event => setCommand(event.target.value)} placeholder={'docker ps\n\ndocker exec -i lidza-db-app sh -c \'exec psql …\''} /></Field><Button variant="primary" type="submit" disabled={!status?.unlocked || busy}><Play size={16} />{busy ? 'Running…' : 'Run command'}</Button></ActionForm><div className="console-output-heading"><h3>Output</h3><CopyButton value={output} label="Copy output" /></div><p role="status" className="muted-copy">{progress}</p><pre className="console-output">{output}</pre></Card></div></>;
+  return <><PageHeader eyebrow="Protected operation" title={`${server?.name || serverID} root console`} description="Just-in-time root access is scoped to this server and recorded in the audit log." back="#servers" />{(error || cancelError) && <ErrorBanner>{error || cancelError}</ErrorBanner>}<div className="console-grid"><Card className="form-card"><SectionHeader title="Security unlock" description={status?.two_factor_enabled ? 'Verify to unlock this server for 15 minutes. Verify again to extend access.' : 'Enable two-factor authentication before using the root console.'} />{status?.two_factor_enabled ? <ActionForm id="console-unlock" onSubmit={unlock}><Field label="Authenticator or recovery code"><Input name="code" inputMode="numeric" autoComplete="one-time-code" required /></Field><Button type="submit"><KeyRound size={16} />{status.unlocked ? 'Extend access' : 'Unlock for 15 minutes'}</Button></ActionForm> : <Button onClick={() => { location.hash = 'page/two-factor/account'; }}>Set up two-factor authentication</Button>}</Card><Card className="form-card"><SectionHeader title="Run command" description={`Maximum runtime: ${Math.round((status?.max_runtime_seconds ?? 600) / 60)} minutes. Output updates live and reconnects after connection loss. Output is capped at ${formatBytes(status?.max_output_bytes ?? 1048576)}.`} /><ActionForm id="console-command" onSubmit={run}><Field label="Command"><textarea rows={10} required spellCheck={false} value={command} onChange={event => setCommand(event.target.value)} placeholder={'docker ps\n\ndocker exec -i lidza-db-app sh -c \'exec psql …\''} /></Field><Button variant="primary" type="submit" disabled={!status?.unlocked || busy}><Play size={16} />{busy ? 'Running…' : 'Run command'}</Button>{jobID && <Button type="button" variant="danger" onClick={cancelCommand} disabled={!status?.unlocked || cancelling}><Square size={16} />{cancelling ? 'Stopping…' : 'Cancel command (Ctrl+C)'}</Button>}</ActionForm><div className="console-output-heading"><h3>Output</h3><CopyButton value={output} label="Copy output" /></div><p role="status" className="muted-copy">{progress}</p><pre className="console-output">{output}</pre></Card></div></>;
 }

@@ -49,7 +49,7 @@ func TestConsoleTransportTimeoutIsNotRetried(t *testing.T) {
 }
 
 func TestConsoleJobsUseShortRequestsAndProtectedReads(t *testing.T) {
-	for _, pattern := range []string{"POST /api/control/servers/{server}/console/jobs", "GET /api/control/servers/{server}/console/jobs/{job}"} {
+	for _, pattern := range []string{"POST /api/control/servers/{server}/console/jobs/{job}/cancel", "POST /api/control/servers/{server}/console/jobs", "GET /api/control/servers/{server}/console/jobs/{job}"} {
 		if routePermission(pattern) != "infrastructure.manage" {
 			t.Fatal("console job exposed to viewers", pattern)
 		}

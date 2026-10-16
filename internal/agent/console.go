@@ -85,12 +85,19 @@ func executeConsoleCommand(ctx context.Context, command string, output io.Writer
 		if cmd.Process == nil {
 			return nil
 		}
+		if errors.Is(context.Cause(ctx), errConsoleCancelled) {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
+		}
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.WaitDelay = 3 * time.Second
 	cmd.Stdout = output
 	cmd.Stderr = output
 	err := cmd.Run()
+	// WaitDelay force-stops a shell that ignores Ctrl+C. Stop its descendants too.
+	if ctx.Err() != nil && cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	result := ConsoleResult{Duration: time.Since(started).Seconds()}
 	if ctx.Err() != nil {
 		result.ExitCode = 124
