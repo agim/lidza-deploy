@@ -8,7 +8,7 @@ const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
   const page=await browser.newPage({viewport:{width,height:950}}),errors=[];
   page.on('pageerror',e=>errors.push(e.message));
   const fixture=await mockConsole(page);fixture.consoleGranted=true;
-  let id='',stopped=false,starts=0,cancels=0,deny=false;
+  let id='',stopped=false,starts=0,cancels=0,deny=false,holdStop=false;
   await page.route('**/api/control/servers/local/console/jobs**',async route=>{
    const req=route.request(),url=new URL(req.url());
    if(url.pathname.endsWith('/cancel')) {
@@ -18,7 +18,7 @@ const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
    }
    if(req.method()==='POST') { starts++;id=req.postDataJSON().id;stopped=false;return route.fulfill({status:202,json:{id,state:'running'}}); }
    const offset=Number(url.searchParams.get('offset'));
-   return route.fulfill({json:{id,state:stopped?'cancelled':'running',output:offset?'':'partial output',next_offset:14,output_size:14,exit_code:stopped?130:0,duration_seconds:1,truncated:false}});
+   return route.fulfill({json:{id,state:stopped&&!holdStop?'cancelled':'running',output:offset?'':'partial output',next_offset:14,output_size:14,exit_code:stopped?130:0,duration_seconds:1,truncated:false}});
   });
   await page.goto(`${base}/console.html#page/console/local`);
   const input=page.locator('#console-command textarea');
@@ -38,13 +38,21 @@ const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
   await page.getByRole('button',{name:'Run command',exact:true}).click();
   deny=true;
   await page.getByRole('button',{name:'Cancel command (Ctrl+C)',exact:true}).click();
-  await page.getByText(/Cancellation was not confirmed/).waitFor();
-  assert.equal(await page.getByRole('button',{name:'Cancel command (Ctrl+C)',exact:true}).isDisabled(),true);
-  await page.locator('#console-unlock input').fill('123456');
-  await page.getByRole('button',{name:'Unlock for 15 minutes',exact:true}).click();
-  await page.getByRole('button',{name:'Cancel command (Ctrl+C)',exact:true}).click();
+  const verify=page.getByRole('alertdialog',{name:'Unlock to cancel command'});
+  await verify.waitFor();
+  await verify.getByLabel('Authenticator or recovery code').fill('123456');
+  await verify.getByRole('button',{name:'Verify & cancel command',exact:true}).click();
   await page.getByRole('status').filter({hasText:'Command cancelled.'}).waitFor();
   assert.equal(starts,2);assert.equal(cancels,3);
+  await page.waitForFunction(()=>!document.querySelector('#console-command button[type=submit]').disabled);
+  await input.fill('slow to stop');await page.getByRole('button',{name:'Run command',exact:true}).click();holdStop=true;
+  await page.getByRole('button',{name:'Cancel command (Ctrl+C)',exact:true}).click();
+  const retry=page.getByRole('button',{name:'Retry cancel (Ctrl+C)',exact:true});
+  await retry.waitFor();assert.equal(await retry.isEnabled(),true,'Acknowledgement left Cancel disabled');
+  assert.equal(await retry.getAttribute('data-variant'),'outline');
+  holdStop=false;await retry.click();
+  await page.getByRole('status').filter({hasText:'Command cancelled.'}).waitFor();
+  assert.equal(starts,3);assert.equal(cancels,5);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
   assert.deepEqual(errors,[]);await page.close();
   console.log(`PASS: Cancel button, Ctrl+C, normal copy, partial output, next draft, renewed MFA and responsive layout at ${width}px`);

@@ -37,3 +37,11 @@ force-stops processes that do not exit within three seconds. Output remains
 available with a cancelled status and exit code 130. Repeating Cancel is safe;
 it never starts a new command. Stopping a client command cannot undo operations
 already applied or necessarily stop work delegated to Docker or other services.
+
+When a saved command is found while the server is locked, the console reports
+that its status is unverified. The enabled, neutral **Unlock to cancel** button
+(or Ctrl+C) opens verification next to the action and automatically requests
+cancellation after successful verification. An expired unlock during cancellation
+opens the same dialog. Closing the dialog or an invalid code does not cancel the
+command. After a cancellation request is acknowledged, **Retry cancel** remains
+available until the agent reports completion.
