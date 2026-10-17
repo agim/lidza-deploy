@@ -12,6 +12,9 @@ import (
 )
 
 type App struct {
+	domainCheckKey     string
+	AdditionalDomains  []string          `json:"additional_domains,omitempty"`
+	DomainStatuses     []DomainStatus    `json:"domain_statuses,omitempty"`
 	ResourceID         string            `json:"resource_id,omitempty"` // agent-owned incarnation; separates reused app IDs from retained data
 	CustomerHosts      bool              `json:"customer_hosts"`
 	Stopped            bool              `json:"stopped"`
@@ -146,13 +149,18 @@ func (a App) Validate() error {
 	if a.Branch == "" || len(a.Branch) > 200 || strings.HasPrefix(a.Branch, "-") || strings.ContainsAny(a.Branch, " ~^:?*[\\\r\n\t") || strings.Contains(a.Branch, "..") || strings.Contains(a.Branch, "@{") {
 		return errors.New("invalid branch")
 	}
-	if !domainPattern.MatchString(a.Domain) || !strings.Contains(a.Domain, ".") || net.ParseIP(a.Domain) != nil || strings.Contains(a.Domain, "..") {
-		return errors.New("invalid domain")
+	if len(a.AdditionalDomains) > 20 {
+		return errors.New("at most 20 additional domains per application")
 	}
-	for _, label := range strings.Split(a.Domain, ".") {
-		if len(label) == 0 || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
-			return errors.New("invalid DNS label")
+	seen := map[string]bool{}
+	for _, domain := range a.Hostnames() {
+		if err := validateHostname(domain); err != nil {
+			return fmt.Errorf("%s: %w", domain, err)
 		}
+		if seen[domain] {
+			return errors.New("duplicate domain: " + domain)
+		}
+		seen[domain] = true
 	}
 	if len(a.Env) > 100 {
 		return errors.New("at most 100 environment variables")
@@ -187,4 +195,35 @@ func environmentURLKey(key string) bool {
 func validEnvironmentURL(value string) bool {
 	u, err := url.Parse(value)
 	return err == nil && u.Scheme != "" && u.Host != "" && strings.Contains(value, "://")
+}
+
+// Hostnames are explicit routing and certificate assignments, distinct from
+// application-approved customer hosts. The primary remains the canonical URL.
+func (a App) Hostnames() []string { return append([]string{a.Domain}, a.AdditionalDomains...) }
+func (a App) HasDomain(host string) bool {
+	for _, domain := range a.Hostnames() {
+		if domain == host {
+			return true
+		}
+	}
+	return false
+}
+func (a App) DomainsOverlap(other App) bool {
+	for _, domain := range a.Hostnames() {
+		if other.HasDomain(domain) {
+			return true
+		}
+	}
+	return false
+}
+func validateHostname(domain string) error {
+	if !domainPattern.MatchString(domain) || !strings.Contains(domain, ".") || net.ParseIP(domain) != nil || strings.Contains(domain, "..") {
+		return errors.New("invalid domain")
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return errors.New("invalid DNS label")
+		}
+	}
+	return nil
 }

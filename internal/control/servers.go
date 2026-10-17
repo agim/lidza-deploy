@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 )
 
 func validateServers(servers []Server) error {
@@ -96,7 +97,7 @@ func (c *Control) writeServer(w http.ResponseWriter, r *http.Request, edit bool)
 		}
 		found := false
 		for _, b := range remote {
-			if a.ID == b.ID && a.Repository == b.Repository && a.Domain == b.Domain {
+			if a.ID == b.ID && a.Repository == b.Repository && a.Domain == b.Domain && slices.Equal(a.AdditionalDomains, b.AdditionalDomains) {
 				found = true
 				break
 			}

@@ -28,6 +28,8 @@ export interface ServerHealthResponse {
 }
 
 export interface DomainStatus {
+  domain?: string;
+  checked?: string;
   state?: string;
   message?: string;
   recheck_seconds?: number;
@@ -39,6 +41,8 @@ export interface Application {
   repository: string;
   branch: string;
   domain: string;
+  additional_domains?: string[];
+  domain_statuses?: DomainStatus[];
   auto_deploy?: boolean;
   customer_hosts?: boolean;
   stopped?: boolean;
@@ -87,6 +91,7 @@ export interface EnvironmentEntry {
 }
 
 export interface AppSettings extends Application {
+  additional_domains_supported?: boolean;
   backup_before_deploy?: boolean;
   env_keys?: string[];
   environment?: EnvironmentEntry[];

@@ -55,6 +55,7 @@ type Config struct {
 	Connectors []auth.Connector
 }
 type Application struct {
+	AdditionalDomains  []string      `json:"additional_domains,omitempty"`
 	CustomerHosts      bool          `json:"customer_hosts"`
 	GitHubInstallation int64         `json:"github_installation,omitempty"`
 	Previews           PreviewConfig `json:"previews,omitempty"`
@@ -426,12 +427,13 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	type view struct {
 		Application
-		Stopped      bool                `json:"stopped"`
-		Maintenance  agent.Maintenance   `json:"maintenance"`
-		Restoring    bool                `json:"restoring,omitempty"`
-		DomainStatus *agent.DomainStatus `json:"domain_status,omitempty"`
-		Current      *agent.Release      `json:"current,omitempty"`
-		AgentError   string              `json:"agent_error,omitempty"`
+		Stopped        bool                 `json:"stopped"`
+		Maintenance    agent.Maintenance    `json:"maintenance"`
+		Restoring      bool                 `json:"restoring,omitempty"`
+		DomainStatuses []agent.DomainStatus `json:"domain_statuses,omitempty"`
+		DomainStatus   *agent.DomainStatus  `json:"domain_status,omitempty"`
+		Current        *agent.Release       `json:"current,omitempty"`
+		AgentError     string               `json:"agent_error,omitempty"`
 	}
 	c.mu.Lock()
 	out := make([]view, 0, len(c.data.Apps))
@@ -462,6 +464,8 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 					out[i].Stopped = a.Stopped
 					out[i].Current = a.Current
 					out[i].DomainStatus = a.DomainStatus
+					out[i].DomainStatuses = a.DomainStatuses
+					out[i].AdditionalDomains = a.AdditionalDomains
 					out[i].Maintenance = a.Maintenance
 					out[i].Restoring = a.Restoring
 					break
@@ -525,7 +529,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	a.AutoDeploy = autoDeploy
 	a.Retiring = false
 	a.Generation = random()
-	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
+	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: a.AdditionalDomains, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
 		return
@@ -545,7 +549,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, other := range c.data.Apps {
-		if other.Domain == a.Domain {
+		if spec.DomainsOverlap(agent.App{Domain: other.Domain, AdditionalDomains: other.AdditionalDomains}) {
 			agent.Fail(w, 409, errors.New("domain already registered"))
 			return
 		}

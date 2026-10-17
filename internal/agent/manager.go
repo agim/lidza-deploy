@@ -217,6 +217,8 @@ func (m *Manager) Apps() []App {
 		a.Env = nil
 		a.EnvKinds = nil
 		a.DomainStatus = nil
+		a.AdditionalDomains = slices.Clone(a.AdditionalDomains)
+		a.DomainStatuses = m.domainStatusesLocked(a)
 		if m.cfg.TLSListen != "" {
 			status, ok := m.domains[a.ID]
 			if !ok || status.Domain != a.Domain {
@@ -248,6 +250,12 @@ func (m *Manager) Upsert(a App) error {
 		return errors.New("application has an active deployment")
 	}
 	old, exists := m.data.Apps[a.ID]
+	if exists && a.AdditionalDomains == nil {
+		a.AdditionalDomains = slices.Clone(old.AdditionalDomains)
+	}
+	if err := a.Validate(); err != nil {
+		return err
+	}
 	if m.removing[a.ID] || m.data.Caches[a.ID].Operation {
 		return errors.New("application cleanup or cache operation is active")
 	}
@@ -272,10 +280,12 @@ func (m *Manager) Upsert(a App) error {
 		return errors.New("agent application limit reached")
 	}
 	for id, other := range m.data.Apps {
-		if id != a.ID && other.Domain == a.Domain {
+		if id != a.ID && a.DomainsOverlap(other) {
 			return errors.New("domain already assigned")
 		}
 	}
+	a.AdditionalDomains = slices.Clone(a.AdditionalDomains)
+	a.DomainStatuses = nil
 	a.DefaultsApplied = old.DefaultsApplied
 	a.EnvSources = maps.Clone(old.EnvSources)
 	if a.EnvSources == nil {

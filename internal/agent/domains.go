@@ -160,11 +160,19 @@ func (m *Manager) runDomainChecks(ctx context.Context, interval time.Duration, c
 		if ctx.Err() != nil {
 			return
 		}
-		apps := m.Apps()
+		apps := []App{}
+		for _, a := range m.Apps() {
+			for _, domain := range a.Hostnames() {
+				item := a
+				item.Domain = domain
+				item.domainCheckKey = domainStatusKey(a, domain)
+				apps = append(apps, item)
+			}
+		}
 		live := map[string]string{}
 		for _, a := range apps {
 			if a.Current != nil && !a.Retiring {
-				live[a.ID] = a.Domain
+				live[checkKey(a)] = a.Domain
 			}
 		}
 		for id, item := range running {
@@ -176,14 +184,14 @@ func (m *Manager) runDomainChecks(ctx context.Context, interval time.Duration, c
 			if a.Current == nil || a.Retiring {
 				continue
 			}
-			if _, active := running[a.ID]; active {
+			if _, active := running[checkKey(a)]; active {
 				continue
 			}
 			if len(running) >= 8 {
 				break
 			}
 			m.mu.Lock()
-			status := m.domains[a.ID]
+			status := m.domains[checkKey(a)]
 			m.mu.Unlock()
 			delay := domainPendingInterval
 			if status.State == "ready" {
@@ -193,9 +201,9 @@ func (m *Manager) runDomainChecks(ctx context.Context, interval time.Duration, c
 				continue
 			}
 			work, cancel := context.WithCancel(ctx)
-			running[a.ID] = runningCheck{domain: a.Domain, cancel: cancel}
+			running[checkKey(a)] = runningCheck{domain: a.Domain, cancel: cancel}
 			pending.Add(1)
-			go func(a App) { defer pending.Done(); check(work, a); finished <- a.ID }(a)
+			go func(a App) { defer pending.Done(); check(work, a); finished <- checkKey(a) }(a)
 		}
 	}
 	scan()
@@ -242,8 +250,8 @@ func (m *Manager) setDomainStatus(a App, status DomainStatus) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	current, ok := m.data.Apps[a.ID]
-	if ok && current.Domain == a.Domain && !current.Retiring {
-		m.domains[a.ID] = status
+	if ok && current.HasDomain(a.Domain) && domainStatusKey(current, a.Domain) == checkKey(a) && !current.Retiring {
+		m.domains[checkKey(a)] = status
 	}
 }
 func (m *Manager) serveDomainProof(w http.ResponseWriter, r *http.Request, domain string) {
@@ -253,7 +261,7 @@ func (m *Manager) serveDomainProof(w http.ResponseWriter, r *http.Request, domai
 		return
 	}
 	for _, a := range m.Apps() {
-		if a.Domain == domain && !a.Retiring {
+		if a.HasDomain(domain) && !a.Retiring {
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Content-Type", "text/plain")
 			io.WriteString(w, challengeProof(m.domainProof(domain), nonce))
@@ -267,13 +275,13 @@ func (m *Manager) serveDomainProof(w http.ResponseWriter, r *http.Request, domai
 // DNS result cannot authorize issuance after DNS is moved away from this host.
 func (m *Manager) domainAllowed(ctx context.Context, domain string) bool {
 	for _, a := range m.Apps() {
-		if a.Domain == strings.ToLower(domain) && !a.Retiring {
+		if a.HasDomain(strings.ToLower(domain)) && !a.Retiring {
 			if m.cfg.TLSListen == "" {
 				return true
 			} // Isolated agents without a TLS terminator.
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			return checkDomainRoute(ctx, a.Domain, m.domainProof(a.Domain), net.DefaultResolver.LookupIP, "80") == nil
+			return checkDomainRoute(ctx, strings.ToLower(domain), m.domainProof(strings.ToLower(domain)), net.DefaultResolver.LookupIP, "80") == nil
 		}
 	}
 	a, ok := m.hostApplication(ctx, domain)
@@ -291,4 +299,31 @@ func challengeProof(proof, nonce string) string {
 	hash := hmac.New(sha256.New, []byte(proof))
 	hash.Write([]byte(nonce))
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func domainStatusKey(a App, domain string) string {
+	if domain == a.Domain {
+		return a.ID
+	}
+	return a.ID + "/" + domain
+}
+func checkKey(a App) string {
+	if a.domainCheckKey != "" {
+		return a.domainCheckKey
+	}
+	return a.ID
+}
+func (m *Manager) domainStatusesLocked(a App) []DomainStatus {
+	if m.cfg.TLSListen == "" {
+		return nil
+	}
+	out := []DomainStatus{}
+	for _, domain := range a.Hostnames() {
+		status, ok := m.domains[domainStatusKey(a, domain)]
+		if !ok || status.Domain != domain {
+			status = DomainStatus{Domain: domain, State: "waiting_dns", RecheckSeconds: int(domainPendingInterval / time.Second)}
+		}
+		out = append(out, status)
+	}
+	return out
 }

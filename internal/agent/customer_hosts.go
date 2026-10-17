@@ -69,7 +69,7 @@ func (m *Manager) hostSnapshot() ([]App, string) {
 			r := *a.Current
 			a.Current = &r
 		}
-		fmt.Fprintf(&b, "%s|%s|%t|%t|%t|%t|", a.ID, a.Domain, a.CustomerHosts, a.Stopped, a.Retiring, a.Preview)
+		fmt.Fprintf(&b, "%s|%s|%t|%t|%t|%t|", a.ID, a.Domain+","+strings.Join(a.AdditionalDomains, ","), a.CustomerHosts, a.Stopped, a.Retiring, a.Preview)
 		if a.Current != nil {
 			fmt.Fprintf(&b, "%s|%s", a.Current.ID, a.Current.Port)
 		}
@@ -79,7 +79,7 @@ func (m *Manager) hostSnapshot() ([]App, string) {
 }
 func registeredHost(apps []App, host string) (App, bool) {
 	for _, a := range apps {
-		if a.Domain == host {
+		if a.HasDomain(host) {
 			return a, true
 		}
 	}

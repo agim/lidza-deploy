@@ -7,6 +7,7 @@ import (
 	"github.com/agim/lidza/pkg/router"
 	"net/http"
 	"net/url"
+	"slices"
 )
 
 func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
@@ -78,13 +79,16 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	spec := agent.App{ID: old.ID, Repository: old.Repository, Branch: input.Branch, Domain: input.Domain}
+	spec := agent.App{ID: old.ID, Repository: old.Repository, Branch: input.Branch, Domain: input.Domain, AdditionalDomains: old.AdditionalDomains}
+	if input.AdditionalDomains != nil {
+		spec.AdditionalDomains = slices.Clone(*input.AdditionalDomains)
+	}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
 		return
 	}
 	for id, a := range c.data.Apps {
-		if id != old.ID && a.Domain == input.Domain {
+		if id != old.ID && spec.DomainsOverlap(agent.App{Domain: a.Domain, AdditionalDomains: a.AdditionalDomains}) {
 			agent.Fail(w, 409, errors.New("domain already registered"))
 			return
 		}
@@ -120,6 +124,7 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	next.Branch = input.Branch
 	next.Domain = input.Domain
+	next.AdditionalDomains = spec.AdditionalDomains
 	c.data.Apps[old.ID] = next
 	if err := c.save(); err != nil {
 		c.data.Apps[old.ID] = old

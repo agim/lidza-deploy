@@ -148,6 +148,12 @@ func (c *Control) dispatchPreview(ctx context.Context, payload json.RawMessage) 
 	}
 	if !exists {
 		a = Application{ID: id, ServerID: parent.ServerID, Repository: parent.Repository, Branch: fmt.Sprintf("pr-%d", in.Number), Domain: id + "." + parent.Previews.BaseDomain, Generation: random(), PreviewParent: parent.ID, GitHubInstallation: parent.GitHubInstallation}
+		for otherID, other := range c.data.Apps {
+			if otherID != id && (agent.App{Domain: other.Domain, AdditionalDomains: other.AdditionalDomains}).HasDomain(a.Domain) {
+				c.mu.Unlock()
+				return errors.New("preview domain already registered")
+			}
+		}
 		c.data.Apps[id] = a
 		if err = c.save(); err != nil {
 			delete(c.data.Apps, id)

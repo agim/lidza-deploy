@@ -11,6 +11,7 @@ import (
 // Environment settings are editable; credentials stay masked unless a separate,
 // purpose-bound step-up request reveals one. Omitted keys survive and null deletes.
 type SettingsPatch struct {
+	AdditionalDomains  *[]string          `json:"additional_domains,omitempty"`
 	CustomerHosts      *bool              `json:"customer_hosts,omitempty"`
 	FromDefaults       bool               `json:"from_defaults,omitempty"`
 	OnlyMissing        bool               `json:"only_missing,omitempty"`
@@ -29,6 +30,9 @@ type EnvironmentEntry struct {
 	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
+	AdditionalDomainsSupported bool               `json:"additional_domains_supported"`
+	AdditionalDomains          []string           `json:"additional_domains"`
+	DomainStatuses             []DomainStatus     `json:"domain_statuses,omitempty"`
 	AppManagedStorageSupported bool               `json:"app_managed_storage_supported"`
 	StorageProviderOverride    bool               `json:"storage_provider_override"`
 	CustomerHosts              bool               `json:"customer_hosts"`
@@ -76,7 +80,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 		}
 		environment = append(environment, entry)
 	}
-	return Settings{AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
+	return Settings{AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
 }
 
 func (m *Manager) RevealCredential(id, key string) (string, error) {
@@ -133,6 +137,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	}
 	a.Branch = p.Branch
 	a.Domain = p.Domain
+	if p.AdditionalDomains != nil {
+		a.AdditionalDomains = slices.Clone(*p.AdditionalDomains)
+	}
 	a.Env = maps.Clone(old.Env)
 	a.EnvKinds = normalizeEnvironmentKinds(old.Env, old.EnvKinds)
 	if a.Env == nil {
@@ -188,14 +195,15 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		return err
 	}
 	for otherID, other := range m.data.Apps {
-		if otherID != id && other.Domain == a.Domain {
+		if otherID != id && a.DomainsOverlap(other) {
 			return errors.New("domain already assigned")
 		}
 	}
 	m.data.Apps[id] = a
 	var err error
-	if a.Current != nil {
-		_, err = m.queueLocked(a, DeployRequest{}, true, changeKeys(old, a))
+	changes := changeKeys(old, a)
+	if a.Current != nil && !(len(changes) == 1 && changes[0] == "additional_domains") {
+		_, err = m.queueLocked(a, DeployRequest{}, true, changes)
 	} else {
 		err = m.save()
 	}
