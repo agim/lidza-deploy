@@ -67,6 +67,18 @@ function assert(value, message) { if (!value) throw new Error(message); }
     assert(calls - count <= 1, 'Completed deployment kept fast-polling');
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), 'Live logs page overflows on mobile');
 
+    // The finished state from the reported screenshot must retain separation too.
+    for (const width of [320, 390, 768, 1440, 2560]) {
+      await page.setViewportSize({ width, height: 900 });
+      const gap = await page.locator('.log-status-card').evaluate(card => {
+        const status = card.firstElementChild.getBoundingClientRect();
+        const follow = card.querySelector('.log-follow-control').getBoundingClientRect();
+        return Math.max(follow.top - status.bottom, follow.left - status.right);
+      });
+      assert(gap >= 16, `Finished status touches Follow latest output at ${width}px: ${gap}px`);
+      await page.screenshot({ path: `/tmp/lidza-log-spacing-${width}.png`, fullPage: true });
+    }
+
     const locationHash = await page.evaluate(() => { location.hash = 'applications'; return location.hash; });
     assert(locationHash === '#applications', 'Could not leave build logs');
     count = calls;

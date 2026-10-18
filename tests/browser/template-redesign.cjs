@@ -8,6 +8,33 @@ async function noOverflow(page, context) {
   assert(overflow.page <= overflow.viewport + 1, `${context}: page overflow ${JSON.stringify(overflow)}`);
   assert.equal(overflow.controls.length, 0, `${context}: clipped controls ${JSON.stringify(overflow.controls)}`);
 }
+async function spacing(page, context) {
+  const problems = await page.evaluate(() => {
+    const rect = element => element.getBoundingClientRect();
+    const issues = [];
+    // All shared action groups, including buttons that wrap onto another row.
+    for (const group of document.querySelectorAll('.page-actions, .sticky-actions, .section-actions, .dialog-actions, .server-actions, .maintenance-actions, .application-actions')) {
+      const controls = [...group.children].filter(element => element.matches('button, a, [data-slot="dropdown-menu-trigger"]') && element.getClientRects().length);
+      for (let i = 0; i < controls.length; i++) for (let j = i + 1; j < controls.length; j++) {
+        const a = rect(controls[i]), b = rect(controls[j]);
+        const x = Math.max(b.left - a.right, a.left - b.right);
+        const y = Math.max(b.top - a.bottom, a.top - b.bottom);
+        if (Math.max(x, y) < 3.5) issues.push(`Touching actions: ${controls[i].textContent} / ${controls[j].textContent}`);
+      }
+    }
+    for (const card of document.querySelectorAll('.log-status-card')) {
+      const status = rect(card.firstElementChild), follow = rect(card.querySelector('.log-follow-control'));
+      const gap = Math.max(follow.top - status.bottom, follow.left - status.right);
+      if (gap < 16) issues.push(`Log status and follow control gap: ${gap}`);
+    }
+    for (const card of document.querySelectorAll('.guidance-card')) {
+      const icon = rect(card.firstElementChild), copy = rect(card.lastElementChild);
+      if (copy.left - icon.right < 14) issues.push('Guidance icon touches its text');
+    }
+    return issues;
+  });
+  assert.deepEqual(problems, [], `${context}: spacing`);
+}
 (async () => {
   const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox'] });
   try {
@@ -23,6 +50,7 @@ async function noOverflow(page, context) {
         await page.waitForTimeout(80);
         assert.equal(await page.locator('#main-content').innerText().then(text => /undefined|NaN/.test(text)), false, `${width} ${route}: missing dynamic values`);
         await noOverflow(page, `${width} ${route}`);
+        await spacing(page, `${width} ${route}`);
         assert.deepEqual(errors, [], `${width} ${route}: browser errors`);
       }
       await page.goto(`${base}/console.html#applications`);
