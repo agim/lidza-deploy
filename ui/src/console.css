@@ -91,7 +91,8 @@ h3 { font-size: 13px; font-weight: 550; }
 .field input, .field select, .field textarea, input[data-slot=input] { font-weight: 400; }
 input:not([type=checkbox]):not([type=radio]), select, textarea { font-family: inherit; min-width: 0; border-radius: 8px; font-size: 12px; line-height: 1.45; }
 input:not([type=checkbox]):not([type=radio]), select { height: 39px; min-height: 39px; padding: 8px 11px; }
-input[data-slot=input] { width: 100%; }
+input[data-slot=input]:not([type=checkbox]):not([type=radio]) { width: 100%; }
+input[data-slot=input]:is([type=checkbox], [type=radio]) { width: 17px; height: 17px; min-height: 17px; flex: 0 0 17px; padding: 0; }
 input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #39ff8850; outline-offset: 1px; border-color: var(--ring); }
 .field-hint { font-size: 10px; line-height: 1.6; }
 .check-row { font-size: 12px; }
@@ -245,7 +246,8 @@ button[data-slot=switch] { cursor: pointer; }
 
 .maintenance-actions { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 10px; }
 .maintenance-options { display: grid; gap: 8px; }
-.maintenance-options .check-row { margin-top: 0; }
+.maintenance-options .check-row { margin-top: 0; display: grid; grid-template-columns: 17px 18px minmax(0, 1fr); align-items: start; justify-content: start; gap: 11px; }
+.maintenance-options .check-row > span { min-width: 0; overflow-wrap: anywhere; }
 .maintenance-options .check-row > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-foreground); }
 .maintenance-next { display: flex; align-items: center; gap: 8px; margin: 20px 0 0; font-size: 11px; }
 .maintenance-report { padding: 18px; background: var(--background); border: 1px solid var(--border); border-radius: 8px; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
