@@ -85,7 +85,10 @@ func (d *Docker) stackCapacity(ctx context.Context, a App, p StackProfile, manif
 			if owner == a.ID {
 				continue
 			}
-			n, _ := strconv.ParseInt(memory, 10, 64)
+			n, parseErr := strconv.ParseInt(memory, 10, 64)
+			if parseErr != nil || n <= 0 {
+				return errors.New("stack capacity cannot budget an unbounded running container; apply a Docker memory limit or use a dedicated stack server")
+			}
 			requested += int((n + 1048575) / 1048576)
 		}
 	}

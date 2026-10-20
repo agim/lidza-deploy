@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,6 +29,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		t.Fatal(err, string(out))
 	}
 	manifest := fixtureStackManifest()
+	manifest.BootstrapReadiness = &StackBootstrapReadiness{Path: "/api/v1/health", ReadyzBodyContains: "Server setup is required", SetupPath: "/setup"}
 	rt := &Docker{Root: t.TempDir(), readinessTimeout: 10 * time.Second}
 	rt.checkout = func(ctx context.Context, a App, dir, token string) error {
 		if err := os.MkdirAll(dir, 0700); err != nil {
@@ -40,7 +42,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		if err = os.WriteFile(filepath.Join(dir, "fixture"), data, 0755); err != nil {
 			return err
 		}
-		for name, data := range map[string]string{"lidza.json": `{"name":"fixture","packs":["lidza/storage"],"frontend":{"template":"htmx"}}`, "Dockerfile": "FROM scratch\nCOPY --chmod=755 fixture /fixture\nENTRYPOINT [\"/fixture\"]\n"} {
+		for name, data := range map[string]string{"lidza.json": `{"name":"fixture","packs":["lidza/storage"],"frontend":{"template":"htmx"}}`, "Dockerfile": "FROM scratch\nCOPY --chmod=755 fixture /fixture\nUSER 65532:65532\nENTRYPOINT [\"/fixture\"]\n"} {
 			if err = os.WriteFile(filepath.Join(dir, name), []byte(data), 0600); err != nil {
 				return err
 			}
@@ -64,6 +66,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	a.RuntimeProfile = "minimum"
 	a.Env["LIDZA_MASTER_KEY"] = strings.Repeat("1", 64)
 	a.Env["RELEASE_TEXT"] = "one-"
+	a.Env["FIXTURE_NEEDS_SETUP"] = "true"
 	no := false
 	a.BackupBeforeDeploy = &no
 	var releases []*Release
@@ -135,7 +138,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		deadline := time.Now().Add(2 * time.Minute)
 		for time.Now().Before(deadline) {
 			for _, d := range m.Deployments() {
-				if d.ID == job.ID && (d.Status == "live" || d.Status == "failed") {
+				if d.ID == job.ID && (d.Status == "live" || d.Status == "failed" || d.Status == "setup_required") {
 					return d
 				}
 			}
@@ -145,7 +148,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		return Deployment{}
 	}
 	first := deploy(false)
-	if first.Status != "live" {
+	if first.Status != "setup_required" {
 		t.Fatalf("first deployment: %s\n%s", first.Error, first.Log)
 	}
 	r1 := m.Current(a.ID)
@@ -178,11 +181,58 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		}
 		return string(body)
 	}
+	if !r1.Stack.Bootstrap {
+		t.Fatal("first-install release was mislabeled as fully ready")
+	}
+	for _, path := range []string{"/readyz", "/protected"} {
+		target := proxy.URL + path
+		if path == "/readyz" {
+			target = "http://127.0.0.1:" + r1.Port + path
+		}
+		req, _ := http.NewRequestWithContext(ctx, "GET", target, nil)
+		req.Host = a.Domain
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		if res.StatusCode != 503 {
+			t.Fatalf("setup API guard bypassed for %s: %d", path, res.StatusCode)
+		}
+	}
+	if !strings.Contains(request("GET", "/setup"), "app") {
+		t.Fatal("guarded setup UI unavailable")
+	}
+	if request("POST", "/setup/publish") != "published" {
+		t.Fatal("setup publication failed")
+	}
 	if request("GET", "/rtc/room") != "rtc:/room" {
 		t.Fatal("SFU prefix routing failed")
 	}
 	if request("POST", "/persist") != "preserved" {
 		t.Fatal("storage attachment failed")
+	}
+	// A host-owned RTC port must cause a clean failed candidate, never eviction.
+	listener, listenErr := net.Listen("tcp", "127.0.0.1:7881")
+	if listenErr != nil {
+		t.Fatal("isolated RTC test port occupied", listenErr)
+	}
+	conflict := fixtureStackManifest()
+	conflict.Services[0].PublicPorts = []StackPort{{Port: 7881, Protocol: "tcp"}}
+	m.mu.Lock()
+	liveApp := m.data.Apps[a.ID]
+	liveApp.Networks = []string{m.data.Databases[a.ID].Network}
+	liveApp.StorageVolume = m.data.StorageVolumes[a.ID]
+	m.mu.Unlock()
+	_, conflictErr := rt.runStack(ctx, liveApp, newID(), r1.Commit, conflict, stackImages(r1))
+	listener.Close()
+	if conflictErr == nil {
+		t.Fatal("host port conflict was ignored")
+	}
+	m.reconcileRoutes()
+	if request("GET", "/persist") != "preserved" {
+		t.Fatal("port conflict failed to recover current stack")
 	}
 	inventory := m.managedContainers()
 	sidecars := 0
@@ -190,6 +240,16 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		if c.AppID == a.ID && strings.HasPrefix(c.Role, "Stack") {
 			sidecars++
 		}
+	}
+	sample := m.containerInventory(ctx)
+	healthy := 0
+	for _, c := range sample.Containers {
+		if strings.HasPrefix(c.Role, "Stack ·") && c.Health == "healthy" {
+			healthy++
+		}
+	}
+	if healthy != 3 {
+		t.Fatalf("sidecar health unavailable: %+v", sample)
 	}
 	if sidecars != 3 {
 		t.Fatalf("inventory missing sidecars: %d", sidecars)
@@ -199,9 +259,44 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		t.Fatalf("reload: %s\n%s", second.Error, second.Log)
 	}
 	r2 := m.Current(a.ID)
+	if r2.Stack.Bootstrap {
+		t.Fatal("published setup did not transition to genuine readiness")
+	}
 	releases = append(releases, r2)
 	if request("GET", "/persist") != "preserved" {
 		t.Fatal("reload lost storage")
+	}
+	// Simulate process death during a rollback after the old writers stopped.
+	if err := m.recordStackTransition(a.ID, r2, r1, true); err != nil {
+		t.Fatal(err)
+	}
+	m.Close()
+	if err := rt.setReleaseRunning(ctx, r2, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.setReleaseRunning(ctx, r1, true); err != nil {
+		t.Fatal(err)
+	}
+	recoveredRuntime := &Docker{Root: rt.Root, checkout: rt.checkout, readinessTimeout: 10 * time.Second}
+	recovered, err := NewManager(context.Background(), m.cfg, recoveredRuntime)
+	if err != nil {
+		t.Fatal("crash recovery", err)
+	}
+	m = recovered
+	proxy.Close()
+	proxy = httptest.NewServer(Proxy(m))
+	defer proxy.Close()
+	rt = recoveredRuntime
+	t.Cleanup(m.Close)
+	m.reconcileRoutes()
+	if request("GET", "/persist") != "preserved" {
+		t.Fatal("agent restart lost the active stack")
+	}
+	m.mu.Lock()
+	pending := len(m.data.StackTransitions)
+	m.mu.Unlock()
+	if pending != 0 {
+		t.Fatal("successful crash recovery left a transition pending")
 	}
 	if err := m.Rollback(ctx, a.ID); err != nil {
 		t.Fatal("rollback", err)
@@ -299,4 +394,71 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		t.Fatal("recreated app adopted retained volume identity")
 	}
 	t.Log("real stack deployment: managed PostgreSQL, resource limits, SFU routing, inventory, persistence, reload, rollback, failed-candidate recovery, stop/start, profile resize isolation and removal passed")
+}
+
+func TestDockerStackCleanupPreservesUnmanagedCollisions(t *testing.T) {
+	if os.Getenv("TEST_DOCKER") != "1" {
+		t.Skip("set TEST_DOCKER=1 for cleanup ownership acceptance")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	owner := "cleanup-" + newID()[:10]
+	id := newID()
+	network := "lidza-stack-" + owner + "-" + id
+	container := "lidza-" + owner + "-" + id + "-office"
+	if _, err := command(ctx, "", nil, "docker", "network", "create", "--label", "io.lidza.stack=unrelated-fixture", network); err != nil {
+		t.Fatal(err)
+	}
+	defer command(context.Background(), "", nil, "docker", "network", "rm", network)
+	if _, err := command(ctx, "", nil, "docker", "create", "--name", container, "--label", "io.lidza.stack=unrelated-fixture", "postgres:17-alpine"); err != nil {
+		t.Fatal(err)
+	}
+	defer command(context.Background(), "", nil, "docker", "rm", "-f", container)
+	rt := &Docker{Root: t.TempDir()}
+	r := &Release{ID: id, Stack: &StackRelease{Network: network, Containers: []StackContainer{{Container: container, Image: "postgres:17-alpine", Service: StackService{Name: "office"}}}}}
+	if err := rt.Remove(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"container", "network"} {
+		name := container
+		if kind == "network" {
+			name = network
+		}
+		args := []string{kind, "ls", "--filter", "name=" + name, "--format", "{{.ID}}"}
+		if kind == "container" {
+			args = append(args, "--all")
+		}
+		out, err := command(ctx, "", nil, "docker", args...)
+		if err != nil || out == "" {
+			t.Fatal("cleanup removed an unmanaged collision", kind, err)
+		}
+	}
+}
+
+func TestDockerStackInitSignalsDroppedUID(t *testing.T) {
+	if os.Getenv("TEST_DOCKER") != "1" {
+		t.Skip("set TEST_DOCKER=1 for supervisor capability acceptance")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	script := `gosu 65532:65532 sh -ec 'touch /tmp/dropped; exec sleep 30' & child=$!; while [ ! -f /tmp/dropped ]; do sleep 0.05; done; `
+	for _, allowed := range []bool{false, true} {
+		args := []string{"run", "--rm", "--network", "none", "--memory", "64m", "--pids-limit", "32", "--tmpfs", "/tmp:rw,nosuid,size=4m"}
+		policy := stackPolicyArgs(StackService{Role: "app", Policy: "init"})
+		for i := 0; i < len(policy); i++ {
+			if !allowed && policy[i] == "--cap-add" && i+1 < len(policy) && policy[i+1] == "KILL" {
+				i++
+				continue
+			}
+			args = append(args, policy[i])
+		}
+		check := script + `if kill -0 "$child" 2>/dev/null; then exit 1; fi`
+		if allowed {
+			check = script + `kill -0 "$child"; kill -TERM "$child"; wait "$child" || true`
+		}
+		args = append(args, "--entrypoint", "sh", "postgres:17-alpine", "-ec", check)
+		if _, err := command(ctx, "", nil, "docker", args...); err != nil {
+			t.Fatalf("cross-UID supervisor signal capability (KILL=%v): %v", allowed, err)
+		}
+	}
 }

@@ -21,7 +21,9 @@ first deployment requires a new application; existing data stays retained for ex
 These are resource limits, not throughput guarantees. The compact standalone total
 is 3584 MiB of containers plus 512 MiB host allowance. A colocated Deploy control
 panel, its database, other applications, and existing databases consume additional
-capacity. Linux kernel-reserved RAM is charged against the host allowance, up to
+capacity. Other running containers must have explicit memory limits; unbounded
+containers cause a placement error rather than being counted as zero. Linux
+kernel-reserved RAM is charged against the host allowance, up to
 256 MiB and never more than half that allowance; service limits stay unchanged.
 This allows a nominal 4 GiB VM whose usable MemTotal is slightly smaller while
 rejecting hosts that cannot fit the actual container limits. Existing/shared databases are reused at their existing limits and are

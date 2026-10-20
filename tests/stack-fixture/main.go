@@ -73,6 +73,21 @@ func main() {
 				return
 			}
 		}
+		if role == "app" && os.Getenv("FIXTURE_NEEDS_SETUP") == "true" {
+			published := filepath.Join(os.Getenv("STORAGE_DIR"), "setup.complete")
+			if r.Method == "POST" && r.URL.Path == "/setup/publish" {
+				if err := os.WriteFile(published, []byte("active"), 0600); err != nil {
+					http.Error(w, "publish failed", 500)
+					return
+				}
+				fmt.Fprint(w, "published")
+				return
+			}
+			if _, err := os.Stat(published); err != nil && (r.URL.Path == "/readyz" || r.URL.Path == "/protected") {
+				http.Error(w, "Server setup is required. Open /setup", 503)
+				return
+			}
+		}
 		if os.Getenv("FAIL_READY") == "true" {
 			http.Error(w, "candidate failure", 503)
 			return

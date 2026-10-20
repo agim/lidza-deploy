@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -309,5 +310,35 @@ func TestStackBootstrapReadinessIsExplicitAndFirstInstallOnly(t *testing.T) {
 		if m.validate() == nil {
 			t.Fatal("invalid bootstrap probe path accepted", path)
 		}
+	}
+}
+
+func TestStackPlacementIncludesOtherContainersAndRejectsUnboundedOnes(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	a := testApp("placement")
+	p, _ := profileByID("minimum")
+	manifest := fixtureStackManifest()
+	for _, tc := range []struct {
+		name, rows string
+		totalMiB   int
+		want       bool
+	}{
+		{"kernel-and-existing-dedicated-db", "268435456 database\n1073741824 placement", 3904, true},
+		{"other-app-counted", "268435456 database\n536870912 other-app", 3904, false},
+		{"existing-large-db-not-shrunk", "1073741824 database", 3904, false},
+		{"unbounded-container", "0 unknown", 3904, false},
+		{"undersized-server", "268435456 database", 3400, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\ninfo) echo %d;;\nps) echo fixture;;\ninspect) printf '%%s\\n' '%s';;\nesac\n", int64(tc.totalMiB)*1048576, tc.rows)
+			if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			err := (&Docker{}).stackCapacity(context.Background(), a, p, manifest)
+			if (err == nil) != tc.want {
+				t.Fatalf("capacity result: %v, want success %v", err, tc.want)
+			}
+		})
 	}
 }
