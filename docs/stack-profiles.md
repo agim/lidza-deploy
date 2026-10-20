@@ -7,17 +7,17 @@ response advertises `stack_profiles_supported: true`.
 ## Selection and budgets
 
 Creation accepts `runtime_profile`: omitted/empty means the existing hardened
-single-container runtime. Explicit choices are `compact-4`, `standard-8`, and
-`expanded-16`. Settings PATCH accepts the same field; changing it on a deployed
+single-container runtime. Explicit choices are `minimum`, `standard`, and
+`performance`. Settings PATCH accepts the same field; changing it on a deployed
 stack queues a reload. Switching between single-container and stack mode after
 first deployment requires a fresh deployment rather than reloading a different
 runtime policy. Stack profiles are unavailable to pull-request previews.
 
 | Profile | App + SFU | Mail + filters + Valkey | Office | New dedicated PostgreSQL | Host allowance |
 | --- | --- | --- | --- | --- | --- |
-| compact-4 | 512 MiB / 0.50 CPU | 1792 MiB / 0.75 CPU | 1024 MiB / 0.50 CPU | 256 MiB / 0.25 CPU | 512 MiB |
-| standard-8 | 1024 MiB / 1 CPU | 3584 MiB / 1.5 CPU | 2048 MiB / 1 CPU | 512 MiB / 0.5 CPU | 1024 MiB |
-| expanded-16 | 2048 MiB / 2 CPU | 7168 MiB / 3 CPU | 4096 MiB / 2 CPU | 1024 MiB / 1 CPU | 2048 MiB |
+| minimum | 512 MiB / 0.50 CPU | 1792 MiB / 0.75 CPU | 1024 MiB / 0.50 CPU | 256 MiB / 0.25 CPU | 512 MiB |
+| standard | 1024 MiB / 1 CPU | 2560 MiB / 1 CPU | 3072 MiB / 1.5 CPU | 512 MiB / 0.5 CPU | 1024 MiB |
+| performance | 2048 MiB / 2 CPU | 4096 MiB / 2 CPU | 7168 MiB / 3 CPU | 1024 MiB / 1 CPU | 2048 MiB |
 
 These are resource limits, not throughput guarantees. The compact standalone total
 is 3584 MiB of containers plus 512 MiB host allowance. A colocated Deploy control
