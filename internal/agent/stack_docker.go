@@ -114,7 +114,9 @@ func stackPolicyArgs(s StackService) []string {
 	if s.Policy == "hardened" {
 		return append(args, "--read-only", "--user", "65532:65532")
 	}
-	args = append(args, "--user", "0:0")
+	if s.Policy != "office" {
+		args = append(args, "--user", "0:0")
+	}
 	caps := []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"}
 	if s.Policy == "mail" {
 		caps = append(caps, "NET_BIND_SERVICE", "KILL", "SYS_CHROOT")
@@ -330,23 +332,47 @@ func (d *Docker) waitStackReady(ctx context.Context, r *Release) error {
 	}
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	nextReport := time.Time{}
 	for {
-		if _, err := d.probeReady(bounded, r); err == nil {
-			if err = d.probeStackServices(bounded, r); err == nil {
+		body, err := d.probeReady(bounded, r)
+		if err == nil {
+			err = d.probeStackServices(bounded, r)
+			if err == nil {
 				return nil
 			}
 		}
+		if time.Now().After(nextReport) {
+			commandDiagnostic(ctx, "stack-readiness", fmt.Sprintf("Waiting for app and stack service readiness: %v\n%s", err, body))
+			nextReport = time.Now().Add(15 * time.Second)
+		}
 		select {
 		case <-bounded.Done():
-			return errors.New("stack candidate failed app/service readiness; previous stack restored")
+			return errors.New("stack candidate failed app/service readiness; recovering the previous stack")
 		case <-time.After(time.Second):
 		}
 	}
 }
 func (d *Docker) removeStack(ctx context.Context, r *Release) error {
+	owner := strings.TrimSuffix(strings.TrimPrefix(r.Stack.Network, "lidza-stack-"), "-"+r.ID)
+	if !strings.HasPrefix(r.Stack.Network, "lidza-stack-") || !strings.HasSuffix(r.Stack.Network, "-"+r.ID) || !idPattern.MatchString(owner) {
+		return errors.New("invalid stack cleanup identity")
+	}
 	var first error
 	for i := len(r.Stack.Containers) - 1; i >= 0; i-- {
 		c := r.Stack.Containers[i]
+		exists, inspectErr := command(ctx, "", nil, "docker", "container", "ls", "--all", "--filter", "name=^/"+c.Container+"$", "--format", "{{.ID}}")
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if exists != "" {
+			label, e := command(ctx, "", nil, "docker", "inspect", "--format", `{{index .Config.Labels "io.lidza.stack"}}`, c.Container)
+			if e != nil {
+				return e
+			}
+			if label != owner {
+				continue
+			}
+		}
 		if err := d.Remove(ctx, &Release{Container: c.Container, Image: func() string {
 			if c.Service.Build != nil && strings.HasSuffix(c.Image, ":"+r.ID) {
 				return c.Image
@@ -361,7 +387,13 @@ func (d *Docker) removeStack(ctx context.Context, r *Release) error {
 		return err
 	}
 	if raw != "" {
-		_, err = command(ctx, "", nil, "docker", "network", "rm", r.Stack.Network)
+		label, e := command(ctx, "", nil, "docker", "network", "inspect", "--format", `{{index .Labels "io.lidza.stack"}}`, r.Stack.Network)
+		if e != nil {
+			return e
+		}
+		if label == owner {
+			_, err = command(ctx, "", nil, "docker", "network", "rm", r.Stack.Network)
+		}
 	}
 	if first != nil {
 		return first

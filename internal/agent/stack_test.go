@@ -176,3 +176,44 @@ func TestStackKernelReservationUsesHostAllowance(t *testing.T) {
 		t.Fatal("larger host lost its reserved allowance")
 	}
 }
+
+func TestStackAttachExistingDatabaseDoesNotResize(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	a := testApp("attach-stack")
+	a.RuntimeProfile = "minimum"
+	if err := m.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	existing := Database{AppID: "shared", Mode: "local", Ready: true, Network: "lidza-db-shared", URL: "postgres://app:private@lidza-db-shared:5432/app?sslmode=disable", MemoryMiB: 1024, CPUs: "2", ResourceProfile: "legacy-dedicated", Backup: BackupPolicy{Keep: 1}}
+	m.mu.Lock()
+	m.data.Databases[existing.AppID] = existing
+	m.mu.Unlock()
+	if err := m.configureDatabase(a.ID, DatabaseRequest{Mode: "existing", ID: existing.AppID}); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	got := m.data.Databases[existing.AppID]
+	attached := m.data.Apps[a.ID]
+	m.mu.Unlock()
+	if got.MemoryMiB != 1024 || got.CPUs != "2" || got.ResourceProfile != "legacy-dedicated" || got.URL != existing.URL {
+		t.Fatal("existing database was retuned or replaced")
+	}
+	if attached.Bindings["DATABASE_URL"] != existing.AppID {
+		t.Fatal("managed database was not reused")
+	}
+}
+
+func TestStackOfficePreservesVendorUser(t *testing.T) {
+	args := stackPolicyArgs(StackService{Role: "office", Policy: "office"})
+	for _, arg := range args {
+		if arg == "--user" {
+			t.Fatal("office policy overrides the pinned vendor image USER")
+		}
+	}
+	joined := strings.Join(args, " ")
+	for _, required := range []string{"--cap-drop ALL", "--security-opt no-new-privileges", "--cap-add SYS_CHROOT"} {
+		if !strings.Contains(joined, required) {
+			t.Fatal("office policy lost a security boundary", required)
+		}
+	}
+}

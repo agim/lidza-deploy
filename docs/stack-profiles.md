@@ -116,9 +116,10 @@ part of this contract.
 Policies are fixed by the agent: `hardened` keeps UID65532, read-only rootfs and no
 capabilities; `init` allows app root initialization with CHOWN/DAC_OVERRIDE/FOWNER/
 SETUID/SETGID only; `mail` additionally allows low-port binding and process ownership;
-`office` supplies the vendor runtime's bounded ownership/chroot capabilities.
+`office` preserves the pinned vendor image's USER and supplies bounded ownership/chroot capabilities.
 All retain cap-drop ALL, no-new-privileges, PID/log/resource limits, no host mounts,
-no host namespaces and no Docker access. Root initialization policies have writable
+no host namespaces and no Docker access. Office never forces root; its vendor image must provide an appropriate runtime user.
+Root initialization policies have writable
 container layers but only declared named volumes persist.
 
 ## Persistence, lifecycle and diagnostics
