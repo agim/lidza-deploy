@@ -88,8 +88,15 @@ their sum is 2.403 GiB, not a simultaneous host peak. All cgroup memory max/OOM/
 OOM-kill counters and Docker restart counts were zero. Office save/XML tests
 passed again after actual rollback, and the RTC route responded. These results
 are reported by the application session, not inferred from platform fixtures.
-This x86 run does not establish public DNS/TLS/MX, TURN or peer-media behavior,
+This ARM64 run does not establish public DNS/TLS/MX, TURN or peer-media behavior,
 physical Android support, or throughput capacity.
+
+The application-side reproducible harness and detailed evidence are published in
+[Thura acceptance](https://github.com/agim/thura/blob/feat/thura-deployment-profiles/docs/deploy-stack-acceptance.md)
+and its [machine-readable report](https://github.com/agim/thura/blob/feat/thura-deployment-profiles/docs/benchmarks/deploy-stack-acceptance.json).
+The tested application source was `24e50db`, using native agent `4cc4754` on
+ARM64 Linux. The owned test VM and agent were stopped after checks, with retained
+state/volumes; the original demo remained untouched.
 
 ## Platform verification
 
