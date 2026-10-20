@@ -50,7 +50,7 @@ export interface Application {
   retiring?: boolean;
   preview_parent?: string;
   github_installation?: number;
-  current?: { commit?: string };
+  current?: { commit?: string; stack?: { bootstrap?: boolean; manifest?: { bootstrap_readiness?: { setup_path?: string } } } };
   previous?: { commit?: string };
   domain_status?: DomainStatus;
   agent_error?: string;

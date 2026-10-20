@@ -88,11 +88,17 @@ type StackService struct {
 	HTTPRoutes      []StackRoute      `json:"http_routes,omitempty"`
 	HealthCommand   []string          `json:"health_command"`
 }
+type StackBootstrapReadiness struct {
+	Path               string `json:"path"`
+	ReadyzBodyContains string `json:"readyz_body_contains"`
+	SetupPath          string `json:"setup_path,omitempty"`
+}
 type StackManifest struct {
-	Version             int            `json:"version"`
-	RequiredEnvironment []string       `json:"required_environment,omitempty"`
-	GeneratedSecrets    []string       `json:"generated_secrets,omitempty"`
-	Services            []StackService `json:"services"`
+	BootstrapReadiness  *StackBootstrapReadiness `json:"bootstrap_readiness,omitempty"`
+	Version             int                      `json:"version"`
+	RequiredEnvironment []string                 `json:"required_environment,omitempty"`
+	GeneratedSecrets    []string                 `json:"generated_secrets,omitempty"`
+	Services            []StackService           `json:"services"`
 }
 type StackContainer struct {
 	Service   StackService `json:"service"`
@@ -100,6 +106,7 @@ type StackContainer struct {
 	Image     string       `json:"image"`
 }
 type StackRelease struct {
+	Bootstrap  bool             `json:"bootstrap,omitempty"`
 	Profile    string           `json:"profile"`
 	Network    string           `json:"network"`
 	Manifest   StackManifest    `json:"manifest"`
@@ -157,6 +164,11 @@ func loadStackManifest(source string) (*StackManifest, error) {
 	return &manifest, nil
 }
 func (m StackManifest) validate() error {
+	if b := m.BootstrapReadiness; b != nil {
+		if !validStackProbePath(b.Path) || b.Path == "/readyz" || len(b.ReadyzBodyContains) < 16 || len(b.ReadyzBodyContains) > 200 || strings.ContainsAny(b.ReadyzBodyContains, "\r\n\x00") || b.SetupPath != "" && !validStackProbePath(b.SetupPath) {
+			return errors.New("bootstrap readiness needs a safe app health path, a specific setup-required marker and an optional safe setup path")
+		}
+	}
 	if m.Version != 1 || len(m.Services) < 1 || len(m.Services) > 3 {
 		return errors.New("stack requires version 1 and one to three services")
 	}
@@ -357,4 +369,8 @@ func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManife
 		}
 	}
 	return a, nil
+}
+
+func validStackProbePath(path string) bool {
+	return len(path) > 1 && len(path) <= 160 && regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`).MatchString(path) && !strings.Contains(path, "..") && !strings.Contains(path, "//")
 }

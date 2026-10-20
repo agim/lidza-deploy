@@ -138,8 +138,10 @@ No sidecar shares writable volumes with a concurrently running old release.
 Images build first. Activation stops the old release before starting the candidate;
 this introduces a maintenance interval, rather than claiming zero-downtime upgrades.
 Readiness requires app `/readyz` plus every declared service health command. Failure
-removes the candidate and restarts the previous stack. Rollback stops current
+removes the candidate and restarts the previous stack. Rollback checks capacity for the previous release’s recorded profile, stops current
 writers, starts previous services and checks readiness; failure restores current.
+Desired settings remain configured for the next reload, while rollback runs the
+previous release’s recorded runtime and environment, as with single-container rollback.
 Removal deletes owned containers/release networks and retains persistent volumes
 and the managed database/backups, following the platform's retained-data policy.
 
@@ -148,3 +150,31 @@ manifest, enabling reload/rollback without fetching a mutable branch. Container
 inventory includes sidecars with app/role ownership and resources. Stack container restart controls queue a coordinated reload, rather than breaking
 the shared network namespace with an isolated app restart. Runtime logs
 include bounded per-service output, scrubbed using application credentials.
+
+## First-install setup readiness
+
+Apps whose production `/readyz` intentionally returns 503 until an operator
+publishes setup may opt into this top-level manifest declaration:
+
+```json
+"bootstrap_readiness": {
+  "path": "/api/v1/health",
+  "readyz_body_contains": "Server setup is required",
+  "setup_path": "/setup"
+}
+```
+
+Only the first installation (or an unfinished bootstrap release) may use it.
+The agent still probes `/readyz`: fallback requires HTTP **503** and the exact
+case-sensitive declared marker, a successful HTTP200 from the declared private
+app health path, and every service health command succeeding. Generic outages,
+connection errors, unrelated503s, unhealthy sidecars and established releases
+cannot use this fallback. The application keeps its real `/readyz`503 and API
+setup gate; no test mode or framework bypass is used.
+
+The release is marked `current.stack.bootstrap=true`, the deployment status is
+`setup_required`, and the GUI shows **Setup required** with an **Open setup**
+link. The app's existing production setup guard controls access. Publishing setup
+and reloading must pass genuine `/readyz`200, which clears the bootstrap marker.
+A release that already passed genuine readiness cannot regain bootstrap eligibility
+just because a later candidate returns a setup marker.

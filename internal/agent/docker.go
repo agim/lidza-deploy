@@ -18,7 +18,7 @@ import (
 )
 
 type Docker struct {
- stackTransition func(string,*Release,*Release,bool) error
+	stackTransition    func(string, *Release, *Release, bool) error
 	prepareRuntime     func(context.Context, App, string) (App, error)
 	runtimeDiagnostics func(context.Context, App) context.Context
 	Root               string
@@ -326,8 +326,17 @@ func (d *Docker) Ready(ctx context.Context, r *Release) error {
 	_, err := d.probeReady(ctx, r)
 	return err
 }
+
+type readinessHTTPError struct{ Status int }
+
+func (e *readinessHTTPError) Error() string {
+	return fmt.Sprintf("readiness returned HTTP %d", e.Status)
+}
 func (d *Docker) probeReady(ctx context.Context, r *Release) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+r.Port+"/readyz", nil)
+	return d.probeAppPath(ctx, r, "/readyz")
+}
+func (d *Docker) probeAppPath(ctx context.Context, r *Release, path string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+r.Port+path, nil)
 	if err != nil {
 		return "", err
 	}
@@ -345,7 +354,7 @@ func (d *Docker) probeReady(ctx context.Context, r *Release) (string, error) {
 		return "", nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-	return string(body), fmt.Errorf("readiness returned HTTP %d", res.StatusCode)
+	return string(body), &readinessHTTPError{Status: res.StatusCode}
 }
 
 func (d *Docker) Remove(ctx context.Context, r *Release) error {

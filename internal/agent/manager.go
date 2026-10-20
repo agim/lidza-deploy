@@ -399,6 +399,9 @@ func (m *Manager) Upsert(a App) error {
 	return nil
 }
 func (m *Manager) busy(id string) bool {
+	if _, pending := m.data.StackTransitions[id]; pending {
+		return true
+	}
 	if m.lifecycle[id] {
 		return true
 	}
@@ -567,7 +570,7 @@ func (m *Manager) update(id, status string, release *Release, err error) error {
 		if err != nil {
 			d.Error = err.Error()
 		}
-		if status == "live" || status == "failed" {
+		if status == "live" || status == "failed" || status == "setup_required" {
 			now := time.Now().UTC()
 			d.Finished = &now
 		}
@@ -628,7 +631,11 @@ func (m *Manager) work() {
 				m.data.Apps[a.ID] = a
 				pending, pendingExists := m.data.StackTransitions[a.ID]
 				delete(m.data.StackTransitions, a.ID)
-				if saveErr := m.update(j.deployment, "live", release, nil); saveErr != nil {
+				status := "live"
+				if release.Stack != nil && release.Stack.Bootstrap {
+					status = "setup_required"
+				}
+				if saveErr := m.update(j.deployment, status, release, nil); saveErr != nil {
 					if pendingExists {
 						m.data.StackTransitions[a.ID] = pending
 					}

@@ -3,10 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fixtureStackManifest() StackManifest {
@@ -237,6 +241,73 @@ func TestOfficeImageRequiresNonRootUser(t *testing.T) {
 	for _, user := range []string{"1001", "1001:1001", "cool"} {
 		if !officeImageUserAllowed(user) {
 			t.Fatal("non-root office image rejected", user)
+		}
+	}
+}
+
+func TestStackBootstrapReadinessIsExplicitAndFirstInstallOnly(t *testing.T) {
+	bin := t.TempDir()
+	script := filepath.Join(bin, "docker")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	for _, tc := range []struct {
+		name         string
+		eligible     bool
+		status       int
+		body         string
+		health       int
+		serviceFails bool
+		want         bool
+		bootstrap    bool
+	}{
+		{"guarded-first-install", true, 503, "Server setup is required. Open /setup", 200, false, true, true},
+		{"established-release", false, 503, "Server setup is required. Open /setup", 200, false, false, false},
+		{"unrelated-outage", true, 503, "database unavailable", 200, false, false, true},
+		{"wrong-status", true, 500, "Server setup is required. Open /setup", 200, false, false, true},
+		{"bootstrap-health-fails", true, 503, "Server setup is required. Open /setup", 503, false, false, true},
+		{"service-unhealthy", true, 503, "Server setup is required. Open /setup", 200, true, false, true},
+		{"genuine-ready", true, 200, "", 200, false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code := "#!/bin/sh\nexit 0\n"
+			if tc.serviceFails {
+				code = "#!/bin/sh\nexit 1\n"
+			}
+			if err := os.WriteFile(script, []byte(code), 0700); err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/readyz" {
+					w.WriteHeader(tc.status)
+					w.Write([]byte(tc.body))
+					return
+				}
+				if r.URL.Path == "/api/v1/health" {
+					w.WriteHeader(tc.health)
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer server.Close()
+			_, port, _ := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+			r := &Release{Port: port, Stack: &StackRelease{Bootstrap: tc.eligible, Manifest: StackManifest{BootstrapReadiness: &StackBootstrapReadiness{Path: "/api/v1/health", ReadyzBodyContains: "Server setup is required", SetupPath: "/setup"}}, Containers: []StackContainer{{Container: "fixture", Service: StackService{Name: "app", HealthCommand: []string{"probe"}}}}}}
+			d := &Docker{readinessTimeout: 200 * time.Millisecond}
+			err := d.waitStackReady(context.Background(), r)
+			if (err == nil) != tc.want {
+				t.Fatalf("bootstrap result = %v, wanted success %v", err, tc.want)
+			}
+			if r.Stack.Bootstrap != tc.bootstrap {
+				t.Fatal("bootstrap readiness marker incorrect")
+			}
+		})
+	}
+	for _, path := range []string{"https://example.com/health", "//evil", "/../health", "/health?reset=true", "/readyz"} {
+		m := fixtureStackManifest()
+		m.BootstrapReadiness = &StackBootstrapReadiness{Path: path, ReadyzBodyContains: "Server setup is required"}
+		if m.validate() == nil {
+			t.Fatal("invalid bootstrap probe path accepted", path)
 		}
 	}
 }

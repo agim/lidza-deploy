@@ -166,7 +166,13 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 			}
 		}
 	}
-	stack := &StackRelease{Profile: a.RuntimeProfile, Network: "lidza-stack-" + a.resourceID() + "-" + id, Manifest: manifest}
+	bootstrapEligible := manifest.BootstrapReadiness != nil && (a.Current == nil || a.Current.Stack != nil && a.Current.Stack.Bootstrap)
+	if bootstrapEligible && a.Current != nil {
+		if _, readyErr := d.probeReady(ctx, a.Current); readyErr == nil {
+			bootstrapEligible = false
+		}
+	}
+	stack := &StackRelease{Bootstrap: bootstrapEligible, Profile: a.RuntimeProfile, Network: "lidza-stack-" + a.resourceID() + "-" + id, Manifest: manifest}
 	candidate := &Release{ID: id, Commit: commit, Created: time.Now().UTC(), Stack: stack}
 	planned := *candidate
 	plannedStack := *stack
@@ -359,9 +365,21 @@ func (d *Docker) waitStackReady(ctx context.Context, r *Release) error {
 	for {
 		body, err := d.probeReady(bounded, r)
 		if err == nil {
-			err = d.probeStackServices(bounded, r)
-			if err == nil {
+			if err = d.probeStackServices(bounded, r); err == nil {
+				r.Stack.Bootstrap = false
 				return nil
+			}
+		}
+		if r.Stack.Bootstrap && r.Stack.Manifest.BootstrapReadiness != nil {
+			b := r.Stack.Manifest.BootstrapReadiness
+			var status *readinessHTTPError
+			if errors.As(err, &status) && status.Status == 503 && strings.Contains(body, b.ReadyzBodyContains) {
+				if _, bootstrapErr := d.probeAppPath(bounded, r, b.Path); bootstrapErr == nil {
+					if serviceErr := d.probeStackServices(bounded, r); serviceErr == nil {
+						commandDiagnostic(ctx, "stack-bootstrap", "First-install setup UI is available; application /readyz remains gated until setup is published and reloaded.")
+						return nil
+					}
+				}
 			}
 		}
 		if time.Now().After(nextReport) {

@@ -60,8 +60,24 @@ func (m *Manager) recoverStackTransitions() error {
 		} else {
 			err = d.Remove(ctx, t.Candidate)
 		}
-		if err == nil && t.Previous != nil && !a.Stopped && !a.Retiring {
+		if err == nil && t.Previous != nil && a.ID != "" && !a.Stopped && !a.Retiring {
 			err = d.setReleaseRunning(ctx, t.Previous, true)
+			if err == nil && t.Previous.Stack != nil {
+				var restored *Release
+				restored, err = d.refreshStackPorts(ctx, t.Previous)
+				if err == nil {
+					err = d.waitStackReady(ctx, restored)
+				}
+				if err == nil {
+					m.mu.Lock()
+					current := m.data.Apps[id]
+					if current.Current != nil && current.Current.ID == restored.ID {
+						current.Current = restored
+						m.data.Apps[id] = current
+					}
+					m.mu.Unlock()
+				}
+			}
 		}
 		cancel()
 		if err != nil {
@@ -79,6 +95,13 @@ func (m *Manager) rollbackStackLocked(ctx context.Context, a App) error {
 	d, ok := m.runtime.(*Docker)
 	if !ok {
 		return errors.New("runtime does not support stack rollback")
+	}
+	profile, ok := profileByID(a.Previous.Stack.Profile)
+	if !ok {
+		return errors.New("previous stack has an unknown resource profile")
+	}
+	if err := d.stackCapacity(ctx, a, profile, a.Previous.Stack.Manifest); err != nil {
+		return err
 	}
 	m.data.StackTransitions[a.ID] = StackTransition{Previous: a.Current, Candidate: a.Previous, Reuse: true}
 	if err := m.save(); err != nil {
