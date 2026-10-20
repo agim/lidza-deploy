@@ -118,6 +118,9 @@ func stackPolicyArgs(s StackService) []string {
 		args = append(args, "--user", "0:0")
 	}
 	caps := []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"}
+	if s.Policy == "init" {
+		caps = append(caps, "KILL")
+	}
 	if s.Policy == "mail" {
 		caps = append(caps, "NET_BIND_SERVICE", "KILL", "SYS_CHROOT")
 	}

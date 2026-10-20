@@ -217,3 +217,10 @@ func TestStackOfficePreservesVendorUser(t *testing.T) {
 		}
 	}
 }
+
+func TestStackInitSupervisorCanSignalDroppedUID(t *testing.T) {
+	args := strings.Join(stackPolicyArgs(StackService{Role: "app", Policy: "init"}), " ")
+	if !strings.Contains(args, "--cap-add KILL") || !strings.Contains(args, "--cap-drop ALL") || !strings.Contains(args, "--security-opt no-new-privileges") {
+		t.Fatal("init policy cannot supervise a dropped-UID worker within its PID namespace")
+	}
+}
