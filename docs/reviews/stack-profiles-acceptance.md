@@ -81,9 +81,15 @@ open-relay refusal; report-spam learning and ham restoration; clean/EICAR scans,
 ClamAV reload and reversible/idempotent learning. Actual agent rollback preserved
 all four immutable file-version records, exact stored object SHA256 values,
 durable Bayes values and learned feedback. Managed database identity and genuine
-readiness remained intact. Resource peak reporting and final app checks are being
-completed in that session. These vendor/application results are reported by the
-application session, not inferred from platform fixtures.
+readiness remained intact. The final resource report records all four container limits totaling 3584 MiB /
+2 CPUs, no host swap, and approximately 27 MiB agent RSS. Per-service memory peaks
+were app 226.1 MiB, mail 1267.0 MiB, office 886.6 MiB and PostgreSQL 80.8 MiB;
+their sum is 2.403 GiB, not a simultaneous host peak. All cgroup memory max/OOM/
+OOM-kill counters and Docker restart counts were zero. Office save/XML tests
+passed again after actual rollback, and the RTC route responded. These results
+are reported by the application session, not inferred from platform fixtures.
+This x86 run does not establish public DNS/TLS/MX, TURN or peer-media behavior,
+physical Android support, or throughput capacity.
 
 ## Platform verification
 
