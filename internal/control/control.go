@@ -55,6 +55,7 @@ type Config struct {
 	Connectors []auth.Connector
 }
 type Application struct {
+	RuntimeProfile     string        `json:"runtime_profile,omitempty"`
 	AdditionalDomains  []string      `json:"additional_domains,omitempty"`
 	CustomerHosts      bool          `json:"customer_hosts"`
 	GitHubInstallation int64         `json:"github_installation,omitempty"`
@@ -466,6 +467,7 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 					out[i].DomainStatus = a.DomainStatus
 					out[i].DomainStatuses = a.DomainStatuses
 					out[i].AdditionalDomains = a.AdditionalDomains
+					out[i].RuntimeProfile = a.RuntimeProfile
 					out[i].Maintenance = a.Maintenance
 					out[i].Restoring = a.Restoring
 					break
@@ -529,7 +531,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	a.AutoDeploy = autoDeploy
 	a.Retiring = false
 	a.Generation = random()
-	spec := agent.App{ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: a.AdditionalDomains, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
+	spec := agent.App{RuntimeProfile: a.RuntimeProfile, ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: a.AdditionalDomains, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
 		return

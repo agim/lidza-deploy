@@ -118,7 +118,14 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 			m.data.Caches[id] = c
 		}
 	}
+	if m.data.StackVolumes == nil {
+		m.data.StackVolumes = map[string][]string{}
+	}
+	if m.data.StackTransitions == nil {
+		m.data.StackTransitions = map[string]StackTransition{}
+	}
 	if d, ok := rt.(*Docker); ok {
+		d.stackTransition = m.recordStackTransition
 		d.prepareRuntime = m.preflightRuntime
 		d.runtimeDiagnostics = func(ctx context.Context, a App) context.Context {
 			return m.deploymentDiagnostics(ctx, job{app: a, deployment: deploymentID(ctx)})
@@ -180,6 +187,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cleanup, stop := context.WithTimeout(ctx, 30*time.Second)
 		removeLegacyBoundedBuilder(cleanup, cfg.DataDir)
 		stop()
+	}
+	if err := m.recoverStackTransitions(); err != nil {
+		cancel()
+		return nil, err
 	}
 	m.enforceStoppedApps()
 	// Docker can assign new ephemeral host ports after container/daemon restarts.
@@ -250,6 +261,12 @@ func (m *Manager) Upsert(a App) error {
 		return errors.New("application has an active deployment")
 	}
 	old, exists := m.data.Apps[a.ID]
+	if exists && a.RuntimeProfile == "" {
+		a.RuntimeProfile = old.RuntimeProfile
+	}
+	if exists && old.Current != nil && (old.RuntimeProfile == "") != (a.RuntimeProfile == "") {
+		return errors.New("changing runtime family requires a new application")
+	}
 	if exists && a.AdditionalDomains == nil {
 		a.AdditionalDomains = slices.Clone(old.AdditionalDomains)
 	}
@@ -609,7 +626,12 @@ func (m *Manager) work() {
 					a.Stopped = false
 				}
 				m.data.Apps[a.ID] = a
+				pending, pendingExists := m.data.StackTransitions[a.ID]
+				delete(m.data.StackTransitions, a.ID)
 				if saveErr := m.update(j.deployment, "live", release, nil); saveErr != nil {
+					if pendingExists {
+						m.data.StackTransitions[a.ID] = pending
+					}
 					m.data.Apps[a.ID] = old
 					err = fmt.Errorf("persist activation: %w", saveErr)
 				}
@@ -625,6 +647,13 @@ func (m *Manager) work() {
 			cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
 			if err != nil && release != nil {
 				_ = m.runtime.Remove(cleanup, release)
+				if release.Stack != nil && j.app.Current != nil {
+					if d, ok := m.runtime.(*Docker); ok {
+						if d.setReleaseRunning(cleanup, j.app.Current, true) == nil {
+							_ = m.recordStackTransition(j.app.ID, nil, nil, false)
+						}
+					}
+				}
 			}
 			if err == nil && retired != nil {
 				_ = m.runtime.Remove(cleanup, retired)
@@ -642,6 +671,9 @@ func (m *Manager) Rollback(ctx context.Context, id string) error {
 	}
 	if m.busy(id) {
 		return errors.New("deployment active")
+	}
+	if a.Previous.Stack != nil {
+		return m.rollbackStackLocked(ctx, a)
 	}
 	if rt, ok := m.runtime.(lifecycleRuntime); ok {
 		if err := rt.SetRunning(ctx, []string{a.Previous.Container}, true); err != nil {

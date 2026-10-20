@@ -57,6 +57,16 @@ func (m *Manager) managedContainers() []managedContainer {
 		if a.Current != nil {
 			add(managedContainer{AppID: a.ID, Name: a.Current.Container, Role: "Web · current release", Restartable: true})
 		}
+		if a.Current != nil && a.Current.Stack != nil {
+			for _, c := range a.Current.Stack.Containers {
+				add(managedContainer{AppID: a.ID, Name: c.Container, Role: "Stack · " + c.Service.Name, Restartable: true})
+			}
+		}
+		if a.Previous != nil && a.Previous.Stack != nil {
+			for _, c := range a.Previous.Stack.Containers {
+				add(managedContainer{AppID: a.ID, Name: c.Container, Role: "Stack · " + c.Service.Name + " · rollback"})
+			}
+		}
 		if a.Previous != nil {
 			add(managedContainer{AppID: a.ID, Name: a.Previous.Container, Role: "Web · rollback release"})
 		}

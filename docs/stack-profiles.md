@@ -10,8 +10,7 @@ Creation accepts `runtime_profile`: omitted/empty means the existing hardened
 single-container runtime. Explicit choices are `minimum`, `standard`, and
 `performance`. Settings PATCH accepts the same field; changing it on a deployed
 stack queues a reload. Switching between single-container and stack mode after
-first deployment requires a fresh deployment rather than reloading a different
-runtime policy. Stack profiles are unavailable to pull-request previews.
+first deployment requires a new application; existing data stays retained for explicit reattachment. Stack profiles are unavailable to pull-request previews.
 
 | Profile | App + SFU | Mail + filters + Valkey | Office | New dedicated PostgreSQL | Host allowance |
 | --- | --- | --- | --- | --- | --- |
@@ -28,7 +27,7 @@ DBs. Migrations remain the application's responsibility.
 
 ## Repository manifest
 
-Commit `lidza.stack.json` at repository root alongside `lidza.json`. It is strict
+Commit `deploy/lidza.stack.json` inside the existing `deploy/` directory. It is strict
 JSON, max 64 KiB, version 1. It is never passed to Compose. Unknown fields, unsafe
 paths, unpinned vendor images, unsupported ports and policies are rejected before
 building. No host binds, Docker socket, host networking, privileged containers,
@@ -54,7 +53,8 @@ user-chosen capabilities or arbitrary resource limits are accepted.
         "LIVEKIT_SERVER_URL": "http://127.0.0.1:7880",
         "LIVEKIT_PUBLIC_URL": "wss://${APP_DOMAIN}/rtc",
         "COLLABORA_SERVER_URL": "http://office:9980",
-        "COLLABORA_APP_URL": "http://thura:3000"
+        "COLLABORA_APP_URL": "http://thura:3000",
+        "THURA_PRIVATE_SERVICE_ORIGINS": "http://127.0.0.1:7880,http://office:9980,http://thura:3000"
       },
       "public_ports": [{"port": 25, "protocol": "tcp"}, {"port": 7881, "protocol": "tcp"}, {"port": 7882, "protocol": "udp"}],
       "http_routes": [{"prefix": "/rtc", "port": 7880, "strip_prefix": true}],
@@ -96,8 +96,9 @@ Existing sealed credentials still use the framework's released decryption API.
 
 Exactly one `app` role and at most one each `mail` and `office` are accepted.
 The app is named/aliased per release on a private, app-incarnation-specific network;
-mail may share its network namespace. All containers are created before starting,
-then mail/office start before the app, avoiding the app-waits-for-Valkey cycle.
+mail may share its network namespace. All containers are created before starting. The app namespace owner starts first
+and waits for Valkey; mail/office then start immediately, without waiting for app
+HTTP readiness. This avoids a circular startup dependency.
 The app HTTP port 3000 and route ports publish on random loopback ports only.
 The existing host HTTPS proxy forwards `/rtc` and WebSocket upgrades to port 7880,
 stripping `/rtc`; other paths reach the app. Office 9980 stays private.

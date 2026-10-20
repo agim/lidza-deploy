@@ -243,7 +243,23 @@ func Proxy(m *Manager) http.Handler {
 			http.Error(w, "application unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		target := &url.URL{Scheme: "http", Host: "127.0.0.1:" + release.Port}
+		port := release.Port
+		if release.Stack != nil {
+			for _, route := range release.Stack.Routes {
+				if route.Published != "" && (r.URL.Path == route.Prefix || strings.HasPrefix(r.URL.Path, route.Prefix+"/")) {
+					port = route.Published
+					if route.StripPrefix {
+						r.URL.Path = strings.TrimPrefix(r.URL.Path, route.Prefix)
+						if r.URL.Path == "" {
+							r.URL.Path = "/"
+						}
+						r.URL.RawPath = ""
+					}
+					break
+				}
+			}
+		}
+		target := &url.URL{Scheme: "http", Host: "127.0.0.1:" + port}
 		p := httputil.NewSingleHostReverseProxy(target)
 		p.Transport = transport
 		p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {

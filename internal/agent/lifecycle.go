@@ -55,7 +55,7 @@ func (m *Manager) stoppedContainers(a App) []string {
 	names := []string{}
 	for _, r := range []*Release{a.Current, a.Previous} {
 		if r != nil {
-			names = append(names, r.Container)
+			names = append(names, releaseContainers(r)...)
 		}
 	}
 	for _, t := range m.data.Tasks {

@@ -90,10 +90,14 @@ func (m *Manager) reconcileRoutes() {
 	}
 	m.mu.Lock()
 	names := []string{}
+	stacks := map[string]*Release{}
 	for _, a := range m.data.Apps {
 		for _, r := range []*Release{a.Current, a.Previous} {
 			if r != nil {
 				names = append(names, r.Container)
+				if r.Stack != nil {
+					stacks[r.Container] = r
+				}
 			}
 		}
 	}
@@ -110,6 +114,14 @@ func (m *Manager) reconcileRoutes() {
 		}
 		return
 	}
+	refreshed := map[string]*Release{}
+	if d, ok := m.runtime.(*Docker); ok {
+		for name, r := range stacks {
+			if next, e := d.refreshStackPorts(ctx, r); e == nil {
+				refreshed[name] = next
+			}
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// Copy release pointers: readers may still be proxying with the old snapshot.
@@ -118,6 +130,13 @@ func (m *Manager) reconcileRoutes() {
 		for _, slot := range []**Release{&a.Current, &a.Previous} {
 			r := *slot
 			if r == nil {
+				continue
+			}
+			if next, ok := refreshed[r.Container]; ok && next.ID == r.ID {
+				if !stackRoutesEqual(r, next) {
+					*slot = next
+					changed = true
+				}
 				continue
 			}
 			if port, ok := ports[r.Container]; ok && port != r.Port {

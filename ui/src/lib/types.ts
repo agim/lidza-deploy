@@ -36,6 +36,7 @@ export interface DomainStatus {
 }
 
 export interface Application {
+ runtime_profile?: string;
   id: ID;
   server_id: ID;
   repository: string;
@@ -91,6 +92,7 @@ export interface EnvironmentEntry {
 }
 
 export interface AppSettings extends Application {
+ stack_profiles_supported?: boolean;
   additional_domains_supported?: boolean;
   backup_before_deploy?: boolean;
   env_keys?: string[];

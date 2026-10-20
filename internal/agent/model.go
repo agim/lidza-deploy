@@ -12,6 +12,8 @@ import (
 )
 
 type App struct {
+	RuntimeProfile     string         `json:"runtime_profile,omitempty"`
+	StackManifest      *StackManifest `json:"-"`
 	domainCheckKey     string
 	AdditionalDomains  []string          `json:"additional_domains,omitempty"`
 	DomainStatuses     []DomainStatus    `json:"domain_statuses,omitempty"`
@@ -77,14 +79,15 @@ func normalizeEnvironmentKinds(env map[string]string, kinds map[string]string) m
 }
 
 type Release struct {
-	CommitMessage string    `json:"commit_message,omitempty"`
-	DatabaseIDs   []string  `json:"database_ids,omitempty"`
-	Image         string    `json:"image,omitempty"`
-	ID            string    `json:"id"`
-	Commit        string    `json:"commit"`
-	Container     string    `json:"container"`
-	Port          string    `json:"port"`
-	Created       time.Time `json:"created"`
+	Stack         *StackRelease `json:"stack,omitempty"`
+	CommitMessage string        `json:"commit_message,omitempty"`
+	DatabaseIDs   []string      `json:"database_ids,omitempty"`
+	Image         string        `json:"image,omitempty"`
+	ID            string        `json:"id"`
+	Commit        string        `json:"commit"`
+	Container     string        `json:"container"`
+	Port          string        `json:"port"`
+	Created       time.Time     `json:"created"`
 }
 type Deployment struct {
 	Log           string     `json:"log,omitempty"`
@@ -114,6 +117,8 @@ type DeployRequest struct {
 	Key              string            `json:"key,omitempty"`
 }
 type diskState struct {
+	StackVolumes      map[string][]string           `json:"stack_volumes,omitempty"`
+	StackTransitions  map[string]StackTransition    `json:"stack_transitions,omitempty"`
 	Maintenance       *MaintenanceState             `json:"maintenance,omitempty"`
 	ClickHouses       map[string]ClickHouseResource `json:"clickhouses,omitempty"`
 	RetiredAppIDs     map[string]bool               `json:"retired_app_ids,omitempty"`
@@ -137,6 +142,14 @@ var domainPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 var envPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (a App) Validate() error {
+	if a.RuntimeProfile != "" {
+		if _, ok := profileByID(a.RuntimeProfile); !ok {
+			return errors.New("unknown runtime profile")
+		}
+		if a.Preview {
+			return errors.New("stack profiles are unavailable for previews")
+		}
+	}
 	if a.PullRequest < 0 || a.PullRequest > 999999999 || a.PullRequest > 0 && !a.Preview {
 		return errors.New("invalid preview pull request")
 	}

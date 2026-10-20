@@ -11,6 +11,7 @@ import (
 // Environment settings are editable; credentials stay masked unless a separate,
 // purpose-bound step-up request reveals one. Omitted keys survive and null deletes.
 type SettingsPatch struct {
+	RuntimeProfile     *string            `json:"runtime_profile,omitempty"`
 	AdditionalDomains  *[]string          `json:"additional_domains,omitempty"`
 	CustomerHosts      *bool              `json:"customer_hosts,omitempty"`
 	FromDefaults       bool               `json:"from_defaults,omitempty"`
@@ -30,6 +31,9 @@ type EnvironmentEntry struct {
 	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
+	StackProfilesSupported     bool               `json:"stack_profiles_supported"`
+	RuntimeProfile             string             `json:"runtime_profile"`
+	StackProfiles              []StackProfile     `json:"stack_profiles"`
 	AdditionalDomainsSupported bool               `json:"additional_domains_supported"`
 	AdditionalDomains          []string           `json:"additional_domains"`
 	DomainStatuses             []DomainStatus     `json:"domain_statuses,omitempty"`
@@ -80,7 +84,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 		}
 		environment = append(environment, entry)
 	}
-	return Settings{AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
+	return Settings{StackProfilesSupported: true, RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
 }
 
 func (m *Manager) RevealCredential(id, key string) (string, error) {
@@ -125,6 +129,12 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		}
 	}
 	a := old
+	if p.RuntimeProfile != nil {
+		a.RuntimeProfile = *p.RuntimeProfile
+		if old.Current != nil && (a.RuntimeProfile == "") != (old.RuntimeProfile == "") {
+			return errors.New("changing runtime family requires a new application; existing data is retained")
+		}
+	}
 	if p.CustomerHosts != nil {
 		a.CustomerHosts = *p.CustomerHosts
 	}
