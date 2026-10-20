@@ -86,6 +86,9 @@ func scrubLiveOutput(text string, secrets []string) string {
 }
 func changeKeys(old App, a App) []string {
 	keys := []string{}
+	if old.RuntimeProfile != a.RuntimeProfile {
+		keys = append(keys, "runtime_profile")
+	}
 	if !slices.Equal(old.AdditionalDomains, a.AdditionalDomains) {
 		keys = append(keys, "additional_domains")
 	}

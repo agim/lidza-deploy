@@ -51,8 +51,8 @@ export function Badge({ tone = 'neutral', children }: { tone?: 'success' | 'warn
 
 export function StatusBadge({ status = 'unknown' }: { status?: string }) {
   const lower = status.toLowerCase();
-  const tone = ['live', 'ready', 'done', 'running', 'healthy'].includes(lower) ? 'success' : ['failed', 'error', 'unhealthy'].includes(lower) ? 'danger' : ['building', 'queued', 'pending', 'retrying', 'waiting'].includes(lower) ? 'warning' : 'neutral';
-  return <Badge tone={tone}><span className="status-dot" />{status || 'unknown'}</Badge>;
+  const tone = ['live', 'ready', 'done', 'running', 'healthy'].includes(lower) ? 'success' : ['failed', 'error', 'unhealthy'].includes(lower) ? 'danger' : ['building', 'queued', 'pending', 'retrying', 'waiting', 'setup_required'].includes(lower) ? 'warning' : 'neutral';
+  return <Badge tone={tone}><span className="status-dot" />{status === 'setup_required' ? 'Setup required' : status || 'unknown'}</Badge>;
 }
 
 export function Field({ label, hint, error, className, children }: { label: string; hint?: ReactNode; error?: string; className?: string; children: ReactNode }) {

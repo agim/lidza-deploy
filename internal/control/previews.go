@@ -51,6 +51,10 @@ func (c *Control) previewConfig(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if input.Enabled && a.RuntimeProfile != "" {
+		agent.Fail(w, 400, errors.New("stack profiles do not support pull-request previews"))
+		return
+	}
 	old := a
 	if input.Env == nil {
 		input.Env = a.Previews.Env
@@ -117,7 +121,7 @@ func (c *Control) dispatchPreview(ctx context.Context, payload json.RawMessage) 
 	if in.Action == "closed" {
 		return c.deletePreview(r, parent.ServerID, id)
 	}
-	if !parent.Previews.Enabled || parent.Retiring {
+	if !parent.Previews.Enabled || parent.Retiring || parent.RuntimeProfile != "" {
 		return nil
 	}
 	// Revalidate the current PR state so an old queued open/sync cannot resurrect a closed PR.

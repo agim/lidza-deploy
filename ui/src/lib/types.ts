@@ -36,6 +36,7 @@ export interface DomainStatus {
 }
 
 export interface Application {
+ runtime_profile?: string;
   id: ID;
   server_id: ID;
   repository: string;
@@ -49,7 +50,7 @@ export interface Application {
   retiring?: boolean;
   preview_parent?: string;
   github_installation?: number;
-  current?: { commit?: string };
+  current?: { commit?: string; stack?: { bootstrap?: boolean; manifest?: { bootstrap_readiness?: { setup_path?: string } } } };
   previous?: { commit?: string };
   domain_status?: DomainStatus;
   agent_error?: string;
@@ -91,6 +92,8 @@ export interface EnvironmentEntry {
 }
 
 export interface AppSettings extends Application {
+ stack_profiles_supported?: boolean;
+ runtime_deployed?: boolean;
   additional_domains_supported?: boolean;
   backup_before_deploy?: boolean;
   env_keys?: string[];

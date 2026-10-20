@@ -79,7 +79,10 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	spec := agent.App{ID: old.ID, Repository: old.Repository, Branch: input.Branch, Domain: input.Domain, AdditionalDomains: old.AdditionalDomains}
+	spec := agent.App{RuntimeProfile: old.RuntimeProfile, ID: old.ID, Repository: old.Repository, Branch: input.Branch, Domain: input.Domain, AdditionalDomains: old.AdditionalDomains}
+	if input.RuntimeProfile != nil {
+		spec.RuntimeProfile = *input.RuntimeProfile
+	}
 	if input.AdditionalDomains != nil {
 		spec.AdditionalDomains = slices.Clone(*input.AdditionalDomains)
 	}
@@ -125,6 +128,7 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 	next.Branch = input.Branch
 	next.Domain = input.Domain
 	next.AdditionalDomains = spec.AdditionalDomains
+	next.RuntimeProfile = spec.RuntimeProfile
 	c.data.Apps[old.ID] = next
 	if err := c.save(); err != nil {
 		c.data.Apps[old.ID] = old

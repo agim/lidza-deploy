@@ -18,6 +18,7 @@ import (
 )
 
 type Docker struct {
+	stackTransition    func(string, *Release, *Release, bool) error
 	prepareRuntime     func(context.Context, App, string) (App, error)
 	runtimeDiagnostics func(context.Context, App) context.Context
 	Root               string
@@ -120,6 +121,23 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 			ctx = d.runtimeDiagnostics(ctx, a)
 		}
 	}
+	if a.RuntimeProfile != "" {
+		manifest := a.StackManifest
+		if manifest == nil {
+			manifest, err = loadStackManifest(source)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if err = os.RemoveAll(filepath.Join(source, ".git")); err != nil {
+			return nil, err
+		}
+		release, err = d.buildStack(ctx, a, id, source, commit, manifest)
+		if release != nil {
+			release.CommitMessage = message
+		}
+		return release, err
+	}
 	if err = prepareBuild(source); err != nil {
 		return nil, err
 	}
@@ -139,6 +157,26 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 func (d *Docker) Reload(ctx context.Context, a App, id string) (*Release, error) {
 	if a.Current == nil || a.Current.Image == "" {
 		return nil, errors.New("no deployed image to reload")
+	}
+	if a.Current.Stack != nil {
+		if a.RuntimeProfile == "" {
+			return nil, errors.New("choose a stack profile before reload")
+		}
+		images := stackImages(a.Current)
+		for _, c := range a.Current.Stack.Containers {
+			if c.Service.Build != nil {
+				image := "lidza/" + a.ID + "-" + c.Service.Name + ":" + id
+				if _, err := command(ctx, "", nil, "docker", "tag", c.Image, image); err != nil {
+					return nil, err
+				}
+				images[c.Service.Name] = image
+			}
+		}
+		release, err := d.runStack(ctx, a, id, a.Current.Commit, a.Current.Stack.Manifest, images)
+		if release != nil {
+			release.CommitMessage = a.Current.CommitMessage
+		}
+		return release, err
 	}
 	image := "lidza/" + a.ID + ":" + id
 	if _, err := command(ctx, "", nil, "docker", "tag", a.Current.Image, image); err != nil {
@@ -280,11 +318,25 @@ func (d *Docker) waitReady(ctx context.Context, r *Release) error {
 	}
 }
 func (d *Docker) Ready(ctx context.Context, r *Release) error {
+	if r != nil && r.Stack != nil {
+		if err := d.probeStackServices(ctx, r); err != nil {
+			return err
+		}
+	}
 	_, err := d.probeReady(ctx, r)
 	return err
 }
+
+type readinessHTTPError struct{ Status int }
+
+func (e *readinessHTTPError) Error() string {
+	return fmt.Sprintf("readiness returned HTTP %d", e.Status)
+}
 func (d *Docker) probeReady(ctx context.Context, r *Release) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+r.Port+"/readyz", nil)
+	return d.probeAppPath(ctx, r, "/readyz")
+}
+func (d *Docker) probeAppPath(ctx context.Context, r *Release, path string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+r.Port+path, nil)
 	if err != nil {
 		return "", err
 	}
@@ -302,12 +354,15 @@ func (d *Docker) probeReady(ctx context.Context, r *Release) (string, error) {
 		return "", nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-	return string(body), fmt.Errorf("readiness returned HTTP %d", res.StatusCode)
+	return string(body), &readinessHTTPError{Status: res.StatusCode}
 }
 
 func (d *Docker) Remove(ctx context.Context, r *Release) error {
 	if r == nil {
 		return nil
+	}
+	if r.Stack != nil {
+		return d.removeStack(ctx, r)
 	}
 	// Listing first makes retries safe when a previous cleanup removed only part
 	// of the release. Daemon failures remain errors rather than "already removed".
@@ -334,6 +389,17 @@ func (d *Docker) Remove(ctx context.Context, r *Release) error {
 func (d *Docker) Logs(ctx context.Context, r *Release) (string, error) {
 	if r == nil {
 		return "", errors.New("no running release")
+	}
+	if r.Stack != nil {
+		var out strings.Builder
+		for _, c := range r.Stack.Containers {
+			output, err := command(ctx, "", nil, "docker", "logs", "--tail", "100", c.Container)
+			if err != nil {
+				return "", err
+			}
+			fmt.Fprintf(&out, "=== %s ===\n%s\n", c.Service.Name, output)
+		}
+		return out.String(), nil
 	}
 	return command(ctx, "", nil, "docker", "logs", "--tail", "200", r.Container)
 }

@@ -39,20 +39,23 @@ type BackupRecord struct {
 	UploadError      string    `json:"upload_error,omitempty"`
 }
 type Database struct {
-	Ephemeral     bool           `json:"ephemeral,omitempty"`
-	PreviewID     string         `json:"preview_id,omitempty"`
-	AppID         string         `json:"app_id"`
-	Mode          string         `json:"mode"`
-	URL           string         `json:"url"`
-	AdminPassword string         `json:"admin_password,omitempty"`
-	Network       string         `json:"network,omitempty"`
-	Ready         bool           `json:"ready"`
-	Operation     string         `json:"operation,omitempty"`
-	Error         string         `json:"error,omitempty"`
-	Event         string         `json:"event,omitempty"`
-	Backup        BackupPolicy   `json:"backup"`
-	NextBackup    time.Time      `json:"next_backup"`
-	Backups       []BackupRecord `json:"backups"`
+	ResourceProfile string         `json:"resource_profile,omitempty"`
+	MemoryMiB       int            `json:"memory_mib,omitempty"`
+	CPUs            string         `json:"cpus,omitempty"`
+	Ephemeral       bool           `json:"ephemeral,omitempty"`
+	PreviewID       string         `json:"preview_id,omitempty"`
+	AppID           string         `json:"app_id"`
+	Mode            string         `json:"mode"`
+	URL             string         `json:"url"`
+	AdminPassword   string         `json:"admin_password,omitempty"`
+	Network         string         `json:"network,omitempty"`
+	Ready           bool           `json:"ready"`
+	Operation       string         `json:"operation,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	Event           string         `json:"event,omitempty"`
+	Backup          BackupPolicy   `json:"backup"`
+	NextBackup      time.Time      `json:"next_backup"`
+	Backups         []BackupRecord `json:"backups"`
 }
 type DatabaseView struct {
 	Attachments []DatabaseAttachment `json:"attachments"`
@@ -213,6 +216,11 @@ func (m *Manager) configureDatabase(appID string, input DatabaseRequest) error {
 		d.Backups = previous.Backups
 	}
 	if d.Mode == "local" {
+		if profile, ok := profileByID(a.RuntimeProfile); ok {
+			d.ResourceProfile = profile.ID
+			d.MemoryMiB = profile.Database.MemoryMiB
+			d.CPUs = profile.Database.CPUs
+		}
 		d.Network = "lidza-db-" + id
 		d.AdminPassword = newID() + newID()
 		u := url.URL{Scheme: "postgres", User: url.UserPassword("app", newID()+newID()), Host: d.Network + ":5432", Path: "/app", RawQuery: "sslmode=disable"}

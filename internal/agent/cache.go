@@ -255,6 +255,27 @@ func (m *Manager) preflightRuntime(ctx context.Context, a App, source string) (A
 	if err := regularFile(filepath.Join(source, "lidza.json"), false); err != nil {
 		return a, errors.New("application requires a regular lidza.json manifest")
 	}
+	var manifest *StackManifest
+	if a.RuntimeProfile != "" {
+		var err error
+		manifest, err = loadStackManifest(source)
+		if err != nil {
+			return a, err
+		}
+		a, err = m.prepareStack(ctx, a, manifest)
+		if err != nil {
+			return a, err
+		}
+		for _, service := range manifest.Services {
+			if service.Role == "app" {
+				env, err := stackEnvironment(a, service)
+				if err != nil {
+					return a, err
+				}
+				a.Env = env
+			}
+		}
+	}
 	cfg, err := config.Load(source)
 	if err != nil {
 		return a, errors.New("application manifest could not be read")
@@ -309,12 +330,18 @@ func (m *Manager) preflightRuntime(ctx context.Context, a App, source string) (A
 	if err != nil {
 		return a, err
 	}
+	stackEnv := maps.Clone(a.Env)
 	a, err = m.prepareAppStorage(ctx, a, cfg, effective)
 	if err != nil {
 		return a, err
 	}
 	if a.StorageVolume != "" {
 		commandDiagnostic(ctx, "storage", "Persistent local storage is attached; files are retained across deployments and reloads.")
+	}
+	if manifest != nil {
+		maps.Copy(stackEnv, a.Env)
+		a.Env = stackEnv
+		a.StackManifest = manifest
 	}
 	// Manifest defaults are non-secret production settings. Explicit app env wins.
 	merged := maps.Clone(cfg.Deploy.Env)
