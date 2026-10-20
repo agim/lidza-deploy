@@ -211,7 +211,10 @@ func TestStackOfficePreservesVendorUser(t *testing.T) {
 		}
 	}
 	joined := strings.Join(args, " ")
-	for _, required := range []string{"--cap-drop ALL", "--security-opt no-new-privileges", "--cap-add SYS_CHROOT"} {
+	if strings.Contains(joined, "no-new-privileges") || len(args) != 8 {
+		t.Fatal("office file-capability policy has an unexpected privilege configuration")
+	}
+	for _, required := range []string{"--cap-drop ALL", "--cap-add CHOWN", "--cap-add FOWNER", "--cap-add SYS_CHROOT"} {
 		if !strings.Contains(joined, required) {
 			t.Fatal("office policy lost a security boundary", required)
 		}
@@ -222,5 +225,18 @@ func TestStackInitSupervisorCanSignalDroppedUID(t *testing.T) {
 	args := strings.Join(stackPolicyArgs(StackService{Role: "app", Policy: "init"}), " ")
 	if !strings.Contains(args, "--cap-add KILL") || !strings.Contains(args, "--cap-drop ALL") || !strings.Contains(args, "--security-opt no-new-privileges") {
 		t.Fatal("init policy cannot supervise a dropped-UID worker within its PID namespace")
+	}
+}
+
+func TestOfficeImageRequiresNonRootUser(t *testing.T) {
+	for _, user := range []string{"", "root", "root:cool", "0", "0:0", "0000"} {
+		if officeImageUserAllowed(user) {
+			t.Fatal("root office image accepted", user)
+		}
+	}
+	for _, user := range []string{"1001", "1001:1001", "cool"} {
+		if !officeImageUserAllowed(user) {
+			t.Fatal("non-root office image rejected", user)
+		}
 	}
 }

@@ -110,28 +110,37 @@ func ensureStackResource(ctx context.Context, kind, name, owner string) error {
 	return nil
 }
 func stackPolicyArgs(s StackService) []string {
-	args := []string{"--cap-drop", "ALL", "--security-opt", "no-new-privileges"}
+	args := []string{"--cap-drop", "ALL"}
+	if s.Policy == "office" {
+		// The non-root vendor helper uses file capabilities; NNP would suppress
+		// them. Its bounding set includes exactly these three container-local caps.
+		return append(args, "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "SYS_CHROOT")
+	}
+	args = append(args, "--security-opt", "no-new-privileges")
 	if s.Policy == "hardened" {
 		return append(args, "--read-only", "--user", "65532:65532")
 	}
-	if s.Policy != "office" {
-		args = append(args, "--user", "0:0")
-	}
-	caps := []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"}
-	if s.Policy == "init" {
-		caps = append(caps, "KILL")
-	}
+	args = append(args, "--user", "0:0")
+	caps := []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID", "KILL"}
 	if s.Policy == "mail" {
-		caps = append(caps, "NET_BIND_SERVICE", "KILL", "SYS_CHROOT")
-	}
-	if s.Policy == "office" {
-		caps = append(caps, "SYS_CHROOT", "MKNOD", "FSETID", "SETFCAP")
+		caps = append(caps, "NET_BIND_SERVICE", "SYS_CHROOT")
 	}
 	for _, cap := range caps {
 		args = append(args, "--cap-add", cap)
 	}
 	return args
 }
+func officeImageUserAllowed(user string) bool {
+	user = strings.SplitN(strings.TrimSpace(user), ":", 2)[0]
+	if user == "" || user == "root" {
+		return false
+	}
+	if uid, err := strconv.ParseUint(user, 10, 32); err == nil {
+		return uid != 0
+	}
+	return true
+}
+
 func stackContainerName(a App, id, name string) string {
 	return "lidza-" + a.ID + "-" + id + "-" + name
 }
@@ -145,6 +154,17 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 	}
 	if err = d.stackCapacity(ctx, a, profile, manifest); err != nil {
 		return nil, err
+	}
+	for _, service := range manifest.Services {
+		if service.Policy == "office" {
+			user, e := command(ctx, "", nil, "docker", "image", "inspect", "--format", "{{.Config.User}}", images[service.Name])
+			if e != nil {
+				return nil, e
+			}
+			if !officeImageUserAllowed(user) {
+				return nil, errors.New("office policy requires a vendor image with an explicit non-root USER")
+			}
+		}
 	}
 	stack := &StackRelease{Profile: a.RuntimeProfile, Network: "lidza-stack-" + a.resourceID() + "-" + id, Manifest: manifest}
 	candidate := &Release{ID: id, Commit: commit, Created: time.Now().UTC(), Stack: stack}

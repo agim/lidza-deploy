@@ -75,7 +75,7 @@ user-chosen capabilities or arbitrary resource limits are accepted.
       "name": "office", "role": "office", "policy": "office",
       "image": "collabora/code@sha256:REPLACE_WITH_TESTED_ARCHITECTURE_CORRECT_DIGEST",
       "command": ["--o:ssl.enable=false", "--o:ssl.termination=true", "--o:net.service_root=/api/v1/collabora", "--o:storage.wopi.alias_groups[@mode]=groups", "--o:storage.wopi.alias_groups.group[0].host=http://thura:3000", "--o:storage.wopi.alias_groups.group[0].host[@allow]=true", "--o:admin_console.enable=false", "--o:logging.level=warning", "--o:num_prespawn_children=1", "--o:per_document.max_concurrency=1"],
-      "health_command": ["curl", "--fail", "--silent", "http://127.0.0.1:9980/hosting/discovery"]
+      "health_command": ["/usr/local/bin/office-health"]
     }
   ]
 }
@@ -83,7 +83,9 @@ user-chosen capabilities or arbitrary resource limits are accepted.
 
 The example's digest is deliberately a placeholder. The application team must pin
 its tested image/index; Docker selects the host architecture or fails explicitly.
-Build context is always repository root, without `.git`; only the Dockerfile and
+The office example assumes the image includes `/usr/local/bin/office-health`;
+distroless vendor images commonly lack curl and require an application-owned
+derivative with a static discovery probe. Build context is always repository root, without `.git`; only the Dockerfile and
 optional target are selectable. Build arguments/secrets from the manifest are not
 supported. Health commands are argv, not a host shell; each has a bounded timeout.
 
@@ -117,8 +119,12 @@ Policies are fixed by the agent: `hardened` keeps UID65532, read-only rootfs and
 capabilities; `init` allows app root initialization with CHOWN/DAC_OVERRIDE/FOWNER/
 SETUID/SETGID/KILL only; `mail` additionally allows low-port binding and process ownership;
 `office` preserves the pinned vendor image's USER and supplies bounded ownership/chroot capabilities.
-All retain cap-drop ALL, no-new-privileges, PID/log/resource limits, no host mounts,
-no host namespaces and no Docker access. Office never forces root; its vendor image must provide an appropriate runtime user.
+All retain cap-drop ALL, PID/log/resource limits, no host mounts,
+no host namespaces and no Docker access. App and mail retain no-new-privileges. Office requires an explicit non-root image
+USER and has an office-only exception to no-new-privileges so its vendor helper
+can acquire its file capabilities. Its bounding set is exactly CHOWN, FOWNER and
+SYS_CHROOT; capabilities outside this set cannot be gained. This exception does
+not change the single-container, app-init, or mail policies.
 Root initialization policies have writable
 container layers but only declared named volumes persist.
 
