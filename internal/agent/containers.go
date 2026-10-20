@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,10 +39,11 @@ type ContainerInventory struct {
 }
 
 type managedContainer struct {
-	AppID       string
-	Name        string
-	Role        string
-	Restartable bool
+	HealthCommand []string
+	AppID         string
+	Name          string
+	Role          string
+	Restartable   bool
 }
 
 func (m *Manager) managedContainers() []managedContainer {
@@ -59,7 +61,7 @@ func (m *Manager) managedContainers() []managedContainer {
 		}
 		if a.Current != nil && a.Current.Stack != nil {
 			for _, c := range a.Current.Stack.Containers {
-				add(managedContainer{AppID: a.ID, Name: c.Container, Role: "Stack · " + c.Service.Name, Restartable: true})
+				add(managedContainer{AppID: a.ID, Name: c.Container, Role: "Stack · " + c.Service.Name, HealthCommand: c.Service.HealthCommand, Restartable: true})
 			}
 		}
 		if a.Previous != nil && a.Previous.Stack != nil {
@@ -67,7 +69,7 @@ func (m *Manager) managedContainers() []managedContainer {
 				add(managedContainer{AppID: a.ID, Name: c.Container, Role: "Stack · " + c.Service.Name + " · rollback"})
 			}
 		}
-		if a.Previous != nil {
+		if a.Previous != nil && a.Previous.Stack == nil {
 			add(managedContainer{AppID: a.ID, Name: a.Previous.Container, Role: "Web · rollback release"})
 		}
 	}
@@ -207,6 +209,32 @@ func (m *Manager) containerInventory(ctx context.Context) ContainerInventory {
 			out.Warning = "Live resource sampling is temporarily unavailable. Container state is still current."
 		}
 	}
+	serviceHealth := map[string]string{}
+	var healthMu sync.Mutex
+	var healthWG sync.WaitGroup
+	for _, item := range managed {
+		if len(item.HealthCommand) == 0 || live[item.Name].State != "running" {
+			continue
+		}
+		healthWG.Add(1)
+		go func(item managedContainer) {
+			defer healthWG.Done()
+			bounded, stop := context.WithTimeout(probe, 3*time.Second)
+			_, err := command(bounded, "", nil, "docker", append([]string{"exec", item.Name}, item.HealthCommand...)...)
+			state := "healthy"
+			if err != nil {
+				state = "unhealthy"
+			}
+			if bounded.Err() != nil {
+				state = "unknown"
+			}
+			stop()
+			healthMu.Lock()
+			serviceHealth[item.Name] = state
+			healthMu.Unlock()
+		}(item)
+	}
+	healthWG.Wait()
 	if listFailed {
 		out.Warning = "Docker inventory is temporarily unavailable. Retry in a few seconds."
 	}
@@ -225,6 +253,12 @@ func (m *Manager) containerInventory(ctx context.Context) ContainerInventory {
 			view.NetworkIO = row.NetworkIO
 			view.BlockIO = row.BlockIO
 			view.PIDs = row.PIDs
+		}
+		if health, ok := serviceHealth[item.Name]; ok {
+			view.Health = health
+			if health == "unknown" && out.Warning == "" {
+				out.Warning = "Stack service health sampling timed out; unavailable evidence is not a healthy result."
+			}
 		}
 		view.NeedsAttention = view.State == "missing" || view.State == "dead" || view.State == "exited" || view.State == "restarting" || view.Health == "unhealthy"
 		out.Containers = append(out.Containers, view)
@@ -258,6 +292,15 @@ func (m *Manager) containerRoutes(mux *http.ServeMux) {
 		}
 		if !target.Restartable {
 			Fail(w, http.StatusConflict, errors.New("this retained container cannot be restarted; use its application control instead"))
+			return
+		}
+		if strings.HasPrefix(target.Role, "Stack · ") {
+			deployment, err := m.Reload(target.AppID)
+			if err != nil {
+				Fail(w, http.StatusConflict, err)
+				return
+			}
+			JSON(w, http.StatusAccepted, map[string]string{"status": "queued", "deployment_id": deployment.ID, "name": target.Name, "app_id": target.AppID})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)

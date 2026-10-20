@@ -124,3 +124,55 @@ func TestStackSecretsPersistAndRemainMasked(t *testing.T) {
 		t.Fatal("preview stack accepted")
 	}
 }
+
+func TestStackMixedLiteralInterpolation(t *testing.T) {
+	a := testApp("mixed")
+	a.Env["LIVEKIT_API_SECRET"] = "private-value"
+	env, err := stackEnvironment(a, StackService{Role: "app", Environment: map[string]string{"THURA_PUBLIC_HOSTS": "thura,${APP_DOMAIN}", "LIVEKIT_PUBLIC_URL": "wss://${APP_DOMAIN}/rtc"}})
+	if err != nil || env["THURA_PUBLIC_HOSTS"] != "thura,mixed.example.com" || env["LIVEKIT_PUBLIC_URL"] != "wss://mixed.example.com/rtc" {
+		t.Fatalf("mixed interpolation failed: %v", err)
+	}
+}
+
+func TestStackPortReservationsAndMissingMasterKey(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	a := testApp("stack-owner")
+	a.RuntimeProfile = "minimum"
+	a.Env["LIDZA_MASTER_KEY"] = strings.Repeat("2", 64)
+	if err := m.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	manifest := fixtureStackManifest()
+	manifest.Services[0].PublicPorts = []StackPort{{Port: 25, Protocol: "tcp"}}
+	other := testApp("other-stack")
+	other.RuntimeProfile = "minimum"
+	other.Current = &Release{ID: "old", Stack: &StackRelease{Manifest: manifest}}
+	m.mu.Lock()
+	m.data.Apps[other.ID] = other
+	m.mu.Unlock()
+	if _, err := m.prepareStack(context.Background(), a, &manifest); err == nil || !strings.Contains(err.Error(), "belongs to application") {
+		t.Fatal("another app's fixed port was not reserved")
+	}
+	m.mu.Lock()
+	delete(m.data.Apps, other.ID)
+	saved := m.data.Apps[a.ID]
+	delete(saved.Env, "LIDZA_MASTER_KEY")
+	m.data.Apps[a.ID] = saved
+	m.mu.Unlock()
+	if _, err := m.prepareStack(context.Background(), saved, &manifest); err == nil || !strings.Contains(err.Error(), "LIDZA_MASTER_KEY") {
+		t.Fatal("missing original master key accepted")
+	}
+}
+
+func TestStackKernelReservationUsesHostAllowance(t *testing.T) {
+	p, _ := profileByID("minimum")
+	if got := stackHostAllowance(p, 3936*1048576); got != 352 {
+		t.Fatalf("kernel reservation not charged to host allowance: %d", got)
+	}
+	if got := stackHostAllowance(p, 3500*1048576); got != 512 {
+		t.Fatal("undersized host received a capacity bypass")
+	}
+	if got := stackHostAllowance(p, 8192*1048576); got != 512 {
+		t.Fatal("larger host lost its reserved allowance")
+	}
+}

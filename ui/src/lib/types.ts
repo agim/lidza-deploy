@@ -93,6 +93,7 @@ export interface EnvironmentEntry {
 
 export interface AppSettings extends Application {
  stack_profiles_supported?: boolean;
+ runtime_deployed?: boolean;
   additional_domains_supported?: boolean;
   backup_before_deploy?: boolean;
   env_keys?: string[];

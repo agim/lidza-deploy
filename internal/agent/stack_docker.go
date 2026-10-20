@@ -66,7 +66,7 @@ func (d *Docker) stackCapacity(ctx context.Context, a App, p StackProfile, manif
 	if err != nil {
 		return errors.New("host memory capacity unavailable")
 	}
-	requested := p.ReserveMiB
+	requested := stackHostAllowance(p, total)
 	for _, s := range manifest.Services {
 		requested += p.budget(s.Role).MemoryMiB
 	}
@@ -348,7 +348,7 @@ func (d *Docker) removeStack(ctx context.Context, r *Release) error {
 	for i := len(r.Stack.Containers) - 1; i >= 0; i-- {
 		c := r.Stack.Containers[i]
 		if err := d.Remove(ctx, &Release{Container: c.Container, Image: func() string {
-			if c.Service.Build != nil {
+			if c.Service.Build != nil && strings.HasSuffix(c.Image, ":"+r.ID) {
 				return c.Image
 			}
 			return ""
@@ -374,4 +374,15 @@ func stackImages(r *Release) map[string]string {
 		out[c.Service.Name] = c.Image
 	}
 	return out
+}
+
+// Linux reports usable RAM after reserving kernel memory. Charge a bounded
+// nominal-host difference to the profile's host allowance, never to services.
+// At least half the allowance remains for userspace; smaller hosts still fail.
+func stackHostAllowance(p StackProfile, totalBytes int64) int {
+	missing := p.HostMiB - int(totalBytes/1048576)
+	if missing > 0 && missing <= min(256, p.ReserveMiB/2) {
+		return p.ReserveMiB - missing
+	}
+	return p.ReserveMiB
 }

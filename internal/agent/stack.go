@@ -20,10 +20,13 @@ type StackBudget struct {
 	CPUs      string `json:"cpus"`
 }
 type StackProfile struct {
-	ID                          string `json:"id"`
-	HostMiB                     int    `json:"host_mib"`
-	ReserveMiB                  int    `json:"reserve_mib"`
-	App, Mail, Office, Database StackBudget
+	ID         string      `json:"id"`
+	HostMiB    int         `json:"host_mib"`
+	ReserveMiB int         `json:"reserve_mib"`
+	App        StackBudget `json:"app"`
+	Mail       StackBudget `json:"mail"`
+	Office     StackBudget `json:"office"`
+	Database   StackBudget `json:"database"`
 }
 
 var stackProfiles = []StackProfile{

@@ -21,7 +21,10 @@ first deployment requires a new application; existing data stays retained for ex
 These are resource limits, not throughput guarantees. The compact standalone total
 is 3584 MiB of containers plus 512 MiB host allowance. A colocated Deploy control
 panel, its database, other applications, and existing databases consume additional
-capacity. Existing/shared databases are reused at their existing limits and are
+capacity. Linux kernel-reserved RAM is charged against the host allowance, up to
+256 MiB and never more than half that allowance; service limits stay unchanged.
+This allows a nominal 4 GiB VM whose usable MemTotal is slightly smaller while
+rejecting hosts that cannot fit the actual container limits. Existing/shared databases are reused at their existing limits and are
 never silently resized or tuned. No swap is allowed for stack services/new compact
 DBs. Migrations remain the application's responsibility.
 
@@ -54,7 +57,7 @@ user-chosen capabilities or arbitrary resource limits are accepted.
         "LIVEKIT_PUBLIC_URL": "wss://${APP_DOMAIN}/rtc",
         "COLLABORA_SERVER_URL": "http://office:9980",
         "COLLABORA_APP_URL": "http://thura:3000",
-        "THURA_PRIVATE_SERVICE_ORIGINS": "http://127.0.0.1:7880,http://office:9980,http://thura:3000"
+        "THURA_SERVICE_HTTP_ORIGINS": "http://127.0.0.1:7880,http://office:9980,http://thura:3000"
       },
       "public_ports": [{"port": 25, "protocol": "tcp"}, {"port": 7881, "protocol": "tcp"}, {"port": 7882, "protocol": "udp"}],
       "http_routes": [{"prefix": "/rtc", "port": 7880, "strip_prefix": true}],
@@ -135,5 +138,6 @@ and the managed database/backups, following the platform's retained-data policy.
 
 Release metadata records service images, container names, routes and the validated
 manifest, enabling reload/rollback without fetching a mutable branch. Container
-inventory includes sidecars with app/role ownership and resources. Runtime logs
+inventory includes sidecars with app/role ownership and resources. Stack container restart controls queue a coordinated reload, rather than breaking
+the shared network namespace with an isolated app restart. Runtime logs
 include bounded per-service output, scrubbed using application credentials.
