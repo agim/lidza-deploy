@@ -1,5 +1,8 @@
 # Stack profile contract (version 1)
 
+Version1 remains supported. For custom per-service budgets, auxiliary services
+and revisioned runtime selection, see [version2](stack-v2.md) (v0.2.102+).
+
 Status: implementation branch `feat/stack-profiles`. This document defines the
 repository/platform boundary; do not assume support on an agent until its settings
 response advertises `stack_profiles_supported: true`.

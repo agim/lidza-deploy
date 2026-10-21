@@ -18,13 +18,14 @@ import (
 )
 
 type Docker struct {
-	stackTransition    func(string, *Release, *Release, bool) error
-	prepareRuntime     func(context.Context, App, string) (App, error)
-	runtimeDiagnostics func(context.Context, App) context.Context
-	Root               string
-	Client             *http.Client
-	checkout           func(context.Context, App, string, string) error
-	readinessTimeout   time.Duration
+	stackTransition     func(string, *Release, *Release, bool) error
+	prepareRuntime      func(context.Context, App, string) (App, error)
+	prepareStackRuntime func(context.Context, App, *StackManifest) (App, error)
+	runtimeDiagnostics  func(context.Context, App) context.Context
+	Root                string
+	Client              *http.Client
+	checkout            func(context.Context, App, string, string) error
+	readinessTimeout    time.Duration
 }
 type limitedBuffer struct {
 	bytes.Buffer
@@ -162,7 +163,36 @@ func (d *Docker) Reload(ctx context.Context, a App, id string) (*Release, error)
 		if a.RuntimeProfile == "" {
 			return nil, errors.New("choose a stack profile before reload")
 		}
+		manifest := a.Current.Stack.Manifest
+		var err error
+		if d.prepareStackRuntime != nil {
+			a, err = d.prepareStackRuntime(ctx, a, &manifest)
+		} else {
+			a, err = d.prepareStackPlan(ctx, a, manifest)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if d.runtimeDiagnostics != nil {
+			ctx = d.runtimeDiagnostics(ctx, a)
+		}
 		images := stackImages(a.Current)
+		host, err := nativeStackPlatform(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, service := range manifest.selectedServices(a.StackSelection) {
+			if images[service.Name] != "" {
+				continue
+			}
+			if service.Build != nil {
+				return nil, fmt.Errorf("service %s has no retained image; use Deploy to build repository source", service.Name)
+			}
+			if _, err = command(ctx, "", nil, "docker", "pull", "--platform", host, service.Image); err != nil {
+				return nil, fmt.Errorf("pull newly enabled service %s failed: %w", service.Name, err)
+			}
+			images[service.Name] = service.Image
+		}
 		for _, c := range a.Current.Stack.Containers {
 			if c.Service.Build != nil {
 				image := "lidza/" + a.ID + "-" + c.Service.Name + ":" + id
@@ -172,7 +202,7 @@ func (d *Docker) Reload(ctx context.Context, a App, id string) (*Release, error)
 				images[c.Service.Name] = image
 			}
 		}
-		release, err := d.runStack(ctx, a, id, a.Current.Commit, a.Current.Stack.Manifest, images)
+		release, err := d.runStack(ctx, a, id, a.Current.Commit, manifest, images)
 		if release != nil {
 			release.CommitMessage = a.Current.CommitMessage
 		}

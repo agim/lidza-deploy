@@ -44,12 +44,16 @@ func (d *Docker) setReleaseRunning(ctx context.Context, r *Release, running bool
 	return nil
 }
 func (d *Docker) buildStack(ctx context.Context, a App, id, source, commit string, manifest *StackManifest) (*Release, error) {
+	a, err := d.prepareStackPlan(ctx, a, *manifest)
+	if err != nil {
+		return nil, err
+	}
 	host, err := nativeStackPlatform(ctx)
 	if err != nil {
 		return nil, err
 	}
 	images := map[string]string{}
-	for _, s := range manifest.Services {
+	for _, s := range manifest.selectedServices(a.StackSelection) {
 		image := s.Image
 		if s.Build != nil {
 			image = "lidza/" + a.ID + "-" + s.Name + ":" + id
@@ -124,10 +128,17 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 	if err = manifest.validate(); err != nil {
 		return nil, err
 	}
-	if err = validateStackImages(ctx, manifest, images); err != nil {
+	a, err = d.prepareStackPlan(ctx, a, manifest)
+	if err != nil {
 		return nil, err
 	}
-	for _, service := range manifest.Services {
+	selected := manifest.selectedServices(a.StackSelection)
+	imageManifest := manifest
+	imageManifest.Services = selected
+	if err = validateStackImages(ctx, imageManifest, images); err != nil {
+		return nil, err
+	}
+	for _, service := range selected {
 		if len(service.PublicPorts) > 0 {
 			if _, err = d.portsCall(ctx, "check", nil); err != nil {
 				return nil, err
@@ -139,7 +150,7 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 	if !ok {
 		return nil, errors.New("choose a stack profile")
 	}
-	for _, service := range manifest.Services {
+	for _, service := range selected {
 		if service.Policy == "office" {
 			user, e := command(ctx, "", nil, "docker", "image", "inspect", "--format", "{{.Config.User}}", images[service.Name])
 			if e != nil {
@@ -156,12 +167,15 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 			bootstrapEligible = false
 		}
 	}
-	stack := &StackRelease{Bootstrap: bootstrapEligible, Profile: a.RuntimeProfile, Network: "lidza-stack-" + a.resourceID() + "-" + id, Manifest: manifest}
+	if err = verifyStackSelection(ctx, a, manifest); err != nil {
+		return nil, err
+	}
+	stack := &StackRelease{Selection: cloneStackSelection(a.StackSelection), Bootstrap: bootstrapEligible, Profile: a.RuntimeProfile, Network: "lidza-stack-" + a.resourceID() + "-" + id, Manifest: manifest}
 	candidate := &Release{ID: id, Commit: commit, Created: time.Now().UTC(), Stack: stack}
 	planned := *candidate
 	plannedStack := *stack
 	planned.Stack = &plannedStack
-	for _, s := range manifest.Services {
+	for _, s := range selected {
 		plannedStack.Containers = append(plannedStack.Containers, StackContainer{Service: s, Container: stackContainerName(a, id, s.Name), Image: images[s.Name]})
 	}
 	if d.stackTransition != nil {
@@ -206,7 +220,7 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
-	services := slices.Clone(manifest.Services)
+	services := slices.Clone(selected)
 	slices.SortStableFunc(services, func(a, b StackService) int {
 		if a.Role == "app" {
 			return -1
@@ -245,7 +259,7 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		if err = os.WriteFile(envfile, []byte(content.String()), 0600); err != nil {
 			return nil, err
 		}
-		budget := profile.budget(s.Role)
+		budget := manifest.serviceBudget(profile, s)
 		args := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--label", "io.lidza.app=" + a.ID, "--label", "io.lidza.stack=" + a.resourceID(), "--label", "io.lidza.service=" + s.Name, "--restart", "unless-stopped", "--stop-timeout", "50", "--memory", fmt.Sprintf("%dm", budget.MemoryMiB), "--memory-swap", fmt.Sprintf("%dm", budget.MemoryMiB), "--cpus", budget.CPUs, "--pids-limit", "512", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", envfile, "--tmpfs", "/tmp:rw,nosuid,size=128m", "--tmpfs", "/run:rw,nosuid,size=32m"}
 		args = append(args, stackPolicyArgs(s)...)
 		if s.ShareAppNetwork {
@@ -283,6 +297,21 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 			return nil, fmt.Errorf("create stack service %s: %w", s.Name, err)
 		}
 		stack.Containers = append(stack.Containers, StackContainer{Service: s, Container: name, Image: image})
+		if s.Role != "app" && len(s.DatabaseBindings) > 0 {
+			connected := map[string]bool{}
+			for _, key := range s.DatabaseBindings {
+				network, known := a.BindingNetworks[key]
+				if !known {
+					return nil, fmt.Errorf("database network for service %s binding %s is unavailable", s.Name, key)
+				}
+				if network != "" && !connected[network] {
+					if _, err = command(ctx, "", nil, "docker", "network", "connect", network, name); err != nil {
+						return nil, errors.New("could not attach service database network")
+					}
+					connected[network] = true
+				}
+			}
+		}
 		if s.Role == "app" {
 			for _, network := range a.Networks {
 				if _, err = command(ctx, "", nil, "docker", "network", "connect", network, name); err != nil {
@@ -320,6 +349,9 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		}
 	}
 	if err = d.waitStackReady(ctx, candidate); err != nil {
+		return nil, err
+	}
+	if err = verifyCandidateSelection(ctx, a, candidate); err != nil {
 		return nil, err
 	}
 	success = true

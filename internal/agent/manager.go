@@ -128,6 +128,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	if d, ok := rt.(*Docker); ok {
 		d.stackTransition = m.recordStackTransition
 		d.prepareRuntime = m.preflightRuntime
+		d.prepareStackRuntime = m.prepareStack
 		d.runtimeDiagnostics = func(ctx context.Context, a App) context.Context {
 			return m.deploymentDiagnostics(ctx, job{app: a, deployment: deploymentID(ctx)})
 		}
@@ -433,6 +434,7 @@ func (m *Manager) Enqueue(id string, req DeployRequest) (Deployment, error) {
 	return m.queueLocked(a, req, false)
 }
 func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...[]string) (Deployment, error) {
+	wasStopped := a.Stopped
 	if a.Stopped && !req.resume {
 		if reload {
 			return Deployment{}, m.save()
@@ -440,6 +442,7 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 		return Deployment{}, errors.New("application is stopped; start it before deploying")
 	}
 	if req.resume {
+		a.UseRecordedSelection = wasStopped
 		a.Stopped = false
 	}
 	if m.upgradePending() {
@@ -501,6 +504,16 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 		ids = append(ids, a.Current.DatabaseIDs...)
 	}
 	a.Networks = slices.Sorted(maps.Keys(networks))
+	a.BindingNetworks = map[string]string{}
+	seenDatabases := map[string]bool{}
+	for key, id := range a.Bindings {
+		db := m.data.Databases[id]
+		a.BindingNetworks[key] = db.Network
+		if db.Mode == "local" && !seenDatabases[id] {
+			a.DatabaseBudgets = append(a.DatabaseBudgets, databaseResourceBudget(db))
+			seenDatabases[id] = true
+		}
+	}
 	a.StorageVolume = m.data.StorageVolumes[a.ID]
 	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
 	if len(m.queue) == cap(m.queue) {

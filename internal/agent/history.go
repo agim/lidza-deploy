@@ -27,7 +27,16 @@ func commandDiagnostic(ctx context.Context, name, output string) {
 }
 func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Context {
 	ctx = context.WithValue(ctx, deploymentIDKey{}, j.deployment)
-	secrets := append(outputSecrets(j.app.Env), j.token)
+	diagnosticEnv := j.app.Env
+	if j.app.StackManifest != nil && j.app.StackManifest.RuntimeSelection != nil {
+		diagnosticEnv = maps.Clone(j.app.Env)
+		// These exact whitelisted enum values are public orchestration metadata,
+		// not credentials. Other settings retain the existing conservative scrub.
+		for key := range j.app.StackManifest.RuntimeSelection.Selectors {
+			delete(diagnosticEnv, key)
+		}
+	}
+	secrets := append(outputSecrets(diagnosticEnv), j.token)
 	ctx = context.WithValue(ctx, diagnosticKey{}, func(line string) {
 		line = scrubOutput(line, secrets)
 		m.mu.Lock()

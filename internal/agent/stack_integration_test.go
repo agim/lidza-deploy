@@ -49,6 +49,9 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		})
 	}
 	manifest := fixtureStackManifest()
+	if os.Getenv("TEST_STACK_V2") == "1" {
+		manifest = realStackV2Manifest(t, ctx, manifest)
+	}
 	if os.Getenv("TEST_PUBLIC_PORTS") == "1" {
 		manifest.Services[0].PublicPorts = []StackPort{{Port: 25, Protocol: "tcp"}, {Port: 7882, Protocol: "udp"}}
 		manifest.Services[0].Environment["FIXTURE_PUBLIC_PORTS"] = "true"
@@ -197,13 +200,17 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	}
 	r1 := m.Current(a.ID)
 	releases = append(releases, r1)
-	if len(r1.Stack.Containers) != 3 || len(r1.Stack.Routes) != 1 {
+	expectedServices := 3
+	if manifest.Version == 2 {
+		expectedServices = 4
+	}
+	if len(r1.Stack.Containers) != expectedServices || len(r1.Stack.Routes) != 1 {
 		t.Fatal("missing stack metadata")
 	}
 	for _, c := range r1.Stack.Containers {
 		out, err := command(ctx, "", nil, "docker", "inspect", "--format", "{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.Privileged}}", c.Container)
 		budget, _ := profileByID("minimum")
-		expected := fmt.Sprintf("%d %d false", budget.budget(c.Service.Role).MemoryMiB*1048576, budget.budget(c.Service.Role).MemoryMiB*1048576)
+		expected := fmt.Sprintf("%d %d false", manifest.serviceBudget(budget, c.Service).MemoryMiB*1048576, manifest.serviceBudget(budget, c.Service).MemoryMiB*1048576)
 		if err != nil || out != expected {
 			t.Fatalf("unsafe limits: %s != %s (%v)", out, expected, err)
 		}
@@ -302,6 +309,10 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	if request("POST", "/persist") != "preserved" {
 		t.Fatal("storage attachment failed")
 	}
+	if manifest.Version == 2 {
+		exerciseStackV2Selection(t, ctx, m, a.ID, proxy.URL, a.Domain, request, deploy, &releases)
+		r1 = m.Current(a.ID)
+	}
 	// A host-owned RTC port must cause a clean failed candidate, never eviction.
 	listener, listenErr := net.Listen("tcp", "127.0.0.1:7881")
 	if listenErr != nil {
@@ -337,10 +348,16 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 			healthy++
 		}
 	}
-	if healthy != 3 {
+	if healthy != expectedServices {
 		t.Fatalf("sidecar health unavailable: %+v", sample)
 	}
-	if sidecars != 3 {
+	expectedInventory := expectedServices
+	m.mu.Lock()
+	if previous := m.data.Apps[a.ID].Previous; previous != nil && previous.Stack != nil {
+		expectedInventory += len(previous.Stack.Containers)
+	}
+	m.mu.Unlock()
+	if sidecars != expectedInventory {
 		t.Fatalf("inventory missing sidecars: %d", sidecars)
 	}
 	// A new checkout after publication must accept database-owned settings too.
