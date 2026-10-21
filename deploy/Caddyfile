@@ -5,6 +5,16 @@
 	}
 }
 
+# Domain verification must stay on HTTP, before the general HTTPS redirect.
+http:// {
+ handle /.well-known/lidza-deploy-host {
+  reverse_proxy 127.0.0.1:8081
+ }
+ handle {
+  redir https://{host}{uri} permanent
+ }
+}
+
 # Every configured application FQDN gets its own automatically renewed cert.
 # DNS A/AAAA records must point here; ports 80 and 443 must be reachable.
 https:// {

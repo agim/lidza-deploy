@@ -33,6 +33,7 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	lastDiagnosticSave  time.Time
 	consoleJobs         map[string]*consoleJob
 	maintenanceOnce     sync.Once
 	maintenanceRun      func(context.Context, string, ...string) (string, error)

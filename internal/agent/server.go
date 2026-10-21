@@ -187,6 +187,7 @@ func Handler(m *Manager) http.Handler {
 		JSON(w, 200, rows)
 	})
 	private.HandleFunc("GET /v1/deployments/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		for _, row := range m.Deployments() {
 			if row.ID == r.PathValue("id") {
 				JSON(w, 200, row)

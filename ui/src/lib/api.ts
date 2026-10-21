@@ -10,6 +10,7 @@ export class APIError extends Error {
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api/${path.replace(/^\//, '')}`, {
+    cache: 'no-store',
     ...init,
     headers: { 'Content-Type': 'application/json', ...init.headers },
   });

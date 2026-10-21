@@ -111,6 +111,10 @@ export function MenuItem({ icon, danger, children, onSelect }: { icon?: ReactNod
   }}>{action.pending ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : icon}{children}</DropdownMenu.Item>;
 }
 
+export function MenuLink({ href, icon, children }: { href: string; icon?: ReactNode; children: ReactNode }) {
+  return <DropdownMenu.Item asChild className="menu-item"><a href={href}>{icon}{children}</a></DropdownMenu.Item>;
+}
+
 export function MenuLabel({ children }: { children: ReactNode }) { return <DropdownMenu.Label className="menu-label">{children}</DropdownMenu.Label>; }
 export function MenuSeparator() { return <DropdownMenu.Separator className="menu-separator" />; }
 

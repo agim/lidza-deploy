@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"log"
 	"maps"
 	"net/url"
 	"slices"
@@ -35,6 +36,7 @@ func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Cont
 			d := &m.data.Deployments[i]
 			if d.ID == j.deployment {
 				d.Log = deploymentLogTail(d.Log + line)
+				m.checkpointDiagnosticLocked()
 				break
 			}
 		}
@@ -56,11 +58,25 @@ func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Cont
 			for i := range m.data.Deployments {
 				if m.data.Deployments[i].ID == j.deployment {
 					m.data.Deployments[i].Log = line
+					m.checkpointDiagnosticLocked()
 					break
 				}
 			}
 		}
 	})
+}
+
+// Live output also needs a durable checkpoint during long builds, not only
+// when the final status or an unrelated state operation happens to save it.
+// Caller holds m.mu. Bound encrypted-state writes across command chunks.
+func (m *Manager) checkpointDiagnosticLocked() {
+	if time.Since(m.lastDiagnosticSave) < 5*time.Second {
+		return
+	}
+	m.lastDiagnosticSave = time.Now()
+	if err := m.save(); err != nil {
+		log.Print("could not persist live deployment output")
+	}
 }
 
 // Hide incomplete secrets at a chunk boundary as well as complete values.
