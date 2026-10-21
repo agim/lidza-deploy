@@ -165,6 +165,7 @@ func (m *Manager) routeLoop() {
 			return
 		case <-ticker.C:
 			m.reconcileRoutes()
+			m.reconcilePublicPorts()
 		}
 	}
 }

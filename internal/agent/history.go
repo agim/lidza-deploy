@@ -167,3 +167,18 @@ func deploymentLogTail(text string) string {
 	}
 	return notice + tail
 }
+
+// Fleet polling must not carry every historical build log. Details retain the
+// original error/output; summaries keep list fields bounded across 500 records.
+func deploymentSummary(d Deployment) Deployment {
+	d.Log = ""
+	d.Changes = nil
+	d.Key = ""
+	if len(d.Error) > 512 {
+		d.Error = d.Error[:512] + "… (see build log)"
+	}
+	if len(d.CommitMessage) > 256 {
+		d.CommitMessage = d.CommitMessage[:256] + "…"
+	}
+	return d
+}

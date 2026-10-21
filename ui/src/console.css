@@ -264,3 +264,11 @@ button[data-slot=switch] { cursor: pointer; }
 .maintenance-options .check-row > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-foreground); }
 .maintenance-next { display: flex; align-items: center; gap: 8px; margin: 20px 0 0; font-size: 11px; }
 .maintenance-report { padding: 18px; background: var(--background); border: 1px solid var(--border); border-radius: 8px; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Filter controls share a baseline; form-field margins do not belong in a toolbar. */
+.section-header:has(.activity-filters) { align-items: center; }
+.activity-filters { align-items: center; }
+.activity-filters > .field { margin-block: 0; width: 100%; }
+.activity-filters .search-field { height: 39px; min-height: 39px; margin-block: 0; }
+.activity-filters .search-field input { height: 100%; min-height: 0; padding: 0; }
+.activity-filters select { height: 39px; min-height: 39px; }

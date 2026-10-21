@@ -457,3 +457,9 @@ input:read-only { color: var(--muted-foreground); background: var(--surface-2); 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.port-inventory { display: grid; gap: 12px; min-width: 0; }
+.port-item { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; min-width: 0; overflow-wrap: anywhere; }
+.port-item strong { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.port-item span { font-size: .875rem; color: var(--muted-foreground); }
+.app-deployment-error { padding: 0 20px 16px; color: var(--destructive); font-size: .875rem; overflow-wrap: anywhere; }

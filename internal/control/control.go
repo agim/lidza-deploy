@@ -313,7 +313,14 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 	if path == "/v1/console" {
 		maxResponse = agent.ConsoleMaxResponse
 	}
-	return json.NewDecoder(io.LimitReader(res.Body, maxResponse)).Decode(out)
+	data, err := io.ReadAll(io.LimitReader(res.Body, maxResponse+1))
+	if err != nil {
+		return errors.New("agent response could not be read")
+	}
+	if int64(len(data)) > maxResponse {
+		return errors.New("agent response exceeds the size limit; upgrade the hosting agent for lightweight deployment history")
+	}
+	return json.Unmarshal(data, out)
 }
 func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux := http.NewServeMux()
@@ -396,11 +403,13 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/webhook", c.hook)
 	handle("POST /api/control/apps/{id}/github-app", c.migrateGitHubApp)
 	handle("GET /api/control/apps/{id}/logs", c.logs)
+	handle("GET /api/control/apps/{id}/ports", c.appPorts)
 	handle("POST /api/control/apps/{id}/owner-claim", c.ownerClaim)
 	handle("GET /api/control/apps/{id}/errors", c.appErrors)
 	handle("GET /api/control/apps/{id}/security", c.appErrors)
 	handle("GET /api/control/apps/{id}/analytics-errors", c.analyticsErrors)
 	handle("GET /api/control/deployments", c.deployments)
+	handle("GET /api/control/deployments/{id}", c.deployment)
 	handle("GET /api/control/deliveries", c.deliveries)
 	handle("GET /api/control/github/repos", c.repos)
 	handle("GET /api/control/github/branches", c.branches)
@@ -647,7 +656,8 @@ func (c *Control) deployments(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []row{}
 	unavailable := []string{}
-	for _, result := range c.readFleet(r, "/v1/deployments") {
+	serverErrors := map[string]string{}
+	for _, result := range c.readFleet(r, "/v1/deployments?logs=0") {
 		s := result.Server
 		var rows []agent.Deployment
 		err := result.Err
@@ -656,13 +666,14 @@ func (c *Control) deployments(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			unavailable = append(unavailable, s.ID)
+			serverErrors[s.ID] = err.Error()
 			continue
 		}
 		for _, d := range rows {
 			out = append(out, row{Deployment: d, ServerID: s.ID})
 		}
 	}
-	agent.JSON(w, 200, map[string]any{"deployments": out, "unavailable_servers": unavailable})
+	agent.JSON(w, 200, map[string]any{"deployments": out, "unavailable_servers": unavailable, "server_errors": serverErrors})
 }
 func (c *Control) repos(w http.ResponseWriter, r *http.Request) {
 	if cfg := c.githubApp(); cfg != nil && len(cfg.Installations) > 0 {

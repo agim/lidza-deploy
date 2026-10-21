@@ -153,7 +153,7 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 			record(c.observe(ctx, "health:"+result.Server.ID+":"+h.AppID, "Application "+h.AppID+" failed its readiness check", h.State == "unhealthy", 3))
 		}
 	}
-	for _, result := range c.readFleet(request, "/v1/deployments") {
+	for _, result := range c.readFleet(request, "/v1/deployments?logs=0") {
 		if result.Err != nil {
 			continue
 		}

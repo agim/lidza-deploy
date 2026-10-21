@@ -76,6 +76,7 @@ func Handler(m *Manager) http.Handler {
 	})
 	m.sshRoutes(private)
 	m.containerRoutes(private)
+	m.publicPortRoutes(private)
 	m.consoleJobRoutes(private)
 	private.HandleFunc("PUT /v1/error-reporting", m.configureErrorReporting)
 	private.HandleFunc("GET /v1/server-health", m.healthRoute)
@@ -176,7 +177,24 @@ func Handler(m *Manager) http.Handler {
 		}
 		JSON(w, 200, map[string]string{"status": "removed"})
 	})
-	private.HandleFunc("GET /v1/deployments", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.Deployments()) })
+	private.HandleFunc("GET /v1/deployments", func(w http.ResponseWriter, r *http.Request) {
+		rows := m.Deployments()
+		if r.URL.Query().Get("logs") == "0" {
+			for i := range rows {
+				rows[i] = deploymentSummary(rows[i])
+			}
+		}
+		JSON(w, 200, rows)
+	})
+	private.HandleFunc("GET /v1/deployments/{id}", func(w http.ResponseWriter, r *http.Request) {
+		for _, row := range m.Deployments() {
+			if row.ID == r.PathValue("id") {
+				JSON(w, 200, row)
+				return
+			}
+		}
+		http.NotFound(w, r)
+	})
 	private.HandleFunc("POST /v1/apps/{id}/reload", func(w http.ResponseWriter, r *http.Request) {
 		d, err := m.Reload(r.PathValue("id"))
 		if err != nil {

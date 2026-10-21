@@ -22,9 +22,9 @@ function assert(value, message) { if (!value) throw new Error(message); }
     });
     await page.route('**/api/control/**', route => {
       const path = new URL(route.request().url()).pathname;
-      if (path.endsWith('/deployments')) {
+      if (path.endsWith('/deployments/fixture-build')) {
         calls += 1;
-        return route.fulfill(offline ? { status: 503, json: { error: 'Agent offline' } } : { json: { deployments: [row()], unavailable_servers: [] } });
+        return route.fulfill(offline ? { status: 503, json: { error: 'Agent offline' } } : { json: row() });
       }
       if (path.endsWith('/status')) return route.fulfill({ json: { roles: ['admin'] } });
       return route.fulfill({ json: [] });

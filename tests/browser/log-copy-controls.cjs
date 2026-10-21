@@ -34,6 +34,7 @@ const base=process.env.TEST_WEB_URL||'http://127.0.0.1:34225';
   await page.getByRole('button',{name:'Copy build log',exact:true}).click();
   await page.getByRole('alert').filter({hasText:'Could not copy'}).waitFor();
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.route('**/api/control/deployments/build-one',route=>route.fulfill({json:{id:'build-one',app_id:'portal',status:'failed',created:'2026-10-20T12:00:00Z',log:'git\ncheckout completed',error:'Fixture runtime preflight rejected'}}));
   await page.route('**/api/control/deployments', route=>route.fulfill({json:{deployments:[{id:'build-one',app_id:'portal',server_id:'local',status:'failed',created:'2026-10-20T12:00:00Z',log:'git\ncheckout completed',error:'Fixture runtime preflight rejected'}],unavailable_servers:[]}}));
   await page.reload();
   await page.locator('#deployment-failure').filter({hasText:'Fixture runtime preflight rejected'}).waitFor();

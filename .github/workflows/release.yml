@@ -44,6 +44,7 @@ jobs:
           set -euo pipefail
           [[ "$LIDZA_DEPLOY_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           python3 tests/scanner-firewall.py
+          python3 tests/public-ports.py
           go test -race ./...
           go vet ./...
       - name: Build and verify both architectures

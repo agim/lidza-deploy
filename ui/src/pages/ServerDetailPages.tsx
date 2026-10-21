@@ -1,3 +1,4 @@
+import { PortSummary } from '../components/AppPorts';
 import { Input } from '../components/primitives/input';
 import { AlertTriangle, Boxes, Cpu, MemoryStick, Pause, Play, RefreshCw, Server, TerminalSquare } from 'lucide-react';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
@@ -16,7 +17,7 @@ export function ServerSettingsPage({ serverID }: { serverID: string }) {
 }
 
 export function ContainersPage({ serverID }: { serverID: string }) {
-  const { servers } = useWorkspace(); const server = servers.find(item => item.id === serverID); const [containers, setContainers] = useState<ContainerInfo[]>([]); const [checkedAt, setCheckedAt] = useState(''); const [warning, setWarning] = useState(''); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const notify = useToast();
+  const { servers, apps } = useWorkspace(); const server = servers.find(item => item.id === serverID); const [containers, setContainers] = useState<ContainerInfo[]>([]); const [checkedAt, setCheckedAt] = useState(''); const [warning, setWarning] = useState(''); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const notify = useToast();
   const load = async () => { try { const value = await get<ContainerInfo[] | ContainerInventory>(`control/servers/${encodeURIComponent(serverID)}/containers`); setContainers(Array.isArray(value) ? value : value.containers || []); setCheckedAt(Array.isArray(value) ? '' : value.checked_at || ''); setWarning(Array.isArray(value) ? '' : value.warning || ''); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
   useEffect(() => { load(); const timer = setInterval(load, 10_000); return () => clearInterval(timer); }, [serverID]);
   const restart = async (name: string) => { await post(`control/servers/${encodeURIComponent(serverID)}/containers/restart`, { name }); notify(`${name} restart requested.`); await load(); };
@@ -24,11 +25,13 @@ export function ContainersPage({ serverID }: { serverID: string }) {
   const columns: Column<ContainerInfo>[] = [
     { id: 'container', label: 'Container', render: row => <div className="container-name"><Boxes size={17} /><div><strong>{row.name}</strong><small>{row.app_id ? `${row.app_id}${row.role ? ` · ${row.role}` : ''}` : row.service ? `Service · ${row.service}` : row.role || row.image}</small></div></div> },
     { id: 'status', label: 'Status', render: row => <StatusBadge status={row.health || row.state || row.status || 'unknown'} /> },
+    { id: 'ports', label: 'Forwarded ports', render: row => row.ports?.length ? <PortSummary ports={row.ports} /> : <span className="muted-copy">None reported</span> },
     { id: 'cpu', label: 'CPU', render: row => { const usage = percent(row.cpu ?? row.cpu_percent); return <div className="usage-cell"><span>{row.cpu || `${usage.toFixed(1)}%`}</span><ProgressBar value={usage} /></div>; } },
     { id: 'memory', label: 'Memory', render: row => { const usage = percent(row.memory_percent) || (row.memory_limit_bytes ? (row.memory_bytes || 0) / row.memory_limit_bytes * 100 : 0); return <div className="usage-cell"><span>{row.memory || `${formatBytes(row.memory_bytes)} / ${formatBytes(row.memory_limit_bytes)}`}</span><ProgressBar value={usage} tone={usage > 90 ? 'danger' : 'accent'} /></div>; } },
     { id: 'actions', label: 'Actions', render: row => row.restartable === false ? <span className="muted-copy">Protected</span> : <ConfirmAction title={`Restart ${row.name}?`} description={row.role?.startsWith("Stack ·") ? "This queues a coordinated reload of the entire stack, preserving its shared network and persistent data. The application will be briefly unavailable." : "Docker will stop and start this container. The application or managed service may be briefly unavailable."} confirmLabel="Restart container" onConfirm={() => restart(row.name)}><Button size="sm"><RefreshCw size={15} />Restart</Button></ConfirmAction> },
   ];
-  return <><PageHeader eyebrow="Server containers" title={server?.name || serverID} description="Live process usage sampled by the hosting agent. Rows stay in a stable order while values update." back="#servers" actions={<Button onClick={load}><RefreshCw size={16} />Refresh</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}{warning && <Notice>{warning}</Notice>}<Card><SectionHeader title="Containers & resource usage" description={`Restart only containers that are unhealthy or stuck. Persistent volumes are not removed.${checkedAt ? ` Sampled ${new Date(checkedAt).toLocaleTimeString()}.` : ''}`} />{loading ? <Loading label="Loading containers…" /> : <ResourceList rows={containers} columns={columns} rowKey={row => row.id || row.name} />}</Card></>;
+  const groups = [...containers.reduce((groups, row) => { const key = row.app_id || ''; const rows = groups.get(key) || []; rows.push(row); groups.set(key, rows); return groups; }, new Map<string, ContainerInfo[]>())].sort(([a], [b]) => a === '' ? 1 : b === '' ? -1 : a.localeCompare(b));
+  return <><PageHeader eyebrow="Server containers" title={server?.name || serverID} description="Live process usage sampled by the hosting agent. Rows stay in a stable order while values update." back="#servers" actions={<Button onClick={load}><RefreshCw size={16} />Refresh</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}{warning && <Notice>{warning}</Notice>}<p className="muted-copy">Containers are grouped by application. Persistent volumes are not removed.{checkedAt ? ` Sampled ${new Date(checkedAt).toLocaleTimeString()}.` : ''}</p>{loading ? <Loading label="Loading containers…" /> : <div className="settings-stack">{groups.length ? groups.map(([appID, rows]) => <Card key={appID} data-app-containers={appID || '__unassigned'}><SectionHeader title={appID || 'Unassigned containers'} description={`${rows.length} container${rows.length === 1 ? '' : 's'}${apps.find(app => app.id === appID)?.domain ? ` · ${apps.find(app => app.id === appID)?.domain}` : ''}`} actions={appID && apps.some(app => app.id === appID) ? <a className="button button-secondary" href={`#page/settings/${encodeURIComponent(appID)}`}>App settings</a> : undefined} /><ResourceList rows={rows} columns={columns} rowKey={row => row.id || row.name} /></Card>) : <Card><p>No containers reported by this server.</p></Card>}</div>}</>;
 }
 
 export { ServerConsolePage } from './ServerConsolePage';
@@ -56,26 +59,13 @@ export function LogPage({ kind, id }: { kind: 'build-logs' | 'runtime-logs'; id:
     const load = async () => {
       try {
         if (kind === 'build-logs') {
-          const value = await get<{ deployments?: Deployment[]; unavailable_servers?: string[] } | Deployment[]>('control/deployments');
-          const rows = Array.isArray(value) ? value : value.deployments || [];
-          const current = rows.find(item => item.id === id);
+          const current = await get<Deployment>(`control/deployments/${encodeURIComponent(id)}`);
           if (!active) return;
-          if (current) {
-            setDeployment(current);
-            const latest = current.log || current.error;
-            if (latest) setOutput(latest);
-            setError('');
-            setLoading(false);
-            schedule(!['queued', 'building'].includes(current.status));
-            return;
-          }
-          const unavailable = Array.isArray(value) ? [] : value.unavailable_servers || [];
-          if (unavailable.length) {
-            const affected = deployment?.server_id ? unavailable.includes(deployment.server_id) : true;
-            setError(affected ? `Live refresh unavailable: hosting agent ${deployment?.server_id || unavailable.join(', ')} is offline. Retrying…` : '');
-          } else {
-            setError('Deployment is no longer available in retained agent history.');
-          }
+          setDeployment(current);
+          setOutput(current.log || current.error || '');
+          setError(''); setLoading(false);
+          schedule(!['queued','building'].includes(current.status));
+          return;
         } else {
           const value = await get<{ logs?: string }>(`control/apps/${encodeURIComponent(id)}/logs`);
           if (!active) return;

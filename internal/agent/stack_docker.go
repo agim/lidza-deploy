@@ -32,7 +32,16 @@ func (d *Docker) setReleaseRunning(ctx context.Context, r *Release, running bool
 	if !running {
 		slices.Reverse(names)
 	}
-	return d.SetRunning(ctx, names, running)
+	if err := d.registerPublicPorts(ctx, r); err != nil {
+		return err
+	}
+	if err := d.SetRunning(ctx, names, running); err != nil {
+		return err
+	}
+	if hasPublicPorts(r) {
+		return d.syncPublicPorts(ctx)
+	}
+	return nil
 }
 func (d *Docker) buildStack(ctx context.Context, a App, id, source, commit string, manifest *StackManifest) (*Release, error) {
 	images := map[string]string{}
@@ -110,6 +119,14 @@ func stackContainerName(a App, id, name string) string {
 func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifest StackManifest, images map[string]string) (release *Release, err error) {
 	if err = manifest.validate(); err != nil {
 		return nil, err
+	}
+	for _, service := range manifest.Services {
+		if len(service.PublicPorts) > 0 {
+			if _, err = d.portsCall(ctx, "check", nil); err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 	profile, ok := profileByID(a.RuntimeProfile)
 	if !ok {
@@ -267,6 +284,9 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 			}
 		}
 	}
+	if err = d.registerPublicPorts(ctx, candidate); err != nil {
+		return nil, err
+	}
 	// Docker requires the namespace owner running before shared-net sidecars can
 	// start. The app supervisor waits for Valkey rather than HTTP dependencies.
 	for _, c := range stack.Containers {
@@ -277,6 +297,11 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 	candidate.Port, err = d.stackPublishedPort(ctx, appName, 3000)
 	if err != nil {
 		return nil, err
+	}
+	if hasPublicPorts(candidate) {
+		if err = d.syncPublicPorts(ctx); err != nil {
+			return nil, err
+		}
 	}
 	for _, s := range services {
 		for _, r := range s.HTTPRoutes {
@@ -399,7 +424,13 @@ func (d *Docker) removeStack(ctx context.Context, r *Release) error {
 	if first != nil {
 		return first
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if hasPublicPorts(r) {
+		return d.syncPublicPorts(ctx)
+	}
+	return nil
 }
 func stackImages(r *Release) map[string]string {
 	out := map[string]string{}

@@ -31,6 +31,7 @@ type EnvironmentEntry struct {
 	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
+	PublicPortsSupported         bool               `json:"public_ports_supported"`
 	MasterKeyGenerationSupported bool               `json:"master_key_generation_supported"`
 	RuntimeDeployed              bool               `json:"runtime_deployed"`
 	StackProfilesSupported       bool               `json:"stack_profiles_supported"`
@@ -86,7 +87,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 		}
 		environment = append(environment, entry)
 	}
-	return Settings{MasterKeyGenerationSupported: true, RuntimeDeployed: a.Current != nil, StackProfilesSupported: true, RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
+	return Settings{PublicPortsSupported: true, MasterKeyGenerationSupported: true, RuntimeDeployed: a.Current != nil, StackProfilesSupported: true, RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
 }
 
 func (m *Manager) RevealCredential(id, key string) (string, error) {
