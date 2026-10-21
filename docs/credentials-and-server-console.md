@@ -4,7 +4,7 @@ Application environment values are classified as either **Setting** or
 **Credential**. Names containing `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASS`,
 `CREDENTIAL` or `PRIVATE` are credentials by default. URL variables containing
 an embedded password are credentials too. An administrator can correct the
-classification in Application settings.
+classification in Application settings, except `LIDZA_MASTER_KEY`, which always remains a credential.
 
 Settings are returned to the browser so they remain directly editable.
 Credentials are not returned by the settings API: the browser receives only
@@ -38,3 +38,23 @@ Root access is inherently destructive. Prefer the normal deployment,
 database, backup and log controls when they cover the operation. The console
 does not provide an interactive TTY, so commands that prompt for input will
 wait until the two-minute timeout.
+
+## Application master keys
+
+New app identities get a random 256-bit `LIDZA_MASTER_KEY` from the hosting agent.
+The creation wizard's **Application master key** field is optional: leave it blank
+to generate, or enter the original 64-character hex key when importing sealed
+credentials or encrypted data. The generated value is saved in encrypted agent
+state before deployment, masked in normal API responses, redacted from logs and
+reused for updates, reloads and restarts. Back up the agent state and its own
+encryption key together.
+
+Existing applications keep their keys. Missing keys on pre-existing installations
+are not silently replaced: import the original through Environment settings. A
+master key cannot be cleared, and explicit replacement must match the app's data.
+
+For a new repository, `lidza credentials init` creates `config/master.key` and
+`config/credentials.yml.enc` when missing; it uses `LIDZA_MASTER_KEY` when supplied.
+Use the same key in Deploy and when sealing the repository's credential file.
+Initialization refuses to invent a replacement for an existing encrypted file
+whose key is unavailable. Deploy's framework decryption check remains enforced.

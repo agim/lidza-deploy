@@ -96,7 +96,7 @@ Sidecars get only their declared environment, with `${ENV_KEY}` references resol
 from app settings. `${APP_DOMAIN}` is the primary HTTPS hostname. Credential-like
 keys must be references, never literal secrets. Secrets are generated only when
 missing, persisted in encrypted agent state, and masked in normal API responses.
-The original `LIDZA_MASTER_KEY` must be provided; Deploy never replaces it.
+New app identities receive a unique generated `LIDZA_MASTER_KEY`, persisted before any deployment. The creation wizard can import a key instead. Existing keys are preserved, and existing installations without a saved key are not silently backfilled. Repositories with sealed credentials require their matching original key; a generated key never bypasses that check.
 Existing sealed credentials still use the framework's released decryption API.
 
 ## Runtime and routing

@@ -27,7 +27,7 @@ create accounts automatically. Albaspot supports this setting.
 
 `AUTH_SECRET` is generated separately for each app. `APP_URL` follows the domain.
 Database, cache and persistent-storage attachments manage their own connection
-variables. `LIDZA_MASTER_KEY` remains manual per app. Shared defaults cannot
+variables. `LIDZA_MASTER_KEY` is generated uniquely for each new app unless supplied in its creation wizard. Existing installations keep their original key. Shared defaults cannot
 contain these secrets, connections, OAuth credentials or arbitrary variable names.
 
 ## Apply defaults to an existing app

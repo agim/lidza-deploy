@@ -180,6 +180,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		if k == "AUTH_SECRET" && (v == nil || *v == "") {
 			return errors.New("AUTH_SECRET cannot be removed or cleared; supply a replacement explicitly to rotate authentication tokens")
 		}
+		if k == "LIDZA_MASTER_KEY" && (v == nil || *v == "") {
+			return errors.New("LIDZA_MASTER_KEY cannot be removed or cleared; replacing it requires the key matching your encrypted application data")
+		}
 		if _, managed := a.Bindings[k]; managed {
 			return errors.New("database variables are managed by database attachments")
 		}

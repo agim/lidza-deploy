@@ -368,7 +368,7 @@ func productionValues(source string, cfg *config.Config, a App) (map[string]stri
 		}
 		key, err := hex.DecodeString(strings.TrimSpace(a.Env["LIDZA_MASTER_KEY"]))
 		if err != nil || len(key) != 32 {
-			return nil, errors.New("sealed application credentials require its existing LIDZA_MASTER_KEY in Settings; this key remains manual")
+			return nil, errors.New("sealed application credentials require their original LIDZA_MASTER_KEY in Settings")
 		}
 		plain, err := credentials.Decrypt(key, strings.TrimSpace(string(sealed)))
 		if err != nil {

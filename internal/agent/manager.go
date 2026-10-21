@@ -379,6 +379,15 @@ func (m *Manager) Upsert(a App) error {
 		a.Env["AUTH_SECRET"] = old.Env["AUTH_SECRET"]
 	}
 	var err error
+	if !exists {
+		a, err = provisionMasterKey(a)
+		if err != nil {
+			return err
+		}
+	} else if a.Env["LIDZA_MASTER_KEY"] == "" && old.Env["LIDZA_MASTER_KEY"] != "" {
+		a.Env = maps.Clone(a.Env)
+		a.Env["LIDZA_MASTER_KEY"] = old.Env["LIDZA_MASTER_KEY"]
+	}
 	a, _, err = provisionAuthSecret(a)
 	if err != nil {
 		return err

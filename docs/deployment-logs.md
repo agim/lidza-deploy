@@ -12,7 +12,7 @@ Older agent versions removed the failed candidate before collecting its startup 
 
 Each app receives a unique, randomly generated 256-bit `AUTH_SECRET` when added. Existing apps missing it receive one on their next deployment or reload. The agent saves the secret in encrypted state before queueing work and reuses it for manual deployments, webhooks, retries, reloads, and restarts. Supplied values are preserved, including when full app updates omit the secret. Migrated apps should import their existing `AUTH_SECRET` through Settings before deployment. Values are write-only in the GUI and redacted from logs. Explicit replacement rotates signing credentials; clearing or deleting this key is rejected to prevent accidental rotation.
 
-`LIDZA_MASTER_KEY` remains manual. This feature does not generate or replace master keys or OAuth provider credentials.
+New apps receive a unique generated `LIDZA_MASTER_KEY` unless one is supplied in the creation wizard. Existing keys are preserved; existing sealed credentials still require their matching original key. OAuth provider credentials remain operator supplied.
 
 ## Runtime file permissions
 
