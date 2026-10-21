@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -31,6 +32,8 @@ type EnvironmentEntry struct {
 	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
+	GatewayTransportSupported    bool                    `json:"gateway_transport_supported"`
+	GatewayHostConfigured        bool                    `json:"gateway_host_configured"`
 	StackManifestVersions        []int                   `json:"stack_manifest_versions"`
 	RuntimeSelection             *StackSelectionSnapshot `json:"runtime_selection,omitempty"`
 	PublicPortsSupported         bool                    `json:"public_ports_supported"`
@@ -72,7 +75,12 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	}
 	keys := slices.Sorted(maps.Keys(a.Env))
 	environment := make([]EnvironmentEntry, 0, len(keys))
+	visibleKeys := []string{}
 	for _, key := range keys {
+		if strings.HasPrefix(key, gatewayEnvPrefix) {
+			continue
+		}
+		visibleKeys = append(visibleKeys, key)
 		value, kind := a.Env[key], kinds[key]
 		entry := EnvironmentEntry{Key: key, Kind: kind, Source: a.EnvSources[key]}
 		if kind == EnvironmentCredential {
@@ -96,7 +104,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if a.Current != nil && a.Current.Stack != nil {
 		selection = cloneStackSelection(a.Current.Stack.Selection)
 	}
-	return Settings{StackManifestVersions: []int{1, 2}, RuntimeSelection: selection, PublicPortsSupported: true, MasterKeyGenerationSupported: true, RuntimeDeployed: a.Current != nil, StackProfilesSupported: true, RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
+	return Settings{GatewayTransportSupported: true, GatewayHostConfigured: m.gatewayTLS != nil, StackManifestVersions: []int{1, 2}, RuntimeSelection: selection, PublicPortsSupported: true, MasterKeyGenerationSupported: true, RuntimeDeployed: a.Current != nil, StackProfilesSupported: true, RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: visibleKeys, Environment: environment}, nil
 }
 
 func (m *Manager) RevealCredential(id, key string) (string, error) {
@@ -128,8 +136,19 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	if m.busy(id) || old.Restoring || m.data.Caches[id].Operation {
 		return errors.New("application has an active deployment")
 	}
+	for key := range p.EnvChanges {
+		if strings.HasPrefix(key, gatewayEnvPrefix) {
+			return errors.New("gateway transport settings are managed by the agent")
+		}
+	}
+	for key := range p.EnvKindChanges {
+		if strings.HasPrefix(key, gatewayEnvPrefix) {
+			return errors.New("gateway transport settings are managed by the agent")
+		}
+	}
 	if p.FromDefaults {
 		values := map[string]string{}
+
 		for k, v := range p.EnvChanges {
 			if v == nil {
 				return errors.New("defaults cannot delete variables")

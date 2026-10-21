@@ -96,6 +96,7 @@ type StackBootstrapReadiness struct {
 	SetupPath          string `json:"setup_path,omitempty"`
 }
 type StackManifest struct {
+	GatewayTransport    *StackGateway                    `json:"gateway_transport,omitempty"`
 	ProfileResources    map[string]StackProfileResources `json:"profile_resources,omitempty"`
 	RuntimeSelection    *StackRuntimeSelection           `json:"runtime_selection,omitempty"`
 	Configuration       []StackConfiguration             `json:"configuration,omitempty"`
@@ -111,6 +112,7 @@ type StackContainer struct {
 	Image     string       `json:"image"`
 }
 type StackRelease struct {
+	Gateway    *GatewayRelease         `json:"gateway,omitempty"`
 	Selection  *StackSelectionSnapshot `json:"selection,omitempty"`
 	Bootstrap  bool                    `json:"bootstrap,omitempty"`
 	Profile    string                  `json:"profile"`
@@ -170,6 +172,31 @@ func loadStackManifest(source string) (*StackManifest, error) {
 	return &manifest, nil
 }
 func (m StackManifest) validate() error {
+	if m.GatewayTransport != nil {
+		if m.Version != 2 {
+			return errors.New("gateway_transport requires manifest version2")
+		}
+		if err := m.GatewayTransport.validate(); err != nil {
+			return err
+		}
+		for _, service := range m.Services {
+			for _, route := range service.HTTPRoutes {
+				for _, prefix := range m.GatewayTransport.Paths {
+					if route.Prefix == prefix || strings.HasPrefix(prefix, route.Prefix+"/") || strings.HasPrefix(route.Prefix, prefix+"/") {
+						return errors.New("protected gateway paths cannot overlap ordinary HTTP service routes")
+					}
+				}
+				if route.Port == 3001 {
+					return errors.New("port3001 is reserved for private gateway TLS")
+				}
+			}
+			for _, port := range service.PublicPorts {
+				if port.Port == 3001 {
+					return errors.New("private gateway TLS cannot be published publicly")
+				}
+			}
+		}
+	}
 	if err := m.validateConfiguration(); err != nil {
 		return err
 	}
@@ -417,6 +444,10 @@ func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManife
 	}
 	var err error
 	a, err = m.provisionStackSettings(a, manifest)
+	if err != nil {
+		return a, err
+	}
+	a, err = m.prepareGateway(a, manifest)
 	if err != nil {
 		return a, err
 	}

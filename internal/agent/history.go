@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/pem"
 	"log"
 	"maps"
 	"net/url"
@@ -154,7 +156,21 @@ func deploymentDuration(d Deployment) float64 {
 
 func outputSecrets(env map[string]string) []string {
 	values := []string{}
-	for _, value := range env {
+	for key, value := range env {
+		if strings.HasPrefix(key, gatewayEnvPrefix) && strings.HasSuffix(key, "_KEY") {
+			if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
+				text := string(decoded)
+				values = append(values, text, strings.ReplaceAll(text, "\n", `\n`))
+				if block, _ := pem.Decode(decoded); block != nil {
+					values = append(values, base64.StdEncoding.EncodeToString(block.Bytes))
+					for _, line := range strings.Split(text, "\n") {
+						if len(line) >= 32 && !strings.HasPrefix(line, "---") {
+							values = append(values, line)
+						}
+					}
+				}
+			}
+		}
 		if value != "" {
 			values = append(values, value)
 		}

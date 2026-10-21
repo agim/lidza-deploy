@@ -166,17 +166,18 @@ else
  if command -v go >/dev/null 2>&1; then
   installed=$(go env GOVERSION 2>/dev/null || true)
   minor=$(printf '%s' "$installed" | sed -n 's/^go1\.\([0-9][0-9]*\).*/\1/p')
-  if [ -n "$minor" ] && [ "$minor" -ge 27 ];then go_cmd=$(command -v go);fi
+  patch=$(printf '%s' "$installed" | sed -n 's/^go1\.27\.\([0-9][0-9]*\).*/\1/p')
+  if [ -n "$minor" ] && { [ "$minor" -gt 27 ] || { [ "$minor" -eq 27 ] && [ -n "$patch" ] && [ "$patch" -ge 3 ]; }; };then go_cmd=$(command -v go);fi
  fi
  if [ -z "$go_cmd" ]; then
   case "$arch" in
-   amd64) go_sum=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445;;
-   arm64) go_sum=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec;;
+   amd64) go_sum=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40;;
+   arm64) go_sum=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49;;
   esac
-  printf '%s\n' 'Downloading verified Go 1.27.1 for this build…'
-  if ! fetch "https://go.dev/dl/go1.27.1.linux-$arch.tar.gz" "$scratch/go.tar.gz"; then
+  printf '%s\n' 'Downloading verified Go 1.27.3 for this build…'
+  if ! fetch "https://go.dev/dl/go1.27.3.linux-$arch.tar.gz" "$scratch/go.tar.gz"; then
    printf '%s\n' 'Go download failed through go.dev; trying the direct Google download…' >&2
-   fetch "https://dl.google.com/go/go1.27.1.linux-$arch.tar.gz" "$scratch/go.tar.gz" || die "Go 1.27.1 could not be downloaded from either official URL. Check https://dl.google.com/go/go1.27.1.linux-$arch.tar.gz from this host, then retry. No packages or services were changed."
+   fetch "https://dl.google.com/go/go1.27.3.linux-$arch.tar.gz" "$scratch/go.tar.gz" || die "Go 1.27.3 could not be downloaded from either official URL. Check https://dl.google.com/go/go1.27.3.linux-$arch.tar.gz from this host, then retry. No packages or services were changed."
   fi
   verify "$go_sum" "$scratch/go.tar.gz"
   tar -xzf "$scratch/go.tar.gz" -C "$scratch"

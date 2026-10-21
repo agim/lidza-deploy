@@ -199,7 +199,11 @@ func main() {
 	if role == "app" {
 		go http.ListenAndServe(":7880", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "rtc:"+r.URL.Path) }))
 	}
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	var handler http.Handler = mux
+	if role == "app" {
+		handler = fixtureGateway(mux, pool)
+	}
+	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		panic(err)
 	}
 }
