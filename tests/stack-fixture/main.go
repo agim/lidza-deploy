@@ -83,7 +83,7 @@ func main() {
 				fmt.Fprint(w, "published")
 				return
 			}
-			if _, err := os.Stat(published); err != nil && (r.URL.Path == "/readyz" || r.URL.Path == "/protected") {
+			if _, err := os.Stat(published); (err != nil || os.Getenv("FIXTURE_RESET_SETUP") == "true") && (r.URL.Path == "/readyz" || r.URL.Path == "/protected") {
 				http.Error(w, "Server setup is required. Open /setup", 503)
 				return
 			}
