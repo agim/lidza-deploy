@@ -87,7 +87,14 @@ h3 { font-size: 13px; font-weight: 550; }
 .workspace-note > .badge { margin-left: auto; }
 .section-header { margin-bottom: 22px; gap: 14px; }
 .section-header p { font-size: 11px; line-height: 1.7; }
-.form-card { padding: 28px; }
+.form-card { padding: 28px; display: flex; flex-direction: column; gap: 20px; }
+/* The container owns section spacing; individual controls must not supply only
+   one-sided margins that disappear when a different field follows them. */
+.form-card > * { margin-block: 0; }
+.form-card .form-grid > .field, .form-card .settings-stack > .field { margin-bottom: 0; }
+.form-card .form-grid { gap: 20px; }
+.backup-options { display: grid; gap: 20px; }
+.backup-options > * { margin-block: 0; }
 .field { min-width: 0; font-weight: 400; align-items: stretch; gap: 8px; margin-bottom: 20px; }
 .field-label { font-size: 11px; font-weight: 450; }
 .field input, .field select, .field textarea, input[data-slot=input] { font-weight: 400; }
@@ -104,7 +111,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 button[data-slot=switch] { cursor: pointer; }
 .wizard-panels { display: block; }
 .form-page { max-width: 850px; }
-.form-page .form-grid { gap: 0 20px; }
+.form-page .form-grid { gap: 20px; }
 .form-page #app-form { position: relative; }
 .form-page .form-card { padding-bottom: 100px; }
 .wizard-actions { position: absolute; bottom: 22px; left: 28px; right: 28px; display: flex; gap: 12px; justify-content: space-between; border-top: 1px solid var(--border); padding-top: 22px; }
@@ -218,7 +225,7 @@ button[data-slot=switch] { cursor: pointer; }
   .view-toggle { margin-left: auto; }
   .form-card, .server-card, .card { padding: 19px; }
   .form-page .form-card { padding: 20px 19px 96px; }
-  .form-page .form-grid { grid-template-columns: 1fr; gap: 0; }
+  .form-page .form-grid { grid-template-columns: 1fr; gap: 20px; }
   .wizard-actions { left: 19px; right: 19px; bottom: 20px; }
   .step { flex-direction: column; font-size: 9px; }
   .step > svg { display: none; }

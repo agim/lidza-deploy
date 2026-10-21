@@ -142,6 +142,61 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 		t.Fatal("initial deployment failed")
 	}
 	originalRelease := m.Current(id).ID
+	retainedBeforeLock := m.databaseViews()[0].Backups[0]
+	retainedPath := filepath.Join(m.backupDir(id), retainedBeforeLock.ID+".dump")
+	retainedBytes, err := os.ReadFile(retainedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A real exclusive table lock must fail pg_dump promptly, not leave the
+	// deployment labeled building for the two-hour database operation window.
+	lockCtx, stopLock := context.WithCancel(ctx)
+	defer stopLock()
+	lockDone := make(chan error, 1)
+	go func() {
+		_, e := command(lockCtx, "", nil, "docker", "exec", "-e", "PGAPPNAME=lidza-backup-lock-test", name, "psql", "-X", "-U", "postgres", "-d", "app", "-c", "BEGIN; LOCK TABLE proof IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(60)")
+		lockDone <- e
+	}()
+	locked := false
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); {
+		out, e := command(ctx, "", nil, "docker", "exec", name, "psql", "-X", "-U", "postgres", "-d", "app", "-tAc", "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.application_name='lidza-backup-lock-test' AND l.mode='AccessExclusiveLock' AND l.granted")
+		if e == nil && strings.TrimSpace(out) == "1" {
+			locked = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !locked {
+		t.Fatal("exclusive lock fixture did not acquire its lock")
+	}
+	blockedByLock, err := m.Enqueue(id, DeployRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lockDeployment Deployment
+	for end := time.Now().Add(40 * time.Second); time.Now().Before(end); {
+		for _, item := range m.Deployments() {
+			if item.ID == blockedByLock.ID {
+				lockDeployment = item
+			}
+		}
+		if lockDeployment.Status == "failed" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_, _ = command(ctx, "", nil, "docker", "exec", name, "psql", "-X", "-U", "postgres", "-d", "app", "-tAc", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='lidza-backup-lock-test'")
+	stopLock()
+	<-lockDone
+	if lockDeployment.Status != "failed" || !strings.Contains(lockDeployment.Error, "lock wait exceeded") || !strings.Contains(lockDeployment.Log, "Dumping PostgreSQL") || m.Current(id).ID != originalRelease {
+		t.Fatal("locked backup was not bounded with useful failure details", lockDeployment)
+	}
+	if current := m.databaseViews()[0]; current.Operation != "" || len(current.Backups) != 1 || current.Backups[0].ID != retainedBeforeLock.ID {
+		t.Fatal("locked dump changed retained backup", current)
+	}
+	if currentBytes, e := os.ReadFile(retainedPath); e != nil || !bytes.Equal(currentBytes, retainedBytes) {
+		t.Fatal("locked dump changed retained backup bytes", e)
+	}
 	store := storage.Config{Provider: "s3", Endpoint: "https://127.0.0.1:1", Bucket: "test", Region: "us-east-1", AccessKey: "test", SecretKey: "test"}
 	if err = m.setBackupStorage(&store); err != nil {
 		t.Fatal(err)

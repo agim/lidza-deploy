@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/agim/lidza/packs/storage"
 	"maps"
 	"strings"
+	"time"
 )
 
 type DatabaseAttachment struct {
@@ -67,61 +69,86 @@ func (m *Manager) bindDatabaseLocked(appID, key, id string) error {
 // a candidate. Include the previous primary database when switching connections.
 func (m *Manager) backupBeforeRelease(ctx context.Context, ids []string) error {
 	for _, id := range ids {
-		commandDiagnostic(ctx, "backup", "Creating the required pre-deployment backup for "+id+". The image build starts after this completes.")
-		m.mu.Lock()
-		d, ok := m.data.Databases[id]
-		if !ok || !d.Ready || d.Operation != "" {
-			m.mu.Unlock()
-			return errors.New("pre-deployment database backup unavailable or busy")
+		minutes := m.cfg.PredeploymentBackupMinutes
+		if minutes <= 0 {
+			minutes = 10
 		}
-		d.Operation = "backup"
-		m.data.Databases[id] = d
-		if err := m.save(); err != nil {
-			d.Operation = ""
-			m.data.Databases[id] = d
-			m.mu.Unlock()
+		backupCtx, cancel := context.WithTimeout(ctx, time.Duration(minutes)*time.Minute)
+		// Scope cancellation to this database, including slot wait and required S3 upload.
+		err := m.backupBeforeReleaseDatabase(backupCtx, id, minutes)
+		cancel()
+		if err != nil {
 			return err
 		}
-		var target *storage.Config
-		if m.data.BackupStorage != nil {
-			cfg := *m.data.BackupStorage
-			target = &cfg
-		}
-		m.mu.Unlock()
-		var record BackupRecord
-		var err error
-		select {
-		case m.databaseSlots <- struct{}{}:
-			record, err = m.dumpDatabase(ctx, d, target, predeploymentBackup)
-			<-m.databaseSlots
-		case <-ctx.Done():
-			err = ctx.Err()
-		}
-		m.mu.Lock()
-		d = m.data.Databases[id]
-		d.Operation = ""
-		d.Event = newID()
-		if record.ID != "" {
-			d.Backups = append(d.Backups, record)
-		}
-		if err != nil {
-			d.Error = "pre-deployment backup failed: " + err.Error()
-		} else {
-			d.Error = ""
-		}
-		m.data.Databases[id] = d
-		saveErr := m.save()
-		if record.ID != "" && saveErr == nil {
-			saveErr = m.pruneBackupsLocked(id)
-		}
-		m.mu.Unlock()
-		if err != nil {
-			return errors.New("pre-deployment backup failed; current release retained")
-		}
-		if saveErr != nil {
-			return errors.New("pre-deployment backup could not be finalized; current release retained")
-		}
-		commandDiagnostic(ctx, "backup", "Pre-deployment backup completed for "+id+".")
 	}
+	return nil
+}
+
+func (m *Manager) backupBeforeReleaseDatabase(ctx context.Context, id string, minutes int) error {
+	commandDiagnostic(ctx, "backup", fmt.Sprintf("Creating the required pre-deployment backup for %s (limit: %d minutes, including required S3 upload). The image build starts after this completes.", id, minutes))
+	m.mu.Lock()
+	d, ok := m.data.Databases[id]
+	if !ok || !d.Ready || d.Operation != "" {
+		m.mu.Unlock()
+		return errors.New("pre-deployment database backup unavailable or busy")
+	}
+	d.Operation = "backup"
+	m.data.Databases[id] = d
+	if err := m.save(); err != nil {
+		d.Operation = ""
+		m.data.Databases[id] = d
+		m.mu.Unlock()
+		return err
+	}
+	var target *storage.Config
+	if m.data.BackupStorage != nil {
+		cfg := *m.data.BackupStorage
+		target = &cfg
+	}
+	m.mu.Unlock()
+	var record BackupRecord
+	var err error
+	stopWaiting := backupProgress(ctx, "Waiting for an available database operation slot", nil)
+	select {
+	case m.databaseSlots <- struct{}{}:
+		stopWaiting()
+		record, err = m.dumpDatabase(ctx, d, target, predeploymentBackup)
+		<-m.databaseSlots
+	case <-ctx.Done():
+		stopWaiting()
+		err = fmt.Errorf("waiting for database operation slot: %w", ctx.Err())
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = fmt.Errorf("backup deadline exceeded: %s", err)
+	} else if errors.Is(err, context.Canceled) {
+		err = errors.New("backup canceled")
+	}
+	m.mu.Lock()
+	d = m.data.Databases[id]
+	d.Operation = ""
+	d.Event = newID()
+	if record.ID != "" {
+		d.Backups = append(d.Backups, record)
+	}
+	if err != nil {
+		d.Error = "pre-deployment backup failed: " + err.Error()
+	} else {
+		d.Error = ""
+	}
+	m.data.Databases[id] = d
+	saveErr := m.save()
+	if record.ID != "" && saveErr == nil {
+		saveErr = m.pruneBackupsLocked(id)
+	}
+	m.mu.Unlock()
+	if err != nil {
+		failure := fmt.Errorf("pre-deployment backup failed: %s; current release retained", err)
+		commandDiagnostic(ctx, "backup", failure.Error())
+		return failure
+	}
+	if saveErr != nil {
+		return errors.New("pre-deployment backup could not be finalized; current release retained")
+	}
+	commandDiagnostic(ctx, "backup", "Pre-deployment backup completed for "+id+".")
 	return nil
 }

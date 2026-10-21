@@ -12,6 +12,21 @@ async function spacing(page, context) {
   const problems = await page.evaluate(() => {
     const rect = element => element.getBoundingClientRect();
     const issues = [];
+    // Shared form sections, including toggles followed by fields rather than buttons.
+    for (const card of document.querySelectorAll('.form-card')) {
+      const children = [...card.children].filter(e => e.getClientRects().length && getComputedStyle(e).display !== 'none');
+      for (let i = 1; i < children.length; i++) {
+        const a = rect(children[i - 1]), b = rect(children[i]);
+        if (b.top - a.bottom < 15.5) issues.push(`Form sections touch: ${children[i - 1].textContent.trim().slice(0, 40)} / ${children[i].textContent.trim().slice(0, 40)}`);
+      }
+    }
+    for (const grid of document.querySelectorAll('.form-card .form-grid')) {
+      const fields = [...grid.children].filter(e => e.getClientRects().length);
+      for (let i = 0; i < fields.length; i++) for (let j = i + 1; j < fields.length; j++) {
+        const a = rect(fields[i]), b = rect(fields[j]);
+        if (Math.max(b.top - a.bottom, a.top - b.bottom, b.left - a.right, a.left - b.right) < 15.5) issues.push('Form grid fields touch');
+      }
+    }
     // All shared action groups, including buttons that wrap onto another row.
     for (const group of document.querySelectorAll('.page-actions, .sticky-actions, .section-actions, .dialog-actions, .server-actions, .maintenance-actions, .application-actions')) {
       const controls = [...group.children].filter(element => element.matches('button, a, [data-slot="dropdown-menu-trigger"]') && element.getClientRects().length);
