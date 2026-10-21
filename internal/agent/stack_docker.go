@@ -44,21 +44,25 @@ func (d *Docker) setReleaseRunning(ctx context.Context, r *Release, running bool
 	return nil
 }
 func (d *Docker) buildStack(ctx context.Context, a App, id, source, commit string, manifest *StackManifest) (*Release, error) {
+	host, err := nativeStackPlatform(ctx)
+	if err != nil {
+		return nil, err
+	}
 	images := map[string]string{}
 	for _, s := range manifest.Services {
 		image := s.Image
 		if s.Build != nil {
 			image = "lidza/" + a.ID + "-" + s.Name + ":" + id
-			args := []string{"build", "--progress=plain", "--tag", image, "--file", s.Build.Dockerfile}
+			args := []string{"build", "--progress=plain", "--platform", host, "--tag", image, "--file", s.Build.Dockerfile}
 			if s.Build.Target != "" {
 				args = append(args, "--target", s.Build.Target)
 			}
 			args = append(args, ".")
-			if _, err := command(ctx, source, nil, "docker", args...); err != nil {
-				return nil, fmt.Errorf("stack %s image build failed: %w", s.Name, err)
+			if err := buildStackImage(ctx, source, s.Name, args); err != nil {
+				return nil, err
 			}
 		} else {
-			if _, err := command(ctx, "", nil, "docker", "pull", image); err != nil {
+			if _, err := command(ctx, "", nil, "docker", "pull", "--platform", host, image); err != nil {
 				return nil, fmt.Errorf("stack %s pinned image pull failed: %w", s.Name, err)
 			}
 		}
@@ -118,6 +122,9 @@ func stackContainerName(a App, id, name string) string {
 }
 func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifest StackManifest, images map[string]string) (release *Release, err error) {
 	if err = manifest.validate(); err != nil {
+		return nil, err
+	}
+	if err = validateStackImages(ctx, manifest, images); err != nil {
 		return nil, err
 	}
 	for _, service := range manifest.Services {
@@ -328,17 +335,6 @@ func (d *Docker) stackPublishedPort(ctx context.Context, name string, port int) 
 	}
 	return strings.TrimPrefix(raw, "127.0.0.1:"), nil
 }
-func (d *Docker) probeStackServices(ctx context.Context, r *Release) error {
-	for _, c := range r.Stack.Containers {
-		bounded, cancel := context.WithTimeout(ctx, 15*time.Second)
-		_, err := command(bounded, "", nil, "docker", append([]string{"exec", c.Container}, c.Service.HealthCommand...)...)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("stack service %s is not ready", c.Service.Name)
-		}
-	}
-	return nil
-}
 func (d *Docker) waitStackReady(ctx context.Context, r *Release) error {
 	timeout := 8 * time.Minute
 	if d.readinessTimeout > 0 {
@@ -347,33 +343,59 @@ func (d *Docker) waitStackReady(ctx context.Context, r *Release) error {
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	nextReport := time.Time{}
+	restarts := map[string]int{}
+	lastReason := "readiness not reached"
 	for {
 		body, err := d.probeReady(bounded, r)
-		if err == nil {
-			if err = d.probeStackServices(bounded, r); err == nil {
-				r.Stack.Bootstrap = false
-				return nil
-			}
+		serviceErr := d.probeStackServices(bounded, r)
+		if err == nil && serviceErr == nil {
+			r.Stack.Bootstrap = false
+			return nil
 		}
-		if r.Stack.Bootstrap && r.Stack.Manifest.BootstrapReadiness != nil {
+		if serviceErr == nil && r.Stack.Bootstrap && r.Stack.Manifest.BootstrapReadiness != nil {
 			b := r.Stack.Manifest.BootstrapReadiness
 			var status *readinessHTTPError
 			if errors.As(err, &status) && status.Status == 503 && strings.Contains(body, b.ReadyzBodyContains) {
 				if _, bootstrapErr := d.probeAppPath(bounded, r, b.Path); bootstrapErr == nil {
-					if serviceErr := d.probeStackServices(bounded, r); serviceErr == nil {
-						commandDiagnostic(ctx, "stack-bootstrap", "First-install setup UI is available; application /readyz remains gated until setup is published and reloaded.")
-						return nil
-					}
+					commandDiagnostic(ctx, "stack-bootstrap", "First-install setup UI is available; application /readyz remains gated until setup is published and reloaded.")
+					return nil
+				} else {
+					err = fmt.Errorf("bootstrap health %s failed: %w", b.Path, bootstrapErr)
 				}
 			}
 		}
-		if time.Now().After(nextReport) {
-			commandDiagnostic(ctx, "stack-readiness", fmt.Sprintf("Waiting for app and stack service readiness: %v\n%s", err, body))
-			nextReport = time.Now().Add(15 * time.Second)
+
+		reasons := []string{}
+		if err != nil {
+			reasons = append(reasons, err.Error())
+		}
+		if serviceErr != nil {
+			reasons = append(reasons, serviceErr.Error())
+		}
+		lastReason = strings.Join(reasons, "; ")
+		fatal := false
+		nextRestarts := map[string]int{}
+		var failures *stackServiceFailures
+		if errors.As(serviceErr, &failures) {
+			for _, f := range failures.services {
+				if f.restarting {
+					nextRestarts[f.container.Container] = restarts[f.container.Container] + 1
+				}
+				fatal = fatal || f.terminal || nextRestarts[f.container.Container] >= 3
+			}
+		}
+		restarts = nextRestarts
+		if fatal || time.Now().After(nextReport) {
+			commandDiagnostic(ctx, "stack-readiness", fmt.Sprintf("Waiting for app and stack service readiness: %s\n%s", lastReason, body))
+			d.reportStackServices(bounded, serviceErr)
+			nextReport = time.Now().Add(30 * time.Second)
+		}
+		if fatal {
+			return fmt.Errorf("stack candidate failed app/service readiness: %s; recovering the previous stack", lastReason)
 		}
 		select {
 		case <-bounded.Done():
-			return errors.New("stack candidate failed app/service readiness; recovering the previous stack")
+			return fmt.Errorf("stack candidate failed app/service readiness: %s; recovering the previous stack", lastReason)
 		case <-time.After(time.Second):
 		}
 	}

@@ -10,6 +10,7 @@ import (
 )
 
 func (c *Control) deployment(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	id := r.PathValue("id")
 	for _, result := range c.readFleet(r, "/v1/deployments/"+url.PathEscape(id)) {
 		if result.Err != nil {

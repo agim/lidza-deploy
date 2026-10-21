@@ -258,9 +258,9 @@ func TestStackBootstrapReadinessIsExplicitAndFirstInstallOnly(t *testing.T) {
 		{"genuine-ready", true, 200, "", 200, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			code := "#!/bin/sh\nexit 0\n"
+			code := "#!/bin/sh\nif [ \"$1\" = inspect ]; then echo '{\"status\":\"running\",\"exit\":0,\"oom\":false}'; exit 0; fi\nexit 0\n"
 			if tc.serviceFails {
-				code = "#!/bin/sh\nexit 1\n"
+				code = "#!/bin/sh\nif [ \"$1\" = inspect ]; then echo '{\"status\":\"running\",\"exit\":0,\"oom\":false}'; exit 0; fi\nexit 1\n"
 			}
 			if err := os.WriteFile(script, []byte(code), 0700); err != nil {
 				t.Fatal(err)
