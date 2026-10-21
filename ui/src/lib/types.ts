@@ -93,6 +93,7 @@ export interface EnvironmentEntry {
 }
 
 export interface AppSettings extends Application {
+ public_ports_supported?: boolean;
  master_key_generation_supported?: boolean;
  stack_profiles_supported?: boolean;
  runtime_deployed?: boolean;
@@ -109,6 +110,7 @@ export interface AppSettings extends Application {
 }
 
 export interface ContainerInfo {
+  ports?: ForwardedPort[];
   id?: string;
   name: string;
   image?: string;
@@ -156,4 +158,11 @@ export interface Route {
   page: PageKey;
   detail?: string;
   id?: string;
+}
+
+export interface ForwardedPort {
+ app_id: string; service: string; container: string; release: string;
+ declared: boolean; protocol: string; host_ip: string; host_port: number;
+ container_port: number; publication: string; firewall: string; external: string;
+ bindings?: { HostIp: string; HostPort: string }[];
 }

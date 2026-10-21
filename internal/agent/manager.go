@@ -193,6 +193,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		return nil, err
 	}
 	m.enforceStoppedApps()
+	m.reconcilePublicPorts()
 	// Docker can assign new ephemeral host ports after container/daemon restarts.
 	m.reconcileRoutes()
 	m.wg.Add(1)

@@ -15,6 +15,7 @@ const assert = require('node:assert/strict');
         if (path.endsWith('/control/status')) return route.fulfill({ json: { roles: ['admin'] } });
         if (path.endsWith('/control/apps')) return route.fulfill({ json: [{ id: 'portal', server_id: 'local', repository: 'acme/portal', branch: 'main', domain: 'portal.example.com', current: { commit: 'abc123' } }] });
         if (path.endsWith('/control/servers')) return route.fulfill({ json: [{ id: 'local', name: 'This server', url: 'http://127.0.0.1:9090' }] });
+        if (path.endsWith('/control/deployments/build-one')) return route.fulfill({json:{id:'build-one',app_id:'portal',status:'building',created:new Date().toISOString(),log:`Build output ${++logRequests}`,duration_seconds:80}});
         if (path.endsWith('/control/deployments')) return route.fulfill({ json: { deployments: [{ id: 'build-one', app_id: 'portal', server_id: 'local', status: 'building', created: new Date().toISOString(), log: `Build output ${++logRequests}`, duration_seconds: 80 }], unavailable_servers: [] } });
         if (path.endsWith('/control/servers/local/console')) return route.fulfill({ json: { two_factor_enabled: true, unlocked: false } });
         if (path.endsWith('/v1/auth/step-up')) { unlockRequests++; return route.fulfill({ json: { expiresAt: new Date(Date.now() + 900000).toISOString() } }); }

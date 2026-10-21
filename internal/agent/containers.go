@@ -15,21 +15,22 @@ import (
 // ContainerView exposes operational metadata only. Container environment,
 // mounts and labels can contain credentials and are deliberately omitted.
 type ContainerView struct {
-	ID             string `json:"id,omitempty"`
-	Name           string `json:"name"`
-	AppID          string `json:"app_id"`
-	Role           string `json:"role"`
-	State          string `json:"state"`
-	Status         string `json:"status,omitempty"`
-	Health         string `json:"health,omitempty"`
-	CPU            string `json:"cpu,omitempty"`
-	Memory         string `json:"memory,omitempty"`
-	MemoryPercent  string `json:"memory_percent,omitempty"`
-	NetworkIO      string `json:"network_io,omitempty"`
-	BlockIO        string `json:"block_io,omitempty"`
-	PIDs           string `json:"pids,omitempty"`
-	Restartable    bool   `json:"restartable"`
-	NeedsAttention bool   `json:"needs_attention"`
+	Ports          []PortView `json:"ports,omitempty"`
+	ID             string     `json:"id,omitempty"`
+	Name           string     `json:"name"`
+	AppID          string     `json:"app_id"`
+	Role           string     `json:"role"`
+	State          string     `json:"state"`
+	Status         string     `json:"status,omitempty"`
+	Health         string     `json:"health,omitempty"`
+	CPU            string     `json:"cpu,omitempty"`
+	Memory         string     `json:"memory,omitempty"`
+	MemoryPercent  string     `json:"memory_percent,omitempty"`
+	NetworkIO      string     `json:"network_io,omitempty"`
+	BlockIO        string     `json:"block_io,omitempty"`
+	PIDs           string     `json:"pids,omitempty"`
+	Restartable    bool       `json:"restartable"`
+	NeedsAttention bool       `json:"needs_attention"`
 }
 
 type ContainerInventory struct {
@@ -238,6 +239,31 @@ func (m *Manager) containerInventory(ctx context.Context) ContainerInventory {
 	if listFailed {
 		out.Warning = "Docker inventory is temporarily unavailable. Retry in a few seconds."
 	}
+	portRows := map[string][]PortView{}
+	if d, ok := m.runtime.(*Docker); ok {
+		m.mu.Lock()
+		var registrations []portRegistration
+		for _, a := range m.data.Apps {
+			registrations = append(registrations, releasePortRegistrations(a.Current)...)
+			if a.Current != nil && a.Current.Stack == nil {
+				registrations = append(registrations, portRegistration{AppID: a.ID, Release: a.Current.ID, Container: a.Current.Container, Service: "app", Ports: []StackPort{}})
+			}
+		}
+		m.mu.Unlock()
+		if len(registrations) > 0 {
+			ports, err := d.portsCall(ctx, "inspect", registrations)
+			if err != nil {
+				out.Warning += " Public-port inventory unavailable: " + err.Error()
+			} else {
+				for _, row := range ports.Ports {
+					portRows[row.Container] = append(portRows[row.Container], row)
+				}
+				if ports.Warning != "" {
+					out.Warning += " " + ports.Warning
+				}
+			}
+		}
+	}
 	for _, item := range managed {
 		view := ContainerView{Name: item.Name, AppID: item.AppID, Role: item.Role, State: "missing", Restartable: item.Restartable}
 		if row, ok := live[item.Name]; ok {
@@ -260,6 +286,7 @@ func (m *Manager) containerInventory(ctx context.Context) ContainerInventory {
 				out.Warning = "Stack service health sampling timed out; unavailable evidence is not a healthy result."
 			}
 		}
+		view.Ports = portRows[item.Name]
 		view.NeedsAttention = view.State == "missing" || view.State == "dead" || view.State == "exited" || view.State == "restarting" || view.Health == "unhealthy"
 		out.Containers = append(out.Containers, view)
 	}

@@ -49,6 +49,10 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		})
 	}
 	manifest := fixtureStackManifest()
+	if os.Getenv("TEST_PUBLIC_PORTS") == "1" {
+		manifest.Services[0].PublicPorts = []StackPort{{Port: 25, Protocol: "tcp"}, {Port: 7882, Protocol: "udp"}}
+		manifest.Services[0].Environment["FIXTURE_PUBLIC_PORTS"] = "true"
+	}
 	manifest.BootstrapReadiness = &StackBootstrapReadiness{Path: "/api/v1/health", ReadyzBodyContains: "Server setup is required", SetupPath: "/setup"}
 	manifest.Configuration = []StackConfiguration{
 		{Name: "MAIL_PROVIDER", Stage: "setup"},
@@ -204,6 +208,51 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 			t.Fatalf("unsafe limits: %s != %s (%v)", out, expected, err)
 		}
 	}
+	assertPublicPorts := func() {
+		if os.Getenv("TEST_PUBLIC_PORTS") != "1" {
+			return
+		}
+		inventory, err := m.appPorts(ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		public := 0
+		for _, port := range inventory.Ports {
+			if port.Declared {
+				public++
+				if port.Publication != "published" || port.Firewall != "allow_rule_installed" || port.External != "unverified" {
+					t.Fatalf("bad public inventory: %+v", port)
+				}
+			}
+		}
+		if public != 2 {
+			t.Fatalf("missing public inventory: %+v", inventory)
+		}
+		if result, err := command(ctx, "", nil, "ip", "netns", "exec", "ports-client", "curl", "--silent", "--show-error", "--noproxy", "*", "--fail", "--max-time", "3", "http://198.18.0.1:25"); err != nil || result != "public-tcp" {
+			t.Fatal("external namespace TCP forwarding failed", err, result)
+		}
+		code := "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(3); s.sendto(b'public-udp',('198.18.0.1',7882)); assert s.recv(1024)==b'public-udp'"
+		if _, err := command(ctx, "", nil, "ip", "netns", "exec", "ports-client", "python3", "-c", code); err != nil {
+			t.Fatal("external namespace UDP forwarding failed", err)
+		}
+	}
+	assertPublicPorts()
+	if os.Getenv("TEST_PUBLIC_PORTS") == "1" {
+		name := "lidza-unrelated-public-" + newID()[:8]
+		if _, err := command(ctx, "", nil, "docker", "run", "-d", "--name", name, "--publish", "0.0.0.0:16379:6379", cacheImage); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = command(context.Background(), "", nil, "docker", "rm", "-f", name) })
+		// The service is reachable locally, but the external namespace remains
+		// blocked by its operator rule: no wildcard/container-network allowance.
+		if _, err := command(ctx, "", nil, "python3", "-c", "import socket; s=socket.create_connection(('127.0.0.1',16379),3); s.close()"); err != nil {
+			t.Fatal("unrelated service was not listening", err)
+		}
+		code := "import socket; s=socket.socket(); s.settimeout(1); result=s.connect_ex(('198.18.0.1',16379)); assert result!=0; s.close()"
+		if _, err := command(ctx, "", nil, "ip", "netns", "exec", "ports-client", "python3", "-c", code); err != nil {
+			t.Fatal("undeclared public port was broadened", err)
+		}
+	}
 	proxy := httptest.NewServer(Proxy(m))
 	defer proxy.Close()
 	request := func(method, path string) string {
@@ -307,11 +356,17 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	if request("GET", "/persist") != "preserved" {
 		t.Fatal("reload lost storage")
 	}
+	assertPublicPorts()
 	// Simulate process death during a rollback after the old writers stopped.
 	if err := m.recordStackTransition(a.ID, r2, r1, true); err != nil {
 		t.Fatal(err)
 	}
 	m.Close()
+	if os.Getenv("TEST_PUBLIC_PORTS") == "1" {
+		if _, err := command(ctx, "", nil, "iptables", "-w", "5", "-D", "DOCKER-USER", "-m", "comment", "--comment", "lidza-public-owner-v1", "-j", "LIDZA-PUBLIC"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := rt.setReleaseRunning(ctx, r2, false); err != nil {
 		t.Fatal(err)
 	}
@@ -348,6 +403,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	if request("GET", "/rtc/room") != "rtc:/room" {
 		t.Fatal("rollback SFU route stale")
 	}
+	assertPublicPorts()
 	m.mu.Lock()
 	bad := m.data.Apps[a.ID]
 	bad.Env["FIXTURE_RESET_SETUP"] = "true"
@@ -372,6 +428,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	if request("GET", "/persist") != "preserved" {
 		t.Fatal("failure did not restore old stack")
 	}
+	assertPublicPorts()
 	m.mu.Lock()
 	bad = m.data.Apps[a.ID]
 	delete(bad.Env, "FIXTURE_RESET_SETUP")
@@ -434,6 +491,16 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	releases = append(releases, m.Current(a.ID))
 	if err := m.Retire(ctx, a.ID); err != nil {
 		t.Fatal("remove stack", err)
+	}
+	if os.Getenv("TEST_PUBLIC_PORTS") == "1" {
+		rules, err := command(ctx, "", nil, "iptables", "-S", "LIDZA-PUBLIC")
+		if err != nil || strings.Contains(rules, "-j ACCEPT") {
+			t.Fatal("removal retained public allow rules", err, rules)
+		}
+		operator, err := command(ctx, "", nil, "iptables", "-S", "DOCKER-USER")
+		if err != nil || !strings.Contains(operator, "fixture-deny-client") {
+			t.Fatal("operator firewall rule changed", err)
+		}
 	}
 	a.RuntimeProfile = "minimum"
 	if err := m.Upsert(a); err != nil {

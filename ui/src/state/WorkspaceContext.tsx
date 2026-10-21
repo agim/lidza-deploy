@@ -36,7 +36,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (foreground) setLoading(true); else setRefreshing(true);
     const results = await Promise.allSettled([
       get<Application[]>('control/apps'), get<Server[]>('control/servers'),
-      get<{ deployments?: Deployment[]; unavailable_servers?: string[] } | Deployment[]>('control/deployments'),
+      get<{ deployments?: Deployment[]; unavailable_servers?: string[]; server_errors?: Record<string,string> } | Deployment[]>('control/deployments'),
       get<ControlStatus>('control/status'),
     ]);
     setData(current => {
@@ -49,7 +49,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       return { apps: [...apps].sort((a, b) => a.id.localeCompare(b.id)), servers: [...servers].sort((a, b) => a.id.localeCompare(b.id)), deployments, status, unavailableServers };
     });
     const failures = results.filter(result => result.status === 'rejected') as PromiseRejectedResult[];
-    setError(failures.length ? `Some workspace data could not be refreshed: ${failures.map(result => result.reason instanceof Error ? result.reason.message : String(result.reason)).join('; ')}` : '');
+    const history = results[2].status==='fulfilled' && !Array.isArray(results[2].value) ? results[2].value.unavailable_servers || [] : [];
+    const reasons = results[2].status==='fulfilled' && !Array.isArray(results[2].value) ? Object.values(results[2].value.server_errors || {}).join('; ') : '';
+    setError(failures.length ? `Some workspace data could not be refreshed: ${failures.map(result => result.reason instanceof Error ? result.reason.message : String(result.reason)).join('; ')}` : history.length ? `Deployment history unavailable for ${history.join(', ')}${reasons ? `: ${reasons}` : ''}. Accepted deployments may still be running; check the hosting agent.` : '');
     if (!failures.length) setUpdatedAt(new Date());
     setLoading(false); setRefreshing(false); busy.current = false;
   }, [demo]);

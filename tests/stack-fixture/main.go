@@ -94,6 +94,24 @@ func main() {
 		}
 		fmt.Fprint(w, os.Getenv("RELEASE_TEXT")+role+":"+r.URL.Path)
 	})
+	if role == "app" && os.Getenv("FIXTURE_PUBLIC_PORTS") == "true" {
+		go http.ListenAndServe(":25", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "public-tcp") }))
+		go func() {
+			conn, err := net.ListenPacket("udp", ":7882")
+			if err != nil {
+				panic(err)
+			}
+			defer conn.Close()
+			buffer := make([]byte, 1024)
+			for {
+				n, addr, err := conn.ReadFrom(buffer)
+				if err != nil {
+					return
+				}
+				conn.WriteTo(buffer[:n], addr)
+			}
+		}()
+	}
 	if role == "app" {
 		go http.ListenAndServe(":7880", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "rtc:"+r.URL.Path) }))
 	}
