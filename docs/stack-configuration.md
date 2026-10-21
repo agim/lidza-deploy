@@ -33,7 +33,7 @@ change `lidza.json` or the framework production rules.
   configuration at runtime. Conditions are supported only on optional settings.
 
 `name` is an uppercase environment key; stages are required. Labels (80 chars)
-AND help (300 chars) are optional plain text, without control characters. At most
+and help (300 chars) are optional plain text, without control characters. At most
 40 unique entries. `secret:true` forces stored environment metadata to credential;
 values are never included in guidance. It does not generate a value. Use existing
 `generated_secrets` for generated bootstrap secrets. Never put secret values or

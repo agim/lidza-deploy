@@ -159,6 +159,14 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		}
 	}
 	m.mu.Unlock()
+	// App-specific deploy requirements fail with actionable guidance before
+	// building, independently of setup-owned framework settings.
+	manifest.Configuration = append(manifest.Configuration, StackConfiguration{Name: "VENDOR_CREDENTIAL", Stage: "deploy", Label: "Vendor credential", Help: "Import the production credential.", Secret: true})
+	blocked := deploy(false)
+	if blocked.Status != "failed" || !strings.Contains(blocked.Error, "Vendor credential") || !strings.Contains(blocked.Error, "Import the production credential.") || m.Current(a.ID) != nil {
+		t.Fatalf("missing deploy requirement was not safely blocked: %+v", blocked)
+	}
+	manifest.Configuration = manifest.Configuration[:len(manifest.Configuration)-1]
 	first := deploy(false)
 	if first.Status != "setup_required" {
 		t.Fatalf("first deployment: %s\n%s", first.Error, first.Log)
@@ -326,10 +334,21 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	m.data.Apps[a.ID] = bad
 	m.mu.Unlock()
 	failed := deploy(false)
-	if failed.Status != "failed" {
-		t.Fatal("unhealthy candidate activated")
+	if failed.Status != "failed" || !strings.Contains(failed.Error, "failed app/service readiness") || !strings.Contains(failed.Log, "Server setup is required") {
+		t.Fatalf("established setup regression was not rejected at runtime readiness: %s\n%s", failed.Error, failed.Log)
 	}
+	// Restarting Docker containers can assign new ephemeral host ports; use
+	// the reconciled route and wait for ordinary readiness after restart.
 	m.reconcileRoutes()
+	if m.Current(a.ID).ID != r1.ID {
+		t.Fatal("established failure replaced the prior release")
+	}
+	if err := rt.waitReady(ctx, m.Current(a.ID)); err != nil {
+		t.Fatal("restored prior release did not regain genuine readiness", err)
+	}
+	if err := rt.Ready(ctx, m.Current(a.ID)); err != nil {
+		t.Fatal("restored sidecar health failed", err)
+	}
 	if request("GET", "/persist") != "preserved" {
 		t.Fatal("failure did not restore old stack")
 	}
