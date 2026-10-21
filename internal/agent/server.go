@@ -273,6 +273,10 @@ func Proxy(m *Manager) http.Handler {
 			http.Error(w, "application unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		if privateRuntimeSelectionPath(owner, r.URL.Path) {
+			http.NotFound(w, r)
+			return
+		}
 		if m.maintenancePage(w, r, owner.Domain) {
 			return
 		}

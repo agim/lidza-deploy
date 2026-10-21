@@ -74,19 +74,21 @@ type StackRoute struct {
 	Published   string `json:"published,omitempty"`
 }
 type StackService struct {
-	Name            string            `json:"name"`
-	Role            string            `json:"role"`
-	Policy          string            `json:"policy"`
-	Build           *StackBuild       `json:"build,omitempty"`
-	Image           string            `json:"image,omitempty"`
-	Command         []string          `json:"command,omitempty"`
-	Aliases         []string          `json:"aliases,omitempty"`
-	Environment     map[string]string `json:"environment,omitempty"`
-	ShareAppNetwork bool              `json:"share_app_network,omitempty"`
-	Volumes         []StackVolume     `json:"volumes,omitempty"`
-	PublicPorts     []StackPort       `json:"public_ports,omitempty"`
-	HTTPRoutes      []StackRoute      `json:"http_routes,omitempty"`
-	HealthCommand   []string          `json:"health_command"`
+	EnabledWhen      *StackConfigurationCondition `json:"enabled_when,omitempty"`
+	DatabaseBindings []string                     `json:"database_bindings,omitempty"`
+	Name             string                       `json:"name"`
+	Role             string                       `json:"role"`
+	Policy           string                       `json:"policy"`
+	Build            *StackBuild                  `json:"build,omitempty"`
+	Image            string                       `json:"image,omitempty"`
+	Command          []string                     `json:"command,omitempty"`
+	Aliases          []string                     `json:"aliases,omitempty"`
+	Environment      map[string]string            `json:"environment,omitempty"`
+	ShareAppNetwork  bool                         `json:"share_app_network,omitempty"`
+	Volumes          []StackVolume                `json:"volumes,omitempty"`
+	PublicPorts      []StackPort                  `json:"public_ports,omitempty"`
+	HTTPRoutes       []StackRoute                 `json:"http_routes,omitempty"`
+	HealthCommand    []string                     `json:"health_command"`
 }
 type StackBootstrapReadiness struct {
 	Path               string `json:"path"`
@@ -94,12 +96,14 @@ type StackBootstrapReadiness struct {
 	SetupPath          string `json:"setup_path,omitempty"`
 }
 type StackManifest struct {
-	Configuration       []StackConfiguration     `json:"configuration,omitempty"`
-	BootstrapReadiness  *StackBootstrapReadiness `json:"bootstrap_readiness,omitempty"`
-	Version             int                      `json:"version"`
-	RequiredEnvironment []string                 `json:"required_environment,omitempty"`
-	GeneratedSecrets    []string                 `json:"generated_secrets,omitempty"`
-	Services            []StackService           `json:"services"`
+	ProfileResources    map[string]StackProfileResources `json:"profile_resources,omitempty"`
+	RuntimeSelection    *StackRuntimeSelection           `json:"runtime_selection,omitempty"`
+	Configuration       []StackConfiguration             `json:"configuration,omitempty"`
+	BootstrapReadiness  *StackBootstrapReadiness         `json:"bootstrap_readiness,omitempty"`
+	Version             int                              `json:"version"`
+	RequiredEnvironment []string                         `json:"required_environment,omitempty"`
+	GeneratedSecrets    []string                         `json:"generated_secrets,omitempty"`
+	Services            []StackService                   `json:"services"`
 }
 type StackContainer struct {
 	Service   StackService `json:"service"`
@@ -107,12 +111,13 @@ type StackContainer struct {
 	Image     string       `json:"image"`
 }
 type StackRelease struct {
-	Bootstrap  bool             `json:"bootstrap,omitempty"`
-	Profile    string           `json:"profile"`
-	Network    string           `json:"network"`
-	Manifest   StackManifest    `json:"manifest"`
-	Containers []StackContainer `json:"containers"`
-	Routes     []StackRoute     `json:"routes,omitempty"`
+	Selection  *StackSelectionSnapshot `json:"selection,omitempty"`
+	Bootstrap  bool                    `json:"bootstrap,omitempty"`
+	Profile    string                  `json:"profile"`
+	Network    string                  `json:"network"`
+	Manifest   StackManifest           `json:"manifest"`
+	Containers []StackContainer        `json:"containers"`
+	Routes     []StackRoute            `json:"routes,omitempty"`
 }
 
 var digestImagePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/:\-]*@sha256:[a-f0-9]{64}$`)
@@ -173,8 +178,12 @@ func (m StackManifest) validate() error {
 			return errors.New("bootstrap readiness needs a safe app health path, a specific setup-required marker and an optional safe setup path")
 		}
 	}
-	if m.Version != 1 || len(m.Services) < 1 || len(m.Services) > 3 {
-		return errors.New("stack requires version 1 and one to three services")
+	maxServices := 3
+	if m.Version == 2 {
+		maxServices = 8
+	}
+	if (m.Version != 1 && m.Version != 2) || len(m.Services) < 1 || len(m.Services) > maxServices {
+		return errors.New("stack requires version 1 (up to three services) or version 2 (up to eight services)")
 	}
 	names, roles, aliases, volumes := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, list := range [][]string{m.RequiredEnvironment, m.GeneratedSecrets} {
@@ -195,15 +204,15 @@ func (m StackManifest) validate() error {
 		}
 	}
 	for _, s := range m.Services {
-		if !idPattern.MatchString(s.Name) || len(s.Name) > 24 || names[s.Name] || roles[s.Role] {
+		if !idPattern.MatchString(s.Name) || len(s.Name) > 24 || names[s.Name] || roles[s.Role] && s.Role != "auxiliary" {
 			return errors.New("invalid or duplicate stack service name/role")
 		}
 		names[s.Name] = true
 		roles[s.Role] = true
-		if s.Role != "app" && s.Role != "mail" && s.Role != "office" {
+		if s.Role != "app" && s.Role != "mail" && s.Role != "office" && !(m.Version == 2 && s.Role == "auxiliary") {
 			return errors.New("unsupported stack service role")
 		}
-		if s.Policy != "hardened" && !(s.Role == "app" && s.Policy == "init") && !(s.Role == "mail" && s.Policy == "mail") && !(s.Role == "office" && s.Policy == "office") {
+		if s.Policy != "hardened" && !((s.Role == "app" || m.Version == 2 && s.Role == "auxiliary") && s.Policy == "init") && !(s.Role == "mail" && s.Policy == "mail") && !(s.Role == "office" && s.Policy == "office") {
 			return errors.New("runtime policy does not match service role")
 		}
 		if (s.Build == nil) == (s.Image == "") {
@@ -274,6 +283,9 @@ func (m StackManifest) validate() error {
 			}
 		}
 	}
+	if err := m.validateV2(); err != nil {
+		return err
+	}
 	if !roles["app"] {
 		return errors.New("stack requires exactly one app service")
 	}
@@ -304,7 +316,7 @@ func stackEnvironment(a App, s StackService) (map[string]string, error) {
 	}
 	return env, nil
 }
-func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManifest) (App, error) {
+func (m *Manager) provisionStackSettings(a App, manifest *StackManifest) (App, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	saved, ok := m.data.Apps[a.ID]
@@ -366,11 +378,7 @@ func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManife
 	a.Env = maps.Clone(next.Env)
 	a.EnvKinds = maps.Clone(next.EnvKinds)
 	a.StackManifest = manifest
-	for _, s := range manifest.Services {
-		if _, err := stackEnvironment(a, s); err != nil {
-			return a, err
-		}
-	}
+
 	// Reserve fixed ports against all committed live stacks. Docker also rejects
 	// host-process bindings; no unrelated container is stopped to claim them.
 	for _, other := range m.data.Apps {
@@ -392,4 +400,63 @@ func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManife
 
 func validStackProbePath(path string) bool {
 	return len(path) > 1 && len(path) <= 160 && regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`).MatchString(path) && !strings.Contains(path, "..") && !strings.Contains(path, "//")
+}
+
+func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManifest) (App, error) {
+	var err error
+	a, err = m.provisionStackSettings(a, manifest)
+	if err != nil {
+		return a, err
+	}
+	a.BindingNetworks = map[string]string{}
+	a.DatabaseBudgets = nil
+	m.mu.Lock()
+	seen := map[string]bool{}
+	for key, id := range a.Bindings {
+		db, ok := m.data.Databases[id]
+		if !ok || !db.Ready || db.Operation != "" {
+			m.mu.Unlock()
+			return a, errors.New("attached database is unavailable or busy")
+		}
+		a.BindingNetworks[key] = db.Network
+		if db.Mode == "local" && !seen[id] {
+			memory, cpus := db.MemoryMiB, db.CPUs
+			if memory == 0 {
+				memory = 1024
+			}
+			if cpus == "" {
+				cpus = "1"
+			}
+			a.DatabaseBudgets = append(a.DatabaseBudgets, StackBudget{memory, cpus})
+			seen[id] = true
+		}
+	}
+	m.mu.Unlock()
+	a, err = (&Docker{}).prepareStackPlan(ctx, a, *manifest)
+	if err != nil {
+		return a, err
+	}
+	for _, service := range manifest.selectedServices(a.StackSelection) {
+		if _, err = stackEnvironment(a, service); err != nil {
+			return a, err
+		}
+	}
+	if manifest.Version == 2 {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.data.StackSelections == nil {
+			m.data.StackSelections = map[string]*StackSelectionSnapshot{}
+		}
+		old, exists := m.data.StackSelections[a.ID]
+		m.data.StackSelections[a.ID] = cloneStackSelection(a.StackSelection)
+		if err = m.save(); err != nil {
+			if exists {
+				m.data.StackSelections[a.ID] = old
+			} else {
+				delete(m.data.StackSelections, a.ID)
+			}
+			return a, err
+		}
+	}
+	return a, nil
 }

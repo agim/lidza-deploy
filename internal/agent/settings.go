@@ -31,30 +31,32 @@ type EnvironmentEntry struct {
 	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
-	PublicPortsSupported         bool               `json:"public_ports_supported"`
-	MasterKeyGenerationSupported bool               `json:"master_key_generation_supported"`
-	RuntimeDeployed              bool               `json:"runtime_deployed"`
-	StackProfilesSupported       bool               `json:"stack_profiles_supported"`
-	RuntimeProfile               string             `json:"runtime_profile"`
-	StackProfiles                []StackProfile     `json:"stack_profiles"`
-	AdditionalDomainsSupported   bool               `json:"additional_domains_supported"`
-	AdditionalDomains            []string           `json:"additional_domains"`
-	DomainStatuses               []DomainStatus     `json:"domain_statuses,omitempty"`
-	AppManagedStorageSupported   bool               `json:"app_managed_storage_supported"`
-	StorageProviderOverride      bool               `json:"storage_provider_override"`
-	CustomerHosts                bool               `json:"customer_hosts"`
-	Stopped                      bool               `json:"stopped"`
-	DefaultsApplied              bool               `json:"defaults_applied"`
-	EnvSources                   map[string]string  `json:"env_sources"`
-	PersistentStorage            bool               `json:"persistent_storage"`
-	Cache                        CacheView          `json:"cache"`
-	BackupBeforeDeploy           bool               `json:"backup_before_deploy"`
-	Bindings                     map[string]string  `json:"database_bindings"`
-	ID                           string             `json:"id"`
-	Branch                       string             `json:"branch"`
-	Domain                       string             `json:"domain"`
-	EnvKeys                      []string           `json:"env_keys"`
-	Environment                  []EnvironmentEntry `json:"environment"`
+	StackManifestVersions        []int                   `json:"stack_manifest_versions"`
+	RuntimeSelection             *StackSelectionSnapshot `json:"runtime_selection,omitempty"`
+	PublicPortsSupported         bool                    `json:"public_ports_supported"`
+	MasterKeyGenerationSupported bool                    `json:"master_key_generation_supported"`
+	RuntimeDeployed              bool                    `json:"runtime_deployed"`
+	StackProfilesSupported       bool                    `json:"stack_profiles_supported"`
+	RuntimeProfile               string                  `json:"runtime_profile"`
+	StackProfiles                []StackProfile          `json:"stack_profiles"`
+	AdditionalDomainsSupported   bool                    `json:"additional_domains_supported"`
+	AdditionalDomains            []string                `json:"additional_domains"`
+	DomainStatuses               []DomainStatus          `json:"domain_statuses,omitempty"`
+	AppManagedStorageSupported   bool                    `json:"app_managed_storage_supported"`
+	StorageProviderOverride      bool                    `json:"storage_provider_override"`
+	CustomerHosts                bool                    `json:"customer_hosts"`
+	Stopped                      bool                    `json:"stopped"`
+	DefaultsApplied              bool                    `json:"defaults_applied"`
+	EnvSources                   map[string]string       `json:"env_sources"`
+	PersistentStorage            bool                    `json:"persistent_storage"`
+	Cache                        CacheView               `json:"cache"`
+	BackupBeforeDeploy           bool                    `json:"backup_before_deploy"`
+	Bindings                     map[string]string       `json:"database_bindings"`
+	ID                           string                  `json:"id"`
+	Branch                       string                  `json:"branch"`
+	Domain                       string                  `json:"domain"`
+	EnvKeys                      []string                `json:"env_keys"`
+	Environment                  []EnvironmentEntry      `json:"environment"`
 }
 
 func (m *Manager) Settings(id string) (Settings, error) {
@@ -87,7 +89,11 @@ func (m *Manager) Settings(id string) (Settings, error) {
 		}
 		environment = append(environment, entry)
 	}
-	return Settings{PublicPortsSupported: true, MasterKeyGenerationSupported: true, RuntimeDeployed: a.Current != nil, StackProfilesSupported: true, RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
+	var selection *StackSelectionSnapshot
+	if a.Current != nil && a.Current.Stack != nil {
+		selection = cloneStackSelection(a.Current.Stack.Selection)
+	}
+	return Settings{StackManifestVersions: []int{1, 2}, RuntimeSelection: selection, PublicPortsSupported: true, MasterKeyGenerationSupported: true, RuntimeDeployed: a.Current != nil, StackProfilesSupported: true, RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: keys, Environment: environment}, nil
 }
 
 func (m *Manager) RevealCredential(id, key string) (string, error) {

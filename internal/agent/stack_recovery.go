@@ -100,6 +100,9 @@ func (m *Manager) rollbackStackLocked(ctx context.Context, a App) error {
 	if !ok {
 		return errors.New("previous stack has an unknown resource profile")
 	}
+	if err := validateRollbackSelection(ctx, a); err != nil {
+		return err
+	}
 	m.data.StackTransitions[a.ID] = StackTransition{Previous: a.Current, Candidate: a.Previous, Reuse: true}
 	if err := m.save(); err != nil {
 		delete(m.data.StackTransitions, a.ID)

@@ -83,6 +83,7 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 		}
 	}
 	delete(m.data.Apps, id)
+	delete(m.data.StackSelections, id)
 	if m.data.RetiredAppIDs == nil {
 		m.data.RetiredAppIDs = map[string]bool{}
 	}
