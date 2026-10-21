@@ -96,12 +96,9 @@ func (m *Manager) rollbackStackLocked(ctx context.Context, a App) error {
 	if !ok {
 		return errors.New("runtime does not support stack rollback")
 	}
-	profile, ok := profileByID(a.Previous.Stack.Profile)
+	_, ok = profileByID(a.Previous.Stack.Profile)
 	if !ok {
 		return errors.New("previous stack has an unknown resource profile")
-	}
-	if err := d.stackCapacity(ctx, a, profile, a.Previous.Stack.Manifest); err != nil {
-		return err
 	}
 	m.data.StackTransitions[a.ID] = StackTransition{Previous: a.Current, Candidate: a.Previous, Reuse: true}
 	if err := m.save(); err != nil {

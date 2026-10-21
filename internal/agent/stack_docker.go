@@ -57,46 +57,6 @@ func (d *Docker) buildStack(ctx context.Context, a App, id, source, commit strin
 	}
 	return d.runStack(ctx, a, id, commit, *manifest, images)
 }
-func (d *Docker) stackCapacity(ctx context.Context, a App, p StackProfile, manifest StackManifest) error {
-	raw, err := command(ctx, "", nil, "docker", "info", "--format", "{{.MemTotal}}")
-	if err != nil {
-		return err
-	}
-	total, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return errors.New("host memory capacity unavailable")
-	}
-	requested := stackHostAllowance(p, total)
-	for _, s := range manifest.Services {
-		requested += p.budget(s.Role).MemoryMiB
-	}
-	ids, err := command(ctx, "", nil, "docker", "ps", "-q")
-	if err != nil {
-		return err
-	}
-	if ids != "" {
-		args := append([]string{"inspect", "--format", `{{json .HostConfig.Memory}} {{index .Config.Labels "io.lidza.app"}}`}, strings.Fields(ids)...)
-		raw, err = command(ctx, "", nil, "docker", args...)
-		if err != nil {
-			return err
-		}
-		for _, line := range strings.Split(raw, "\n") {
-			memory, owner, _ := strings.Cut(line, " ")
-			if owner == a.ID {
-				continue
-			}
-			n, parseErr := strconv.ParseInt(memory, 10, 64)
-			if parseErr != nil || n <= 0 {
-				return errors.New("stack capacity cannot budget an unbounded running container; apply a Docker memory limit or use a dedicated stack server")
-			}
-			requested += int((n + 1048575) / 1048576)
-		}
-	}
-	if int64(requested)*1048576 > total {
-		return fmt.Errorf("stack profile needs %d MiB including other container limits and host allowance; host has %d MiB", requested, total/1048576)
-	}
-	return nil
-}
 func ensureStackResource(ctx context.Context, kind, name, owner string) error {
 	raw, err := command(ctx, "", nil, "docker", kind, "ls", "--filter", "name=^"+name+"$", "--format", "{{.Name}}")
 	if err != nil {
@@ -154,9 +114,6 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 	profile, ok := profileByID(a.RuntimeProfile)
 	if !ok {
 		return nil, errors.New("choose a stack profile")
-	}
-	if err = d.stackCapacity(ctx, a, profile, manifest); err != nil {
-		return nil, err
 	}
 	for _, service := range manifest.Services {
 		if service.Policy == "office" {
@@ -450,15 +407,4 @@ func stackImages(r *Release) map[string]string {
 		out[c.Service.Name] = c.Image
 	}
 	return out
-}
-
-// Linux reports usable RAM after reserving kernel memory. Charge a bounded
-// nominal-host difference to the profile's host allowance, never to services.
-// At least half the allowance remains for userspace; smaller hosts still fail.
-func stackHostAllowance(p StackProfile, totalBytes int64) int {
-	missing := p.HostMiB - int(totalBytes/1048576)
-	if missing > 0 && missing <= min(256, p.ReserveMiB/2) {
-		return p.ReserveMiB - missing
-	}
-	return p.ReserveMiB
 }
