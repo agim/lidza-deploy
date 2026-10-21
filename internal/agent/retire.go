@@ -82,7 +82,8 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 			delete(m.data.Tasks, key)
 		}
 	}
-	delete(m.data.GatewayPKI, m.data.Apps[id].resourceID())
+	gatewayID := m.data.Apps[id].resourceID()
+	delete(m.data.GatewayPKI, gatewayID)
 	delete(m.data.Apps, id)
 	delete(m.data.StackSelections, id)
 	if m.data.RetiredAppIDs == nil {
@@ -94,5 +95,12 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 		m.data = before
 		return err
 	}
+	m.gatewayMu.Lock()
+	if client := m.gatewayClients[gatewayID]; client != nil {
+		client.CloseIdleConnections()
+		delete(m.gatewayClients, gatewayID)
+	}
+	delete(m.gatewayKeys, gatewayID)
+	m.gatewayMu.Unlock()
 	return nil
 }

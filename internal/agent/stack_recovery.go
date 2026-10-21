@@ -100,6 +100,9 @@ func (m *Manager) rollbackStackLocked(ctx context.Context, a App) error {
 	if !ok {
 		return errors.New("previous stack has an unknown resource profile")
 	}
+	if err := validateGatewayRollback(a); err != nil {
+		return err
+	}
 	if err := validateRollbackSelection(ctx, a); err != nil {
 		return err
 	}

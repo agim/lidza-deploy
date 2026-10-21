@@ -1,8 +1,9 @@
 # Protected application gateway
 
-Implementation contract on feat/gateway-transport; not released in Deploy yet.
-Do not upgrade or redeploy production for this checkpoint. Framework API is
-released in github.com/agim/lidza v0.1.125; all builds require Go1.27.3 or newer.
+Minimum agent and control-panel version: **v0.2.103**. Framework API is released
+in github.com/agim/lidza v0.1.125; all builds require Go1.27.3 or newer. Upgrade
+both components before adding the manifest opt-in, then configure and verify the
+protected host ingress. See [acceptance evidence](reviews/gateway-transport.md).
 
 ## App opt-in
 

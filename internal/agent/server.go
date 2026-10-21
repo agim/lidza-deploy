@@ -278,6 +278,10 @@ func Proxy(m *Manager) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		if protectedGatewayPath(owner.Current, r.URL.Path) && !gateway.RequireTLS13(r) {
+			http.Error(w, "verified original TLS1.3 required", 403)
+			return
+		}
 		if m.maintenancePage(w, r, owner.Domain) {
 			return
 		}

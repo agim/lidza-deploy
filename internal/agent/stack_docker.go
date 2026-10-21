@@ -172,7 +172,7 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 	}
 	stack := &StackRelease{Selection: cloneStackSelection(a.StackSelection), Bootstrap: bootstrapEligible, Profile: a.RuntimeProfile, Network: "lidza-stack-" + a.resourceID() + "-" + id, Manifest: manifest}
 	if manifest.GatewayTransport != nil {
-		stack.Gateway = &GatewayRelease{Identity: a.resourceID()}
+		stack.Gateway = &GatewayRelease{Identity: a.resourceID(), Authority: a.Domain}
 	}
 	candidate := &Release{ID: id, Commit: commit, Created: time.Now().UTC(), Stack: stack}
 	planned := *candidate
@@ -345,7 +345,7 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		if e != nil {
 			return nil, e
 		}
-		stack.Gateway = &GatewayRelease{Identity: a.resourceID(), Port: port}
+		stack.Gateway = &GatewayRelease{Identity: a.resourceID(), Authority: a.Domain, Port: port}
 	}
 	if hasPublicPorts(candidate) {
 		if err = d.syncPublicPorts(ctx); err != nil {
@@ -362,9 +362,6 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		}
 	}
 	if err = d.waitStackReady(ctx, candidate); err != nil {
-		return nil, err
-	}
-	if err = d.probeGateway(ctx, candidate); err != nil {
 		return nil, err
 	}
 	if err = verifyCandidateSelection(ctx, a, candidate); err != nil {
@@ -396,11 +393,12 @@ func (d *Docker) waitStackReady(ctx context.Context, r *Release) error {
 	for {
 		body, err := d.probeReady(bounded, r)
 		serviceErr := d.probeStackServices(bounded, r)
-		if err == nil && serviceErr == nil {
+		gatewayErr := d.probeGateway(bounded, r)
+		if err == nil && serviceErr == nil && gatewayErr == nil {
 			r.Stack.Bootstrap = false
 			return nil
 		}
-		if serviceErr == nil && r.Stack.Bootstrap && r.Stack.Manifest.BootstrapReadiness != nil {
+		if serviceErr == nil && gatewayErr == nil && r.Stack.Bootstrap && r.Stack.Manifest.BootstrapReadiness != nil {
 			b := r.Stack.Manifest.BootstrapReadiness
 			var status *readinessHTTPError
 			if errors.As(err, &status) && status.Status == 503 && strings.Contains(body, b.ReadyzBodyContains) {
@@ -414,6 +412,9 @@ func (d *Docker) waitStackReady(ctx context.Context, r *Release) error {
 		}
 
 		reasons := []string{}
+		if gatewayErr != nil {
+			reasons = append(reasons, gatewayErr.Error())
+		}
 		if err != nil {
 			reasons = append(reasons, err.Error())
 		}

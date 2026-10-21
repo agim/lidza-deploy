@@ -56,6 +56,9 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		manifest.Services[0].PublicPorts = []StackPort{{Port: 25, Protocol: "tcp"}, {Port: 7882, Protocol: "udp"}}
 		manifest.Services[0].Environment["FIXTURE_PUBLIC_PORTS"] = "true"
 	}
+	if os.Getenv("TEST_STACK_GATEWAY") == "1" {
+		manifest.GatewayTransport = &StackGateway{Version: 1, Paths: []string{"/gateway-protected"}}
+	}
 	manifest.BootstrapReadiness = &StackBootstrapReadiness{Path: "/api/v1/health", ReadyzBodyContains: "Server setup is required", SetupPath: "/setup"}
 	manifest.Configuration = []StackConfiguration{
 		{Name: "MAIL_PROVIDER", Stage: "setup"},
@@ -94,6 +97,13 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		return nil
 	}
 	m := testManager(t, rt)
+	if os.Getenv("TEST_STACK_GATEWAY") == "1" {
+		cfg := gatewayTestConfig(t)
+		m.cfg.Gateway = &cfg
+		if err := m.initGateway(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	a := testApp("stack-" + newID()[:10])
 	a.RuntimeProfile = "minimum"
 	a.Env["LIDZA_MASTER_KEY"] = strings.Repeat("1", 64)
@@ -155,6 +165,11 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	assertGateway := func() {
+		if os.Getenv("TEST_STACK_GATEWAY") == "1" {
+			assertDockerGateway(t, m, a.ID)
+		}
+	}
 	deploy := func(reload bool) Deployment {
 		t.Helper()
 		var job Deployment
@@ -171,6 +186,9 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		for time.Now().Before(deadline) {
 			for _, d := range m.Deployments() {
 				if d.ID == job.ID && (d.Status == "live" || d.Status == "failed" || d.Status == "setup_required") {
+					if d.Status == "live" || d.Status == "setup_required" {
+						assertGateway()
+					}
 					return d
 				}
 			}
@@ -331,6 +349,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		t.Fatal("host port conflict was ignored")
 	}
 	m.reconcileRoutes()
+	assertGateway()
 	if request("GET", "/persist") != "preserved" {
 		t.Fatal("port conflict failed to recover current stack")
 	}
@@ -374,6 +393,24 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		t.Fatal("reload lost storage")
 	}
 	assertPublicPorts()
+	if os.Getenv("TEST_STACK_GATEWAY") == "1" {
+		m.mu.Lock()
+		broken := m.data.Apps[a.ID]
+		broken.Env["FIXTURE_GATEWAY_FAIL"] = "true"
+		m.data.Apps[a.ID] = broken
+		m.mu.Unlock()
+		failedTLS := deploy(false)
+		if failedTLS.Status != "failed" || !strings.Contains(failedTLS.Error, "private app mTLS health") || m.Current(a.ID).ID != r2.ID {
+			t.Fatalf("broken private TLS candidate did not retain previous release: %s %s", failedTLS.Status, failedTLS.Error)
+		}
+		m.mu.Lock()
+		fixed := m.data.Apps[a.ID]
+		delete(fixed.Env, "FIXTURE_GATEWAY_FAIL")
+		m.data.Apps[a.ID] = fixed
+		m.mu.Unlock()
+		m.reconcileRoutes()
+		assertGateway()
+	}
 	// Simulate process death during a rollback after the old writers stopped.
 	if err := m.recordStackTransition(a.ID, r2, r1, true); err != nil {
 		t.Fatal(err)
@@ -414,6 +451,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	if err := m.Rollback(ctx, a.ID); err != nil {
 		t.Fatal("rollback", err)
 	}
+	assertGateway()
 	if m.Current(a.ID).ID != r1.ID {
 		t.Fatal("rollback target not activated")
 	}

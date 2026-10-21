@@ -44,7 +44,7 @@ Or install the published `main` directly:
 curl -fsSL https://raw.githubusercontent.com/agim/lidza-deploy/main/install.sh | sudo sh -s -- --fqdn deploy.example.com
 ```
 
-The root installer downloads the latest published agent and control-panel binaries, verifies their SHA-256 checksums, installs their prerequisites, pairs the local agent, and starts the services. Go is not required on the host. You do not need to build or transfer a bundle manually. Use `--source` (or `--version REF`) only to build from source; that mode requires Go 1.27+ or downloads temporary Go 1.27.1 with a pinned checksum. Docker, Git and systemd services are installed by the bundled host installer; public mode also installs Caddy. The default includes the control panel; PostgreSQL and other settings are configured in the browser. **`--fqdn` is required.** Omitting it stops before downloads, builds or host changes. Use `--fqdn localhost` explicitly for a local/tunnel installation; localhost is never selected implicitly. With `--agent-only`, the FQDN names the agent API instead.
+The root installer downloads the latest published agent and control-panel binaries, verifies their SHA-256 checksums, installs their prerequisites, pairs the local agent, and starts the services. Go is not required on the host. You do not need to build or transfer a bundle manually. Use `--source` (or `--version REF`) only to build from source; that mode requires Go 1.27.3+ or downloads temporary Go 1.27.3 with a pinned checksum. Docker, Git and systemd services are installed by the bundled host installer; public mode also installs Caddy. The default includes the control panel; PostgreSQL and other settings are configured in the browser. **`--fqdn` is required.** Omitting it stops before downloads, builds or host changes. Use `--fqdn localhost` explicitly for a local/tunnel installation; localhost is never selected implicitly. With `--agent-only`, the FQDN names the agent API instead.
 
 To inspect the host or planned actions:
 
@@ -234,7 +234,7 @@ Async actions use the shared `Button`, `MenuItem`, and `ActionForm` feedback. Re
 
 `npm run build` removes only the previous hashed console assets, then writes `web/static/console.html` and `web/static/assets/console/`. The release workflow rebuilds and type-checks this output before Go validation.
 
-Requires Go 1.27.1+, Git, Docker Engine, and Python 3 for the local setup helper. The web assets need no build step.
+Requires Go 1.27.3+, Git, Docker Engine, and Python 3 for the local setup helper. The web assets need no build step.
 
 ```sh
 ./scripts/dev-prepare.sh
@@ -298,3 +298,12 @@ The agent supplies the connection and network; the app applies its schema.
 See [managed ClickHouse](docs/clickhouse.md).
 
 Apps enabling `lidza/storage` with the local provider receive [persistent application storage](docs/application-storage.md) automatically. Uploads survive releases, reloads, and rollbacks; workers and scheduled commands share the attachment. Existing S3 configuration is preserved.
+
+### Protected protocol ingress
+
+Stack manifest v2 can opt into authenticated gateway transport for protocols
+that require verified original TLS1.3. Agent/control v0.2.103 and the reviewed
+Caddy mTLS configuration are required. The agent generates stable per-app
+credentials; applications keep their ordinary internal HTTP listener and add a
+private mTLS listener. See [the contract and rollout](docs/gateway-transport.md)
+and [isolated acceptance evidence](docs/reviews/gateway-transport.md).

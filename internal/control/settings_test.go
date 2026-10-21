@@ -44,7 +44,7 @@ func TestSettingsForwardsV2CapabilityAndPublicSelection(t *testing.T) {
 			t.Error("agent request authentication missing")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"stack_manifest_versions":[1,2],"runtime_selection":{"version":1,"revision":"draft-7","values":{"AI_RUNTIME":"local"}},"environment":[{"key":"DEPLOY_RUNTIME_TOKEN","kind":"credential","preview":"abcd…","length":48}]}`))
+		w.Write([]byte(`{"gateway_transport_supported":true,"gateway_host_configured":true,"stack_manifest_versions":[1,2],"runtime_selection":{"version":1,"revision":"draft-7","values":{"AI_RUNTIME":"local"}},"environment":[{"key":"DEPLOY_RUNTIME_TOKEN","kind":"credential","preview":"abcd…","length":48}]}`))
 	}))
 	defer remote.Close()
 	c := &Control{client: remote.Client(), registry: []Server{{ID: "local", URL: remote.URL, Token: strings.Repeat("a", 32)}}, data: saved{Apps: map[string]Application{"portal": {ID: "portal", ServerID: "local", Branch: "main", Domain: "portal.example.com"}}}}
@@ -53,8 +53,10 @@ func TestSettingsForwardsV2CapabilityAndPublicSelection(t *testing.T) {
 	w := httptest.NewRecorder()
 	c.settings(w, r)
 	var got struct {
-		Versions  []int `json:"stack_manifest_versions"`
-		Selection struct {
+		GatewaySupported  bool  `json:"gateway_transport_supported"`
+		GatewayConfigured bool  `json:"gateway_host_configured"`
+		Versions          []int `json:"stack_manifest_versions"`
+		Selection         struct {
 			Version  int               `json:"version"`
 			Revision string            `json:"revision"`
 			Values   map[string]string `json:"values"`
@@ -62,6 +64,9 @@ func TestSettingsForwardsV2CapabilityAndPublicSelection(t *testing.T) {
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
+	}
+	if !got.GatewaySupported || !got.GatewayConfigured {
+		t.Fatal("gateway capability metadata lost", w.Body.String())
 	}
 	if w.Code != 200 || len(got.Versions) != 2 || got.Versions[1] != 2 || got.Selection.Version != 1 || got.Selection.Revision != "draft-7" || got.Selection.Values["AI_RUNTIME"] != "local" {
 		t.Fatal("v2 contract metadata lost", w.Body.String())

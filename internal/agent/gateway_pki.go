@@ -211,3 +211,24 @@ func renewGatewayPKI(p gatewayPKI) (gatewayPKI, bool, error) {
 	p.ClientCert, err = renew(p.ClientCert, p.ClientKey)
 	return p, changed, err
 }
+
+func (p gatewayPKI) validate() error {
+	roots, err := gatewayRoots(p.CA)
+	if err != nil {
+		return err
+	}
+	for _, leaf := range []struct {
+		cert, key string
+		usage     x509.ExtKeyUsage
+		name      string
+	}{{p.ServerCert, p.ServerKey, x509.ExtKeyUsageServerAuth, gatewayAppName}, {p.ClientCert, p.ClientKey, x509.ExtKeyUsageClientAuth, ""}} {
+		pair, err := gatewayCertificate(leaf.cert, leaf.key)
+		if err != nil {
+			return err
+		}
+		if _, err := pair.Leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: leaf.name, KeyUsages: []x509.ExtKeyUsage{leaf.usage}}); err != nil {
+			return errors.New("retained gateway certificate does not verify under its private CA")
+		}
+	}
+	return nil
+}

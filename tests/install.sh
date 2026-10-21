@@ -63,10 +63,10 @@ case "$url" in
  https://github.com/agim/lidza-deploy/releases/latest/download/lidza-agent-linux-*.tar.gz.sha256) cp "$INSTALL_TEST_BUNDLE.sha256" "$output";;
  https://github.com/agim/lidza-deploy/releases/latest/download/lidza-agent-linux-*.tar.gz) cp "$INSTALL_TEST_BUNDLE" "$output";;
  https://codeload.github.com/agim/lidza-deploy/tar.gz/main) cp "$INSTALL_TEST_SOURCE" "$output";;
- https://go.dev/dl/go1.27.1.linux-*.tar.gz)
+ https://go.dev/dl/go1.27.3.linux-*.tar.gz)
   if [ "${INSTALL_TEST_PRIMARY_404:-0}" = 1 ];then exit 22;fi
   printf 'invalid Go archive\n' > "$output";;
- https://dl.google.com/go/go1.27.1.linux-*.tar.gz)
+ https://dl.google.com/go/go1.27.3.linux-*.tar.gz)
   [ -n "${INSTALL_TEST_GO_ARCHIVE:-}" ] || exit 22
   cp "$INSTALL_TEST_GO_ARCHIVE" "$output";;
  *) exit 1;;

@@ -35,8 +35,9 @@ type StackGateway struct {
 	Paths   []string `json:"paths"`
 }
 type GatewayRelease struct {
-	Identity string `json:"identity"`
-	Port     string `json:"port"`
+	Authority string `json:"authority"`
+	Identity  string `json:"identity"`
+	Port      string `json:"port"`
 }
 
 func (g *StackGateway) validate() error {
@@ -48,7 +49,7 @@ func (g *StackGateway) validate() error {
 	}
 	seen := map[string]bool{}
 	for _, p := range g.Paths {
-		if !validStackProbePath(p) || p == "/" || p == "/readyz" || p == "/healthz" || p == "/metrics" || strings.HasPrefix(p, "/.well-known/") || seen[p] {
+		if !validStackProbePath(p) || pathpkg.Clean(p) != p || strings.HasSuffix(p, "/") || p == "/" || p == "/readyz" || p == "/healthz" || p == "/metrics" || strings.HasPrefix(p, "/.well-known/") || seen[p] {
 			return errors.New("invalid or duplicate protected gateway path prefix")
 		}
 		seen[p] = true
@@ -83,7 +84,16 @@ func readGatewayFile(path string, private bool) ([]byte, error) {
 }
 func (m *Manager) initGateway() error {
 	c := m.cfg.Gateway
+	m.gatewayKeys = maps.Clone(m.data.GatewayPKI)
+	if m.gatewayKeys == nil {
+		m.gatewayKeys = map[string]gatewayPKI{}
+	}
 	if c == nil {
+		for _, app := range m.data.Apps {
+			if app.Current != nil && app.Current.Stack != nil && app.Current.Stack.Gateway != nil {
+				return errors.New("protected releases require their retained host gateway configuration")
+			}
+		}
 		return nil
 	}
 	host, port, err := net.SplitHostPort(c.Listen)
@@ -158,14 +168,12 @@ func (m *Manager) GatewayServer() *http.Server {
 	return &http.Server{Addr: m.cfg.Gateway.Listen, Handler: handler, TLSConfig: m.gatewayTLS.Clone(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 32768}
 }
 func (m *Manager) gatewayClient(identity string) (*http.Client, error) {
-	m.mu.Lock()
-	pki, ok := m.data.GatewayPKI[identity]
-	m.mu.Unlock()
+	m.gatewayMu.Lock()
+	defer m.gatewayMu.Unlock()
+	pki, ok := m.gatewayKeys[identity]
 	if !ok {
 		return nil, errors.New("retained app gateway identity is unavailable")
 	}
-	m.gatewayMu.Lock()
-	defer m.gatewayMu.Unlock()
 	if m.gatewayClients == nil {
 		m.gatewayClients = map[string]*gateway.Transport{}
 	}
@@ -218,6 +226,9 @@ func (m *Manager) prepareGateway(a App, manifest *StackManifest) (App, error) {
 	if err != nil {
 		return a, err
 	}
+	if err := pki.validate(); err != nil {
+		return a, err
+	}
 	cert, err := gatewayCertificate(pki.ClientCert, pki.ClientKey)
 	if err != nil {
 		return a, err
@@ -266,6 +277,9 @@ func (m *Manager) prepareGateway(a App, manifest *StackManifest) (App, error) {
 		}
 		return a, err
 	}
+	m.gatewayMu.Lock()
+	m.gatewayKeys[id] = pki
+	m.gatewayMu.Unlock()
 	if renewed {
 		m.gatewayMu.Lock()
 		if t := m.gatewayClients[id]; t != nil {
@@ -294,7 +308,10 @@ func (d *Docker) probeGateway(ctx context.Context, r *Release) error {
 	if err != nil {
 		return err
 	}
-	req.Host = gatewayAppName
+	req.Host = r.Stack.Gateway.Authority
+	if req.Host == "" {
+		return errors.New("protected release public authority is missing")
+	}
 	res, err := client.Do(req)
 	if err != nil {
 		return errors.New("private app mTLS health unavailable; verify the released framework private listener is enabled")
@@ -302,6 +319,24 @@ func (d *Docker) probeGateway(ctx context.Context, r *Release) error {
 	res.Body.Close()
 	if res.StatusCode != 200 {
 		return fmt.Errorf("private app mTLS health returned HTTP %d", res.StatusCode)
+	}
+	return nil
+}
+
+func validateGatewayRollback(a App) error {
+	if a.Current == nil || a.Current.Stack == nil || a.Current.Stack.Gateway == nil {
+		return nil
+	}
+	if a.Current.Stack.Manifest.GatewayTransport == nil {
+		return errors.New("current protected transport declaration is unavailable")
+	}
+	if a.Previous == nil || a.Previous.Stack == nil || a.Previous.Stack.Gateway == nil || a.Previous.Stack.Manifest.GatewayTransport == nil {
+		return errors.New("rollback would remove protected gateway transport")
+	}
+	for _, prefix := range a.Current.Stack.Manifest.GatewayTransport.Paths {
+		if !slices.Contains(a.Previous.Stack.Manifest.GatewayTransport.Paths, prefix) {
+			return errors.New("rollback would remove a protected gateway path")
+		}
 	}
 	return nil
 }
