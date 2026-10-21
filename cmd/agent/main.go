@@ -23,6 +23,8 @@ func main() {
 	scannerOutput := flag.String("scanner-firewall-output", "", "directory for reviewable scanner firewall configuration (prepare mode)")
 	scannerAllow := flag.String("scanner-firewall-allow", "", "comma-separated operator/monitoring IPs or CIDRs exempt from scanner bans")
 	directTraffic := flag.Bool("direct-public-traffic", false, "confirm public traffic reaches Caddy directly without a CDN/load balancer")
+	gatewayMode := flag.String("gateway-transport", "", "prepare reviewable protected gateway host configuration")
+	gatewayOutput := flag.String("gateway-output", "", "new absolute directory for private gateway credentials and reviewable configuration")
 	flag.Parse()
 	if *version {
 		fmt.Println(buildinfo.Version)
@@ -32,6 +34,16 @@ func main() {
 		if err := agent.ConfigureScannerFirewall(context.Background(), *scannerFirewall, *scannerOutput, *scannerAllow, *directTraffic); err != nil {
 			log.Fatal(err)
 		}
+		return
+	}
+	if *gatewayMode != "" {
+		if *gatewayMode != "prepare" {
+			log.Fatal("gateway-transport supports prepare only")
+		}
+		if err := agent.PrepareGateway(*gatewayOutput); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Prepared private gateway credentials and reviewable configuration; no services changed.")
 		return
 	}
 	if *applySSH {
@@ -54,9 +66,13 @@ func main() {
 	m.StartMaintenance()
 	api := &http.Server{Addr: cfg.Listen, Handler: agent.Handler(m), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second}
 	proxy := &http.Server{Addr: cfg.ProxyListen, Handler: agent.Proxy(m), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
-	errs := make(chan error, 2)
+	gateway := m.GatewayServer()
+	errs := make(chan error, 3)
 	go func() { errs <- api.ListenAndServe() }()
 	go func() { errs <- proxy.ListenAndServe() }()
+	if gateway != nil {
+		go func() { errs <- gateway.ListenAndServeTLS("", "") }()
+	}
 	log.Printf("agent API %s; application ingress %s", cfg.Listen, cfg.ProxyListen)
 	select {
 	case <-ctx.Done():
@@ -70,4 +86,7 @@ func main() {
 	defer cancel()
 	_ = api.Shutdown(shutdown)
 	_ = proxy.Shutdown(shutdown)
+	if gateway != nil {
+		_ = gateway.Shutdown(shutdown)
+	}
 }

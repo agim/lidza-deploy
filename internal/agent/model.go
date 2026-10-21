@@ -126,6 +126,7 @@ type DeployRequest struct {
 	Key              string            `json:"key,omitempty"`
 }
 type diskState struct {
+	GatewayPKI        map[string]gatewayPKI              `json:"gateway_pki,omitempty"`
 	StackSelections   map[string]*StackSelectionSnapshot `json:"stack_selections,omitempty"`
 	StackVolumes      map[string][]string                `json:"stack_volumes,omitempty"`
 	StackTransitions  map[string]StackTransition         `json:"stack_transitions,omitempty"`

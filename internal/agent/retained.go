@@ -87,6 +87,7 @@ func (m *Manager) resourceSnapshotLocked() diskState {
 	out.StorageVolumes = maps.Clone(m.data.StorageVolumes)
 	out.StackVolumes = maps.Clone(m.data.StackVolumes)
 	out.StackSelections = maps.Clone(m.data.StackSelections)
+	out.GatewayPKI = maps.Clone(m.data.GatewayPKI)
 	out.Caches = maps.Clone(m.data.Caches)
 	out.ClickHouses = maps.Clone(m.data.ClickHouses)
 	out.RetainedResources = maps.Clone(m.data.RetainedResources)

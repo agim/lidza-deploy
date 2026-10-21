@@ -4,12 +4,15 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/agim/lidza/pkg/credentials"
+	"github.com/agim/lidza/pkg/gateway"
 	"golang.org/x/sync/singleflight"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,6 +36,10 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	gatewayMu           sync.Mutex
+	gatewayClients      map[string]*gateway.Transport
+	gatewayTLS          *tls.Config
+	gatewayVerify       func(http.Handler) http.Handler
 	lastDiagnosticSave  time.Time
 	consoleJobs         map[string]*consoleJob
 	maintenanceOnce     sync.Once
@@ -84,6 +91,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
+	if err := m.initGateway(); err != nil {
+		cancel()
+		return nil, err
+	}
 	if m.data.Tasks == nil {
 		m.data.Tasks = map[string]Task{}
 	}
@@ -129,6 +140,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		d.stackTransition = m.recordStackTransition
 		d.prepareRuntime = m.preflightRuntime
 		d.prepareStackRuntime = m.prepareStack
+		d.gatewayClient = m.gatewayClient
 		d.runtimeDiagnostics = func(ctx context.Context, a App) context.Context {
 			return m.deploymentDiagnostics(ctx, job{app: a, deployment: deploymentID(ctx)})
 		}
@@ -215,7 +227,15 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	return m, nil
 }
 func (m *Manager) path() string { return filepath.Join(m.cfg.DataDir, "state.json") }
-func (m *Manager) Close()       { m.cancel(); m.wg.Wait() }
+func (m *Manager) Close() {
+	m.cancel()
+	m.wg.Wait()
+	m.gatewayMu.Lock()
+	defer m.gatewayMu.Unlock()
+	for _, client := range m.gatewayClients {
+		client.CloseIdleConnections()
+	}
+}
 func newID() string {
 	var b [12]byte
 	if _, err := rand.Read(b[:]); err != nil {

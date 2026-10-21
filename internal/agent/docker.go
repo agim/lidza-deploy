@@ -18,6 +18,7 @@ import (
 )
 
 type Docker struct {
+	gatewayClient       func(string) (*http.Client, error)
 	stackTransition     func(string, *Release, *Release, bool) error
 	prepareRuntime      func(context.Context, App, string) (App, error)
 	prepareStackRuntime func(context.Context, App, *StackManifest) (App, error)
@@ -348,6 +349,9 @@ func (d *Docker) waitReady(ctx context.Context, r *Release) error {
 	}
 }
 func (d *Docker) Ready(ctx context.Context, r *Release) error {
+	if err := d.probeGateway(ctx, r); err != nil {
+		return err
+	}
 	if r != nil && r.Stack != nil {
 		if err := d.probeStackServices(ctx, r); err != nil {
 			return err

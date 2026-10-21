@@ -10,12 +10,13 @@ import (
 // Adapted from monolithcms-app/agent/config.go. Configuration remains private
 // and atomically replaced; registration is explicit rather than trust-on-first-use.
 type Config struct {
-	TLSListen                  string `json:"tls_listen"`
-	Listen                     string `json:"listen"`
-	ProxyListen                string `json:"proxy_listen"`
-	DataDir                    string `json:"data_dir"`
-	APIKey                     string `json:"api_key"`
-	PredeploymentBackupMinutes int    `json:"predeployment_backup_minutes,omitempty"`
+	Gateway                    *GatewayConfig `json:"gateway,omitempty"`
+	TLSListen                  string         `json:"tls_listen"`
+	Listen                     string         `json:"listen"`
+	ProxyListen                string         `json:"proxy_listen"`
+	DataDir                    string         `json:"data_dir"`
+	APIKey                     string         `json:"api_key"`
+	PredeploymentBackupMinutes int            `json:"predeployment_backup_minutes,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {

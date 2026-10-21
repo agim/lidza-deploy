@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"github.com/agim/lidza/pkg/gateway"
 	"io"
 	"maps"
 	"net"
@@ -284,6 +285,40 @@ func Proxy(m *Manager) http.Handler {
 		if release == nil || release.Port == "" {
 			http.Error(w, "application unavailable", http.StatusServiceUnavailable)
 			return
+		}
+		if protectedGatewayPath(release, r.URL.Path) {
+			if !gateway.RequireTLS13(r) {
+				http.Error(w, "verified original TLS1.3 required", http.StatusForbidden)
+				return
+			}
+			if release.Stack.Gateway == nil || release.Stack.Gateway.Port == "" {
+				http.Error(w, "protected application ingress unavailable", 503)
+				return
+			}
+			client, err := m.gatewayClient(release.Stack.Gateway.Identity)
+			if err != nil {
+				http.Error(w, "protected application ingress unavailable", 503)
+				return
+			}
+			target := "127.0.0.1:" + release.Stack.Gateway.Port
+			proxy := &httputil.ReverseProxy{Transport: client.Transport, Rewrite: func(p *httputil.ProxyRequest) {
+				p.Out.URL.Scheme = "https"
+				p.Out.URL.Host = target
+				p.Out.Host = p.In.Host
+				if err := gateway.Forward(p.Out, p.In); err != nil {
+					p.Out.URL.Scheme = "invalid"
+				}
+			}, ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+				http.Error(w, "protected upstream unavailable", 502)
+			}}
+			proxy.ServeHTTP(w, r)
+			return
+		}
+		// Never carry origin evidence onto the legacy plaintext backend path.
+		r = r.Clone(r.Context())
+		r.Header.Del(gateway.Header)
+		for _, name := range gateway.EdgeHeaderNames() {
+			r.Header.Del(name)
 		}
 		port := release.Port
 		if release.Stack != nil {

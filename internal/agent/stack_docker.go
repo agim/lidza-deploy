@@ -171,6 +171,9 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		return nil, err
 	}
 	stack := &StackRelease{Selection: cloneStackSelection(a.StackSelection), Bootstrap: bootstrapEligible, Profile: a.RuntimeProfile, Network: "lidza-stack-" + a.resourceID() + "-" + id, Manifest: manifest}
+	if manifest.GatewayTransport != nil {
+		stack.Gateway = &GatewayRelease{Identity: a.resourceID()}
+	}
 	candidate := &Release{ID: id, Commit: commit, Created: time.Now().UTC(), Stack: stack}
 	planned := *candidate
 	plannedStack := *stack
@@ -272,6 +275,9 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		}
 		if s.Role == "app" {
 			args = append(args, "--publish", "127.0.0.1::3000")
+			if manifest.GatewayTransport != nil {
+				args = append(args, "--publish", "127.0.0.1::3001")
+			}
 			args = append(args, storageMountArgs(a)...)
 			for _, p := range s.PublicPorts {
 				args = append(args, "--publish", fmt.Sprintf("0.0.0.0:%d:%d/%s", p.Port, p.Port, p.Protocol))
@@ -334,6 +340,13 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 	if err != nil {
 		return nil, err
 	}
+	if manifest.GatewayTransport != nil {
+		port, e := d.stackPublishedPort(ctx, appName, 3001)
+		if e != nil {
+			return nil, e
+		}
+		stack.Gateway = &GatewayRelease{Identity: a.resourceID(), Port: port}
+	}
 	if hasPublicPorts(candidate) {
 		if err = d.syncPublicPorts(ctx); err != nil {
 			return nil, err
@@ -349,6 +362,9 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		}
 	}
 	if err = d.waitStackReady(ctx, candidate); err != nil {
+		return nil, err
+	}
+	if err = d.probeGateway(ctx, candidate); err != nil {
 		return nil, err
 	}
 	if err = verifyCandidateSelection(ctx, a, candidate); err != nil {

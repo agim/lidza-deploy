@@ -179,6 +179,14 @@ func (d *Docker) refreshStackPorts(ctx context.Context, r *Release) (*Release, e
 	if err != nil {
 		return nil, err
 	}
+	if stack.Gateway != nil {
+		copy := *stack.Gateway
+		stack.Gateway = &copy
+		stack.Gateway.Port, err = d.stackPublishedPort(ctx, r.Container, 3001)
+		if err != nil {
+			return nil, err
+		}
+	}
 	for i, route := range stack.Routes {
 		stack.Routes[i].Published, err = d.stackPublishedPort(ctx, r.Container, route.Port)
 		if err != nil {
@@ -188,6 +196,12 @@ func (d *Docker) refreshStackPorts(ctx context.Context, r *Release) (*Release, e
 	return &next, nil
 }
 func stackRoutesEqual(a, b *Release) bool {
+	if (a.Stack.Gateway == nil) != (b.Stack.Gateway == nil) {
+		return false
+	}
+	if a.Stack.Gateway != nil && *a.Stack.Gateway != *b.Stack.Gateway {
+		return false
+	}
 	if a.Port != b.Port || len(a.Stack.Routes) != len(b.Stack.Routes) {
 		return false
 	}

@@ -82,6 +82,7 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 			delete(m.data.Tasks, key)
 		}
 	}
+	delete(m.data.GatewayPKI, m.data.Apps[id].resourceID())
 	delete(m.data.Apps, id)
 	delete(m.data.StackSelections, id)
 	if m.data.RetiredAppIDs == nil {
