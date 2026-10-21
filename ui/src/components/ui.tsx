@@ -157,8 +157,13 @@ export function PromptDialog({ open, title, description, label, value, submitLab
 
 export function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState('');
   useEffect(() => { if (!copied) return; const timer = setTimeout(() => setCopied(false), 1600); return () => clearTimeout(timer); }, [copied]);
-  return <Button size="sm" onClick={async () => { await navigator.clipboard.writeText(value); setCopied(true); }}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? 'Copied' : label}</Button>;
+  return <span className="copy-control"><Button type="button" size="sm" onClick={async () => { setError(''); try { await navigator.clipboard.writeText(value); setCopied(true); } catch { setCopied(false); setError('Could not copy. Select the text and copy it manually.'); } }}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? 'Copied' : label}</Button>{error && <span className="field-error" role="alert">{error}</span>}</span>;
+}
+
+export function LogOutputHeader({ title, value, copyLabel }: { title: string; value: string; copyLabel: string }) {
+  return <div className="log-output-heading"><h3>{title}</h3><CopyButton value={value} label={copyLabel} /></div>;
 }
 
 export function ProgressBar({ value, tone = 'accent' }: { value: number; tone?: 'accent' | 'danger' | 'warning' }) {

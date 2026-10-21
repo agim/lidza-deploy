@@ -6,7 +6,7 @@ import { del, get, patch, post, put } from '../lib/api';
 import { formatDate } from '../lib/format';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
-import { ActionForm, Badge, Button, Card, CopyButton, EmptyState, ErrorBanner, Field, Loading, Notice, PageHeader, SearchField, SectionHeader } from '../components/ui';
+import { ActionForm, Badge, Button, Card, CopyButton, LogOutputHeader, EmptyState, ErrorBanner, Field, Loading, Notice, PageHeader, SearchField, SectionHeader } from '../components/ui';
 
 export function DefaultsPage() {
   const [values, setValues] = useState<Record<string, string>>({}), [error, setError] = useState(''), [busy, setBusy] = useState(false); const notify = useToast();
@@ -105,7 +105,7 @@ export function TeamPage({ audit = false }: { audit?: boolean }) {
   useEffect(() => { void load(); }, [audit]); if (!data && !error) return <Loading overlay label={`Loading ${audit ? 'audit log' : 'team'}…`} />;
   const rows: any[] = Array.isArray(data) ? data : data?.members || data?.items || data?.entries || [];
   const visible = rows.filter(row => JSON.stringify(row).toLowerCase().includes(query.toLowerCase()));
-  return <><PageHeader eyebrow="Workspace" title={audit ? 'Audit log' : 'Team'} description={audit ? 'A durable record of sensitive and administrative actions.' : 'Give people the least access needed to operate this workspace.'} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card><SectionHeader title={audit ? 'Activity' : 'Fleet team'} description={audit ? 'Newest events first.' : 'Admins manage infrastructure; deployers release existing apps; viewers inspect status.'} actions={<SearchField value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${audit ? 'activity' : 'members'}…`} />} /><div className="simple-list">{visible.map((row, index) => <div key={row.id || row.subject || index}><div><strong>{row.name || row.email || row.subject || row.action || 'Event'}</strong><small>{audit ? `${formatDate(row.created || row.created_at)} · ${row.actor || ''}` : `${row.role || 'viewer'}${row.owner ? ' · installation owner' : ''}`}</small>{audit && <p>{row.target || row.detail || ''}</p>}</div>{!audit && !row.owner && <Button size="sm" variant="danger" onClick={async () => { await del(`control/team/${encodeURIComponent(row.subject || row.email)}`); notify('Member removed.'); load(); }}>Remove</Button>}</div>)}{!visible.length && <EmptyState icon={audit ? <ClipboardList /> : <Users />} title={audit ? 'No activity found' : 'No team members found'} description={query ? 'Try another search.' : audit ? 'Administrative actions will appear here.' : 'The installation owner is always protected.'} />}</div></Card>{!audit && <AddMember onSaved={() => { notify('Team member saved.'); load(); }} onError={setError} />}</>;
+  return <><PageHeader eyebrow="Workspace" title={audit ? 'Audit log' : 'Team'} description={audit ? 'A durable record of sensitive and administrative actions.' : 'Give people the least access needed to operate this workspace.'} actions={audit ? <CopyButton value={visible.map(row => [formatDate(row.created || row.created_at), row.actor, row.action || row.subject, row.target || row.detail].filter(Boolean).join(' · ')).join('\n')} label="Copy audit log" /> : undefined} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card><SectionHeader title={audit ? 'Activity' : 'Fleet team'} description={audit ? 'Newest events first.' : 'Admins manage infrastructure; deployers release existing apps; viewers inspect status.'} actions={<SearchField value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${audit ? 'activity' : 'members'}…`} />} /><div className="simple-list">{visible.map((row, index) => <div key={row.id || row.subject || index}><div><strong>{row.name || row.email || row.subject || row.action || 'Event'}</strong><small>{audit ? `${formatDate(row.created || row.created_at)} · ${row.actor || ''}` : `${row.role || 'viewer'}${row.owner ? ' · installation owner' : ''}`}</small>{audit && <p>{row.target || row.detail || ''}</p>}</div>{!audit && !row.owner && <Button size="sm" variant="danger" onClick={async () => { await del(`control/team/${encodeURIComponent(row.subject || row.email)}`); notify('Member removed.'); load(); }}>Remove</Button>}</div>)}{!visible.length && <EmptyState icon={audit ? <ClipboardList /> : <Users />} title={audit ? 'No activity found' : 'No team members found'} description={query ? 'Try another search.' : audit ? 'Administrative actions will appear here.' : 'The installation owner is always protected.'} />}</div></Card>{!audit && <AddMember onSaved={() => { notify('Team member saved.'); load(); }} onError={setError} />}</>;
 }
 
 function AddMember({ onSaved, onError }: { onSaved: () => void; onError: (value: string) => void }) {
@@ -210,7 +210,7 @@ function ActivityGroupCard({ group, security }: { group: ActivityGroup; security
     </div>
     <details className="activity-details">
       <summary><span>View details</span><ChevronDown size={16} aria-hidden="true" /></summary>
-      <div className="activity-details-body">
+      <div className="activity-details-body"><CopyButton value={JSON.stringify({ title, first_seen: activityTime(group.first), last_seen: occurredAt, occurrences: group.count, source: item.source, method: item.method, route, status, container: item.container, release: item.release, commit: item.commit, message, stack: item.stack, security: item.security, recent_occurrences: group.items.slice(0, 20).map(event => ({ time: activityTime(event), request_id: event.requestId || event.request_id })) }, null, 2)} label="Copy event details" />
         <dl className="activity-facts">
           <div><dt>First seen</dt><dd><time dateTime={activityTime(group.first)}>{formatDate(activityTime(group.first))}</time></dd></div>
           <div><dt>Last seen</dt><dd><time dateTime={occurredAt}>{formatDate(occurredAt)}</time></dd></div>
@@ -221,8 +221,8 @@ function ActivityGroupCard({ group, security }: { group: ActivityGroup; security
           {item.release && <div><dt>Release</dt><dd>{item.release}</dd></div>}
           {item.commit && <div><dt>Commit</dt><dd>{item.commit}</dd></div>}
         </dl>
-        {message && <section className="activity-detail-section"><h3>Message</h3><pre>{message}</pre></section>}
-        {item.stack && <section className="activity-detail-section"><h3>Stack trace</h3><pre>{item.stack}</pre></section>}
+        {message && <section className="activity-detail-section"><LogOutputHeader title="Message" value={message} copyLabel="Copy message" /><pre>{message}</pre></section>}
+        {item.stack && <section className="activity-detail-section"><LogOutputHeader title="Stack trace" value={item.stack} copyLabel="Copy stack trace" /><pre>{item.stack}</pre></section>}
         <section className="activity-detail-section">
           <h3>Recent occurrences</h3>
           <div className="activity-occurrences">
