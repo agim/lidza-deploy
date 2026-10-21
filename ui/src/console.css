@@ -159,6 +159,10 @@ button[data-slot=switch] { cursor: pointer; }
 .guidance-card { display: flex; margin-top: 25px; align-items: flex-start; }
 .guidance-card p { font-size: 11px; line-height: 1.8; margin-bottom: 0; }
 .log-card { padding: 20px; }
+.log-output-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.log-output-heading h3 { margin: 0; }
+.copy-control { display: inline-grid; gap: 6px; min-width: 0; max-width: 100%; }
+.copy-control .button { justify-self: start; }
 .log-card pre { font-size: 12px; min-height: 300px; }
 .log-status-card { font-size: 11px; }
 .console-output, .command-field textarea, .terminal-output { font-family: ui-monospace, monospace; font-size: 12px; }
