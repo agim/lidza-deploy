@@ -153,6 +153,12 @@ inventory includes sidecars with app/role ownership and resources. Stack contain
 the shared network namespace with an isolated app restart. Runtime logs
 include bounded per-service output, scrubbed using application credentials.
 
+## Configuration requirements
+
+Apps can declare deploy-time, wizard-owned and optional settings in the
+[configuration contract](stack-configuration.md). Undeclared framework production
+requirements remain strict. A bootstrap health path alone does not defer settings.
+
 ## First-install setup readiness
 
 Apps whose production `/readyz` intentionally returns 503 until an operator

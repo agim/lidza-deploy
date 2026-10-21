@@ -30,6 +30,11 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	}
 	manifest := fixtureStackManifest()
 	manifest.BootstrapReadiness = &StackBootstrapReadiness{Path: "/api/v1/health", ReadyzBodyContains: "Server setup is required", SetupPath: "/setup"}
+	manifest.Configuration = []StackConfiguration{
+		{Name: "MAIL_PROVIDER", Stage: "setup"},
+		{Name: "MAIL_FROM", Stage: "setup"},
+		{Name: "LLM_PROVIDER", Stage: "optional"},
+	}
 	rt := &Docker{Root: t.TempDir(), readinessTimeout: 10 * time.Second}
 	rt.checkout = func(ctx context.Context, a App, dir, token string) error {
 		if err := os.MkdirAll(dir, 0700); err != nil {
@@ -42,7 +47,7 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		if err = os.WriteFile(filepath.Join(dir, "fixture"), data, 0755); err != nil {
 			return err
 		}
-		for name, data := range map[string]string{"lidza.json": `{"name":"fixture","packs":["lidza/storage"],"frontend":{"template":"htmx"}}`, "Dockerfile": "FROM scratch\nCOPY --chmod=755 fixture /fixture\nUSER 65532:65532\nENTRYPOINT [\"/fixture\"]\n"} {
+		for name, data := range map[string]string{"lidza.json": `{"name":"fixture","packs":["lidza/db","lidza/storage","lidza/mail","lidza/llm"],"frontend":{"template":"htmx"}}`, "Dockerfile": "FROM scratch\nCOPY --chmod=755 fixture /fixture\nUSER 65532:65532\nENTRYPOINT [\"/fixture\"]\n"} {
 			if err = os.WriteFile(filepath.Join(dir, name), []byte(data), 0600); err != nil {
 				return err
 			}
@@ -147,6 +152,21 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		t.Fatal("stack deployment did not finish")
 		return Deployment{}
 	}
+	m.mu.Lock()
+	for _, key := range []string{"MAIL_PROVIDER", "MAIL_FROM", "LLM_PROVIDER"} {
+		if m.data.Apps[a.ID].Env[key] != "" {
+			t.Fatalf("fixture supplied %s, hiding empty-settings bootstrap regression", key)
+		}
+	}
+	m.mu.Unlock()
+	// App-specific deploy requirements fail with actionable guidance before
+	// building, independently of setup-owned framework settings.
+	manifest.Configuration = append(manifest.Configuration, StackConfiguration{Name: "VENDOR_CREDENTIAL", Stage: "deploy", Label: "Vendor credential", Help: "Import the production credential.", Secret: true})
+	blocked := deploy(false)
+	if blocked.Status != "failed" || !strings.Contains(blocked.Error, "Vendor credential") || !strings.Contains(blocked.Error, "Import the production credential.") || m.Current(a.ID) != nil {
+		t.Fatalf("missing deploy requirement was not safely blocked: %+v", blocked)
+	}
+	manifest.Configuration = manifest.Configuration[:len(manifest.Configuration)-1]
 	first := deploy(false)
 	if first.Status != "setup_required" {
 		t.Fatalf("first deployment: %s\n%s", first.Error, first.Log)
@@ -254,9 +274,10 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	if sidecars != 3 {
 		t.Fatalf("inventory missing sidecars: %d", sidecars)
 	}
-	second := deploy(true)
+	// A new checkout after publication must accept database-owned settings too.
+	second := deploy(false)
 	if second.Status != "live" {
-		t.Fatalf("reload: %s\n%s", second.Error, second.Log)
+		t.Fatalf("established redeployment: %s\n%s", second.Error, second.Log)
 	}
 	r2 := m.Current(a.ID)
 	if r2.Stack.Bootstrap {
@@ -309,20 +330,31 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	}
 	m.mu.Lock()
 	bad := m.data.Apps[a.ID]
-	bad.Env["FAIL_READY"] = "true"
+	bad.Env["FIXTURE_RESET_SETUP"] = "true"
 	m.data.Apps[a.ID] = bad
 	m.mu.Unlock()
-	failed := deploy(true)
-	if failed.Status != "failed" {
-		t.Fatal("unhealthy candidate activated")
+	failed := deploy(false)
+	if failed.Status != "failed" || !strings.Contains(failed.Error, "failed app/service readiness") || !strings.Contains(failed.Log, "Server setup is required") {
+		t.Fatalf("established setup regression was not rejected at runtime readiness: %s\n%s", failed.Error, failed.Log)
 	}
+	// Restarting Docker containers can assign new ephemeral host ports; use
+	// the reconciled route and wait for ordinary readiness after restart.
 	m.reconcileRoutes()
+	if m.Current(a.ID).ID != r1.ID {
+		t.Fatal("established failure replaced the prior release")
+	}
+	if err := rt.waitReady(ctx, m.Current(a.ID)); err != nil {
+		t.Fatal("restored prior release did not regain genuine readiness", err)
+	}
+	if err := rt.Ready(ctx, m.Current(a.ID)); err != nil {
+		t.Fatal("restored sidecar health failed", err)
+	}
 	if request("GET", "/persist") != "preserved" {
 		t.Fatal("failure did not restore old stack")
 	}
 	m.mu.Lock()
 	bad = m.data.Apps[a.ID]
-	delete(bad.Env, "FAIL_READY")
+	delete(bad.Env, "FIXTURE_RESET_SETUP")
 	m.data.Apps[a.ID] = bad
 	m.mu.Unlock()
 	yes := true

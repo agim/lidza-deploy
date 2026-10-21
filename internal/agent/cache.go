@@ -350,7 +350,7 @@ func (m *Manager) preflightRuntime(ctx context.Context, a App, source string) (A
 	}
 	maps.Copy(merged, a.Env)
 	a.Env = merged
-	if err := productionRequirements(cfg, effective, a.StorageVolume != ""); err != nil {
+	if err := stackProductionRequirements(cfg, effective, a.StorageVolume != "", manifest); err != nil {
 		return a, err
 	}
 	return a, a.Validate()
@@ -390,7 +390,23 @@ func productionValues(source string, cfg *config.Config, a App) (map[string]stri
 	return values, nil
 }
 func productionRequirements(cfg *config.Config, values map[string]string, persistentLocalStorage ...bool) error {
+	return stackProductionRequirements(cfg, values, len(persistentLocalStorage) > 0 && persistentLocalStorage[0], nil)
+}
+
+func stackProductionRequirements(cfg *config.Config, values map[string]string, persistentLocalStorage bool, manifest *StackManifest) error {
+	declared := map[string]StackConfiguration{}
 	var missing []string
+	if manifest != nil {
+		if err := manifest.validateConfiguration(); err != nil {
+			return err
+		}
+		for _, setting := range manifest.Configuration {
+			declared[setting.Name] = setting
+			if setting.required(values) && strings.TrimSpace(values[setting.Name]) == "" {
+				missing = append(missing, setting.guidance())
+			}
+		}
+	}
 	for _, enabled := range cfg.Packs {
 		for _, official := range pack.Officials {
 			if enabled != pack.OfficialPrefix+official.Name {
@@ -398,10 +414,15 @@ func productionRequirements(cfg *config.Config, values map[string]string, persis
 			}
 			for _, setting := range official.Production {
 				v := strings.TrimSpace(values[setting.Name])
-				if enabled == "lidza/storage" && setting.Name == "STORAGE_PROVIDER" && (v == "" || v == "local") && len(persistentLocalStorage) > 0 && persistentLocalStorage[0] && values["STORAGE_DIR"] == appStorageMount {
+				if enabled == "lidza/storage" && setting.Name == "STORAGE_PROVIDER" && (v == "" || v == "local") && persistentLocalStorage && values["STORAGE_DIR"] == appStorageMount {
 					continue
 				}
 				if v == "" && !setting.Optional {
+					if _, ok := declared[setting.Name]; ok {
+						// App-owned setup is validated by real runtime readiness.
+						// Deploy/conditional guidance was already added above.
+						continue
+					}
 					missing = append(missing, setting.Name+" ("+enabled+")")
 				} else if slices.Contains(setting.Dev, strings.ToLower(v)) {
 					missing = append(missing, setting.Name+" (production configuration required)")

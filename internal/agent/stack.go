@@ -94,6 +94,7 @@ type StackBootstrapReadiness struct {
 	SetupPath          string `json:"setup_path,omitempty"`
 }
 type StackManifest struct {
+	Configuration       []StackConfiguration     `json:"configuration,omitempty"`
 	BootstrapReadiness  *StackBootstrapReadiness `json:"bootstrap_readiness,omitempty"`
 	Version             int                      `json:"version"`
 	RequiredEnvironment []string                 `json:"required_environment,omitempty"`
@@ -164,6 +165,9 @@ func loadStackManifest(source string) (*StackManifest, error) {
 	return &manifest, nil
 }
 func (m StackManifest) validate() error {
+	if err := m.validateConfiguration(); err != nil {
+		return err
+	}
 	if b := m.BootstrapReadiness; b != nil {
 		if !validStackProbePath(b.Path) || b.Path == "/readyz" || len(b.ReadyzBodyContains) < 16 || len(b.ReadyzBodyContains) > 200 || strings.ContainsAny(b.ReadyzBodyContains, "\r\n\x00") || b.SetupPath != "" && !validStackProbePath(b.SetupPath) {
 			return errors.New("bootstrap readiness needs a safe app health path, a specific setup-required marker and an optional safe setup path")
@@ -309,6 +313,15 @@ func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManife
 	}
 	next := saved
 	next.Env = maps.Clone(saved.Env)
+	next.EnvKinds = maps.Clone(saved.EnvKinds)
+	if next.EnvKinds == nil {
+		next.EnvKinds = map[string]string{}
+	}
+	for _, setting := range manifest.Configuration {
+		if _, present := next.Env[setting.Name]; setting.Secret && present {
+			next.EnvKinds[setting.Name] = EnvironmentCredential
+		}
+	}
 	if next.Env == nil {
 		next.Env = map[string]string{}
 	}
@@ -322,6 +335,11 @@ func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManife
 	}
 	for _, k := range manifest.RequiredEnvironment {
 		if next.Env[k] == "" {
+			for _, setting := range manifest.Configuration {
+				if setting.Name == k {
+					return a, fmt.Errorf("stack requires %s; configure in application Settings → Environment", setting.guidance())
+				}
+			}
 			return a, fmt.Errorf("stack requires %s in encrypted application settings", k)
 		}
 	}
@@ -346,6 +364,7 @@ func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManife
 		return a, err
 	}
 	a.Env = maps.Clone(next.Env)
+	a.EnvKinds = maps.Clone(next.EnvKinds)
 	a.StackManifest = manifest
 	for _, s := range manifest.Services {
 		if _, err := stackEnvironment(a, s); err != nil {
