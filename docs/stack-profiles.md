@@ -21,12 +21,13 @@ first deployment requires a new application; existing data stays retained for ex
 These are resource limits, not throughput guarantees. The compact standalone total
 is 3584 MiB of containers plus 512 MiB host allowance. A colocated Deploy control
 panel, its database, other applications, and existing databases consume additional
-capacity. Other running containers must have explicit memory limits; unbounded
-containers cause a placement error rather than being counted as zero. Linux
-kernel-reserved RAM is charged against the host allowance, up to
-256 MiB and never more than half that allowance; service limits stay unchanged.
-This allows a nominal 4 GiB VM whose usable MemTotal is slightly smaller while
-rejecting hosts that cannot fit the actual container limits. Existing/shared databases are reused at their existing limits and are
+capacity. Deployment and rollback do not reject a stack based on host RAM or
+summed container memory limits. Limits are ceilings, not reserved memory; shared
+servers can therefore deploy a profile even when their summed ceilings exceed
+physical RAM or unrelated containers have no explicit limit. Profile names and
+host allowances are sizing guidance, not placement restrictions. Each stack
+service still receives its selected memory/CPU limit. Existing/shared databases
+are reused at their existing limits and are
 never silently resized or tuned. No swap is allowed for stack services/new compact
 DBs. Migrations remain the application's responsibility.
 
@@ -140,7 +141,7 @@ No sidecar shares writable volumes with a concurrently running old release.
 Images build first. Activation stops the old release before starting the candidate;
 this introduces a maintenance interval, rather than claiming zero-downtime upgrades.
 Readiness requires app `/readyz` plus every declared service health command. Failure
-removes the candidate and restarts the previous stack. Rollback checks capacity for the previous release’s recorded profile, stops current
+removes the candidate and restarts the previous stack. Rollback validates the previous release’s recorded profile, stops current
 writers, starts previous services and checks readiness; failure restores current.
 Desired settings remain configured for the next reload, while rollback runs the
 previous release’s recorded runtime and environment, as with single-container rollback.

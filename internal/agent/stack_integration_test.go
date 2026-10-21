@@ -28,6 +28,26 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatal(err, string(out))
 	}
+	// Other containers' limits are ceilings, not reserved RAM. Neither a
+	// ceiling above physical memory nor an unbounded unrelated container
+	// should block deploy, reload or rollback. These idle fixtures allocate
+	// no large buffers and are removed independently of the app resources.
+	for _, memory := range []string{"0", "64g"} {
+		name := "lidza-capacity-fixture-" + newID()[:10]
+		args := []string{"run", "--rm", "-d", "--name", name, "--network", "none"}
+		if memory != "0" {
+			args = append(args, "--memory", memory, "--memory-swap", memory)
+		}
+		args = append(args, cacheImage, "sleep", "600")
+		if _, err := command(ctx, "", nil, "docker", args...); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_, _ = command(cleanup, "", nil, "docker", "rm", "-f", name)
+		})
+	}
 	manifest := fixtureStackManifest()
 	manifest.BootstrapReadiness = &StackBootstrapReadiness{Path: "/api/v1/health", ReadyzBodyContains: "Server setup is required", SetupPath: "/setup"}
 	manifest.Configuration = []StackConfiguration{
