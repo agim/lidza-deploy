@@ -27,15 +27,24 @@ browser tests. Server destinations now use native anchors, with a regression
 covering actual menu activation, routing and the locked console. MFA remains
 required. Primary-domain DNS/TLS error details are now visible in app Settings.
 
-A separate confirmed production routing problem returned HTTP308 from
-/.well-known/lidza-deploy-host even with a valid nonce. The agent requires a
-fresh HTTP200 proof before authorizing on-demand TLS, so that redirect blocks
-certificate issuance. The installer already contains the correct exception;
-the standalone deploy/Caddyfile sample now matches it. Binary upgrades do not
-rewrite an operator's live Caddy configuration. Add the HTTP proof route before
-the general redirect in the existing configuration, validate and reload Caddy;
-preserve management hostnames and other routes. No production configuration or
-deployment was changed by this session.
+The production TLS failure was caused by DNS pointing at another server, not
+by a missing Caddy route. The initial public HTTP308 observation came from the
+wrong destination; attributing it to the deployment host's Caddy configuration
+was incorrect. The application session subsequently verified that both the
+on-disk and live production Caddy configurations already had the HTTP proof
+exception, and local HTTP proof returned200. The agent correctly refused
+certificate authorization while DNS still pointed elsewhere.
+
+The operator corrected the authoritative A record. Public resolvers then agreed,
+while the production provider resolver temporarily retained the old answer until
+its TTL expired. Resolver convergence and successful public TLS verification are
+separate observations; the DNS correction alone does not establish TLS recovery.
+No production Caddy change, app restart or redeploy was needed for this diagnosis.
+
+The standalone deploy/Caddyfile sample did lack the HTTP proof exception and was
+corrected to match the existing installer. That sample improvement is separate
+from the production incident. Binary upgrades do not rewrite live Caddy config;
+do not change a verified correct configuration to compensate for wrong DNS.
 
 Thura's application session reports its corrected multi-architecture source
 bc01d2e reached setup_required with all declared service health checks passing.
