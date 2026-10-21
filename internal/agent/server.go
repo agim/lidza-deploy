@@ -55,6 +55,25 @@ func Handler(m *Manager) http.Handler {
 		w.WriteHeader(403)
 	})
 	private := http.NewServeMux()
+	private.HandleFunc("POST /v1/apps/{id}/master-key", func(w http.ResponseWriter, r *http.Request) {
+		if err := m.GenerateMasterKey(r.PathValue("id")); err != nil {
+			Fail(w, 409, err)
+			return
+		}
+		settings, err := m.Settings(r.PathValue("id"))
+		if err != nil {
+			Fail(w, 404, err)
+			return
+		}
+		for _, entry := range settings.Environment {
+			if entry.Key == "LIDZA_MASTER_KEY" {
+				w.Header().Set("Cache-Control", "no-store")
+				JSON(w, 200, entry)
+				return
+			}
+		}
+		Fail(w, 500, errors.New("generated key metadata unavailable"))
+	})
 	m.sshRoutes(private)
 	m.containerRoutes(private)
 	m.consoleJobRoutes(private)

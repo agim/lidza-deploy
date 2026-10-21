@@ -29,3 +29,34 @@ func provisionMasterKey(a App) (App, error) {
 	a.EnvSources["LIDZA_MASTER_KEY"] = "built-in"
 	return a, nil
 }
+
+// An explicit operator action for older installations. Save without restarting
+// the running app; deployment/reload will use the new key.
+func (m *Manager) GenerateMasterKey(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.data.Apps[id]
+	if !ok || a.Retiring {
+		return errors.New("application unavailable")
+	}
+	if a.Env["LIDZA_MASTER_KEY"] != "" {
+		return errors.New("application already has a master key; generation will not replace it")
+	}
+	if m.busy(id) || a.Restoring || m.upgradePending() {
+		return errors.New("wait for the active application operation before generating a master key")
+	}
+	next, err := provisionMasterKey(a)
+	if err != nil {
+		return err
+	}
+	next.EnvKinds = normalizeEnvironmentKinds(next.Env, next.EnvKinds)
+	if err = next.Validate(); err != nil {
+		return err
+	}
+	m.data.Apps[id] = next
+	if err = m.save(); err != nil {
+		m.data.Apps[id] = a
+		return err
+	}
+	return nil
+}

@@ -52,6 +52,21 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 		t.Fatal(w.Code, w.Body)
 	}
 	settings, _ := manager.Settings("portal")
+
+	existingMaster, err := manager.RevealCredential("portal", "LIDZA_MASTER_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := call(c.generateMasterKey, "POST", "portal", ""); response.Code != 502 || !strings.Contains(response.Body.String(), "already has a master key") || strings.Contains(response.Body.String(), existingMaster) {
+		t.Fatal("generator proxy did not reject replacement safely", response.Code)
+	}
+	preservedMaster, err := manager.RevealCredential("portal", "LIDZA_MASTER_KEY")
+	if err != nil || preservedMaster != existingMaster {
+		t.Fatal("generator proxy rotated an existing master key")
+	}
+	if routePermission("POST /api/control/apps/{id}/master-key") != "deploy.write" {
+		t.Fatal("master key generation bypasses settings permissions")
+	}
 	if !settings.CustomerHosts {
 		t.Fatal("creation lost customer-host opt-in")
 	}

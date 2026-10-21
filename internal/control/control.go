@@ -381,6 +381,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("PUT /api/control/mail", c.configureMail)
 	handle("POST /api/control/mail/test", c.testMail)
 	handle("GET /api/control/apps/{id}/settings", c.settings)
+	handle("POST /api/control/apps/{id}/master-key", c.generateMasterKey)
 	handle("PATCH /api/control/apps/{id}/settings", c.updateSettings)
 	handle("POST /api/control/apps/{id}/environment/{key}/reveal", c.revealCredential)
 	handle("DELETE /api/control/apps/{id}/webhook", c.disableHook)

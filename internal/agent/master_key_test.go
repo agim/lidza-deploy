@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,5 +200,103 @@ func TestMasterKeyGenerationDoesNotRegisterUnsavedApp(t *testing.T) {
 	}
 	if _, ok := m.data.Apps["unsaved-master"]; ok {
 		t.Fatal("registered app without durable key")
+	}
+}
+
+func TestExplicitMasterKeyGeneratorIsAuthenticatedMaskedAndNoRotation(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	a := testApp("older-install")
+	a.Current = &Release{ID: "running", Container: "existing-container"}
+	m.mu.Lock()
+	m.data.Apps[a.ID] = a
+	if err := m.save(); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Unlock()
+	handler := Handler(m)
+	req := httptest.NewRequest("POST", "/v1/apps/"+a.ID+"/master-key", nil)
+	denied := httptest.NewRecorder()
+	handler.ServeHTTP(denied, req)
+	if denied.Code != 401 {
+		t.Fatal("unauthenticated key generation accepted", denied.Code)
+	}
+	req = httptest.NewRequest("POST", "/v1/apps/"+a.ID+"/master-key", nil)
+	req.Header.Set("Authorization", "Bearer "+m.cfg.APIKey)
+	reply := httptest.NewRecorder()
+	handler.ServeHTTP(reply, req)
+	if reply.Code != 200 {
+		t.Fatal(reply.Code, reply.Body)
+	}
+	key := m.data.Apps[a.ID].Env["LIDZA_MASTER_KEY"]
+	var entry EnvironmentEntry
+	if err := json.Unmarshal(reply.Body.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if len(key) != 64 || entry.Key != "LIDZA_MASTER_KEY" || entry.Value != "" || entry.Length != 64 || entry.Kind != EnvironmentCredential || strings.Contains(reply.Body.String(), key) {
+		t.Fatal("invalid or exposed key metadata")
+	}
+	if m.Current(a.ID).ID != "running" || len(m.queue) != 0 || len(m.data.Deployments) != 0 {
+		t.Fatal("generation changed running release")
+	}
+	for i := 0; i < 2; i++ {
+		if err := m.GenerateMasterKey(a.ID); err == nil {
+			t.Fatal("rotated existing key")
+		}
+	}
+	if m.data.Apps[a.ID].Env["LIDZA_MASTER_KEY"] != key {
+		t.Fatal("existing key changed")
+	}
+	// A second operator must not win a racing generation request.
+	b := testApp("racing-install")
+	m.mu.Lock()
+	m.data.Apps[b.ID] = b
+	m.mu.Unlock()
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() { results <- m.GenerateMasterKey(b.ID) }()
+	}
+	successes := 0
+	for i := 0; i < 2; i++ {
+		if <-results == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatal("generation was not atomic", successes)
+	}
+	settings, _ := m.Settings(a.ID)
+	if !settings.MasterKeyGenerationSupported {
+		t.Fatal("generation capability not exposed")
+	}
+}
+
+func TestExplicitMasterKeyGeneratorBlocksBusyAppsAndRollsBackSaveFailure(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	a := testApp("generator-busy")
+	m.mu.Lock()
+	m.data.Apps[a.ID] = a
+	m.data.Deployments = append(m.data.Deployments, Deployment{ID: "active", AppID: a.ID, Status: "building"})
+	m.mu.Unlock()
+	if err := m.GenerateMasterKey(a.ID); err == nil {
+		t.Fatal("changed key during deployment")
+	}
+	m.mu.Lock()
+	m.data.Deployments = nil
+	if err := m.save(); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Unlock()
+	m.Close()
+	if err := os.Rename(m.path(), m.path()+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(m.path(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.GenerateMasterKey(a.ID); err == nil {
+		t.Fatal("hidden key persistence failure")
+	}
+	if m.data.Apps[a.ID].Env["LIDZA_MASTER_KEY"] != "" {
+		t.Fatal("used non-durable key")
 	}
 }

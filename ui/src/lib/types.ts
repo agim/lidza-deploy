@@ -84,6 +84,7 @@ export interface ControlStatus {
 }
 
 export interface EnvironmentEntry {
+  source?: string;
   key: string;
   kind?: 'setting' | 'credential' | 'auto';
   value?: string;
@@ -92,6 +93,7 @@ export interface EnvironmentEntry {
 }
 
 export interface AppSettings extends Application {
+ master_key_generation_supported?: boolean;
  stack_profiles_supported?: boolean;
  runtime_deployed?: boolean;
   additional_domains_supported?: boolean;

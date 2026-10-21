@@ -62,6 +62,7 @@ func routePermission(pattern string) string {
 	case "POST /api/control/apps/{id}/owner-claim", "POST /api/control/apps/{id}/environment/{key}/reveal":
 		return "deploy.secrets"
 	case "PATCH /api/control/apps/{id}/settings",
+		"POST /api/control/apps/{id}/master-key",
 		"PUT /api/control/apps/{id}/{feature}", "PUT /api/control/apps/{id}/tasks/{task}",
 		"POST /api/control/apps/{id}/tasks/{task}/{action}",
 		"POST /api/control/apps/{id}/deploy", "POST /api/control/apps/{id}/rollback",
