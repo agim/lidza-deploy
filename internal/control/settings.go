@@ -38,6 +38,21 @@ func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
 	}{Settings: out, ServerID: a.ServerID, Repository: a.Repository, GitHubInstallation: a.GitHubInstallation})
 }
 
+func (c *Control) generateMasterKey(w http.ResponseWriter, r *http.Request) {
+	a, ok := c.app(r.PathValue("id"))
+	if !ok || a.Retiring {
+		http.NotFound(w, r)
+		return
+	}
+	var out agent.EnvironmentEntry
+	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+url.PathEscape(a.ID)+"/master-key", nil, &out); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	agent.JSON(w, 200, out)
+}
+
 func (c *Control) revealCredential(w http.ResponseWriter, r *http.Request) {
 	a, ok := c.app(r.PathValue("id"))
 	if !ok || a.Retiring {

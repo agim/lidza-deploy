@@ -50,7 +50,7 @@ reused for updates, reloads and restarts. Back up the agent state and its own
 encryption key together.
 
 Existing applications keep their keys. Missing keys on pre-existing installations
-are not silently replaced: import the original through Environment settings. A
+are not silently replaced: import the original through Environment settings. For an app with no existing encryption key, **Settings → Environment → Generate master key** saves a new key on the agent after confirmation. It preserves other unsaved edits and does not reload the running app; use Deploy or Reload when ready. Generation rejects an existing key atomically, including concurrent requests, and the response contains only masked metadata. A
 master key cannot be cleared, and explicit replacement must match the app's data.
 
 For a new repository, `lidza credentials init` creates `config/master.key` and
