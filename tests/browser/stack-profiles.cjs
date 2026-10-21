@@ -5,7 +5,7 @@ const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
 (async () => {
  const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox'] });
  try {
-  for (const width of [390, 1440]) {
+  for (const width of [320, 390, 768, 1440]) {
    const page = await browser.newPage({ viewport: { width, height: 900 } });
    const errors = []; page.on('pageerror', e => errors.push(e.message));
    const state = await mockConsole(page);
@@ -23,6 +23,30 @@ const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
    await page.getByRole('button', { name: 'Continue', exact: true }).click();
    await page.getByRole('combobox', { name: 'Runtime profile' }).selectOption('minimum');
    await page.locator('[name=domain]').fill('stack.example.com');
+   for (const mode of ['none', 'external', 'local']) {
+    await page.locator('[name=database_mode]').selectOption(mode);
+    const gap = await page.locator('[name=database_mode]').evaluate(select => {
+      const field = select.closest('.field');
+      const toggle = field.previousElementSibling;
+      return field.getBoundingClientRect().top - toggle.getBoundingClientRect().bottom;
+    });
+    assert(gap >= 16, `Customer hostname / database gap at ${width}px (${mode}): ${gap}`);
+    const overlaps = await page.locator('[data-step="1"] .form-card').evaluate(card => {
+      const rows = [...card.children].filter(e => e.getClientRects().length);
+      return rows.slice(1).map((e, i) => e.getBoundingClientRect().top - rows[i].getBoundingClientRect().bottom).filter(gap => gap < 16);
+    });
+    assert.deepEqual(overlaps, [], `Hosting/data sections touch at ${width}px (${mode})`);
+    const gridGaps = await page.locator('[data-step="1"] .form-grid').evaluateAll(grids => grids.flatMap(grid => {
+      const fields = [...grid.children].filter(e => e.getClientRects().length);
+      const gaps = [];
+      for (let i = 0; i < fields.length; i++) for (let j = i + 1; j < fields.length; j++) {
+        const a = fields[i].getBoundingClientRect(), b = fields[j].getBoundingClientRect();
+        gaps.push(Math.max(b.top-a.bottom, a.top-b.bottom, b.left-a.right, a.left-b.right));
+      }
+      return gaps.filter(gap => gap < 16);
+    }));
+    assert.deepEqual(gridGaps, [], `Hosting/data grid fields touch at ${width}px (${mode})`);
+   }
    await page.locator('[name=database_mode]').selectOption('local');
    await page.getByRole('button', { name: 'Continue', exact: true }).click();
    await page.getByRole('button', { name: 'Create application', exact: true }).click();
