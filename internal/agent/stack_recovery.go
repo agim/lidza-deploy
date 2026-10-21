@@ -103,6 +103,28 @@ func (m *Manager) rollbackStackLocked(ctx context.Context, a App) error {
 	if err := validateRollbackSelection(ctx, a); err != nil {
 		return err
 	}
+	if a.Previous.Stack.Manifest.Version == 2 {
+		previousApp := a
+		previousApp.RuntimeProfile = a.Previous.Stack.Profile
+		previousApp.DatabaseBudgets = nil
+		seen := map[string]bool{}
+		for _, id := range a.Previous.DatabaseIDs {
+			db, exists := m.data.Databases[id]
+			if !exists || !db.Ready || db.Operation != "" {
+				return errors.New("previous release database attachment is unavailable or busy")
+			}
+			if db.Mode == "local" && !seen[id] {
+				previousApp.DatabaseBudgets = append(previousApp.DatabaseBudgets, databaseResourceBudget(db))
+				seen[id] = true
+			}
+		}
+		if err := a.Previous.Stack.Manifest.validate(); err != nil {
+			return err
+		}
+		if err := a.Previous.Stack.Manifest.validatePlan(previousApp, a.Previous.Stack.Selection); err != nil {
+			return err
+		}
+	}
 	m.data.StackTransitions[a.ID] = StackTransition{Previous: a.Current, Candidate: a.Previous, Reuse: true}
 	if err := m.save(); err != nil {
 		delete(m.data.StackTransitions, a.ID)

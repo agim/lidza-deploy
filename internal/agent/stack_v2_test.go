@@ -197,7 +197,7 @@ func TestStackV2PrivateSelectionNotPubliclyProxied(t *testing.T) {
 	_, a, mf := selectionServer(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.Write([]byte("private")) })
 	manager := testManager(t, &fakeRuntime{})
 	manager.data.Apps[a.ID] = a
-	for _, p := range []string{mf.RuntimeSelection.Path, mf.RuntimeSelection.Path + "/", "/other/../" + strings.TrimPrefix(mf.RuntimeSelection.Path, "/")} {
+	for _, p := range []string{mf.RuntimeSelection.Path, mf.RuntimeSelection.Path + "/", "/other/../" + strings.TrimPrefix(mf.RuntimeSelection.Path, "/"), "/.well-known%252fdeploy-runtime"} {
 		r := httptest.NewRequest("GET", "http://"+a.Domain+p, nil)
 		w := httptest.NewRecorder()
 		Proxy(manager).ServeHTTP(w, r)
@@ -267,5 +267,93 @@ esac
 	}
 	if !strings.Contains(string(raw), "--platform linux/amd64") {
 		t.Fatal("native platform not selected", string(raw))
+	}
+}
+
+func TestStackV2InitialExplicitChoiceAndCandidateFence(t *testing.T) {
+	a := v2App()
+	m := fixtureStackV2()
+	a.Env["AI_RUNTIME"] = "local"
+	selected, err := resolveStackSelection(context.Background(), a, m)
+	if err != nil || selected.Values["AI_RUNTIME"] != "local" {
+		t.Fatal("explicit initial choice overwritten", err)
+	}
+	_, a, m = selectionServer(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(StackSelectionSnapshot{Version: 1, Revision: "changed", Values: map[string]string{"AI_RUNTIME": "local"}})
+	})
+	candidate := *a.Current
+	stack := *a.Current.Stack
+	candidate.Stack = &stack
+	stack.Selection = &StackSelectionSnapshot{Version: 1, Revision: "planned", Values: map[string]string{"AI_RUNTIME": "local"}}
+	if err = verifyCandidateSelection(context.Background(), a, &candidate); err == nil {
+		t.Fatal("candidate revision drift accepted")
+	}
+	a.Current = nil
+	if err = verifyCandidateSelection(context.Background(), a, &candidate); err != nil || candidate.Stack.Selection.Revision != "changed" {
+		t.Fatal("first revision not adopted", err)
+	}
+	candidate.Stack.Selection.Values["AI_RUNTIME"] = "remote"
+	if err = verifyCandidateSelection(context.Background(), a, &candidate); err == nil {
+		t.Fatal("first-install topology drift accepted")
+	}
+}
+func TestStackV2ExchangeCredentialAlwaysMasked(t *testing.T) {
+	manager := testManager(t, &fakeRuntime{})
+	a := v2App()
+	mf := fixtureStackV2()
+	a.Current = &Release{Stack: &StackRelease{Manifest: mf}}
+	a.EnvKinds = map[string]string{"DEPLOY_RUNTIME_TOKEN": EnvironmentSetting}
+	manager.data.Apps[a.ID] = a
+	settings, err := manager.Settings(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(settings)
+	if strings.Contains(string(raw), "stable-token") {
+		t.Fatal("exchange token exposed")
+	}
+	for _, entry := range settings.Environment {
+		if entry.Key == "DEPLOY_RUNTIME_TOKEN" && entry.Kind != EnvironmentCredential {
+			t.Fatal("exchange token not masked")
+		}
+	}
+	if err = manager.PatchSettings(a.ID, SettingsPatch{Branch: a.Branch, Domain: a.Domain, EnvKindChanges: map[string]string{"DEPLOY_RUNTIME_TOKEN": EnvironmentSetting}}); err == nil {
+		t.Fatal("token changed to plaintext")
+	}
+	if err = manager.PatchSettings(a.ID, SettingsPatch{Branch: a.Branch, Domain: a.Domain, EnvChanges: map[string]*string{"DEPLOY_RUNTIME_TOKEN": nil}}); err == nil {
+		t.Fatal("retained token deleted")
+	}
+	delete(a.Env, "DEPLOY_RUNTIME_TOKEN")
+	manager.data.Apps[a.ID] = a
+	if _, err = manager.prepareStack(context.Background(), a, &mf); err == nil || !strings.Contains(err.Error(), "restore the original") {
+		t.Fatal("running identity silently replaced", err)
+	}
+}
+
+func TestStackV2LegacyDatabaseCeilingsAreNotInvented(t *testing.T) {
+	old := databaseResourceBudget(Database{Mode: "local"})
+	if old.MemoryMiB != 1024 || old.CPUs != "" {
+		t.Fatal("legacy ceilings invented", old)
+	}
+	a := v2App()
+	a.DatabaseBudgets = []StackBudget{old}
+	m := fixtureStackV2()
+	if err := m.validatePlan(a, &StackSelectionSnapshot{Version: 1, Revision: "a", Values: map[string]string{"AI_RUNTIME": "remote"}}); err == nil || !strings.Contains(err.Error(), "no valid recorded CPU ceiling") {
+		t.Fatal("unbounded database claimed bounded", err)
+	}
+}
+
+func TestStackV2PublicSelectorDiagnosticsRetainServiceNames(t *testing.T) {
+	manager := testManager(t, &fakeRuntime{})
+	manager.data.Deployments = []Deployment{{ID: "probe"}}
+	a := v2App()
+	mf := fixtureStackV2()
+	a.StackManifest = &mf
+	a.Env["AI_RUNTIME"] = "local"
+	ctx := manager.deploymentDiagnostics(context.Background(), job{app: a, deployment: "probe"})
+	commandDiagnostic(ctx, "stack", "local-ai failed stable-token")
+	output := manager.Deployments()[0].Log
+	if !strings.Contains(output, "local-ai failed") || strings.Contains(output, "stable-token") || !strings.Contains(output, "[redacted]") {
+		t.Fatal("public enum obscured diagnostics or token leaked", output)
 	}
 }

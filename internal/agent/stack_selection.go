@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"path"
 	"slices"
 	"strconv"
@@ -155,6 +156,13 @@ func verifyStackSelection(ctx context.Context, a App, m StackManifest) error {
 }
 func privateRuntimeSelectionPath(a App, p string) bool {
 	cleaned := path.Clean(p)
+	for i := 0; i < 2; i++ {
+		decoded, err := url.PathUnescape(cleaned)
+		if err != nil || decoded == cleaned {
+			break
+		}
+		cleaned = path.Clean(decoded)
+	}
 	for _, r := range []*Release{a.Current, a.Previous} {
 		if r == nil || r.Stack == nil || r.Stack.Manifest.RuntimeSelection == nil {
 			continue
@@ -207,4 +215,11 @@ func validateRollbackSelection(ctx context.Context, a App) error {
 		return errors.New("previous release topology conflicts with active/saved desired configuration; publish a compatible selection or deploy a reconciled release before rollback")
 	}
 	return nil
+}
+
+func runtimeSelectionTokenKey(a App) string {
+	if a.Current != nil && a.Current.Stack != nil && a.Current.Stack.Manifest.RuntimeSelection != nil {
+		return a.Current.Stack.Manifest.RuntimeSelection.TokenKey
+	}
+	return ""
 }

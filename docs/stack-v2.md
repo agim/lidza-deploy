@@ -1,8 +1,9 @@
 # Stack manifest version 2
 
-Implementation checkpoint on feat/stack-v2. Release/minimum version pending
-isolated acceptance; do not deploy this contract to production yet. Version1
-remains supported with its unchanged policies and resource profiles.
+Minimum agent and control-panel version: **v0.2.102**. Upgrade both before
+using this contract; older agents reject version2. Version1 remains supported
+with its unchanged policies and resource profiles. See the
+[isolated platform acceptance report](reviews/stack-v2-acceptance.md).
 
 The path remains deploy/lidza.stack.json. Set version:2. Existing fields retain
 their meaning. New capabilities are:
@@ -110,7 +111,9 @@ service budgets do not count. This does not restore admission control based on
 unrelated containers' ceiling sums. Existing managed database sizing is retained;
 if attached database ceilings exceed the declared allowance, increase the
 allowance/profile or explicitly change attachments. No shared/preexisting DB is
-silently resized. A4GiB Matrix/local-model claim needs new whole-app acceptance;
+silently resized. Legacy database attachments without a recorded CPU limit are
+unbounded and cannot establish a bounded v2 database allowance; explicitly
+configure a bounded attachment rather than assuming a CPU limit. A4GiB Matrix/local-model claim needs new whole-app acceptance;
 the prior four-container measurements do not establish it.
 
 Settings advertises stack_manifest_versions:[1,2] and returns the committed

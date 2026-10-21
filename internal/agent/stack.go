@@ -326,6 +326,10 @@ func (m *Manager) provisionStackSettings(a App, manifest *StackManifest) (App, e
 	next := saved
 	next.Env = maps.Clone(saved.Env)
 	next.EnvKinds = maps.Clone(saved.EnvKinds)
+	next.EnvSources = maps.Clone(saved.EnvSources)
+	if next.EnvSources == nil {
+		next.EnvSources = map[string]string{}
+	}
 	if next.EnvKinds == nil {
 		next.EnvKinds = map[string]string{}
 	}
@@ -338,8 +342,13 @@ func (m *Manager) provisionStackSettings(a App, manifest *StackManifest) (App, e
 		next.Env = map[string]string{}
 	}
 	for _, k := range manifest.GeneratedSecrets {
+		next.EnvKinds[k] = EnvironmentCredential
+		if next.Env[k] == "" && saved.Current != nil && saved.Current.Stack != nil && saved.Current.Stack.Manifest.RuntimeSelection != nil && saved.Current.Stack.Manifest.RuntimeSelection.TokenKey == k {
+			return a, errors.New("retained runtime-selection credential is missing; restore the original credential instead of rotating the running app identity")
+		}
 		if next.Env[k] == "" {
 			next.Env[k] = newID() + newID()
+			next.EnvSources[k] = "stack-generated"
 			if k == "LIVEKIT_API_KEY" {
 				next.Env[k] = newID()
 			}
@@ -403,6 +412,9 @@ func validStackProbePath(path string) bool {
 }
 
 func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManifest) (App, error) {
+	if err := manifest.validate(); err != nil {
+		return a, err
+	}
 	var err error
 	a, err = m.provisionStackSettings(a, manifest)
 	if err != nil {
@@ -420,14 +432,7 @@ func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManife
 		}
 		a.BindingNetworks[key] = db.Network
 		if db.Mode == "local" && !seen[id] {
-			memory, cpus := db.MemoryMiB, db.CPUs
-			if memory == 0 {
-				memory = 1024
-			}
-			if cpus == "" {
-				cpus = "1"
-			}
-			a.DatabaseBudgets = append(a.DatabaseBudgets, StackBudget{memory, cpus})
+			a.DatabaseBudgets = append(a.DatabaseBudgets, databaseResourceBudget(db))
 			seen[id] = true
 		}
 	}

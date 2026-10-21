@@ -510,14 +510,7 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 		db := m.data.Databases[id]
 		a.BindingNetworks[key] = db.Network
 		if db.Mode == "local" && !seenDatabases[id] {
-			memory, cpus := db.MemoryMiB, db.CPUs
-			if memory == 0 {
-				memory = 1024
-			}
-			if cpus == "" {
-				cpus = "1"
-			}
-			a.DatabaseBudgets = append(a.DatabaseBudgets, StackBudget{memory, cpus})
+			a.DatabaseBudgets = append(a.DatabaseBudgets, databaseResourceBudget(db))
 			seenDatabases[id] = true
 		}
 	}

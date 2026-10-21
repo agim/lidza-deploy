@@ -1,10 +1,9 @@
 # Proposed stack version 2: additional services and runtime selection
 
-Status: proposal, not an accepted manifest or a released runtime capability.
-Do not put these fields in a production manifest yet. v0.2.101 accepts only
-version1, one app and at most one each mail/office, three services total.
-Unknown fields and roles fail closed. No production deployment is authorized by
-this document. The application repository owns its integration and measurements.
+Status: superseded by the implemented [version2 contract](stack-v2.md),
+minimum agent and control-panel v0.2.102. This document records the original
+proposal; use the implemented contract for exact supported fields and constraints.
+The application repository owns its integration and measurements.
 
 ## Existing supported contract
 

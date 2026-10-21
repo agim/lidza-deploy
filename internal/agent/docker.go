@@ -173,6 +173,9 @@ func (d *Docker) Reload(ctx context.Context, a App, id string) (*Release, error)
 		if err != nil {
 			return nil, err
 		}
+		if d.runtimeDiagnostics != nil {
+			ctx = d.runtimeDiagnostics(ctx, a)
+		}
 		images := stackImages(a.Current)
 		host, err := nativeStackPlatform(ctx)
 		if err != nil {

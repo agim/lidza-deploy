@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -28,6 +29,15 @@ type StackSelectionSnapshot struct {
 
 var stackCPUPattern = regexp.MustCompile(`^[0-9]{1,2}(\.[0-9]{1,3})?$`)
 
+// Old databases defaulted to a 1GiB memory cap and no CPU cap. Preserve
+// that fact: a missing CPU ceiling cannot be invented for a bounded v2 plan.
+func databaseResourceBudget(d Database) StackBudget {
+	memory := d.MemoryMiB
+	if memory == 0 {
+		memory = 1024
+	}
+	return StackBudget{MemoryMiB: memory, CPUs: d.CPUs}
+}
 func budgetCPU(b StackBudget) (int, error) {
 	if !stackCPUPattern.MatchString(b.CPUs) {
 		return 0, errors.New("CPU budget must be a positive decimal with up to three fractional digits")
@@ -72,7 +82,7 @@ func (m StackManifest) validateV2() error {
 	}
 	sel := m.RuntimeSelection
 	if sel != nil {
-		if len(sel.Selectors) == 0 || len(sel.Selectors) > 16 || len(sel.Initial) != len(sel.Selectors) || !validStackProbePath(sel.Path) || !strings.HasPrefix(sel.Path, "/.well-known/") || sel.Path == domainProbePath || !slices.Contains(m.GeneratedSecrets, sel.TokenKey) || platformConfiguration(sel.TokenKey) {
+		if len(sel.Selectors) == 0 || len(sel.Selectors) > 16 || len(sel.Initial) != len(sel.Selectors) || !validStackProbePath(sel.Path) || path.Clean(sel.Path) != sel.Path || !strings.HasPrefix(sel.Path, "/.well-known/") || sel.Path == domainProbePath || !slices.Contains(m.GeneratedSecrets, sel.TokenKey) || platformConfiguration(sel.TokenKey) {
 			return errors.New("runtime_selection needs bounded selectors/initial values, a private well-known path and a purpose-specific generated token")
 		}
 		for name, values := range sel.Selectors {
@@ -152,7 +162,7 @@ func (m StackManifest) validatePlan(a App, selection *StackSelectionSnapshot) er
 	for _, b := range a.DatabaseBudgets {
 		n, err := budgetCPU(b)
 		if err != nil {
-			return errors.New("attached database limits unavailable")
+			return errors.New("attached database has no valid recorded CPU ceiling; its configuration is preserved, explicitly attach a bounded database before claiming this profile")
 		}
 		actualMemory += b.MemoryMiB
 		actualCPU += n

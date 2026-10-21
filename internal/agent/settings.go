@@ -67,6 +67,9 @@ func (m *Manager) Settings(id string) (Settings, error) {
 		return Settings{}, errors.New("unknown application")
 	}
 	kinds := normalizeEnvironmentKinds(a.Env, a.EnvKinds)
+	if tokenKey := runtimeSelectionTokenKey(a); tokenKey != "" {
+		kinds[tokenKey] = EnvironmentCredential
+	}
 	keys := slices.Sorted(maps.Keys(a.Env))
 	environment := make([]EnvironmentEntry, 0, len(keys))
 	for _, key := range keys {
@@ -107,7 +110,7 @@ func (m *Manager) RevealCredential(id, key string) (string, error) {
 	if !ok {
 		return "", errors.New("unknown environment variable")
 	}
-	if normalizeEnvironmentKinds(a.Env, a.EnvKinds)[key] != EnvironmentCredential {
+	if key != runtimeSelectionTokenKey(a) && normalizeEnvironmentKinds(a.Env, a.EnvKinds)[key] != EnvironmentCredential {
 		return "", errors.New("environment variable is a setting and does not require reveal")
 	}
 	return value, nil
@@ -185,6 +188,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		if k == "CACHE_URL" && m.data.Caches[id].Mode != "" {
 			return errors.New("CACHE_URL is managed through Cache settings")
 		}
+		if k == runtimeSelectionTokenKey(a) && (v == nil || *v == "") {
+			return errors.New("runtime-selection credential cannot be cleared; preserve the installation's authenticated exchange identity")
+		}
 		if k == "AUTH_SECRET" && (v == nil || *v == "") {
 			return errors.New("AUTH_SECRET cannot be removed or cleared; supply a replacement explicitly to rotate authentication tokens")
 		}
@@ -205,6 +211,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		}
 	}
 	for key, kind := range p.EnvKindChanges {
+		if key == runtimeSelectionTokenKey(a) && kind != EnvironmentCredential {
+			return errors.New("runtime-selection credentials remain masked; they cannot be changed to plain settings")
+		}
 		if kind != EnvironmentSetting && kind != EnvironmentCredential {
 			return fmt.Errorf("invalid environment classification for %q", key)
 		}
