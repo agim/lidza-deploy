@@ -10,11 +10,12 @@ import (
 // Adapted from monolithcms-app/agent/config.go. Configuration remains private
 // and atomically replaced; registration is explicit rather than trust-on-first-use.
 type Config struct {
-	TLSListen   string `json:"tls_listen"`
-	Listen      string `json:"listen"`
-	ProxyListen string `json:"proxy_listen"`
-	DataDir     string `json:"data_dir"`
-	APIKey      string `json:"api_key"`
+	TLSListen                  string `json:"tls_listen"`
+	Listen                     string `json:"listen"`
+	ProxyListen                string `json:"proxy_listen"`
+	DataDir                    string `json:"data_dir"`
+	APIKey                     string `json:"api_key"`
+	PredeploymentBackupMinutes int    `json:"predeployment_backup_minutes,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -30,6 +31,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if !filepath.IsAbs(c.DataDir) {
 		return c, errors.New("data_dir must be absolute")
+	}
+	if c.PredeploymentBackupMinutes < 0 || c.PredeploymentBackupMinutes > 120 {
+		return c, errors.New("predeployment_backup_minutes must be between 1 and 120, or 0 for the 10-minute default")
 	}
 	return c, nil
 }

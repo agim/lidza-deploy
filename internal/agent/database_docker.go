@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 )
@@ -18,7 +19,8 @@ func dockerStream(ctx context.Context, input io.Reader, output io.Writer, extra 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdin = input
 	cmd.Stdout = output
-	cmd.Stderr = io.Discard
+	var stderr limitedBuffer
+	cmd.Stderr = &stderr
 	cmd.WaitDelay = 5 * time.Second
 	for _, name := range []string{"PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"} {
 		if v := os.Getenv(name); v != "" {
@@ -27,6 +29,16 @@ func dockerStream(ctx context.Context, input io.Reader, output io.Writer, extra 
 	}
 	cmd.Env = append(cmd.Env, extra...)
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// Classify known causes without returning raw PostgreSQL output (which may contain secrets).
+		text := stderr.String()
+		// pg_dump implements --lock-wait-timeout using statement_timeout
+		// around its initial LOCK TABLE, rather than PostgreSQL lock_timeout.
+		if slices.Contains(args, "pg_dump") && (strings.Contains(text, "lock timeout") || (strings.Contains(text, "statement timeout") && strings.Contains(text, "LOCK TABLE"))) {
+			return errors.New("PostgreSQL backup lock wait exceeded 30 seconds; a schema change or exclusive table lock is blocking pg_dump")
+		}
 		return errors.New("PostgreSQL Docker operation failed; check connection, permissions and server version (client: PostgreSQL 17)")
 	}
 	return nil
