@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/agim/lidza/packs/storage"
@@ -70,6 +71,10 @@ func normalizeEnvironmentKinds(env map[string]string, kinds map[string]string) m
 	out := make(map[string]string, len(env))
 	for key, value := range env {
 		kind := kinds[key]
+		if key == "LIDZA_MASTER_KEY" {
+			out[key] = EnvironmentCredential
+			continue
+		}
 		if kind != EnvironmentSetting && kind != EnvironmentCredential {
 			kind = environmentKind(key, value)
 		}
@@ -179,6 +184,12 @@ func (a App) Validate() error {
 		return errors.New("at most 100 environment variables")
 	}
 	for k, v := range a.Env {
+		if k == "LIDZA_MASTER_KEY" && v != "" {
+			decoded, err := hex.DecodeString(v)
+			if err != nil || len(decoded) != 32 {
+				return errors.New("LIDZA_MASTER_KEY must contain exactly 64 hexadecimal characters")
+			}
+		}
 		if !envPattern.MatchString(k) || strings.ContainsAny(v, "\r\n\x00") {
 			return fmt.Errorf("invalid environment variable %q", k)
 		}

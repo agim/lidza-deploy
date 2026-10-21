@@ -36,8 +36,8 @@ func TestAuthSecretProvisioningStableAndPrivate(t *testing.T) {
 	if err != nil || len(bytes) != 32 {
 		t.Fatal("expected 256-bit random auth secret")
 	}
-	if m.data.Apps[a.ID].Env["LIDZA_MASTER_KEY"] != "" {
-		t.Fatal("master key must remain manual")
+	if key, e := hex.DecodeString(m.data.Apps[a.ID].Env["LIDZA_MASTER_KEY"]); e != nil || len(key) != 32 {
+		t.Fatal("new application requires a default master key")
 	}
 	second := testApp("auth-two")
 	if err := m.Upsert(second); err != nil {

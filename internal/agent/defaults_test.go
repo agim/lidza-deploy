@@ -118,7 +118,7 @@ func ptrString(s string) *string { return &s }
 func TestDefaultsRejectedQueueDoesNotConsumeSnapshot(t *testing.T) {
 	m := testManager(t, &fakeRuntime{})
 	a := testApp("full")
-	for i := 0; i < 97; i++ {
+	for i := 0; i < 96; i++ {
 		a.Env[fmt.Sprintf("VAR_%d", i)] = "value"
 	}
 	if err := m.Upsert(a); err != nil {

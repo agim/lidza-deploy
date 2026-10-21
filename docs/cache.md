@@ -11,7 +11,7 @@ Credentials are generated once and stored in the agent's encrypted state.
 Redeployments, reloads and agent restarts reuse them. Existing `CACHE_URL`
 environment values and production sealed credentials are preserved. Sealed
 credentials still require the application's original `LIDZA_MASTER_KEY`; Deploy
-does not generate or replace that key.
+does not replace that key. New app identities receive a unique default master key unless one is imported during creation.
 
 An owned, running local cache is checked with an authenticated PING before
 provisioning is considered. A healthy service keeps its existing limits and
