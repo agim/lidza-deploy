@@ -59,7 +59,10 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	}
 	environment, flags := postgresEnvironment(d.URL)
 	args = append(args, flags...)
-	args = append(args, databaseImage, "pg_dump", "--format=custom", "--no-owner", "--no-acl", "--lock-wait-timeout=30s")
+	// Full telemetry dumps spend substantial CPU compressing repeated JSON.
+	// Keep the complete custom archive, but avoid pg_dump's moderate gzip default.
+	// PostgreSQL 17's matching pg_restore reads Zstandard without an external tool.
+	args = append(args, databaseImage, "pg_dump", "--format=custom", "--compress=zstd:1", "--no-owner", "--no-acl", "--lock-wait-timeout=30s")
 	stopDump := backupProgress(ctx, "Dumping PostgreSQL to local disk (database lock wait limited to 30 seconds)", writer.n.Load)
 	err = dockerStream(ctx, nil, writer, environment, args...)
 	stopDump()
