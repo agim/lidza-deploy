@@ -102,6 +102,13 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 	if hex.EncodeToString(sum[:]) != record.SHA256 || int64(len(raw)) != record.Size {
 		t.Fatal("backup integrity metadata mismatch")
 	}
+	var archiveList bytes.Buffer
+	if err := dockerStream(ctx, bytes.NewReader(raw), &archiveList, nil, "exec", "-i", name, "pg_restore", "--list"); err != nil {
+		t.Fatal("backup archive is unreadable", err)
+	}
+	if !strings.Contains(archiveList.String(), "Compression: zstd") || !strings.Contains(archiveList.String(), "TABLE DATA public proof") {
+		t.Fatal("full Zstandard archive required", archiveList.String())
+	}
 	files, _ := filepath.Glob(filepath.Join(m.backupDir(id), "*.dump"))
 	if len(files) != 1 {
 		t.Fatal("retention did not remove old file")
@@ -197,7 +204,14 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 	if currentBytes, e := os.ReadFile(retainedPath); e != nil || !bytes.Equal(currentBytes, retainedBytes) {
 		t.Fatal("locked dump changed retained backup bytes", e)
 	}
-	store := storage.Config{Provider: "s3", Endpoint: "https://127.0.0.1:1", Bucket: "test", Region: "us-east-1", AccessKey: "test", SecretKey: "test"}
+	// A controlled endpoint with an untrusted certificate fails promptly. An
+	// arbitrary unused port may be silently dropped by a host firewall instead
+	// of refusing the connection, making this preservation test nondeterministic.
+	unavailableS3 := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer unavailableS3.Close()
+	store := storage.Config{Provider: "s3", Endpoint: unavailableS3.URL, Bucket: "test", Region: "us-east-1", AccessKey: "test", SecretKey: "test"}
 	if err = m.setBackupStorage(&store); err != nil {
 		t.Fatal(err)
 	}
