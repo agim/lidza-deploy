@@ -32,6 +32,35 @@ A failed dump, required off-site upload or metadata save stops activation and le
 
 ## Local and off-site copies
 
+### Disposable table history
+
+The hosting agent supports explicit, database-scoped data exclusions in
+`/etc/lidza-agent/config.json`. For example, Kulla can omit its disposable raw
+history while retaining accounts, tokens, settings, schema and queued work:
+
+```json
+{
+  "backup_exclude_table_data": {
+    "kulla-lidza": ["public.kulla_logs", "public.kulla_delivery_evidence"]
+  }
+}
+```
+
+Merge this field into the existing private configuration; do not replace the
+agent credential or other keys. The map key is the database resource identity
+(`io.lidza.database` on its container), which may differ from the application ID.
+Restart the agent after editing. Names must be exact lowercase `schema.table`
+identifiers; wildcard and pattern exclusions are rejected. The policy applies to
+manual, scheduled, deployment and reload backups of that resource only. Other
+databases still receive full backups. Table definitions remain in the archive;
+their excluded contents do not. The build log and saved backup record explicitly
+list excluded table data. The backup gate, deadline, hashes, upload verification
+and failure retention are unchanged. A restored excluded table intentionally
+starts empty; applications using references to disposable history must handle
+missing history without fabricating data.
+
+### Archive storage
+
 Backups use `pg_dump --format=custom --compress=zstd:1 --no-owner --no-acl` and capture one database, not cluster roles or the control panel. They are written privately under `/var/lib/lidza-agent/backups/DATABASE_ID/` (or the agent's configured data directory), finalized before being listed, and include a SHA-256 checksum. Dumps are limited to 5 GiB, with two database operations per agent at once. Scheduled/manual backups retain their two-hour operation deadline; deployment backups use the shorter deadline described above. Large installations needing physical backups or point-in-time recovery should use their PostgreSQL provider's backup facilities.
 
 In **Integrations → S3-compatible storage**, enter an HTTPS endpoint, bucket, region, optional prefix, and access/secret keys. Saving writes and deletes a small connection-check object. Enable off-site copies per app after configuring the destination. The bucket must exist and grant object write/read-metadata/delete access within the prefix. Keep it private, enable provider-side encryption, and configure a bucket lifecycle rule for off-site retention. Local latest-only retention does **not** delete S3 objects. Pre-deployment backups overwrite one current object; if bucket versioning is enabled, configure lifecycle expiration for noncurrent versions to avoid retaining previous copies. This version does not provide client-side encryption or automatic S3 restores.

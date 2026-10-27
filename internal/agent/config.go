@@ -5,6 +5,7 @@ import (
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // Adapted from monolithcms-app/agent/config.go. Configuration remains private
@@ -17,6 +18,9 @@ type Config struct {
 	DataDir                    string         `json:"data_dir"`
 	APIKey                     string         `json:"api_key"`
 	PredeploymentBackupMinutes int            `json:"predeployment_backup_minutes,omitempty"`
+	// Exact schema.table names, scoped to a database resource identity. Schemas
+	// remain in dumps; only disposable table data is omitted. No glob patterns.
+	BackupExcludeTableData map[string][]string `json:"backup_exclude_table_data,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -35,6 +39,16 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if c.PredeploymentBackupMinutes < 0 || c.PredeploymentBackupMinutes > 120 {
 		return c, errors.New("predeployment_backup_minutes must be between 1 and 120, or 0 for the 10-minute default")
+	}
+	for database, tables := range c.BackupExcludeTableData {
+		if database == "" || len(tables) > 100 {
+			return c, errors.New("backup exclusions require a database identity and at most 100 exact tables")
+		}
+		for _, table := range tables {
+			if !regexp.MustCompile(`^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$`).MatchString(table) {
+				return c, errors.New("backup exclusions must be exact lowercase schema.table names, without patterns")
+			}
+		}
 	}
 	return c, nil
 }

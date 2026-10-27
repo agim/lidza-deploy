@@ -63,6 +63,10 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	// Keep the complete custom archive, but avoid pg_dump's moderate gzip default.
 	// PostgreSQL 17's matching pg_restore reads Zstandard without an external tool.
 	args = append(args, databaseImage, "pg_dump", "--format=custom", "--compress=zstd:1", "--no-owner", "--no-acl", "--lock-wait-timeout=30s")
+	for _, table := range m.cfg.BackupExcludeTableData[d.AppID] {
+		args = append(args, "--exclude-table-data="+table)
+		commandDiagnostic(ctx, "backup", "Omitting disposable table data by agent policy: "+table+" (schema retained).")
+	}
 	stopDump := backupProgress(ctx, "Dumping PostgreSQL to local disk (database lock wait limited to 30 seconds)", writer.n.Load)
 	err = dockerStream(ctx, nil, writer, environment, args...)
 	stopDump()
@@ -96,7 +100,7 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	if err != nil {
 		return record, errors.New("backup directory sync failed")
 	}
-	record = BackupRecord{ID: id, Created: time.Now().UTC(), Size: writer.n.Load(), SHA256: hex.EncodeToString(hash.Sum(nil))}
+	record = BackupRecord{ID: id, Created: time.Now().UTC(), Size: writer.n.Load(), SHA256: hex.EncodeToString(hash.Sum(nil)), ExcludedTableData: append([]string(nil), m.cfg.BackupExcludeTableData[d.AppID]...)}
 	// Do not carry the disk-stage reporter into the upload stage.
 	stopSync()
 	commandDiagnostic(ctx, "backup", fmt.Sprintf("Local backup finalized: %.1f MiB; SHA-256 recorded.", float64(record.Size)/(1<<20)))
