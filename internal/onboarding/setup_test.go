@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/agim/lidza"
+	"github.com/agim/lidza-deploy/internal/testsupport"
 	"github.com/agim/lidza-deploy/internal/webapp"
 	"github.com/agim/lidza-deploy/web"
 	"github.com/agim/lidza/pkg/credentials"
@@ -34,6 +35,11 @@ func cleanSetupEnv(t *testing.T) {
 	for _, k := range []string{"DATABASE_URL", "AUTH_SECRET", "AUTH_COOKIE_SECURE", "LIDZA_MASTER_KEY", "PUBLIC_URL", "APP_URL", "CONTROL_USER", "CONTROL_PASSWORD", "AUTH_CONNECT", "AUTH_CONNECT_GITHUB_CLIENT_ID", "AUTH_CONNECT_GITHUB_CLIENT_SECRET", "CONTROL_SERVERS_FILE"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
+	}
+	// The CLI suppresses operator keys. New() uses only this test's key with
+	// its t.TempDir; never re-enable access to an operator key file.
+	if os.Getenv(credentials.EnvKeyOff) == "1" {
+		testsupport.Key(t)
 	}
 	t.Cleanup(func() { credentials.SetOverrides(nil) })
 }
