@@ -69,3 +69,32 @@ Moving private agent tests into domains/dmarc/billing packages would change thei
 access and architecture without addressing an observed 580-second bottleneck.
 No unrelated Albaspot tests were moved. Optional Docker/Caddy/database integration
 tests still require their documented opt-in environment and fixtures.
+
+## Commit and incremental results
+
+The dependency update was committed first as df6f4e0. After a successful verify,
+the local pre-commit hook printed `[lidza] verify: passed 0s ago on the tree being
+committed; not repeated`. The commit took **0.027 seconds**. The hook was installed
+locally under .git/hooks for this measurement, not as a new repository convention.
+The CLI was installed from the release into the executor's normal Go binary cache.
+
+Only after that commit, a new test in internal/testsupport checked that fixture
+keys are distinct, decrypt their own temporary credentials, never create a master
+key file, and leave operator key-file suppression enabled. This was a real change
+to one test package, committed separately as 29861e1. `lidza verify` took
+**0.937 seconds**: check 546 ms, tests 356 ms; the unchanged feature test packages
+were cached and the new test package actually ran. Its commit took 0.046 seconds.
+
+A subsequent **uncached** `lidza test -- -count=1` passed in **25.031 seconds**
+(agent 23.693 seconds). This is full execution of the default suite, rather than
+claiming that cached results or a nonexistent tests/ split made it faster. The
+meaningful improvement here is avoiding repeated checks/tests and using Go's
+existing per-package cache. No 580-second package exists to split in this repo.
+
+The complete `go test -race ./...` and `go vet ./...` also passed after the update.
+A focused race run covers the subsequent one-package credential isolation test.
+The substantial remaining gap is that generic check does not discover the UI's
+nested ui/tsconfig.json, and this executor lacks optional checker installations;
+project-specific frontend checks and opt-in integration fixtures remain necessary.
+The requested note lookup is unavailable in plain-Go MCP mode. None of those
+limitations were patched in the framework repository.
