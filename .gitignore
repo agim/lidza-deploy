@@ -41,3 +41,6 @@ dist/
 .lidza-deploy/
 config/master.key
 config/credentials.yml.enc
+
+# Framework inspection and verification stamps
+.lidza/
