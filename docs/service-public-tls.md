@@ -1,6 +1,6 @@
 # Public certificates for stack services
 
-Implementation contract for agent/control v0.2.105 (not available in v0.2.104).
+Minimum agent/control version: **v0.2.105** (not available in v0.2.104).
 Do not add this field to deployed manifests until that version is installed.
 This is host deployment orchestration; the framework's private gateway identities
 are not public-domain certificates and are never reused here.
@@ -50,10 +50,20 @@ service_tls.trust_roots to a host-admin-owned PEM CA file for private PKI. The
 manifest cannot set either. No recursive search, wildcard acquisition, remote
 Caddy API, credentials, or filesystem path is exposed to the container. The agent
 validates the full chain, server purpose, matching private key, hostname and
-validity before atomic publication. The private key/bundle are mode0400 owned by
+validity before atomic publication. Wildcard, CA and multi-domain certificates
+are rejected even when their names would otherwise match the app. The private key/bundle are mode0400 owned by
 the declared uid; source/key bytes never appear in diagnostics or inventory.
 
 Material is isolated by app incarnation, primary hostname and service. Rollback
 keeps the previous release's hostname binding, and sync covers retained releases.
+Bindings whose hostname is no longer assigned to this app cannot renew or be
+started by rollback; redeploy against its configured hostname.
 Stopped/removed apps do not initiate issuance. Removal deletes copied key material
 after containers are removed; Caddy's original objects and unrelated apps remain.
+
+Container inventory exposes public_tls with hostname, status, not_after,
+fingerprint and a safe warning. The Containers page shows pending/ready/error
+and expiration. Ready means validated material delivered; it is not proof of
+SMTP/public reachability or of a consumer having reloaded its TLS configuration.
+
+Do not downgrade the agent below this contract while opted-in releases exist.

@@ -110,6 +110,7 @@ export interface AppSettings extends Application {
 }
 
 export interface ContainerInfo {
+  public_tls?: { hostname: string; status: string; not_after?: string; fingerprint?: string; warning?: string };
   ports?: ForwardedPort[];
   id?: string;
   name: string;

@@ -18,6 +18,7 @@ import (
 )
 
 type Docker struct {
+	serviceTLS          *serviceTLSController
 	gatewayClient       func(string) (*http.Client, error)
 	stackTransition     func(string, *Release, *Release, bool) error
 	prepareRuntime      func(context.Context, App, string) (App, error)

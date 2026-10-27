@@ -15,22 +15,23 @@ import (
 // ContainerView exposes operational metadata only. Container environment,
 // mounts and labels can contain credentials and are deliberately omitted.
 type ContainerView struct {
-	Ports          []PortView `json:"ports,omitempty"`
-	ID             string     `json:"id,omitempty"`
-	Name           string     `json:"name"`
-	AppID          string     `json:"app_id"`
-	Role           string     `json:"role"`
-	State          string     `json:"state"`
-	Status         string     `json:"status,omitempty"`
-	Health         string     `json:"health,omitempty"`
-	CPU            string     `json:"cpu,omitempty"`
-	Memory         string     `json:"memory,omitempty"`
-	MemoryPercent  string     `json:"memory_percent,omitempty"`
-	NetworkIO      string     `json:"network_io,omitempty"`
-	BlockIO        string     `json:"block_io,omitempty"`
-	PIDs           string     `json:"pids,omitempty"`
-	Restartable    bool       `json:"restartable"`
-	NeedsAttention bool       `json:"needs_attention"`
+	PublicTLS      *ServiceTLSStatus `json:"public_tls,omitempty"`
+	Ports          []PortView        `json:"ports,omitempty"`
+	ID             string            `json:"id,omitempty"`
+	Name           string            `json:"name"`
+	AppID          string            `json:"app_id"`
+	Role           string            `json:"role"`
+	State          string            `json:"state"`
+	Status         string            `json:"status,omitempty"`
+	Health         string            `json:"health,omitempty"`
+	CPU            string            `json:"cpu,omitempty"`
+	Memory         string            `json:"memory,omitempty"`
+	MemoryPercent  string            `json:"memory_percent,omitempty"`
+	NetworkIO      string            `json:"network_io,omitempty"`
+	BlockIO        string            `json:"block_io,omitempty"`
+	PIDs           string            `json:"pids,omitempty"`
+	Restartable    bool              `json:"restartable"`
+	NeedsAttention bool              `json:"needs_attention"`
 }
 
 type ContainerInventory struct {
@@ -40,6 +41,7 @@ type ContainerInventory struct {
 }
 
 type managedContainer struct {
+	PublicTLS     *ServiceTLSBinding
 	HealthCommand []string
 	AppID         string
 	Name          string
@@ -62,12 +64,12 @@ func (m *Manager) managedContainers() []managedContainer {
 		}
 		if a.Current != nil && a.Current.Stack != nil {
 			for _, c := range a.Current.Stack.Containers {
-				add(managedContainer{AppID: a.ID, Name: c.Container, Role: "Stack · " + c.Service.Name, HealthCommand: c.Service.HealthCommand, Restartable: true})
+				add(managedContainer{PublicTLS: c.PublicTLS, AppID: a.ID, Name: c.Container, Role: "Stack · " + c.Service.Name, HealthCommand: c.Service.HealthCommand, Restartable: true})
 			}
 		}
 		if a.Previous != nil && a.Previous.Stack != nil {
 			for _, c := range a.Previous.Stack.Containers {
-				add(managedContainer{AppID: a.ID, Name: c.Container, Role: "Stack · " + c.Service.Name + " · rollback"})
+				add(managedContainer{PublicTLS: c.PublicTLS, AppID: a.ID, Name: c.Container, Role: "Stack · " + c.Service.Name + " · rollback"})
 			}
 		}
 		if a.Previous != nil && a.Previous.Stack == nil {
@@ -286,8 +288,11 @@ func (m *Manager) containerInventory(ctx context.Context) ContainerInventory {
 				out.Warning = "Stack service health sampling timed out; unavailable evidence is not a healthy result."
 			}
 		}
+		if item.PublicTLS != nil && m.serviceTLS != nil {
+			view.PublicTLS = m.serviceTLS.status(*item.PublicTLS)
+		}
 		view.Ports = portRows[item.Name]
-		view.NeedsAttention = view.State == "missing" || view.State == "dead" || view.State == "exited" || view.State == "restarting" || view.Health == "unhealthy"
+		view.NeedsAttention = view.State == "missing" || view.State == "dead" || view.State == "exited" || view.State == "restarting" || view.Health == "unhealthy" || view.PublicTLS != nil && view.PublicTLS.Status != "ready"
 		out.Containers = append(out.Containers, view)
 	}
 	return out
