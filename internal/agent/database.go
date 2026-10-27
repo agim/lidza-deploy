@@ -28,15 +28,16 @@ type DatabaseRequest struct {
 	Backup BackupPolicy `json:"backup"`
 }
 type BackupRecord struct {
-	Kind             string    `json:"kind,omitempty"`
-	ID               string    `json:"id"`
-	Created          time.Time `json:"created"`
-	Size             int64     `json:"size"`
-	SHA256           string    `json:"sha256"`
-	Offsite          bool      `json:"offsite"`
-	ObjectKey        string    `json:"object_key,omitempty"`
-	OffsiteRequested bool      `json:"offsite_requested,omitempty"`
-	UploadError      string    `json:"upload_error,omitempty"`
+	ExcludedTableData []string  `json:"excluded_table_data,omitempty"`
+	Kind              string    `json:"kind,omitempty"`
+	ID                string    `json:"id"`
+	Created           time.Time `json:"created"`
+	Size              int64     `json:"size"`
+	SHA256            string    `json:"sha256"`
+	Offsite           bool      `json:"offsite"`
+	ObjectKey         string    `json:"object_key,omitempty"`
+	OffsiteRequested  bool      `json:"offsite_requested,omitempty"`
+	UploadError       string    `json:"upload_error,omitempty"`
 }
 type Database struct {
 	ResourceProfile string         `json:"resource_profile,omitempty"`

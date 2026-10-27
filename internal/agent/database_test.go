@@ -69,13 +69,14 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 	var result bytes.Buffer
 	env, flags := postgresEnvironment(secret)
 	args := append([]string{"run", "--rm", "--network", name}, flags...)
-	args = append(args, databaseImage, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-tAc", "CREATE TABLE proof (value text); INSERT INTO proof VALUES ('restore-me'); SELECT rolsuper FROM pg_roles WHERE rolname=current_user")
+	args = append(args, databaseImage, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-tAc", "CREATE TABLE proof (value text); INSERT INTO proof VALUES ('restore-me'); CREATE TABLE disposable_log(value text); INSERT INTO disposable_log VALUES ('do-not-back-up-history'); SELECT rolsuper FROM pg_roles WHERE rolname=current_user")
 	if err := dockerStream(ctx, nil, &result, env, args...); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasSuffix(strings.TrimSpace(result.String()), "f") {
 		t.Fatal("app role is a superuser")
 	}
+	m.cfg.BackupExcludeTableData = map[string][]string{id: {"public.disposable_log"}}
 	ports, err := command(ctx, "", nil, "docker", "port", name)
 	if err != nil || ports != "" {
 		t.Fatal("database exposed a host port")
@@ -93,6 +94,9 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 		}
 	}
 	record := d.Backups[0]
+	if len(record.ExcludedTableData) != 1 || record.ExcludedTableData[0] != "public.disposable_log" {
+		t.Fatal("backup coverage exclusions were not recorded", record.ExcludedTableData)
+	}
 	path := filepath.Join(m.backupDir(id), record.ID+".dump")
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -122,6 +126,10 @@ func TestDockerDatabaseBackupRestore(t *testing.T) {
 	proof, err := command(ctx, "", nil, "docker", "exec", name, "psql", "-U", "postgres", "-d", "restored", "-tAc", "SELECT value FROM proof")
 	if err != nil || proof != "restore-me" {
 		t.Fatal("restored data mismatch")
+	}
+	discarded, err := command(ctx, "", nil, "docker", "exec", name, "psql", "-U", "postgres", "-d", "restored", "-tAc", "SELECT count(*) FROM disposable_log")
+	if err != nil || discarded != "0" {
+		t.Fatal("disposable table schema must restore with no data", discarded, err)
 	}
 	state, _ := os.ReadFile(filepath.Join(m.cfg.DataDir, "state.json"))
 	views, _ := json.Marshal(m.databaseViews())
