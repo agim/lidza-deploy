@@ -118,8 +118,9 @@ Public ports are limited to app-owned SMTP TCP25 and RTC TCP7881/UDP7882. Confli
 with other apps or host processes fail explicitly; other containers are never
 stopped to claim ports. `THURA_RTC_NODE_IP` must be set to the server's externally
 reachable address when automatic SFU address discovery is unsuitable. Configure
-SMTP TLS in the application/mail image; arbitrary host certificate binds are not
-part of this contract.
+SMTP TLS in the application/mail image. From v0.2.105, use the explicit
+[public service certificate contract](service-public-tls.md) for a managed
+read-only copy with renewal sync. Arbitrary host certificate binds remain forbidden.
 
 Policies are fixed by the agent: `hardened` keeps UID65532, read-only rootfs and no
 capabilities; `init` allows app root initialization with CHOWN/DAC_OVERRIDE/FOWNER/

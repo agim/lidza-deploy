@@ -125,3 +125,10 @@ remains gated on upstream verified transport support; no proxy-header bypass.
 Protected TLS protocols may opt into `gateway_transport` on v0.2.103 or newer.
 See the [protected gateway contract](gateway-transport.md); ordinary HTTP
 forwarding headers never establish original-client transport evidence.
+
+## Public service certificates
+
+From v0.2.105, a service can opt into `public_tls` for a read-only, per-service
+copy of its primary hostname certificate, with validated renewal sync. See the
+[exact certificate delivery contract](service-public-tls.md). This does not expose
+Caddy storage or reuse the private gateway PKI.

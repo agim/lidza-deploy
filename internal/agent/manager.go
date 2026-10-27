@@ -36,6 +36,7 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	serviceTLS          *serviceTLSController
 	gatewayKeys         map[string]gatewayPKI
 	gatewayMu           sync.Mutex
 	gatewayClients      map[string]*gateway.Transport
@@ -137,7 +138,16 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	if m.data.StackTransitions == nil {
 		m.data.StackTransitions = map[string]StackTransition{}
 	}
+	m.serviceTLS, err = newServiceTLSController(cfg)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	for _, a := range m.data.Apps {
+		m.serviceTLS.setOwner(a)
+	}
 	if d, ok := rt.(*Docker); ok {
+		d.serviceTLS = m.serviceTLS
 		d.stackTransition = m.recordStackTransition
 		d.prepareRuntime = m.preflightRuntime
 		d.prepareStackRuntime = m.prepareStack
@@ -213,6 +223,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	m.reconcileRoutes()
 	m.wg.Add(1)
 	go m.routeLoop()
+	if _, ok := rt.(*Docker); ok {
+		m.wg.Add(1)
+		go m.serviceTLSLoop()
+	}
 	m.wg.Add(1)
 	go m.work()
 	m.wg.Add(1)
@@ -449,6 +463,9 @@ func (m *Manager) Upsert(a App) error {
 	if err := m.save(); err != nil {
 		m.data = before
 		return err
+	}
+	if m.serviceTLS != nil {
+		m.serviceTLS.setOwner(a)
 	}
 	return nil
 }

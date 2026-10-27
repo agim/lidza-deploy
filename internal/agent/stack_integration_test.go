@@ -104,7 +104,26 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var tlsFixture *publicTLSFixture
+	if os.Getenv("TEST_STACK_PUBLIC_TLS") == "1" {
+		tlsFixture = newPublicTLSFixture(t)
+		m.cfg.ServiceTLS = &ServiceTLSConfig{CertificateDirectory: tlsFixture.c.source, TrustRoots: filepath.Join(filepath.Dir(tlsFixture.c.root), "ca.pem")}
+		c, err := newServiceTLSController(m.cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.serviceTLS = c
+		rt.serviceTLS = c
+		tlsFixture.c = c
+		manifest.Services[1].PublicTLS = &StackPublicTLS{Hostname: "primary", UID: os.Getuid()}
+	}
 	a := testApp("stack-" + newID()[:10])
+	if tlsFixture != nil {
+		tlsFixture.a = a
+		tlsFixture.b = ServiceTLSBinding{ResourceID: a.resourceID(), Service: "mail", Hostname: a.Domain, UID: os.Getuid()}
+		cert, key := tlsFixture.issue(t, []string{a.Domain}, time.Now().Add(time.Hour))
+		tlsFixture.store(t, cert, key)
+	}
 	a.RuntimeProfile = "minimum"
 	a.Env["LIDZA_MASTER_KEY"] = strings.Repeat("1", 64)
 	a.Env["RELEASE_TEXT"] = "one-"
@@ -166,6 +185,9 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	assertGateway := func() {
+		if os.Getenv("TEST_STACK_PUBLIC_TLS") == "1" {
+			assertDockerPublicTLS(t, m, a.ID)
+		}
 		if os.Getenv("TEST_STACK_GATEWAY") == "1" {
 			assertDockerGateway(t, m, a.ID)
 		}
@@ -546,6 +568,11 @@ func TestDockerStackProfilesLifecycle(t *testing.T) {
 	releases = append(releases, m.Current(a.ID))
 	if err := m.Retire(ctx, a.ID); err != nil {
 		t.Fatal("remove stack", err)
+	}
+	if tlsFixture != nil {
+		if _, err := os.Stat(filepath.Join(m.serviceTLS.root, tlsFixture.b.ResourceID)); !os.IsNotExist(err) {
+			t.Fatal("retire retained copied public keys", err)
+		}
 	}
 	if os.Getenv("TEST_PUBLIC_PORTS") == "1" {
 		rules, err := command(ctx, "", nil, "iptables", "-S", "LIDZA-PUBLIC")

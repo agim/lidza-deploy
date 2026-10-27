@@ -307,3 +307,8 @@ Caddy mTLS configuration are required. The agent generates stable per-app
 credentials; applications keep their ordinary internal HTTP listener and add a
 private mTLS listener. See [the contract and rollout](docs/gateway-transport.md)
 and [isolated acceptance evidence](docs/reviews/gateway-transport.md).
+
+For SMTP and other non-HTTP stack services, v0.2.105 adds an explicit
+[public-domain certificate opt-in](docs/service-public-tls.md). The agent delivers
+only the app hostname's validated leaf key/chain into a service-private read-only
+volume and reconciles renewals; the Caddy store and Docker socket stay private.

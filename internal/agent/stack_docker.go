@@ -28,6 +28,19 @@ func releaseContainers(r *Release) []string {
 	return names
 }
 func (d *Docker) setReleaseRunning(ctx context.Context, r *Release, running bool) error {
+	if running && r != nil && r.Stack != nil {
+		for _, c := range r.Stack.Containers {
+			if c.PublicTLS != nil {
+				if d.serviceTLS == nil {
+					return errors.New("public service TLS controller unavailable")
+				}
+				if err := d.serviceTLS.sync(*c.PublicTLS); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	names := releaseContainers(r)
 	if !running {
 		slices.Reverse(names)
@@ -179,7 +192,7 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 	plannedStack := *stack
 	planned.Stack = &plannedStack
 	for _, s := range selected {
-		plannedStack.Containers = append(plannedStack.Containers, StackContainer{Service: s, Container: stackContainerName(a, id, s.Name), Image: images[s.Name]})
+		plannedStack.Containers = append(plannedStack.Containers, StackContainer{PublicTLS: serviceTLSBinding(a, s), Service: s, Container: stackContainerName(a, id, s.Name), Image: images[s.Name]})
 	}
 	if d.stackTransition != nil {
 		if err = d.stackTransition(a.ID, a.Current, &planned, false); err != nil {
@@ -244,6 +257,18 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		if e != nil {
 			return nil, e
 		}
+		binding := serviceTLSBinding(a, s)
+		if binding != nil {
+			if d.serviceTLS == nil {
+				return nil, errors.New("public service TLS controller unavailable")
+			}
+			if err = d.serviceTLS.sync(*binding); err != nil {
+				return nil, err
+			}
+			for key, value := range binding.environment() {
+				env[key] = value
+			}
+		}
 		if s.Role == "app" {
 			appName = name
 			candidate.Container = name
@@ -264,6 +289,9 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		}
 		budget := manifest.serviceBudget(profile, s)
 		args := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--label", "io.lidza.app=" + a.ID, "--label", "io.lidza.stack=" + a.resourceID(), "--label", "io.lidza.service=" + s.Name, "--restart", "unless-stopped", "--stop-timeout", "50", "--memory", fmt.Sprintf("%dm", budget.MemoryMiB), "--memory-swap", fmt.Sprintf("%dm", budget.MemoryMiB), "--cpus", budget.CPUs, "--pids-limit", "512", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", envfile, "--tmpfs", "/tmp:rw,nosuid,size=128m", "--tmpfs", "/run:rw,nosuid,size=32m"}
+		if binding != nil {
+			args = append(args, "--mount", d.serviceTLS.mount(*binding))
+		}
 		args = append(args, stackPolicyArgs(s)...)
 		if s.ShareAppNetwork {
 			args = append(args, "--network", "container:"+appName)
@@ -302,7 +330,7 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		if _, err = command(ctx, "", nil, "docker", args...); err != nil {
 			return nil, fmt.Errorf("create stack service %s: %w", s.Name, err)
 		}
-		stack.Containers = append(stack.Containers, StackContainer{Service: s, Container: name, Image: image})
+		stack.Containers = append(stack.Containers, StackContainer{PublicTLS: serviceTLSBinding(a, s), Service: s, Container: name, Image: image})
 		if s.Role != "app" && len(s.DatabaseBindings) > 0 {
 			connected := map[string]bool{}
 			for _, key := range s.DatabaseBindings {

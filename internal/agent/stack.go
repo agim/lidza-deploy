@@ -74,6 +74,7 @@ type StackRoute struct {
 	Published   string `json:"published,omitempty"`
 }
 type StackService struct {
+	PublicTLS        *StackPublicTLS              `json:"public_tls,omitempty"`
 	EnabledWhen      *StackConfigurationCondition `json:"enabled_when,omitempty"`
 	DatabaseBindings []string                     `json:"database_bindings,omitempty"`
 	Name             string                       `json:"name"`
@@ -107,9 +108,10 @@ type StackManifest struct {
 	Services            []StackService                   `json:"services"`
 }
 type StackContainer struct {
-	Service   StackService `json:"service"`
-	Container string       `json:"container"`
-	Image     string       `json:"image"`
+	PublicTLS *ServiceTLSBinding `json:"public_tls,omitempty"`
+	Service   StackService       `json:"service"`
+	Container string             `json:"container"`
+	Image     string             `json:"image"`
 }
 type StackRelease struct {
 	Gateway    *GatewayRelease         `json:"gateway,omitempty"`
@@ -282,11 +284,21 @@ func (m StackManifest) validate() error {
 			}
 			volumes[v.Name] = true
 		}
+		if s.PublicTLS != nil {
+			if m.Version != 2 || s.PublicTLS.Hostname != "primary" || s.PublicTLS.UID < 0 || s.PublicTLS.UID > 65535 || (s.Policy == "hardened" && s.PublicTLS.UID != 65532) {
+				return errors.New("public_tls requires stack v2, hostname primary and a valid reader uid matching the runtime policy")
+			}
+			for _, v := range s.Volumes {
+				if v.Target == publicTLSMount || strings.HasPrefix(publicTLSMount, v.Target+"/") || strings.HasPrefix(v.Target, publicTLSMount+"/") {
+					return errors.New("public TLS mount overlaps a service volume")
+				}
+			}
+		}
 		if s.Role == "app" && len(s.Volumes) > 0 {
 			return errors.New("app storage uses the platform STORAGE_DIR attachment")
 		}
 		for k, v := range s.Environment {
-			if !envPattern.MatchString(k) || strings.ContainsAny(v, "\x00\r\n") || len(v) > 8192 || strings.HasPrefix(k, "LIDZA_") || k == "DATABASE_URL" || k == "STORAGE_DIR" {
+			if strings.HasPrefix(k, publicTLSPrefix) || !envPattern.MatchString(k) || strings.ContainsAny(v, "\x00\r\n") || len(v) > 8192 || strings.HasPrefix(k, "LIDZA_") || k == "DATABASE_URL" || k == "STORAGE_DIR" {
 				return errors.New("invalid or platform-managed stack environment setting")
 			}
 			if environmentKind(k, v) == EnvironmentCredential && !regexp.MustCompile(`^\$\{[A-Z][A-Z0-9_]*\}$`).MatchString(v) {

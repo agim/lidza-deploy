@@ -74,6 +74,11 @@ func (m *Manager) Retire(ctx context.Context, id string) error {
 			}
 		}
 	}
+	if m.serviceTLS != nil {
+		if err := m.serviceTLS.retire(a.resourceID()); err != nil {
+			return errors.New("application disabled; copied service certificates could not be removed, retry removal")
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	before := m.resourceSnapshotLocked()
