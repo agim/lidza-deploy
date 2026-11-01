@@ -330,6 +330,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 		handle(pattern, c.githubAppRoute)
 	}
 	handle("GET /api/control/application-defaults", c.applicationDefaults)
+	handle("GET /api/control/apps/{id}/migration-plan", c.migrationPlan)
 	handle("PUT /api/control/application-defaults", c.applicationDefaults)
 	handle("POST /api/control/apps/{id}/apply-defaults", c.applyDefaults)
 	handle("GET /api/control/team", c.team)

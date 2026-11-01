@@ -272,3 +272,8 @@ button[data-slot=switch] { cursor: pointer; }
 .activity-filters .search-field { height: 39px; min-height: 39px; margin-block: 0; }
 .activity-filters .search-field input { height: 100%; min-height: 0; padding: 0; }
 .activity-filters select { height: 39px; min-height: 39px; }
+
+.migration-plan { padding: 12px 18px; border-top: 1px solid var(--border); font-size: 13px; overflow-wrap: anywhere; }
+.migration-plan summary { cursor: pointer; }
+.migration-plan .settings-stack { padding-top: 12px; }
+.migration-plan ol, .migration-plan ul { padding-left: 20px; }

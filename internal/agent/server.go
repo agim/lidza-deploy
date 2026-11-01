@@ -56,6 +56,7 @@ func Handler(m *Manager) http.Handler {
 		w.WriteHeader(403)
 	})
 	private := http.NewServeMux()
+	private.HandleFunc("GET /v1/apps/{id}/migration-plan", m.migrationPlanRoute)
 	private.HandleFunc("POST /v1/apps/{id}/master-key", func(w http.ResponseWriter, r *http.Request) {
 		if err := m.GenerateMasterKey(r.PathValue("id")); err != nil {
 			Fail(w, 409, err)
