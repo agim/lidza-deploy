@@ -15,6 +15,8 @@ import (
 )
 
 type Task struct {
+	DailyTimes   []string   `json:"daily_times,omitempty"`
+	WeeklyDay    *int       `json:"weekly_day,omitempty"`
 	Launching    bool       `json:"launching,omitempty"`
 	Paused       bool       `json:"paused,omitempty"`
 	Revision     string     `json:"revision,omitempty"`
@@ -38,6 +40,33 @@ type Task struct {
 }
 
 func (t Task) schedule() (jobs.Schedule, error) {
+	if len(t.DailyTimes) > 0 || t.WeeklyDay != nil {
+		if t.Timezone != "" {
+			if _, err := time.LoadLocation(t.Timezone); err != nil {
+				return nil, errors.New("invalid timezone")
+			}
+		}
+		if t.WeeklyDay != nil {
+			if *t.WeeklyDay < 0 || *t.WeeklyDay > 6 || t.Daily == "" || len(t.DailyTimes) > 0 {
+				return nil, errors.New("weekly schedules need one daily time and a weekday from 0 (Sunday) to 6 (Saturday)")
+			}
+			if _, err := time.Parse("15:04", t.Daily); err != nil {
+				return nil, errors.New("daily time must be HH:MM")
+			}
+			return jobs.Weekly(time.Weekday(*t.WeeklyDay), t.Daily, t.Timezone), nil
+		}
+		if t.Daily != "" || len(t.DailyTimes) > 24 {
+			return nil, errors.New("choose one daily time or up to 24 daily times")
+		}
+		seen := map[string]bool{}
+		for _, clock := range t.DailyTimes {
+			if _, err := time.Parse("15:04", clock); err != nil || seen[clock] {
+				return nil, errors.New("daily times must be distinct HH:MM values")
+			}
+			seen[clock] = true
+		}
+		return jobs.DailyAt(t.Timezone, t.DailyTimes...), nil
+	}
 	if t.Daily != "" {
 		if _, err := time.Parse("15:04", t.Daily); err != nil {
 			return nil, errors.New("daily time must be HH:MM")
@@ -84,6 +113,7 @@ func (m *Manager) taskList(app string) []Task {
 		if app == "" || t.AppID == app {
 			t.Paused = m.data.Apps[t.AppID].Stopped
 			t.Command = slices.Clone(t.Command)
+			t.DailyTimes = slices.Clone(t.DailyTimes)
 			t.SeenKeys = nil
 			out = append(out, t)
 		}
@@ -115,6 +145,7 @@ func (m *Manager) putTask(appID string, t Task) error {
 			return errors.New("could not stop previous task")
 		}
 	}
+	t.DailyTimes = slices.Clone(t.DailyTimes)
 	t.AppID = appID
 	t.Revision = newID()
 	t.SeenKeys = slices.Clone(old.SeenKeys)
