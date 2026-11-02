@@ -34,6 +34,8 @@ type EnvironmentEntry struct {
 	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
+	ReadonlyEnvKeys              []string                `json:"readonly_env_keys,omitempty"`
+	SettingsApplyOnDeploy        bool                    `json:"settings_apply_on_deploy,omitempty"`
 	BuildConfigurationSupported  bool                    `json:"build_configuration_supported"`
 	Capabilities                 *ManagementCapabilities `json:"capabilities,omitempty"`
 	Runtime                      string                  `json:"runtime,omitempty"`
@@ -70,6 +72,9 @@ type Settings struct {
 }
 
 type ManagementCapabilities struct {
+	Routing     *bool  `json:"routing,omitempty"`
+	Resources   *bool  `json:"resources,omitempty"`
+	RuntimeMode *bool  `json:"runtime_mode,omitempty"`
 	Configure   bool   `json:"configure"`
 	Environment bool   `json:"environment"`
 	Deploy      bool   `json:"deploy"`

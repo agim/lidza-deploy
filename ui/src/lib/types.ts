@@ -96,8 +96,10 @@ export interface EnvironmentEntry {
 }
 
 export interface AppSettings extends Application {
+ readonly_env_keys?:string[];
+ settings_apply_on_deploy?:boolean;
  build_configuration_supported?: boolean;
- capabilities?: {configure:boolean;environment:boolean;deploy:boolean;reload:boolean;rollback:boolean;processes:boolean;logs:boolean;reason?:string};
+ capabilities?: {routing?:boolean;resources?:boolean;runtime_mode?:boolean;configure:boolean;environment:boolean;deploy:boolean;reload:boolean;rollback:boolean;processes:boolean;logs:boolean;reason?:string};
  public_ports_supported?: boolean;
  master_key_generation_supported?: boolean;
  stack_profiles_supported?: boolean;
