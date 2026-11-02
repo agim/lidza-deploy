@@ -96,10 +96,10 @@ export function ActionMenu({ label = 'More actions', children, compact = false }
   return <CloseMenuContext.Provider value={() => setOpen(false)}><DropdownMenu.Root open={open} onOpenChange={setOpen}><DropdownMenu.Trigger asChild><Button variant={compact ? "ghost" : "secondary"} size={compact ? "icon" : "sm"} aria-label={label}><MoreHorizontal size={16} />{!compact && <>{label}<ChevronDown size={14} /></>}</Button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="menu-content" align="end" sideOffset={7}>{children}</DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></CloseMenuContext.Provider>;
 }
 
-export function MenuItem({ icon, danger, children, onSelect }: { icon?: ReactNode; danger?: boolean; children: ReactNode; onSelect?: () => unknown }) {
+export function MenuItem({ icon, danger, disabled, children, onSelect }: { icon?: ReactNode; danger?: boolean; disabled?: boolean; children: ReactNode; onSelect?: () => unknown }) {
   const action = useActionFeedback();
   const close = useContext(CloseMenuContext);
-  return <DropdownMenu.Item className={cx('menu-item', danger && 'menu-danger')} disabled={action.pending} aria-busy={action.pending || undefined} onSelect={event => {
+  return <DropdownMenu.Item className={cx('menu-item', danger && 'menu-danger')} disabled={disabled || action.pending} aria-busy={action.pending || undefined} onSelect={event => {
     if (action.active.current) { event.preventDefault(); return; }
     try {
       const result = onSelect?.();
