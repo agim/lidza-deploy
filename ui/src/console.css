@@ -1,6 +1,6 @@
 /* Production integration of the supplied Nova template. Layout and controls
    are shared by every route; operational pages keep their existing API logic. */
-html { min-width: min(320px, 100%); font-family: "Inter Variable", sans-serif; }
+html { min-width: 0; font-family: "Inter Variable", sans-serif; }
 body { font-size: 13px; -webkit-font-smoothing: antialiased; }
 [hidden] { display: none !important; }
 .app-shell { display: block; }
