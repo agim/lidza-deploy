@@ -397,6 +397,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/environment/{key}/reveal", c.revealCredential)
 	handle("DELETE /api/control/apps/{id}/webhook", c.disableHook)
 	handle("GET /api/control/apps", c.apps)
+	handle("GET /api/control/apps/{id}/processes", c.applicationProcesses)
 	handle("POST /api/control/apps", c.create)
 	handle("DELETE /api/control/apps/{id}", c.retire)
 	handle("POST /api/control/apps/{id}/reload", c.reloadApp)
