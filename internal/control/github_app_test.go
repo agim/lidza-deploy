@@ -175,7 +175,16 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 	a.GitHubInstallation = 0
 	c.data.Apps[a.ID] = a
 	c.mu.Unlock()
+	retained, retainErr := c.resolveApplicationInstallation(ctx, a)
+	if retainErr != nil || retained.GitHubInstallation != 0 {
+		t.Fatal("automatic pairing replaced working OAuth access", retainErr)
+	}
+	// This fixture already has a working OAuth grant. Use an unconnected test
+	// owner for this lookup without deleting or modifying that retained grant.
+	connectedOwner := c.operatorID
+	c.operatorID = random()
 	paired, pairErr := c.resolveApplicationInstallation(ctx, a)
+	c.operatorID = connectedOwner
 	if pairErr != nil || paired.GitHubInstallation != 7 || paired.Generation != a.Generation || paired.AutoDeploy != a.AutoDeploy || paired.Secret != a.Secret || paired.HookID != a.HookID {
 		t.Fatal("automatic repository pairing changed application ownership or preferences", pairErr)
 	}
