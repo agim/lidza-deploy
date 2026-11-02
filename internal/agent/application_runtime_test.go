@@ -74,3 +74,31 @@ func TestAstroOnlyBuildsExplicitPublicEnvironment(t *testing.T) {
 		t.Fatal("public build file mode")
 	}
 }
+
+func TestBuildContextProtectsDockerfileSpecificIgnoreAndRejectsSymlinkWrites(t *testing.T) {
+	root := t.TempDir()
+	specific := filepath.Join(root, "Dockerfile.dockerignore")
+	os.WriteFile(specific, []byte("# Original rules\n!everything\n"), 0600)
+	if err := secureBuildContext(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".dockerignore", "Dockerfile.dockerignore"} {
+		data, _ := os.ReadFile(filepath.Join(root, name))
+		for _, required := range []string{"**/.env", "**/master.key", "**/.npmrc"} {
+			if !strings.Contains(string(data), required) {
+				t.Fatal("credential exclusion missing", name, required)
+			}
+		}
+	}
+	out := filepath.Join(t.TempDir(), "must-not-change")
+	os.WriteFile(out, []byte("original"), 0600)
+	os.Remove(specific)
+	os.Symlink(out, specific)
+	if err := secureBuildContext(root); err == nil {
+		t.Fatal("ignore file symlink was written")
+	}
+	data, _ := os.ReadFile(out)
+	if string(data) != "original" {
+		t.Fatal("external file changed")
+	}
+}

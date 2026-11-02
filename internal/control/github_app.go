@@ -226,6 +226,10 @@ func (c *Control) validateGitHubAccess(ctx context.Context, a Application) error
 	return c.cfg.GitHub.ValidateInstallationAccess(ctx, cfg.App, a.GitHubInstallation, a.Repository)
 }
 func (c *Control) deploymentCredentials(ctx context.Context, a Application, key string) (out agent.DeployRequest, err error) {
+	a, err = c.resolveApplicationInstallation(ctx, a)
+	if err != nil {
+		return out, err
+	}
 	defer func() {
 		if err == nil {
 			out.Defaults = c.applicationDefaultsSnapshot()

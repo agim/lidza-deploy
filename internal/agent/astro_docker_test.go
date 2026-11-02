@@ -19,8 +19,8 @@ func TestAstroDockerProductionDeployAndReload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	engine, err := command(ctx, "", nil, "docker", "info", "--format", "{{.Name}}")
-	if err != nil || engine != "Office-Asus" || os.Getenv("DOCKER_HOST") != "" {
-		t.Fatal("Astro acceptance requires the local Office-Asus engine", err)
+	if expected := os.Getenv("LIDZA_TEST_DOCKER_ENGINE"); err != nil || expected == "" || engine != expected || os.Getenv("DOCKER_HOST") != "" {
+		t.Fatal("Astro acceptance requires an explicitly selected local Docker engine via LIDZA_TEST_DOCKER_ENGINE", err)
 	}
 	for _, mode := range []string{"static", "node"} {
 		t.Run(mode, func(t *testing.T) {

@@ -106,9 +106,40 @@ func applicationSourceDirectory(checkout string, a App) (string, error) {
 
 func prepareApplicationBuild(source string, a App) error {
 	if a.Runtime == "astro" {
-		return prepareAstroBuild(source, a)
+		if err := prepareAstroBuild(source, a); err != nil {
+			return err
+		}
+	} else if err := prepareBuild(source); err != nil {
+		return err
 	}
-	return prepareBuild(source)
+	return secureBuildContext(source)
+}
+
+func secureBuildContext(source string) error {
+	for _, name := range []string{".dockerignore", "Dockerfile.dockerignore"} {
+		path := filepath.Join(source, name)
+		if err := regularFile(path, true); err != nil {
+			return err
+		}
+		if name == "Dockerfile.dockerignore" {
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				continue
+			}
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprint(file, "\n# Deployment credentials never enter the build context\n.git\n**/.git\n.env\n.env.*\n**/.env\n**/.env.*\n.npmrc\n**/.npmrc\n**/master.key\n**/*.key\n**/*.pem\n")
+		closeErr := file.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	return nil
 }
 
 func astroOptions(a App) AstroConfig {
