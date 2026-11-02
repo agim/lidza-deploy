@@ -14,6 +14,8 @@ An optional [independent application ingress](docs/independent-ingress.md) can k
 
 For an existing application host, [coexist mode](docs/coexisting-host.md) disables automatic host-wide maintenance, swap provisioning and legacy service migrations while retaining management of explicitly registered container resources.
 
+The [control handoff tool](docs/control-handoff.md) reviews and stages an existing dashboard's encrypted files with explicit, verified agent endpoint remapping. It leaves database transfer and activation as separate reviewed operations.
+
 ## Working features
 
 - GitHub public and private repositories, selected branches, manual deploy and redeploy.
