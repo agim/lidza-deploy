@@ -8,6 +8,13 @@ IDs and blockers. They contain no environment values, database passwords, task
 commands or backup object names. Planning never starts/stops containers, writes
 state, copies data or changes DNS.
 
+For a source agent that predates this endpoint, build `./cmd/migration-review`
+and run it with `-config /etc/lidza-agent/config.json` (optionally `-app ID`).
+It reads the retained encrypted inventory and gateway configuration through the
+independent reader. It starts no listeners or management jobs and needs no API
+token. The running source agent does not need an upgrade or restart. Run it as
+an operator able to read the retained keys; only the redacted plans are printed.
+
 The plan explicitly reports `execution_supported: false`. It is a preparation
 and review tool, not an automated move. A fresh plan and a verified destination
 are needed before execution. Database backup timestamps are inventory evidence,
