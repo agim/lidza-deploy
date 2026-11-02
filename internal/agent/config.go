@@ -11,6 +11,7 @@ import (
 // Adapted from monolithcms-app/agent/config.go. Configuration remains private
 // and atomically replaced; registration is explicit rather than trust-on-first-use.
 type Config struct {
+	HostMode                   string            `json:"host_mode,omitempty"`
 	IngressOnly                bool              `json:"ingress_only,omitempty"`
 	ServiceTLS                 *ServiceTLSConfig `json:"service_tls,omitempty"`
 	Gateway                    *GatewayConfig    `json:"gateway,omitempty"`
@@ -32,6 +33,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if v := os.Getenv("LIDZA_AGENT_TOKEN"); v != "" {
 		c.APIKey = v
+	}
+	if err := c.validateHostMode(); err != nil {
+		return c, err
 	}
 	if c.IngressOnly && (!validateIngressListen(c.Listen) || !validateIngressListen(c.ProxyListen)) {
 		return c, errors.New("independent ingress and health listeners must use explicit loopback addresses")
@@ -56,4 +60,11 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	return c, nil
+}
+
+func (c Config) validateHostMode() error {
+	if c.HostMode != "" && c.HostMode != "managed" && c.HostMode != "coexist" {
+		return errors.New("host_mode must be managed or coexist")
+	}
+	return nil
 }

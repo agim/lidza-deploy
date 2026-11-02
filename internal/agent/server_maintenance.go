@@ -28,13 +28,14 @@ type CleanupRequest struct {
 	Logs       bool `json:"logs"`
 }
 type MaintenanceState struct {
-	Policy            MaintenancePolicy `json:"policy"`
-	Running           bool              `json:"running"`
-	NextRun           time.Time         `json:"next_run"`
-	NextBackupCleanup time.Time         `json:"next_backup_cleanup"`
-	LastRun           time.Time         `json:"last_run"`
-	Messages          []string          `json:"messages,omitempty"`
-	Error             string            `json:"error,omitempty"`
+	HostAutomationBlocked bool              `json:"host_automation_blocked,omitempty"`
+	Policy                MaintenancePolicy `json:"policy"`
+	Running               bool              `json:"running"`
+	NextRun               time.Time         `json:"next_run"`
+	NextBackupCleanup     time.Time         `json:"next_backup_cleanup"`
+	LastRun               time.Time         `json:"last_run"`
+	Messages              []string          `json:"messages,omitempty"`
+	Error                 string            `json:"error,omitempty"`
 }
 
 func defaultMaintenancePolicy() MaintenancePolicy {
@@ -53,10 +54,14 @@ func (m *Manager) maintenanceStatus() MaintenanceState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := *m.data.Maintenance
+	out.HostAutomationBlocked = m.cfg.HostMode == "coexist"
 	out.Messages = slices.Clone(out.Messages)
 	return out
 }
 func (m *Manager) setMaintenancePolicy(p MaintenancePolicy) error {
+	if m.cfg.HostMode == "coexist" {
+		return errors.New("host-wide maintenance is disabled in coexist mode")
+	}
 	if err := p.Validate(); err != nil {
 		return err
 	}
@@ -97,6 +102,9 @@ func (m *Manager) cleanupBusyLocked() bool {
 // Merely constructing a manager (for inspection or integration fixtures) must
 // never invoke host-wide Docker pruning or journal vacuuming.
 func (m *Manager) StartMaintenance() {
+	if m.cfg.HostMode == "coexist" || m.cfg.IngressOnly {
+		return
+	}
 	m.maintenanceOnce.Do(func() { m.wg.Add(1); go m.maintenanceLoop() })
 }
 
@@ -115,6 +123,9 @@ func (m *Manager) maintenanceLoop() {
 	}
 }
 func (m *Manager) maintenanceTick(now time.Time) {
+	if m.cfg.HostMode == "coexist" || m.cfg.IngressOnly {
+		return
+	}
 	m.mu.Lock()
 	state := *m.data.Maintenance
 	request := CleanupRequest{Backups: !state.NextBackupCleanup.After(now)}
@@ -131,6 +142,9 @@ func (m *Manager) maintenanceTick(now time.Time) {
 	}
 }
 func (m *Manager) startMaintenance(request CleanupRequest, now time.Time) error {
+	if m.cfg.HostMode == "coexist" || m.cfg.IngressOnly {
+		return errors.New("host-wide maintenance is disabled for this agent role")
+	}
 	if !request.Backups && !request.BuildCache && !request.Logs {
 		return errors.New("select at least one cleanup category")
 	}
@@ -187,6 +201,9 @@ func (m *Manager) startMaintenance(request CleanupRequest, now time.Time) error 
 	return nil
 }
 func (m *Manager) performMaintenance(ctx context.Context, request CleanupRequest) ([]string, error) {
+	if m.cfg.HostMode == "coexist" || m.cfg.IngressOnly {
+		return nil, errors.New("host-wide maintenance is disabled for this agent role")
+	}
 	var messages []string
 	var failures []error
 	if request.Backups {

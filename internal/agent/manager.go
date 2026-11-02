@@ -74,6 +74,9 @@ type Manager struct {
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
+	if err := cfg.validateHostMode(); err != nil {
+		return nil, err
+	}
 	if cfg.IngressOnly {
 		return nil, errors.New("ingress_only must use NewIngressReader, not a deployment manager")
 	}
@@ -212,7 +215,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
-	if _, ok := rt.(*Docker); ok {
+	if _, ok := rt.(*Docker); ok && cfg.HostMode != "coexist" {
 		cleanup, stop := context.WithTimeout(ctx, 30*time.Second)
 		removeLegacyBoundedBuilder(cleanup, cfg.DataDir)
 		stop()
@@ -235,8 +238,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	go m.work()
 	m.wg.Add(1)
 	go m.consoleLoop()
-	m.wg.Add(1)
-	go m.swapLoop()
+	if cfg.HostMode != "coexist" {
+		m.wg.Add(1)
+		go m.swapLoop()
+	}
 	m.migrateConsoleService()
 	m.migrateControlBootService()
 	if cfg.TLSListen != "" {
