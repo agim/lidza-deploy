@@ -34,6 +34,26 @@ type MigrationDatabase struct {
 	LatestBackup    *time.Time `json:"latest_backup,omitempty"`
 }
 
+// Older live releases may retain database IDs without explicit app bindings.
+// Include both the deployed dependencies and next-deploy bindings for review.
+// An empty key list means release evidence only; never infer environment edits.
+func migrationDatabaseReferences(a App) map[string][]string {
+	refs := map[string][]string{}
+	if a.Current != nil {
+		for _, id := range a.Current.DatabaseIDs {
+			if id != "" {
+				refs[id] = []string{}
+			}
+		}
+	}
+	for key, id := range a.Bindings {
+		if id != "" {
+			refs[id] = append(refs[id], key)
+		}
+	}
+	return refs
+}
+
 func (m *Manager) MigrationPlan(id string) (MigrationPlan, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -60,10 +80,7 @@ func (m *Manager) MigrationPlan(id string) (MigrationPlan, error) {
 		p.EnvironmentKeys = append(p.EnvironmentKeys, key)
 	}
 	slices.Sort(p.EnvironmentKeys)
-	bindings := map[string][]string{}
-	for key, db := range a.Bindings {
-		bindings[db] = append(bindings[db], key)
-	}
+	bindings := migrationDatabaseReferences(a)
 	for dbID, keys := range bindings {
 		slices.Sort(keys)
 		db, found := m.data.Databases[dbID]
@@ -75,11 +92,8 @@ func (m *Manager) MigrationPlan(id string) (MigrationPlan, error) {
 			if otherID == id {
 				continue
 			}
-			for _, attached := range other.Bindings {
-				if attached == dbID {
-					entry.SharedWith = append(entry.SharedWith, otherID)
-					break
-				}
+			if _, attached := migrationDatabaseReferences(other)[dbID]; attached {
+				entry.SharedWith = append(entry.SharedWith, otherID)
 			}
 		}
 		slices.Sort(entry.SharedWith)

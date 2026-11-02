@@ -59,3 +59,45 @@ func TestMigrationPlanIdentifiesUnmanagedDependencies(t *testing.T) {
 		t.Fatal("missing app accepted")
 	}
 }
+
+func TestMigrationPlanIncludesLegacyLiveDatabaseDependencies(t *testing.T) {
+	m := testManager(t, &fakeRuntime{})
+	a := testApp("legacy")
+	a.Current = &Release{Commit: "current", DatabaseIDs: []string{"old", "old", "missing", ""}}
+	a.Bindings = map[string]string{"EVENT_DATABASE_URL": "next"}
+	a.Env["DATABASE_URL"] = "postgres://user:secret@old/db"
+	m.mu.Lock()
+	m.data.Apps[a.ID] = a
+	m.data.Apps["legacy-peer"] = App{Current: &Release{DatabaseIDs: []string{"old"}}}
+	m.data.Databases["old"] = Database{Mode: "local", Ready: true}
+	m.data.Databases["next"] = Database{Mode: "local", Ready: true}
+	before, _ := json.Marshal(m.data)
+	m.mu.Unlock()
+	p, err := m.MigrationPlan(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(p)
+	if len(p.Databases) != 3 {
+		t.Fatalf("lost release or next-deploy dependency: %s", encoded)
+	}
+	old := p.Databases[2]
+	if old.ID != "old" || len(old.EnvironmentKeys) != 0 || len(old.SharedWith) != 1 || old.SharedWith[0] != "legacy-peer" {
+		t.Fatalf("lost legacy sharing or invented binding: %s", encoded)
+	}
+	if p.Databases[1].ID != "next" || len(p.Databases[1].EnvironmentKeys) != 1 || p.Databases[1].EnvironmentKeys[0] != "EVENT_DATABASE_URL" {
+		t.Fatalf("lost explicit binding: %s", encoded)
+	}
+	if !strings.Contains(strings.Join(p.Blockers, " "), "Database missing is unavailable") || !strings.Contains(strings.Join(p.Blockers, " "), "manually configured database connection in DATABASE_URL") {
+		t.Fatalf("missing unresolved/manual dependency review: %s", encoded)
+	}
+	if strings.Contains(string(encoded), "postgres://") || strings.Contains(string(encoded), "user:secret") {
+		t.Fatal("connection leaked")
+	}
+	m.mu.Lock()
+	after, _ := json.Marshal(m.data)
+	m.mu.Unlock()
+	if string(before) != string(after) {
+		t.Fatal("planning changed legacy bindings")
+	}
+}
