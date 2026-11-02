@@ -11,6 +11,7 @@ import (
 )
 
 func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	a, ok := c.app(r.PathValue("id"))
 	if !ok || a.Retiring {
 		http.NotFound(w, r)

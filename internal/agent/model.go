@@ -60,14 +60,29 @@ func environmentKind(key, value string) string {
 	upper := strings.ToUpper(key)
 	for _, part := range strings.FieldsFunc(upper, func(r rune) bool { return r == '_' || r == '-' }) {
 		switch part {
-		case "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "CREDENTIAL", "PRIVATE":
+		case "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "CREDENTIAL", "CREDENTIALS", "PRIVATE", "AUTH", "AUTHORIZATION":
 			return EnvironmentCredential
 		}
 	}
-	if environmentURLKey(key) {
-		if parsed, err := url.Parse(value); err == nil && parsed.User != nil {
-			if _, present := parsed.User.Password(); present {
-				return EnvironmentCredential
+	compact := strings.NewReplacer("_", "", "-", "").Replace(upper)
+	for _, part := range []string{"PASSWORD", "PASSPHRASE", "APIKEY", "ACCESSTOKEN", "CLIENTSECRET", "CREDENTIAL", "PRIVATEKEY"} {
+		if strings.Contains(compact, part) {
+			return EnvironmentCredential
+		}
+	}
+	if strings.Contains(value, "-----BEGIN") && strings.Contains(value, "PRIVATE KEY-----") {
+		return EnvironmentCredential
+	}
+	if parsed, err := url.Parse(value); err == nil {
+		if parsed.User != nil {
+			return EnvironmentCredential
+		}
+		for field, values := range parsed.Query() {
+			switch strings.ToLower(field) {
+			case "token", "access_token", "api_key", "apikey", "signature", "sig", "password", "secret", "credential":
+				if len(values) > 0 && values[0] != "" {
+					return EnvironmentCredential
+				}
 			}
 		}
 	}

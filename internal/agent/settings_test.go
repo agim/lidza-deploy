@@ -127,6 +127,31 @@ func FuzzEnvironmentKind(f *testing.F) {
 	})
 }
 
+func TestEnvironmentClassificationSeparatesSettingsFromCredentials(t *testing.T) {
+	for _, test := range []struct{ key, value, kind string }{
+		{"APP_ID", "12376", EnvironmentSetting},
+		{"LOG_LEVEL", "debug", EnvironmentSetting},
+		{"MAX_THREADS", "5", EnvironmentSetting},
+		{"PUBLIC_URL", "https://example.com", EnvironmentSetting},
+		{"APP_MASTER_KEY", "original-key", EnvironmentCredential},
+		{"SECRET_KEY_BASE", "original-secret", EnvironmentCredential},
+		{"SMTP_PASSWORD", "password", EnvironmentCredential},
+		{"PGPASSWORD", "password", EnvironmentCredential},
+		{"APIKEY", "token", EnvironmentCredential},
+		{"AUTHORIZATION", "Bearer token", EnvironmentCredential},
+		{"DATABASE_DSN", "postgres://user:password@db/app", EnvironmentCredential},
+		{"SOURCE", "https://token@github.com/org/repo", EnvironmentCredential},
+		{"DOWNLOAD_URL", "https://example.com/file?signature=signed-secret", EnvironmentCredential},
+		{"SIGNING_MATERIAL", "-----BEGIN PRIVATE KEY-----\nkey", EnvironmentCredential},
+	} {
+		t.Run(test.key, func(t *testing.T) {
+			if got := environmentKind(test.key, test.value); got != test.kind {
+				t.Fatalf("classification = %s, want %s", got, test.kind)
+			}
+		})
+	}
+}
+
 func TestSettingsAutomaticallyReloadAndRetainHealthyRelease(t *testing.T) {
 	rt := &fakeRuntime{}
 	m := testManager(t, rt)
