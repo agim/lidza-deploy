@@ -11,6 +11,7 @@ import (
 // Adapted from monolithcms-app/agent/config.go. Configuration remains private
 // and atomically replaced; registration is explicit rather than trust-on-first-use.
 type Config struct {
+	IngressOnly                bool              `json:"ingress_only,omitempty"`
 	ServiceTLS                 *ServiceTLSConfig `json:"service_tls,omitempty"`
 	Gateway                    *GatewayConfig    `json:"gateway,omitempty"`
 	TLSListen                  string            `json:"tls_listen"`
@@ -32,7 +33,10 @@ func LoadConfig(path string) (Config, error) {
 	if v := os.Getenv("LIDZA_AGENT_TOKEN"); v != "" {
 		c.APIKey = v
 	}
-	if len(c.APIKey) < 32 {
+	if c.IngressOnly && (!validateIngressListen(c.Listen) || !validateIngressListen(c.ProxyListen)) {
+		return c, errors.New("independent ingress and health listeners must use explicit loopback addresses")
+	}
+	if !c.IngressOnly && len(c.APIKey) < 32 {
 		return c, errors.New("agent API key must contain at least 32 characters")
 	}
 	if !filepath.IsAbs(c.DataDir) {

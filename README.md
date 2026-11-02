@@ -10,6 +10,8 @@ See the [deployment readiness review](docs/deployment-readiness.md) for the late
 
 See [Remote backups](docs/remote-backups.md) for saved credential indicators, off-site upload results, bucket inventory and retrying retained local backups.
 
+An optional [independent application ingress](docs/independent-ingress.md) can keep routing in a separate process while the deployment manager is maintained. Existing installations require a reviewed live traffic handoff before changing services or routing.
+
 ## Working features
 
 - GitHub public and private repositories, selected branches, manual deploy and redeploy.

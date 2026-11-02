@@ -244,6 +244,14 @@ func TestGatewayManifestAndConfigurationValidation(t *testing.T) {
 	}
 }
 func TestRealProtectedAgentGateway(t *testing.T) {
+	testRealProtectedAgentGateway(t, false)
+}
+
+func TestRealProtectedIndependentIngress(t *testing.T) {
+	testRealProtectedAgentGateway(t, true)
+}
+
+func testRealProtectedAgentGateway(t *testing.T, independent bool) {
 	binary := os.Getenv("LIDZA_TEST_CADDY")
 	if binary == "" {
 		t.Skip("set LIDZA_TEST_CADDY for real edge/agent/application mTLS acceptance")
@@ -308,13 +316,27 @@ func TestRealProtectedAgentGateway(t *testing.T) {
 	saved := m.data.Apps[a.ID]
 	saved.Current = release
 	m.data.Apps[a.ID] = saved
+	if err := m.save(); err != nil {
+		m.mu.Unlock()
+		t.Fatal(err)
+	}
 	m.mu.Unlock()
-	ingress := m.GatewayServer()
+	proxyManager := m
+	if independent {
+		reader, err := NewIngressReader(context.Background(), ingressConfig(m))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		proxyManager = reader
+		m.Close()
+	}
+	ingress := proxyManager.GatewayServer()
 	relay := httptest.NewUnstartedServer(ingress.Handler)
 	relay.TLS = ingress.TLSConfig
 	relay.StartTLS()
 	defer relay.Close()
-	plain := httptest.NewServer(Proxy(m))
+	plain := httptest.NewServer(Proxy(proxyManager))
 	defer plain.Close()
 	req, _ := http.NewRequest("POST", plain.URL+"/protected", strings.NewReader("must not execute"))
 	req.Host = a.Domain

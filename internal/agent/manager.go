@@ -36,6 +36,7 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	ingressError        error
 	serviceTLS          *serviceTLSController
 	gatewayKeys         map[string]gatewayPKI
 	gatewayMu           sync.Mutex
@@ -73,6 +74,9 @@ type Manager struct {
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
+	if cfg.IngressOnly {
+		return nil, errors.New("ingress_only must use NewIngressReader, not a deployment manager")
+	}
 	ctx, cancel := context.WithCancel(parent)
 	m := &Manager{hostCache: map[string]hostVerdict{}, hostSlots: make(chan struct{}, 8), lifecycle: map[string]bool{}, reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
