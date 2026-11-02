@@ -29,3 +29,22 @@ reviewing live changes. Manual per-database backup retention remains available.
 
 An independent `ingress_only` process remains a routing reader, regardless of
 host mode, and does not become a deployment or maintenance manager.
+
+## Preserve existing hostnames
+
+Set `reserved_domains` to the existing applications' DNS names before allowing
+new deployments. A `*.tenant.example.com` entry reserves all subdomains beneath
+that suffix; include `tenant.example.com` separately to reserve the root too.
+At most 500 unique lowercase names or leading wildcard subtrees are accepted.
+
+Reservations block primary-domain and alias assignments, settings changes,
+customer-host routing and certificate permission checks. Startup rejects an
+owned container inventory that overlaps them. They also apply to independent
+ingress snapshots, so stale state cannot route or authorize a reserved name.
+Existing applications continue through their current web server routes.
+
+Import the reviewed existing web-server hostname inventory into this list; it
+does not automatically track changes made by another deployment manager. Update
+the reservations through the same reviewed host configuration process when new
+independently managed applications are added. No routes or DNS are changed by
+reserving a name.

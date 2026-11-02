@@ -100,6 +100,12 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
+	for _, app := range m.data.Apps {
+		if err := m.checkReservedDomains(app); err != nil {
+			cancel()
+			return nil, err
+		}
+	}
 	if err := m.initGateway(); err != nil {
 		cancel()
 		return nil, err
@@ -323,6 +329,9 @@ func (m *Manager) Upsert(a App) error {
 		a.AdditionalDomains = slices.Clone(old.AdditionalDomains)
 	}
 	if err := a.Validate(); err != nil {
+		return err
+	}
+	if err := m.checkReservedDomains(a); err != nil {
 		return err
 	}
 	if m.removing[a.ID] || m.data.Caches[a.ID].Operation {

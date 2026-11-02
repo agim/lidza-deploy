@@ -244,6 +244,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	if err := a.Validate(); err != nil {
 		return err
 	}
+	if err := m.checkReservedDomains(a); err != nil {
+		return err
+	}
 	for otherID, other := range m.data.Apps {
 		if otherID != id && a.DomainsOverlap(other) {
 			return errors.New("domain already assigned")

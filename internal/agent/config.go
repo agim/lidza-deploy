@@ -11,6 +11,7 @@ import (
 // Adapted from monolithcms-app/agent/config.go. Configuration remains private
 // and atomically replaced; registration is explicit rather than trust-on-first-use.
 type Config struct {
+	ReservedDomains            []string          `json:"reserved_domains,omitempty"`
 	HostMode                   string            `json:"host_mode,omitempty"`
 	IngressOnly                bool              `json:"ingress_only,omitempty"`
 	ServiceTLS                 *ServiceTLSConfig `json:"service_tls,omitempty"`
@@ -65,6 +66,9 @@ func LoadConfig(path string) (Config, error) {
 func (c Config) validateHostMode() error {
 	if c.HostMode != "" && c.HostMode != "managed" && c.HostMode != "coexist" {
 		return errors.New("host_mode must be managed or coexist")
+	}
+	if err := validateReservedDomains(c.ReservedDomains); err != nil {
+		return err
 	}
 	return nil
 }

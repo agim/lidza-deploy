@@ -255,6 +255,10 @@ func (m *Manager) setDomainStatus(a App, status DomainStatus) {
 	}
 }
 func (m *Manager) serveDomainProof(w http.ResponseWriter, r *http.Request, domain string) {
+	if m.cfg.reservedHostname(domain) {
+		http.NotFound(w, r)
+		return
+	}
 	nonce := r.URL.Query().Get("nonce")
 	if decoded, err := hex.DecodeString(nonce); err != nil || len(decoded) != 12 {
 		http.NotFound(w, r)
@@ -274,6 +278,9 @@ func (m *Manager) serveDomainProof(w http.ResponseWriter, r *http.Request, domai
 // Certificate authorization uses a fresh route check, so an old successful
 // DNS result cannot authorize issuance after DNS is moved away from this host.
 func (m *Manager) domainAllowed(ctx context.Context, domain string) bool {
+	if m.cfg.reservedHostname(strings.ToLower(domain)) {
+		return false
+	}
 	for _, a := range m.Apps() {
 		if a.HasDomain(strings.ToLower(domain)) && !a.Retiring {
 			if m.cfg.TLSListen == "" {

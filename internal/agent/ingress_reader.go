@@ -23,6 +23,9 @@ const ingressSnapshotLimit = 128 << 20
 // containers, writes inventory, or runs host maintenance. Protected requests
 // retain the shared, flock-protected replay journal used by the existing agent.
 func NewIngressReader(parent context.Context, cfg Config) (*Manager, error) {
+	if err := cfg.validateHostMode(); err != nil {
+		return nil, err
+	}
 	if !cfg.IngressOnly {
 		return nil, errors.New("ingress reader requires ingress_only configuration")
 	}
@@ -75,6 +78,9 @@ func (m *Manager) reloadIngressSnapshot() error {
 	for id, app := range next.Apps {
 		if id != app.ID || app.Validate() != nil {
 			return errors.New("routing snapshot contains an invalid application")
+		}
+		if err := m.checkReservedDomains(app); err != nil {
+			return err
 		}
 		if app.Current != nil && app.Current.Stack != nil && app.Current.Stack.Gateway != nil {
 			if m.cfg.Gateway == nil {
