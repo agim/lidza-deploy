@@ -392,20 +392,33 @@ func testRealProtectedAgentGateway(t *testing.T, independent bool) {
 		t.Fatal(err)
 	}
 	defer func() { cancel(); _ = cmd.Wait() }()
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("real Caddy did not start")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 	publicRoots, err := gatewayRoots(publicPKI.CA)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// A bound TCP socket does not establish that Caddy's TLS configuration and
+	// upstream transport are ready. Wait for a real ordinary HTTPS response.
+	readyTransport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: publicRoots, ServerName: a.Domain, MinVersion: tls.VersionTLS13}, TLSHandshakeTimeout: time.Second}
+	defer readyTransport.CloseIdleConnections()
+	readyClient := &http.Client{Transport: readyTransport, Timeout: time.Second}
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		req, _ := http.NewRequest("GET", "https://"+addr+"/", nil)
+		req.Host = a.Domain
+		res, err := readyClient.Do(req)
+		ready := false
+		if err == nil {
+			body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+			res.Body.Close()
+			ready = res.StatusCode == 200 && string(body) == "ordinary internal HTTP"
+		}
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			data, _ := os.ReadFile(filepath.Join(dir, "caddy.log"))
+			t.Fatalf("real Caddy HTTPS did not become ready: %v; %s", err, data)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	for _, version := range []uint16{tls.VersionTLS13, tls.VersionTLS12} {
 		transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: publicRoots, ServerName: a.Domain, MinVersion: version, MaxVersion: version}, TLSHandshakeTimeout: time.Second}
