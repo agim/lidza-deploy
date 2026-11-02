@@ -60,7 +60,7 @@ func environmentKind(key, value string) string {
 	upper := strings.ToUpper(key)
 	for _, part := range strings.FieldsFunc(upper, func(r rune) bool { return r == '_' || r == '-' }) {
 		switch part {
-		case "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "CREDENTIAL", "CREDENTIALS", "PRIVATE", "AUTH", "AUTHORIZATION":
+		case "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "CREDENTIAL", "CREDENTIALS", "PRIVATE", "AUTH", "AUTHORIZATION", "AUTHENTICATION", "JWT", "PAT", "BEARER", "SIGNATURE":
 			return EnvironmentCredential
 		}
 	}

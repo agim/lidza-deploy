@@ -138,6 +138,8 @@ func TestEnvironmentClassificationSeparatesSettingsFromCredentials(t *testing.T)
 		{"SMTP_PASSWORD", "password", EnvironmentCredential},
 		{"PGPASSWORD", "password", EnvironmentCredential},
 		{"APIKEY", "token", EnvironmentCredential},
+		{"GITHUB_PAT", "personal-token", EnvironmentCredential},
+		{"JWT", "signed-token", EnvironmentCredential},
 		{"AUTHORIZATION", "Bearer token", EnvironmentCredential},
 		{"DATABASE_DSN", "postgres://user:password@db/app", EnvironmentCredential},
 		{"SOURCE", "https://token@github.com/org/repo", EnvironmentCredential},
