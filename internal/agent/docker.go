@@ -115,6 +115,10 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 		return nil, err
 	}
 	message, _ := command(ctx, source, nil, "git", "log", "-1", "--format=%s")
+	source, err = applicationSourceDirectory(source, a)
+	if err != nil {
+		return nil, err
+	}
 	if d.prepareRuntime != nil {
 		a, err = d.prepareRuntime(ctx, a, source)
 		if err != nil {
@@ -141,14 +145,23 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 		}
 		return release, err
 	}
-	if err = prepareBuild(source); err != nil {
+	if err = prepareApplicationBuild(source, a); err != nil {
 		return nil, err
 	}
 	if err = os.RemoveAll(filepath.Join(source, ".git")); err != nil {
 		return nil, err
 	}
 	image := "lidza/" + a.ID + ":" + id
-	if _, err = command(ctx, source, nil, "docker", "build", "--progress=plain", "--tag", image, "."); err != nil {
+	buildArgs := []string{"build", "--progress=plain", "--tag", image}
+	if a.Runtime == "astro" {
+		publicEnv := filepath.Join(dir, "public-build.env")
+		if err = astroPublicBuildEnvironment(a, publicEnv); err != nil {
+			return nil, err
+		}
+		buildArgs = append(buildArgs, "--secret", "id=lidza_public_env,src="+publicEnv)
+	}
+	buildArgs = append(buildArgs, ".")
+	if _, err = command(ctx, source, nil, "docker", buildArgs...); err != nil {
 		return nil, fmt.Errorf("image build: %w", err)
 	}
 	release, err = d.runImage(ctx, a, id, image, commit)
@@ -233,7 +246,7 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 	}
 	defer os.RemoveAll(dir)
 	name := "lidza-" + a.ID + "-" + id
-	release = &Release{ID: id, Commit: commit, Container: name, Image: image, Created: time.Now().UTC()}
+	release = &Release{HealthPath: applicationHealthPath(a), ID: id, Commit: commit, Container: name, Image: image, Created: time.Now().UTC()}
 	candidate := release
 	success := false
 	created := false
@@ -368,7 +381,7 @@ func (e *readinessHTTPError) Error() string {
 	return fmt.Sprintf("readiness returned HTTP %d", e.Status)
 }
 func (d *Docker) probeReady(ctx context.Context, r *Release) (string, error) {
-	return d.probeAppPath(ctx, r, "/readyz")
+	return d.probeAppPath(ctx, r, releaseHealthPath(r))
 }
 func (d *Docker) probeAppPath(ctx context.Context, r *Release, path string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+r.Port+path, nil)

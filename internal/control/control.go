@@ -55,22 +55,25 @@ type Config struct {
 	Connectors []auth.Connector
 }
 type Application struct {
-	RuntimeProfile     string        `json:"runtime_profile,omitempty"`
-	AdditionalDomains  []string      `json:"additional_domains,omitempty"`
-	CustomerHosts      bool          `json:"customer_hosts"`
-	GitHubInstallation int64         `json:"github_installation,omitempty"`
-	Previews           PreviewConfig `json:"previews,omitempty"`
-	PreviewParent      string        `json:"preview_parent,omitempty"`
-	Generation         string        `json:"generation,omitempty"`
-	Retiring           bool          `json:"retiring,omitempty"`
-	ID                 string        `json:"id"`
-	ServerID           string        `json:"server_id"`
-	Repository         string        `json:"repository"`
-	Branch             string        `json:"branch"`
-	Domain             string        `json:"domain"`
-	AutoDeploy         bool          `json:"auto_deploy"`
-	HookID             int64         `json:"hook_id,omitempty"`
-	Secret             string        `json:"secret,omitempty"`
+	Runtime            string             `json:"runtime,omitempty"`
+	Astro              *agent.AstroConfig `json:"astro,omitempty"`
+	Build              agent.BuildConfig  `json:"build,omitempty,omitzero"`
+	RuntimeProfile     string             `json:"runtime_profile,omitempty"`
+	AdditionalDomains  []string           `json:"additional_domains,omitempty"`
+	CustomerHosts      bool               `json:"customer_hosts"`
+	GitHubInstallation int64              `json:"github_installation,omitempty"`
+	Previews           PreviewConfig      `json:"previews,omitempty"`
+	PreviewParent      string             `json:"preview_parent,omitempty"`
+	Generation         string             `json:"generation,omitempty"`
+	Retiring           bool               `json:"retiring,omitempty"`
+	ID                 string             `json:"id"`
+	ServerID           string             `json:"server_id"`
+	Repository         string             `json:"repository"`
+	Branch             string             `json:"branch"`
+	Domain             string             `json:"domain"`
+	AutoDeploy         bool               `json:"auto_deploy"`
+	HookID             int64              `json:"hook_id,omitempty"`
+	Secret             string             `json:"secret,omitempty"`
 }
 type saved struct {
 	ApplicationDefaults       map[string]string      `json:"application_defaults"`
@@ -519,6 +522,9 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a := input.Application
+	if a.Runtime == "go" {
+		a.Runtime = ""
+	}
 	autoDeploy := a.AutoDeploy
 	if a.GitHubInstallation == 0 {
 		if cfg := c.githubApp(); cfg != nil {
@@ -542,7 +548,11 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	a.AutoDeploy = autoDeploy
 	a.Retiring = false
 	a.Generation = random()
-	spec := agent.App{RuntimeProfile: a.RuntimeProfile, ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: a.AdditionalDomains, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
+	spec := agent.App{Runtime: a.Runtime, Astro: a.Astro, Build: a.Build, RuntimeProfile: a.RuntimeProfile, ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: a.AdditionalDomains, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
+	if err := c.verifyApplicationRuntime(r, a.ServerID, spec); err != nil {
+		agent.Fail(w, 409, err)
+		return
+	}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
 		return

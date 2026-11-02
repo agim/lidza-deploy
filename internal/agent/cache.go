@@ -252,6 +252,9 @@ func (m *Manager) cacheRoutes(mux *http.ServeMux) {
 // It consumes framework production metadata and credentials without touching the
 // agent's process environment or writing the app's manual master key to disk.
 func (m *Manager) preflightRuntime(ctx context.Context, a App, source string) (App, error) {
+	if a.Runtime == "astro" {
+		return a, prepareAstroBuild(source, a)
+	}
 	if err := regularFile(filepath.Join(source, "lidza.json"), false); err != nil {
 		return a, errors.New("application requires a regular lidza.json manifest")
 	}

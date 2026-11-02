@@ -277,3 +277,5 @@ button[data-slot=switch] { cursor: pointer; }
 .migration-plan summary { cursor: pointer; }
 .migration-plan .settings-stack { padding-top: 12px; }
 .migration-plan ol, .migration-plan ul { padding-left: 20px; }
+
+.form-card fieldset { min-width: 0; border: 0; margin: 0; padding: 0; }

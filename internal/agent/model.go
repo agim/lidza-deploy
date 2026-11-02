@@ -13,6 +13,9 @@ import (
 )
 
 type App struct {
+	Runtime              string                  `json:"runtime,omitempty"`
+	Astro                *AstroConfig            `json:"astro,omitempty"`
+	Build                BuildConfig             `json:"build,omitempty,omitzero"`
 	RuntimeProfile       string                  `json:"runtime_profile,omitempty"`
 	StackManifest        *StackManifest          `json:"-"`
 	StackSelection       *StackSelectionSnapshot `json:"-"`
@@ -88,6 +91,7 @@ func normalizeEnvironmentKinds(env map[string]string, kinds map[string]string) m
 }
 
 type Release struct {
+	HealthPath    string        `json:"health_path,omitempty"`
 	Stack         *StackRelease `json:"stack,omitempty"`
 	CommitMessage string        `json:"commit_message,omitempty"`
 	DatabaseIDs   []string      `json:"database_ids,omitempty"`
@@ -153,6 +157,9 @@ var domainPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 var envPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (a App) Validate() error {
+	if err := validateApplicationRuntime(a); err != nil {
+		return err
+	}
 	if a.RuntimeProfile != "" {
 		if _, ok := profileByID(a.RuntimeProfile); !ok {
 			return errors.New("unknown runtime profile")

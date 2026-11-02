@@ -1,0 +1,25 @@
+import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {afterEach,it,expect,vi} from 'vitest';
+import {NewApplicationPage} from './NewApplicationPage';
+vi.mock('../state/WorkspaceContext',()=>({useWorkspace:()=>({servers:[{id:'server',name:'Test server'}],status:{},refresh:vi.fn(),loading:false})}));
+afterEach(()=>{cleanup();vi.unstubAllGlobals();});
+it('creates an Astro app without a framework master key or Go stack settings',async()=>{
+  const fetch=vi.fn().mockResolvedValue({ok:true,status:201,json:async()=>({})});vi.stubGlobal('fetch',fetch);
+  render(<NewApplicationPage/>);
+  fireEvent.change(screen.getByLabelText('Runtime'),{target:{value:'astro'}});
+  fireEvent.change(screen.getByLabelText(/GitHub repository/),{target:{value:'org/marketing'}});
+  fireEvent.change(screen.getByLabelText(/Application ID/),{target:{value:'marketing'}});
+  fireEvent.change(screen.getByLabelText(/Repository directory/),{target:{value:'apps/marketing'}});
+  fireEvent.click(screen.getByRole('button',{name:'Continue'}));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Continue'})).not.toHaveAttribute('aria-busy','true'));
+  fireEvent.change(screen.getByLabelText(/Application hostname/),{target:{value:'www.example.com'}});
+  fireEvent.change(screen.getByLabelText('Database',{exact:true}),{target:{value:'none'}});
+  expect(Array.from(document.querySelectorAll<HTMLInputElement|HTMLSelectElement>('[data-step="1"] input,[data-step="1"] select')).filter(input=>!input.checkValidity()).map(input=>({name:input.name,value:input.value}))).toEqual([]);
+  fireEvent.click(screen.getByRole('button',{name:'Continue'}));
+  expect(screen.queryByLabelText('Application master key')).not.toBeInTheDocument();
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Create application'})).toBeEnabled());
+  fireEvent.click(screen.getByRole('button',{name:'Create application'}));
+  await waitFor(()=>expect(fetch).toHaveBeenCalled());
+  const body=JSON.parse(fetch.mock.calls[0][1].body);
+  expect(body.runtime).toBe('astro');expect(body.build.source_directory).toBe('apps/marketing');expect(body.astro.mode).toBe('static');expect(body.env.LIDZA_MASTER_KEY).toBeUndefined();expect(body.customer_hosts).toBe(false);expect(body.runtime_profile).toBe('');
+},10000);

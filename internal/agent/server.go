@@ -122,6 +122,9 @@ func Handler(m *Manager) http.Handler {
 	m.upgradeRoutes(private)
 	private.HandleFunc("DELETE /v1/previews/{id}", m.previewRoute)
 	private.HandleFunc("GET /v1/apps", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.Apps()) })
+	private.HandleFunc("GET /v1/application-runtimes", func(w http.ResponseWriter, r *http.Request) {
+		JSON(w, 200, map[string]any{"runtimes": ApplicationRuntimes(), "build_configuration_supported": true})
+	})
 	private.HandleFunc("POST /v1/console", func(w http.ResponseWriter, r *http.Request) {
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(ConsoleResponseTimeout))
 		var input ConsoleRequest
