@@ -166,6 +166,12 @@ button[data-slot=switch] { cursor: pointer; }
 .log-card pre { font-size: 12px; min-height: 300px; }
 .log-status-card { font-size: 11px; }
 .console-output, .command-field textarea, .terminal-output { font-family: ui-monospace, monospace; font-size: 12px; }
+.application-processes, .application-process, .application-process > div, .process-log-panel { min-width: 0; max-width: 100%; }
+.application-process { grid-template-columns: minmax(0, 1fr) auto; }
+.application-process strong, .process-log-panel h3 { overflow-wrap: anywhere; }
+.process-log-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.process-log-panel .process-log-output { box-sizing: border-box; width: 100%; max-height: 55vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+@media (max-width: 640px) { .application-process { grid-template-columns: minmax(0, 1fr); } }
 .console-unlock-form { display: grid; gap: 16px; }
 .console-unlock-form .field { margin-bottom: 0; }
 .activity-card { padding: 20px; }
