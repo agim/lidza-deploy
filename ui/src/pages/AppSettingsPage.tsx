@@ -1,3 +1,4 @@
+import { usePreference } from '../state/PreferencesContext';
 import { ApplicationProcesses } from '../components/ApplicationProcesses';
 import { AppPorts } from '../components/AppPorts';
 import { RuntimeProfileField } from '../components/RuntimeProfileField';
@@ -15,7 +16,7 @@ type Row = EnvironmentEntry & { rowID: string; action: Action; revealed?: boolea
 export function AppSettingsPage({ appID }: { appID: string }) {
   const [settings, setSettings] = useState<AppSettings>();
   const [rows, setRows] = useState<Row[]>([]);
-  const [tab, setTab] = useState('general');
+  const [tab, setTab] = usePreference<string>('deploy.settings.tab', 'general');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);

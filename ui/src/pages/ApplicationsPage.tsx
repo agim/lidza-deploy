@@ -1,3 +1,4 @@
+import { usePreference } from '../state/PreferencesContext';
 import { ApplicationAutoDeploy } from '../components/ApplicationAutoDeploy';
 import { MigrationPlan } from '../components/MigrationPlan';
 import { Activity, ArrowUpRight, Box, CheckCheck, ChevronRight, GitFork, LayoutGrid, List, Server, Database, ExternalLink, FileClock, GitBranch, HardDrive, MoreHorizontal, Play, Plus, RefreshCw, RotateCcw, SearchX, Settings, ShieldCheck, Square, Trash2 } from 'lucide-react';
@@ -24,10 +25,10 @@ export function ApplicationsPage() {
   const { apps, servers, deployments, latestDeployment, error, refresh } = useWorkspace();
   const [submitted, setSubmitted] = useState<Record<string, Deployment>>({});
   const displayedDeployment = useCallback((id: string) => { const saved = latestDeployment(id); const queued = submitted[id]; return queued && (!saved || +new Date(queued.created) > +new Date(saved.created)) ? queued : saved; }, [latestDeployment, submitted]);
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = usePreference<string>('deploy.apps.query', '');
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
-  const [filter, setFilter] = useState('all');
-  const [view, setView] = useState<'grid' | 'list'>('grid');
+  const [filter, setFilter] = usePreference<string>('deploy.apps.status', 'all');
+  const [view, setView] = usePreference<'grid' | 'list'>('deploy.apps.view', 'grid');
   const notify = useToast();
   const visible = useMemo(() => apps.filter(app => `${app.id} ${app.domain} ${app.repository}`.toLowerCase().includes(query.toLowerCase()) && (filter === 'all' || appState(app, displayedDeployment(app.id)) === filter)), [apps, query, filter, displayedDeployment]);
   const run = async (app: Application, action: string, method: 'POST' | 'DELETE' = 'POST') => {

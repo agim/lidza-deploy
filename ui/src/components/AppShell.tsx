@@ -2,8 +2,9 @@ import { Activity, AppWindow, Boxes, CircleHelp, CloudCog, DatabaseBackup, Chevr
 import { type ReactNode, useEffect, useState } from 'react';
 import type { PageKey, Route } from '../lib/types';
 import { relativeTime } from '../lib/format';
+import { usePreferences } from '../state/PreferencesContext';
 import { useWorkspace } from '../state/WorkspaceContext';
-import { IconButton, Loading } from './ui';
+import { Button, ErrorBanner, IconButton, Loading } from './ui';
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from './primitives/sheet';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './primitives/dropdown-menu';
 import { useToast } from './ToastProvider';
@@ -34,6 +35,7 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
   const [open, setOpen] = useState(false);
   const { apps, loading, refreshing, updatedAt, error, unavailableServers, status } = useWorkspace();
   const notify = useToast();
+  const preferences = usePreferences();
   useEffect(() => setOpen(false), [route.page, route.detail, route.id]);
   const activePage = route.page === 'detail' ? (['server', 'containers', 'cleanup', 'console', 'ssh', 'upgrade'].includes(route.detail || '') ? 'servers' : route.detail === 'database' ? 'databases' : 'applications') : route.page;
   const navigation = <><a className="brand" href="#applications" aria-label="Līdza Deploy home"><strong>līdza<ArrowUpRight size={20} strokeWidth={1.3} /></strong><span>deploy</span></a>
@@ -44,8 +46,8 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
     <aside className="sidebar desktop-sidebar">{navigation}</aside>
     <Sheet open={open} onOpenChange={setOpen}><SheetContent side="left" className="mobile-sidebar" showCloseButton={false}><SheetTitle className="sr-only">Workspace menu</SheetTitle><SheetDescription className="sr-only">Navigate applications, infrastructure and workspace settings.</SheetDescription><IconButton className="mobile-nav-close" label="Close menu" onClick={() => setOpen(false)}><X size={18} /></IconButton>{navigation}</SheetContent></Sheet>
     <div className="app-frame app-body">
-      <header className="topbar"><div className="breadcrumbs topbar-left"><IconButton className="mobile-menu" label="Open menu" onClick={() => setOpen(true)}><Menu size={18} /></IconButton><span>Workspace</span><ChevronRight size={13} /><strong>{labelForRoute(route)}</strong></div><div className="topbar-right"><span className="updated live-indicator" role="status"><span className={refreshing ? 'online-dot pulse' : 'online-dot'} />{loading ? 'Connecting…' : updatedAt ? `Updated ${relativeTime(updatedAt.toISOString())}` : 'Connected'}</span><DropdownMenu><DropdownMenuTrigger asChild><button className="user-avatar small account-trigger" aria-label="Account menu">A</button></DropdownMenuTrigger><DropdownMenuContent align="end" className="account-dropdown"><DropdownMenuItem asChild><a href="#page/two-factor/account">Two-factor authentication</a></DropdownMenuItem><DropdownMenuItem onSelect={() => { void (async () => { try { const response = await fetch('/api/v1/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); if (!response.ok) throw new Error('Sign out failed. Please try again.'); location.href = '/login.html'; } catch (reason) { notify(String(reason), true); } })(); }}>Sign out</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></header>
-      <main id="main-content">{loading ? <Loading overlay label="Loading your workspace…" /> : children}<footer className="page-footer"><span>Built with Līdza <span aria-hidden="true">·</span> Independent apps. One place to deploy.</span><span>shadcn/ui · Nova</span></footer></main>
+      <header className="topbar"><div className="breadcrumbs topbar-left"><IconButton className="mobile-menu" label="Open menu" onClick={() => setOpen(true)}><Menu size={18} /></IconButton><span>Workspace</span><ChevronRight size={13} /><strong>{labelForRoute(route)}</strong></div><div className="topbar-right"><span className="updated live-indicator" role="status"><span className={refreshing ? 'online-dot pulse' : 'online-dot'} />{loading ? 'Connecting…' : updatedAt ? `Updated ${relativeTime(updatedAt.toISOString())}` : 'Connected'}</span><DropdownMenu><DropdownMenuTrigger asChild><button className="user-avatar small account-trigger" aria-label="Account menu">A</button></DropdownMenuTrigger><DropdownMenuContent align="end" className="account-dropdown"><DropdownMenuItem asChild><a href="#page/two-factor/account">Two-factor authentication</a></DropdownMenuItem><DropdownMenuItem onSelect={() => { void (async () => { try { await preferences.flush().catch(() => {}); const response = await fetch('/api/v1/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); if (!response.ok) throw new Error('Sign out failed. Please try again.'); location.href = '/login.html'; } catch (reason) { notify(String(reason), true); } })(); }}>Sign out</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></header>
+      <main id="main-content">{preferences.error && <ErrorBanner>{preferences.error} <Button size="sm" onClick={() => { void preferences.flush().catch(() => {}); }}>Retry</Button></ErrorBanner>}{loading || !preferences.ready ? <Loading overlay label="Loading your workspace…" /> : children}<footer className="page-footer"><span>Built with Līdza <span aria-hidden="true">·</span> Independent apps. One place to deploy.</span><span>shadcn/ui · Nova</span></footer></main>
     </div>
   </div>;
 }

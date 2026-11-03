@@ -186,7 +186,7 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(71924161)"); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+auth.FactorTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable+analytics.Tables+consoleTable); err != nil {
+	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+auth.FactorTable+auth.PreferenceTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable+analytics.Tables+consoleTable); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {

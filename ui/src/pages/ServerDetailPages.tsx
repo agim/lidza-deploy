@@ -1,3 +1,4 @@
+import { usePreference } from '../state/PreferencesContext';
 import { PortSummary } from '../components/AppPorts';
 import { Input } from '../components/primitives/input';
 import { AlertTriangle, Boxes, Cpu, MemoryStick, Pause, Play, RefreshCw, Server, TerminalSquare } from 'lucide-react';
@@ -44,7 +45,7 @@ export function LogPage({ kind, id }: { kind: 'build-logs' | 'runtime-logs'; id:
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [paused, setPaused] = useState(false);
-  const [follow, setFollow] = useState(true);
+  const [follow, setFollow] = usePreference<boolean>('deploy.logs.follow', true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [manualRefreshing, setManualRefreshing] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
