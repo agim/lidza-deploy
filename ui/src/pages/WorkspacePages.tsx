@@ -1,3 +1,4 @@
+import { usePreference } from '../state/PreferencesContext';
 import { ComponentGallery } from '../components/ComponentGallery';
 import { Input } from '../components/primitives/input';
 import { Activity, BookOpen, CheckCircle2, ChevronDown, ClipboardList, Clock3, KeyRound, Plus, RefreshCw, Route as RouteIcon, Search, Server, Settings2, ShieldCheck, Smartphone, Trash2, UploadCloud, Users } from 'lucide-react';
@@ -100,7 +101,7 @@ export function UpdatesPage() {
 }
 
 export function TeamPage({ audit = false }: { audit?: boolean }) {
-  const [data, setData] = useState<any>(), [error, setError] = useState(''), [query, setQuery] = useState(''); const notify = useToast();
+  const [data, setData] = useState<any>(), [error, setError] = useState(''), [query, setQuery] = usePreference<string>(audit ? 'deploy.audit.query' : 'deploy.team.query', ''); const notify = useToast();
   const load = () => get<any>(`control/${audit ? 'audit' : 'team'}`).then(setData).catch(reason => setError(reason instanceof Error ? reason.message : String(reason)));
   useEffect(() => { void load(); }, [audit]); if (!data && !error) return <Loading overlay label={`Loading ${audit ? 'audit log' : 'team'}…`} />;
   const rows: any[] = Array.isArray(data) ? data : data?.members || data?.items || data?.entries || [];
@@ -242,12 +243,12 @@ function ActivityGroupCard({ group, security }: { group: ActivityGroup; security
 
 export function ActivityPage({ security = false, selectedID }: { security?: boolean; selectedID?: string }) {
   const { apps } = useWorkspace();
-  const [appID, setAppID] = useState(selectedID || apps[0]?.id || '');
+  const [savedAppID, setAppID] = usePreference<string>(security ? 'deploy.security.app' : 'deploy.errors.app', '');
+  const appID = selectedID || savedAppID || apps[0]?.id || '';
   const [response, setResponse] = useState<ActivityResponse>();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [query, setQuery] = useState('');
-  useEffect(() => { if (!appID && apps[0]?.id) setAppID(apps[0].id); }, [appID, apps]);
+  const [query, setQuery] = usePreference<string>(security ? 'deploy.security.query' : 'deploy.errors.query', '');
   const load = async (id = appID) => {
     if (!id) return;
     setLoading(true);
@@ -272,7 +273,7 @@ export function ActivityPage({ security = false, selectedID }: { security?: bool
     {error && <ErrorBanner>{error}</ErrorBanner>}
     {response?.collection_error && <Notice><strong>Collector warning:</strong>&nbsp; {response.collection_error}</Notice>}
     <Card>
-      <SectionHeader title={security ? 'Security events' : 'Error groups'} description={`${groups.length} ${groups.length === 1 ? 'group' : 'groups'}${collectorStatus ? ` · collector ${collectorStatus}` : ''}${response?.last_received ? ` · last report ${formatDate(response.last_received)}` : ''}${response?.truncated ? ' · newest 500 occurrences shown' : ''}`} actions={<div className="activity-filters"><SearchField value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${security ? 'security events' : 'errors'}…`} /><Field label="Application" className="toolbar-filter"><select value={appID} onChange={event => setAppID(event.target.value)}>{apps.map(app => <option key={app.id} value={app.id}>{app.id}</option>)}</select></Field></div>} />
+      <SectionHeader title={security ? 'Security events' : 'Error groups'} description={`${groups.length} ${groups.length === 1 ? 'group' : 'groups'}${collectorStatus ? ` · collector ${collectorStatus}` : ''}${response?.last_received ? ` · last report ${formatDate(response.last_received)}` : ''}${response?.truncated ? ' · newest 500 occurrences shown' : ''}`} actions={<div className="activity-filters"><SearchField value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${security ? 'security events' : 'errors'}…`} /><Field label="Application" className="toolbar-filter"><select value={appID} onChange={event => { setAppID(event.target.value); if (selectedID) location.hash = security ? 'security' : 'errors'; }}>{apps.map(app => <option key={app.id} value={app.id}>{app.id}</option>)}</select></Field></div>} />
       {loading ? <Loading /> : <div className="activity-list">{groups.map(group => <ActivityGroupCard key={group.key} group={group} security={security} />)}{!groups.length && <EmptyState icon={security ? <ShieldCheck /> : <Activity />} title={query ? 'No matching activity' : security ? 'No security events' : 'No application errors'} description={query ? 'Try a different message, route, request ID, release or container.' : 'Nothing requiring attention was reported for this application.'} />}</div>}
     </Card>
   </>;

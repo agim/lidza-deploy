@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	"github.com/agim/lidza/pkg/credentials"
 	"os"
@@ -28,6 +29,9 @@ func (m *Manager) load() error {
 	return json.Unmarshal(data, &m.data)
 }
 func (m *Manager) save() error {
+	if m.cfg.IngressOnly {
+		return errors.New("independent ingress cannot write deployment inventory")
+	}
 	plain, err := json.Marshal(m.data)
 	if err != nil {
 		return err

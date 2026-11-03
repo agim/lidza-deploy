@@ -36,6 +36,7 @@ type job struct {
 	token       string
 }
 type Manager struct {
+	ingressError        error
 	serviceTLS          *serviceTLSController
 	gatewayKeys         map[string]gatewayPKI
 	gatewayMu           sync.Mutex
@@ -73,6 +74,12 @@ type Manager struct {
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
+	if err := cfg.validateHostMode(); err != nil {
+		return nil, err
+	}
+	if cfg.IngressOnly {
+		return nil, errors.New("ingress_only must use NewIngressReader, not a deployment manager")
+	}
 	ctx, cancel := context.WithCancel(parent)
 	m := &Manager{hostCache: map[string]hostVerdict{}, hostSlots: make(chan struct{}, 8), lifecycle: map[string]bool{}, reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
@@ -92,6 +99,12 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	if err := m.load(); err != nil {
 		cancel()
 		return nil, err
+	}
+	for _, app := range m.data.Apps {
+		if err := m.checkReservedDomains(app); err != nil {
+			cancel()
+			return nil, err
+		}
 	}
 	if err := m.initGateway(); err != nil {
 		cancel()
@@ -208,7 +221,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
-	if _, ok := rt.(*Docker); ok {
+	if _, ok := rt.(*Docker); ok && cfg.HostMode != "coexist" {
 		cleanup, stop := context.WithTimeout(ctx, 30*time.Second)
 		removeLegacyBoundedBuilder(cleanup, cfg.DataDir)
 		stop()
@@ -231,8 +244,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	go m.work()
 	m.wg.Add(1)
 	go m.consoleLoop()
-	m.wg.Add(1)
-	go m.swapLoop()
+	if cfg.HostMode != "coexist" {
+		m.wg.Add(1)
+		go m.swapLoop()
+	}
 	m.migrateConsoleService()
 	m.migrateControlBootService()
 	if cfg.TLSListen != "" {
@@ -314,6 +329,9 @@ func (m *Manager) Upsert(a App) error {
 		a.AdditionalDomains = slices.Clone(old.AdditionalDomains)
 	}
 	if err := a.Validate(); err != nil {
+		return err
+	}
+	if err := m.checkReservedDomains(a); err != nil {
 		return err
 	}
 	if m.removing[a.ID] || m.data.Caches[a.ID].Operation {

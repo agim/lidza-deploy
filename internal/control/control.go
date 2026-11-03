@@ -55,22 +55,25 @@ type Config struct {
 	Connectors []auth.Connector
 }
 type Application struct {
-	RuntimeProfile     string        `json:"runtime_profile,omitempty"`
-	AdditionalDomains  []string      `json:"additional_domains,omitempty"`
-	CustomerHosts      bool          `json:"customer_hosts"`
-	GitHubInstallation int64         `json:"github_installation,omitempty"`
-	Previews           PreviewConfig `json:"previews,omitempty"`
-	PreviewParent      string        `json:"preview_parent,omitempty"`
-	Generation         string        `json:"generation,omitempty"`
-	Retiring           bool          `json:"retiring,omitempty"`
-	ID                 string        `json:"id"`
-	ServerID           string        `json:"server_id"`
-	Repository         string        `json:"repository"`
-	Branch             string        `json:"branch"`
-	Domain             string        `json:"domain"`
-	AutoDeploy         bool          `json:"auto_deploy"`
-	HookID             int64         `json:"hook_id,omitempty"`
-	Secret             string        `json:"secret,omitempty"`
+	Runtime            string             `json:"runtime,omitempty"`
+	Astro              *agent.AstroConfig `json:"astro,omitempty"`
+	Build              agent.BuildConfig  `json:"build,omitempty,omitzero"`
+	RuntimeProfile     string             `json:"runtime_profile,omitempty"`
+	AdditionalDomains  []string           `json:"additional_domains,omitempty"`
+	CustomerHosts      bool               `json:"customer_hosts"`
+	GitHubInstallation int64              `json:"github_installation,omitempty"`
+	Previews           PreviewConfig      `json:"previews,omitempty"`
+	PreviewParent      string             `json:"preview_parent,omitempty"`
+	Generation         string             `json:"generation,omitempty"`
+	Retiring           bool               `json:"retiring,omitempty"`
+	ID                 string             `json:"id"`
+	ServerID           string             `json:"server_id"`
+	Repository         string             `json:"repository"`
+	Branch             string             `json:"branch"`
+	Domain             string             `json:"domain"`
+	AutoDeploy         bool               `json:"auto_deploy"`
+	HookID             int64              `json:"hook_id,omitempty"`
+	Secret             string             `json:"secret,omitempty"`
 }
 type saved struct {
 	ApplicationDefaults       map[string]string      `json:"application_defaults"`
@@ -183,7 +186,7 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(71924161)"); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+auth.FactorTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable+analytics.Tables+consoleTable); err != nil {
+	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+auth.FactorTable+auth.PreferenceTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable+analytics.Tables+consoleTable); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -330,6 +333,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 		handle(pattern, c.githubAppRoute)
 	}
 	handle("GET /api/control/application-defaults", c.applicationDefaults)
+	handle("GET /api/control/apps/{id}/migration-plan", c.migrationPlan)
 	handle("PUT /api/control/application-defaults", c.applicationDefaults)
 	handle("POST /api/control/apps/{id}/apply-defaults", c.applyDefaults)
 	handle("GET /api/control/team", c.team)
@@ -393,6 +397,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/environment/{key}/reveal", c.revealCredential)
 	handle("DELETE /api/control/apps/{id}/webhook", c.disableHook)
 	handle("GET /api/control/apps", c.apps)
+	handle("GET /api/control/apps/{id}/processes", c.applicationProcesses)
 	handle("POST /api/control/apps", c.create)
 	handle("DELETE /api/control/apps/{id}", c.retire)
 	handle("POST /api/control/apps/{id}/reload", c.reloadApp)
@@ -518,6 +523,9 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a := input.Application
+	if a.Runtime == "go" {
+		a.Runtime = ""
+	}
 	autoDeploy := a.AutoDeploy
 	if a.GitHubInstallation == 0 {
 		if cfg := c.githubApp(); cfg != nil {
@@ -541,7 +549,11 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	a.AutoDeploy = autoDeploy
 	a.Retiring = false
 	a.Generation = random()
-	spec := agent.App{RuntimeProfile: a.RuntimeProfile, ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: a.AdditionalDomains, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
+	spec := agent.App{Runtime: a.Runtime, Astro: a.Astro, Build: a.Build, RuntimeProfile: a.RuntimeProfile, ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: a.AdditionalDomains, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
+	if err := c.verifyApplicationRuntime(r, a.ServerID, spec); err != nil {
+		agent.Fail(w, 409, err)
+		return
+	}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
 		return

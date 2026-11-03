@@ -11,6 +11,7 @@ import (
 )
 
 func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	a, ok := c.app(r.PathValue("id"))
 	if !ok || a.Retiring {
 		http.NotFound(w, r)
@@ -94,7 +95,13 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	spec := agent.App{RuntimeProfile: old.RuntimeProfile, ID: old.ID, Repository: old.Repository, Branch: input.Branch, Domain: input.Domain, AdditionalDomains: old.AdditionalDomains}
+	spec := agent.App{Runtime: old.Runtime, Astro: old.Astro, Build: old.Build, RuntimeProfile: old.RuntimeProfile, ID: old.ID, Repository: old.Repository, Branch: input.Branch, Domain: input.Domain, AdditionalDomains: old.AdditionalDomains}
+	if input.Build != nil {
+		spec.Build = *input.Build
+	}
+	if input.Astro != nil {
+		spec.Astro = input.Astro
+	}
 	if input.RuntimeProfile != nil {
 		spec.RuntimeProfile = *input.RuntimeProfile
 	}
@@ -137,6 +144,7 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := old
+	next.Astro, next.Build = spec.Astro, spec.Build
 	if input.CustomerHosts != nil {
 		next.CustomerHosts = *input.CustomerHosts
 	}

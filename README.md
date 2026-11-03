@@ -10,6 +10,12 @@ See the [deployment readiness review](docs/deployment-readiness.md) for the late
 
 See [Remote backups](docs/remote-backups.md) for saved credential indicators, off-site upload results, bucket inventory and retrying retained local backups.
 
+An optional [independent application ingress](docs/independent-ingress.md) can keep routing in a separate process while the deployment manager is maintained. Existing installations require a reviewed live traffic handoff before changing services or routing.
+
+For an existing application host, [coexist mode](docs/coexisting-host.md) disables automatic host-wide maintenance, swap provisioning and legacy service migrations while retaining management of explicitly registered container resources.
+
+The [control handoff tool](docs/control-handoff.md) reviews and stages an existing dashboard's encrypted files with explicit, verified agent endpoint remapping. It leaves database transfer and activation as separate reviewed operations.
+
 ## Working features
 
 - GitHub public and private repositories, selected branches, manual deploy and redeploy.

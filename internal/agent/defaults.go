@@ -26,6 +26,10 @@ func ValidateAppDefaults(values map[string]string) error {
 
 // Called under the manager lock; the snapshot is saved together with the queue.
 func (m *Manager) initialDefaults(a App, values map[string]string) App {
+	if a.Runtime == "astro" {
+		a.DefaultsApplied = true
+		return a
+	}
 	if a.DefaultsApplied {
 		return a
 	}

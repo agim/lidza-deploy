@@ -1,3 +1,4 @@
+import { usePreference } from '../state/PreferencesContext';
 import { Cloud, CloudOff, Database, Download, HardDrive, RefreshCw, RotateCcw, Search } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { get, post } from '../lib/api';
@@ -12,7 +13,7 @@ interface DatabaseItem { app_id: string; server_id: string; mode?: string; ready
 interface RemoteBackup { key: string; prefix?: string; size?: number; modifiedAt?: string; legacy?: boolean }
 
 export function DatabasesPage() {
-  const { apps } = useWorkspace(); const [data, setData] = useState<DatabaseItem[]>([]), [selected, setSelected] = useState('all'), [loading, setLoading] = useState(true), [error, setError] = useState('');
+  const { apps } = useWorkspace(); const [data, setData] = useState<DatabaseItem[]>([]), [selected, setSelected] = usePreference<string>('deploy.databases.app', 'all'), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const load = async () => { try { const value = await get<{ databases?: DatabaseItem[] } | DatabaseItem[]>('control/databases'); setData(Array.isArray(value) ? value : value.databases || []); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
   useEffect(() => { load(); }, []);
   const visible = useMemo(() => data.filter(item => selected === 'all' || item.app_id === selected || item.attachments?.some(attachment => attachment.app_id === selected)), [data, selected]);
@@ -45,7 +46,7 @@ export function DatabaseDetailPage({ appID }: { appID: string }) {
 }
 
 export function RemoteBackupsPage() {
-  const [items, setItems] = useState<RemoteBackup[]>([]), [meta, setMeta] = useState<{ bucket?: string; prefix?: string; checked?: string }>({}), [query, setQuery] = useState(''), [loading, setLoading] = useState(true), [error, setError] = useState('');
+  const [items, setItems] = useState<RemoteBackup[]>([]), [meta, setMeta] = useState<{ bucket?: string; prefix?: string; checked?: string }>({}), [query, setQuery] = usePreference<string>('deploy.backups.query', ''), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const load = async () => { try { const value = await get<{ objects?: RemoteBackup[]; bucket?: string; prefix?: string; checked?: string }>('control/storage/backups'); setItems(value.objects || []); setMeta(value); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
   useEffect(() => { load(); }, []); const visible = items.filter(item => item.key.toLowerCase().includes(query.toLowerCase()));
   const columns: Column<RemoteBackup>[] = [{ id: 'object', label: 'Object', render: row => <div><code className="object-key">{meta.bucket}/{row.prefix || meta.prefix}/{row.key}</code>{row.legacy && <Badge tone="warning">Legacy location</Badge>}</div> }, { id: 'size', label: 'Size', render: row => formatBytes(row.size) }, { id: 'modified', label: 'Modified', render: row => formatDate(row.modifiedAt) }, { id: 'actions', label: 'Actions', render: row => <a className="button button-secondary button-sm" href={`/api/control/storage/backups/download?key=${encodeURIComponent(row.key)}${row.legacy ? '&legacy=1' : ''}`}><Download size={15} />Download</a> }];

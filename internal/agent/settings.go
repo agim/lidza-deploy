@@ -12,6 +12,8 @@ import (
 // Environment settings are editable; credentials stay masked unless a separate,
 // purpose-bound step-up request reveals one. Omitted keys survive and null deletes.
 type SettingsPatch struct {
+	Build              *BuildConfig       `json:"build,omitempty"`
+	Astro              *AstroConfig       `json:"astro,omitempty"`
 	RuntimeProfile     *string            `json:"runtime_profile,omitempty"`
 	AdditionalDomains  *[]string          `json:"additional_domains,omitempty"`
 	CustomerHosts      *bool              `json:"customer_hosts,omitempty"`
@@ -32,6 +34,13 @@ type EnvironmentEntry struct {
 	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
+	ReadonlyEnvKeys              []string                `json:"readonly_env_keys,omitempty"`
+	SettingsApplyOnDeploy        bool                    `json:"settings_apply_on_deploy,omitempty"`
+	BuildConfigurationSupported  bool                    `json:"build_configuration_supported"`
+	Capabilities                 *ManagementCapabilities `json:"capabilities,omitempty"`
+	Runtime                      string                  `json:"runtime,omitempty"`
+	Astro                        *AstroConfig            `json:"astro,omitempty"`
+	Build                        BuildConfig             `json:"build,omitempty"`
 	GatewayTransportSupported    bool                    `json:"gateway_transport_supported"`
 	GatewayHostConfigured        bool                    `json:"gateway_host_configured"`
 	StackManifestVersions        []int                   `json:"stack_manifest_versions"`
@@ -60,6 +69,20 @@ type Settings struct {
 	Domain                       string                  `json:"domain"`
 	EnvKeys                      []string                `json:"env_keys"`
 	Environment                  []EnvironmentEntry      `json:"environment"`
+}
+
+type ManagementCapabilities struct {
+	Routing     *bool  `json:"routing,omitempty"`
+	Resources   *bool  `json:"resources,omitempty"`
+	RuntimeMode *bool  `json:"runtime_mode,omitempty"`
+	Configure   bool   `json:"configure"`
+	Environment bool   `json:"environment"`
+	Deploy      bool   `json:"deploy"`
+	Reload      bool   `json:"reload"`
+	Rollback    bool   `json:"rollback"`
+	Processes   bool   `json:"processes"`
+	Logs        bool   `json:"logs"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 func (m *Manager) Settings(id string) (Settings, error) {
@@ -104,7 +127,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if a.Current != nil && a.Current.Stack != nil {
 		selection = cloneStackSelection(a.Current.Stack.Selection)
 	}
-	return Settings{GatewayTransportSupported: true, GatewayHostConfigured: m.gatewayTLS != nil, StackManifestVersions: []int{1, 2}, RuntimeSelection: selection, PublicPortsSupported: true, MasterKeyGenerationSupported: true, RuntimeDeployed: a.Current != nil, StackProfilesSupported: true, RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: visibleKeys, Environment: environment}, nil
+	return Settings{BuildConfigurationSupported: true, Capabilities: &ManagementCapabilities{Configure: true, Environment: true, Deploy: true, Reload: true, Rollback: true, Processes: true, Logs: true}, Runtime: a.Runtime, Astro: a.Astro, Build: a.Build, GatewayTransportSupported: true, GatewayHostConfigured: m.gatewayTLS != nil, StackManifestVersions: []int{1, 2}, RuntimeSelection: selection, PublicPortsSupported: true, MasterKeyGenerationSupported: a.Runtime != "astro", RuntimeDeployed: a.Current != nil, StackProfilesSupported: a.Runtime != "astro", RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: visibleKeys, Environment: environment}, nil
 }
 
 func (m *Manager) RevealCredential(id, key string) (string, error) {
@@ -160,6 +183,12 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		}
 	}
 	a := old
+	if p.Build != nil {
+		a.Build = *p.Build
+	}
+	if p.Astro != nil {
+		a.Astro = p.Astro
+	}
 	if p.RuntimeProfile != nil {
 		a.RuntimeProfile = *p.RuntimeProfile
 		if old.Current != nil && (a.RuntimeProfile == "") != (old.RuntimeProfile == "") {
@@ -242,6 +271,9 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		a.EnvKinds[key] = kind
 	}
 	if err := a.Validate(); err != nil {
+		return err
+	}
+	if err := m.checkReservedDomains(a); err != nil {
 		return err
 	}
 	for otherID, other := range m.data.Apps {

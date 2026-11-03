@@ -1,5 +1,6 @@
+import { usePreference } from '../state/PreferencesContext';
 import { FileClock, PackageOpen } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { formatDate } from '../lib/format';
 import type { Deployment } from '../lib/types';
 import { useWorkspace } from '../state/WorkspaceContext';
@@ -8,7 +9,7 @@ import { ResourceList, type Column } from '../components/ResourceList';
 
 export function DeploymentsPage() {
   const { deployments, apps } = useWorkspace();
-  const [appID, setAppID] = useState('all');
+  const [appID, setAppID] = usePreference<string>('deploy.deployments.app', 'all');
   const visible = useMemo(() => [...deployments].filter(item => appID === 'all' || item.app_id === appID).sort((a, b) => +new Date(b.created) - +new Date(a.created)), [deployments, appID]);
   const columns: Column<Deployment>[] = [
     { id: 'app', label: 'Application', render: row => <strong>{row.app_id}</strong> },

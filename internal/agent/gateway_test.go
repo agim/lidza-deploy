@@ -244,6 +244,14 @@ func TestGatewayManifestAndConfigurationValidation(t *testing.T) {
 	}
 }
 func TestRealProtectedAgentGateway(t *testing.T) {
+	testRealProtectedAgentGateway(t, false)
+}
+
+func TestRealProtectedIndependentIngress(t *testing.T) {
+	testRealProtectedAgentGateway(t, true)
+}
+
+func testRealProtectedAgentGateway(t *testing.T, independent bool) {
 	binary := os.Getenv("LIDZA_TEST_CADDY")
 	if binary == "" {
 		t.Skip("set LIDZA_TEST_CADDY for real edge/agent/application mTLS acceptance")
@@ -308,13 +316,27 @@ func TestRealProtectedAgentGateway(t *testing.T) {
 	saved := m.data.Apps[a.ID]
 	saved.Current = release
 	m.data.Apps[a.ID] = saved
+	if err := m.save(); err != nil {
+		m.mu.Unlock()
+		t.Fatal(err)
+	}
 	m.mu.Unlock()
-	ingress := m.GatewayServer()
+	proxyManager := m
+	if independent {
+		reader, err := NewIngressReader(context.Background(), ingressConfig(m))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		proxyManager = reader
+		m.Close()
+	}
+	ingress := proxyManager.GatewayServer()
 	relay := httptest.NewUnstartedServer(ingress.Handler)
 	relay.TLS = ingress.TLSConfig
 	relay.StartTLS()
 	defer relay.Close()
-	plain := httptest.NewServer(Proxy(m))
+	plain := httptest.NewServer(Proxy(proxyManager))
 	defer plain.Close()
 	req, _ := http.NewRequest("POST", plain.URL+"/protected", strings.NewReader("must not execute"))
 	req.Host = a.Domain
@@ -370,20 +392,33 @@ func TestRealProtectedAgentGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { cancel(); _ = cmd.Wait() }()
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("real Caddy did not start")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 	publicRoots, err := gatewayRoots(publicPKI.CA)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// A bound TCP socket does not establish that Caddy's TLS configuration and
+	// upstream transport are ready. Wait for a real ordinary HTTPS response.
+	readyTransport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: publicRoots, ServerName: a.Domain, MinVersion: tls.VersionTLS13}, TLSHandshakeTimeout: time.Second}
+	defer readyTransport.CloseIdleConnections()
+	readyClient := &http.Client{Transport: readyTransport, Timeout: time.Second}
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		req, _ := http.NewRequest("GET", "https://"+addr+"/", nil)
+		req.Host = a.Domain
+		res, err := readyClient.Do(req)
+		ready := false
+		if err == nil {
+			body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+			res.Body.Close()
+			ready = res.StatusCode == 200 && string(body) == "ordinary internal HTTP"
+		}
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			data, _ := os.ReadFile(filepath.Join(dir, "caddy.log"))
+			t.Fatalf("real Caddy HTTPS did not become ready: %v; %s", err, data)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	for _, version := range []uint16{tls.VersionTLS13, tls.VersionTLS12} {
 		transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: publicRoots, ServerName: a.Domain, MinVersion: version, MaxVersion: version}, TLSHandshakeTimeout: time.Second}

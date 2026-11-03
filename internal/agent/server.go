@@ -38,11 +38,8 @@ func Decode(w http.ResponseWriter, r *http.Request, v any) error {
 	}
 	return nil
 }
-func Handler(m *Manager) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, map[string]string{"status": "ok"}) })
-	// Caddy calls this loopback endpoint before issuing any certificate.
-	mux.HandleFunc("GET /tls/allow", func(w http.ResponseWriter, r *http.Request) {
+func tlsAllowHandler(m *Manager) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil || !net.ParseIP(host).IsLoopback() {
 			w.WriteHeader(403)
@@ -55,7 +52,17 @@ func Handler(m *Manager) http.Handler {
 		}
 		w.WriteHeader(403)
 	})
+}
+func Handler(m *Manager) http.Handler {
+	if m.cfg.IngressOnly {
+		return IngressHealth(m)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, map[string]string{"status": "ok"}) })
+	// Caddy calls this loopback endpoint before issuing any certificate.
+	mux.Handle("GET /tls/allow", tlsAllowHandler(m))
 	private := http.NewServeMux()
+	private.HandleFunc("GET /v1/apps/{id}/migration-plan", m.migrationPlanRoute)
 	private.HandleFunc("POST /v1/apps/{id}/master-key", func(w http.ResponseWriter, r *http.Request) {
 		if err := m.GenerateMasterKey(r.PathValue("id")); err != nil {
 			Fail(w, 409, err)
@@ -115,6 +122,9 @@ func Handler(m *Manager) http.Handler {
 	m.upgradeRoutes(private)
 	private.HandleFunc("DELETE /v1/previews/{id}", m.previewRoute)
 	private.HandleFunc("GET /v1/apps", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.Apps()) })
+	private.HandleFunc("GET /v1/application-runtimes", func(w http.ResponseWriter, r *http.Request) {
+		JSON(w, 200, map[string]any{"runtimes": ApplicationRuntimes(), "build_configuration_supported": true})
+	})
 	private.HandleFunc("POST /v1/console", func(w http.ResponseWriter, r *http.Request) {
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(ConsoleResponseTimeout))
 		var input ConsoleRequest
@@ -250,6 +260,10 @@ func Handler(m *Manager) http.Handler {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if m.cfg.IngressOnly {
+			Fail(w, 409, errors.New("independent ingress does not expose management operations"))
+			return
+		}
 		private.ServeHTTP(w, r)
 	}))
 	return mux
@@ -257,6 +271,10 @@ func Handler(m *Manager) http.Handler {
 func Proxy(m *Manager) http.Handler {
 	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 30 * time.Second, IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m.cfg.IngressOnly && !m.ingressAvailable() {
+			http.Error(w, "routing snapshot unavailable", 503)
+			return
+		}
 		host := strings.ToLower(r.Host)
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h

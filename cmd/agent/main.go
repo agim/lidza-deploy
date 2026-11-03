@@ -58,13 +58,24 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	m, err := agent.NewManager(ctx, cfg, &agent.Docker{Root: filepath.Join(cfg.DataDir, "builds")})
+	var m *agent.Manager
+	if cfg.IngressOnly {
+		m, err = agent.NewIngressReader(ctx, cfg)
+	} else {
+		m, err = agent.NewManager(ctx, cfg, &agent.Docker{Root: filepath.Join(cfg.DataDir, "builds")})
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer m.Close()
-	m.StartMaintenance()
-	api := &http.Server{Addr: cfg.Listen, Handler: agent.Handler(m), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second}
+	if !cfg.IngressOnly {
+		m.StartMaintenance()
+	}
+	apiHandler := agent.Handler(m)
+	if cfg.IngressOnly {
+		apiHandler = agent.IngressHealth(m)
+	}
+	api := &http.Server{Addr: cfg.Listen, Handler: apiHandler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second}
 	proxy := &http.Server{Addr: cfg.ProxyListen, Handler: agent.Proxy(m), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	gateway := m.GatewayServer()
 	errs := make(chan error, 3)

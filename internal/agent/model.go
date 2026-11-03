@@ -13,6 +13,9 @@ import (
 )
 
 type App struct {
+	Runtime              string                  `json:"runtime,omitempty"`
+	Astro                *AstroConfig            `json:"astro,omitempty"`
+	Build                BuildConfig             `json:"build,omitempty,omitzero"`
 	RuntimeProfile       string                  `json:"runtime_profile,omitempty"`
 	StackManifest        *StackManifest          `json:"-"`
 	StackSelection       *StackSelectionSnapshot `json:"-"`
@@ -57,14 +60,29 @@ func environmentKind(key, value string) string {
 	upper := strings.ToUpper(key)
 	for _, part := range strings.FieldsFunc(upper, func(r rune) bool { return r == '_' || r == '-' }) {
 		switch part {
-		case "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "CREDENTIAL", "PRIVATE":
+		case "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "CREDENTIAL", "CREDENTIALS", "PRIVATE", "AUTH", "AUTHORIZATION", "AUTHENTICATION", "JWT", "PAT", "BEARER", "SIGNATURE":
 			return EnvironmentCredential
 		}
 	}
-	if environmentURLKey(key) {
-		if parsed, err := url.Parse(value); err == nil && parsed.User != nil {
-			if _, present := parsed.User.Password(); present {
-				return EnvironmentCredential
+	compact := strings.NewReplacer("_", "", "-", "").Replace(upper)
+	for _, part := range []string{"PASSWORD", "PASSPHRASE", "APIKEY", "ACCESSTOKEN", "CLIENTSECRET", "CREDENTIAL", "PRIVATEKEY"} {
+		if strings.Contains(compact, part) {
+			return EnvironmentCredential
+		}
+	}
+	if strings.Contains(value, "-----BEGIN") && strings.Contains(value, "PRIVATE KEY-----") {
+		return EnvironmentCredential
+	}
+	if parsed, err := url.Parse(value); err == nil {
+		if parsed.User != nil {
+			return EnvironmentCredential
+		}
+		for field, values := range parsed.Query() {
+			switch strings.ToLower(field) {
+			case "token", "access_token", "api_key", "apikey", "signature", "sig", "password", "secret", "credential":
+				if len(values) > 0 && values[0] != "" {
+					return EnvironmentCredential
+				}
 			}
 		}
 	}
@@ -88,6 +106,7 @@ func normalizeEnvironmentKinds(env map[string]string, kinds map[string]string) m
 }
 
 type Release struct {
+	HealthPath    string        `json:"health_path,omitempty"`
 	Stack         *StackRelease `json:"stack,omitempty"`
 	CommitMessage string        `json:"commit_message,omitempty"`
 	DatabaseIDs   []string      `json:"database_ids,omitempty"`
@@ -153,6 +172,9 @@ var domainPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 var envPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (a App) Validate() error {
+	if err := validateApplicationRuntime(a); err != nil {
+		return err
+	}
 	if a.RuntimeProfile != "" {
 		if _, ok := profileByID(a.RuntimeProfile); !ok {
 			return errors.New("unknown runtime profile")
