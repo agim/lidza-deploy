@@ -18,15 +18,18 @@ import (
 	"time"
 )
 
-const maxBackupSize int64 = 5 << 30 // S3 single PUT limit; never truncate a successful backup.
+const maxBackupSize int64 = 5 << 30
+const maxExtendedBackupSize int64 = 64 << 30
+
 type backupWriter struct {
-	w io.Writer
-	n atomic.Int64
+	w     io.Writer
+	n     atomic.Int64
+	limit int64
 }
 
 func (w *backupWriter) Write(p []byte) (int, error) {
-	if w.n.Load()+int64(len(p)) > maxBackupSize {
-		return 0, errors.New("backup exceeds 5 GiB single-object limit")
+	if int64(len(p)) > w.limit-w.n.Load() {
+		return 0, fmt.Errorf("backup exceeds its configured %d-byte limit", w.limit)
 	}
 	n, e := w.w.Write(p)
 	w.n.Add(int64(n))
@@ -37,6 +40,10 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	dir := m.backupDir(d.AppID)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return record, errors.New("cannot create backup directory")
+	}
+	limit, err := m.backupDiskLimit(dir, d.AppID)
+	if err != nil {
+		return record, err
 	}
 	file, err := os.CreateTemp(dir, ".backup-*")
 	if err != nil {
@@ -52,7 +59,7 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 		_, _ = command(cleanup, "", nil, "docker", "rm", "-f", container)
 	}()
 	hash := sha256.New()
-	writer := &backupWriter{w: io.MultiWriter(file, hash)}
+	writer := &backupWriter{w: io.MultiWriter(file, hash), limit: limit}
 	args := []string{"run", "--rm", "--name", container, "--label", "io.lidza.backup=" + d.AppID, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "512m", "--pids-limit", "128"}
 	if d.Network != "" {
 		args = append(args, "--network", d.Network)
@@ -130,6 +137,9 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 // Līdza supplies S3 signing; the existing presigned PUT API lets us stream a
 // file without buffering database contents in the control panel or agent RAM.
 func uploadBackup(ctx context.Context, cfg storage.Config, path, key string, size int64) error {
+	if size > maxBackupSize {
+		return uploadMultipartBackup(ctx, cfg, path, key, size)
+	}
 	stopAuthorization := backupProgress(ctx, "Authorizing required S3 upload", nil)
 	store, err := storage.New(cfg)
 	if err != nil {
@@ -181,6 +191,10 @@ func uploadBackup(ctx context.Context, cfg storage.Config, path, key string, siz
 		return fmt.Errorf("storage rejected upload (HTTP %d)", res.StatusCode)
 	}
 	res.Body.Close()
+	return verifyBackupObjectSize(ctx, store, key, size)
+}
+
+func verifyBackupObjectSize(ctx context.Context, store *storage.Storage, key string, size int64) error {
 	stopVerify := backupProgress(ctx, "Verifying uploaded S3 object size", nil)
 	object, err := store.Stat(ctx, key)
 	stopVerify()

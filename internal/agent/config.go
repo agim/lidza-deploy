@@ -25,6 +25,8 @@ type Config struct {
 	// Exact schema.table names, scoped to a database resource identity. Schemas
 	// remain in dumps; only disposable table data is omitted. No glob patterns.
 	BackupExcludeTableData map[string][]string `json:"backup_exclude_table_data,omitempty"`
+	// Exact database resource limits. An omitted resource keeps the 5 GiB default.
+	BackupMaxBytes map[string]int64 `json:"backup_max_bytes,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -49,6 +51,11 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if c.PredeploymentBackupMinutes < 0 || c.PredeploymentBackupMinutes > 120 {
 		return c, errors.New("predeployment_backup_minutes must be between 1 and 120, or 0 for the 10-minute default")
+	}
+	for database, limit := range c.BackupMaxBytes {
+		if !idPattern.MatchString(database) || limit < maxBackupSize || limit > maxExtendedBackupSize {
+			return c, errors.New("backup_max_bytes requires exact database IDs and limits between 5 GiB and 64 GiB")
+		}
 	}
 	for database, tables := range c.BackupExcludeTableData {
 		if database == "" || len(tables) > 100 {

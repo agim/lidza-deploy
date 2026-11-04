@@ -5,7 +5,7 @@ go 1.27.0
 toolchain go1.27.3
 
 require (
-	github.com/agim/lidza v0.1.129
+	github.com/agim/lidza v0.1.132
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/prometheus/procfs v0.22.0
 	golang.org/x/crypto v0.58.0
