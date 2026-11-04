@@ -79,7 +79,9 @@ h3 { font-size: 13px; font-weight: 550; }
 .application-view-list .application-card-content { display: grid; grid-template-columns: auto minmax(120px, 1fr) minmax(80px, 1fr); gap: 7px 16px; align-items: center; }
 .application-view-list .app-card-heading { grid-row: span 3; display: grid; gap: 10px; margin: 0; justify-items: start; }
 .application-view-list .app-source, .application-view-list .auto-deploy, .application-view-list .app-details, .application-view-list .app-domain { margin: 0; }
-.application-view-list .app-card-footer { max-width: 210px; align-content: center; border-left: 1px solid var(--border); border-top: 0; }
+.application-view-list .app-card-footer { grid-column: 2; grid-row: 1; max-width: 210px; align-content: center; border-left: 1px solid var(--border); border-top: 0; }
+.application-view-list .migration-plan,
+.application-view-list .app-deployment-error { grid-column: 1 / -1; }
 .application-view-list .new-app-card { min-height: 110px; }
 .workspace-note { margin-top: 26px; display: flex; flex-direction: row; gap: 14px; align-items: center; background: transparent; }
 .workspace-note strong { font-size: 11px; font-weight: 450; }
