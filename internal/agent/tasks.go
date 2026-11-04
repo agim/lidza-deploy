@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/agim/lidza/packs/jobs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/agim/lidza/packs/jobs"
 )
 
 type Task struct {
@@ -27,6 +28,7 @@ type Task struct {
 	Command      []string   `json:"command"`
 	Enabled      bool       `json:"enabled"`
 	EveryMinutes int        `json:"every_minutes,omitempty"`
+	Cron         string     `json:"cron,omitempty"`
 	Daily        string     `json:"daily,omitempty"`
 	Timezone     string     `json:"timezone,omitempty"`
 	NextRun      time.Time  `json:"next_run,omitempty"`
@@ -40,6 +42,15 @@ type Task struct {
 }
 
 func (t Task) schedule() (jobs.Schedule, error) {
+	if t.Cron != "" {
+		if t.EveryMinutes != 0 || t.Daily != "" || len(t.DailyTimes) > 0 || t.WeeklyDay != nil {
+			return nil, errors.New("choose cron or another task schedule")
+		}
+		if len(t.Cron) > 120 || len(t.Timezone) > 80 {
+			return nil, errors.New("task cron expression or time zone is too long")
+		}
+		return jobs.Cron(t.Cron, t.Timezone)
+	}
 	if len(t.DailyTimes) > 0 || t.WeeklyDay != nil {
 		if t.Timezone != "" {
 			if _, err := time.LoadLocation(t.Timezone); err != nil {

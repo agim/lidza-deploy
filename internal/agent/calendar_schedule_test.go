@@ -49,3 +49,23 @@ func TestTaskCalendarRejectsAmbiguousOrInvalidDefinitions(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskCronPreservesExactClockMinutes(t *testing.T) {
+	task := Task{ID: "report", Mode: "schedule", Command: []string{"report"}, Cron: "0,15,30,45 7-9 * * 1-5", Timezone: "America/New_York"}
+	if err := task.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	schedule, err := task.schedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Date(2026, 11, 2, 12, 16, 0, 0, time.UTC)
+	want := time.Date(2026, 11, 2, 12, 30, 0, 0, time.UTC)
+	if next := schedule.Next(after); !next.Equal(want) {
+		t.Fatalf("next run = %s, want %s", next, want)
+	}
+	task.EveryMinutes = 15
+	if task.Validate() == nil {
+		t.Fatal("ambiguous cron and interval accepted")
+	}
+}
