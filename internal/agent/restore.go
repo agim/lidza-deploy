@@ -138,7 +138,7 @@ func (m *Manager) finishRestore(appID string, in RestoreRequest, err error) {
 	if err != nil {
 		target.Error = err.Error()
 	} else {
-		target.NextBackup = time.Now().UTC().Add(time.Duration(target.Backup.Hours) * time.Hour)
+		target.NextBackup = target.Backup.NextBackupAfter(time.Now())
 	}
 	m.data.Databases[in.Target] = target
 	a, exists := m.data.Apps[appID]

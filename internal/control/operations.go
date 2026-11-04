@@ -95,18 +95,22 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 			if d.Retained {
 				continue
 			}
-			if d.Ready && d.Backup.Hours > 0 {
+			now := time.Now()
+			if d.Ready && d.Backup.Scheduled() {
 				var latest time.Time
 				for _, b := range d.Backups {
 					if b.Kind != "predeployment" && b.Created.After(latest) {
 						latest = b.Created
 					}
 				}
-				stale := latest.IsZero() && d.NextBackup.Before(time.Now().Add(-30*time.Minute)) || !latest.IsZero() && time.Since(latest) > time.Duration(d.Backup.Hours)*2*time.Hour
+				stale := d.NextBackup.Before(now.Add(-30 * time.Minute))
+				if !latest.IsZero() {
+					stale = d.Backup.NextBackupAfter(d.Backup.NextBackupAfter(latest)).Before(now)
+				}
 				record(c.observe(ctx, "backup-age:"+result.Server.ID+":"+d.AppID, "Scheduled backup is overdue for "+d.AppID, stale, 2))
 			}
 			record(c.observe(ctx, "database:"+result.Server.ID+":"+d.AppID, "Database or backup operation failed for "+d.AppID, d.Error != "", 1))
-			if d.Ready && d.Operation == "" && d.Backup.Hours > 0 && !d.NextBackup.After(time.Now()) {
+			if d.Ready && d.Operation == "" && d.Backup.Scheduled() && !d.NextBackup.After(now) {
 				if d.Backup.Offsite {
 					if err := c.syncBackupStorage(request, result.Server.ID); err != nil {
 						record(c.observe(ctx, "storage:"+result.Server.ID, "Off-site storage configuration could not reach "+result.Server.Name, true, 1))

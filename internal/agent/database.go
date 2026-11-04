@@ -8,17 +8,22 @@ import (
 	"net/url"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/agim/lidza/packs/jobs"
 	"github.com/agim/lidza/packs/storage"
 )
 
 var postgresOptions = map[string]string{"sslmode": "PGSSLMODE", "application_name": "PGAPPNAME", "options": "PGOPTIONS", "channel_binding": "PGCHANNELBINDING", "connect_timeout": "PGCONNECT_TIMEOUT"}
 
 type BackupPolicy struct {
-	Hours   int  `json:"hours"` // 0: manual only; 1, 24, 168: scheduled.
-	Keep    int  `json:"keep"`
-	Offsite bool `json:"offsite"`
+	Hours    int    `json:"hours"` // Legacy interval in hours.
+	Cron     string `json:"cron,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
+	Keep     int    `json:"keep"`
+	Offsite  bool   `json:"offsite"`
 }
 type DatabaseRequest struct {
 	ID     string       `json:"id,omitempty"`
@@ -76,10 +81,38 @@ func (p BackupPolicy) Validate() error {
 	if p.Hours != 0 && p.Hours != 1 && p.Hours != 24 && p.Hours != 168 {
 		return errors.New("choose manual, hourly, daily or weekly backups")
 	}
+	if p.Cron != "" {
+		if p.Hours != 0 || len(p.Cron) > 120 || len(p.Timezone) > 80 {
+			return errors.New("choose one backup interval or one calendar schedule")
+		}
+		if fields := strings.Fields(p.Cron); len(fields) == 5 {
+			if _, err := strconv.Atoi(fields[0]); err != nil {
+				return errors.New("calendar backups require one fixed minute per hour")
+			}
+		}
+		if _, err := jobs.Cron(p.Cron, p.Timezone); err != nil {
+			return errors.New("enter a valid five-field backup schedule and timezone")
+		}
+	} else if p.Timezone != "" {
+		return errors.New("backup timezone requires a calendar schedule")
+	}
 	if p.Keep < 1 || p.Keep > 100 {
 		return errors.New("retain between 1 and 100 backups")
 	}
 	return nil
+}
+
+func (p BackupPolicy) Scheduled() bool { return p.Hours > 0 || p.Cron != "" }
+
+func (p BackupPolicy) NextBackupAfter(after time.Time) time.Time {
+	if p.Cron != "" {
+		schedule, err := jobs.Cron(p.Cron, p.Timezone)
+		if err != nil {
+			return time.Time{}
+		}
+		return schedule.Next(after).UTC()
+	}
+	return after.UTC().Add(time.Duration(p.Hours) * time.Hour)
 }
 func (r DatabaseRequest) Validate() error {
 	if r.ID != "" && !idPattern.MatchString(r.ID) {
@@ -130,7 +163,7 @@ func (m *Manager) databaseViews() []DatabaseView {
 		live := m.databaseInUseLocked(id)
 		policy, next := d.Backup, d.NextBackup
 		if !live {
-			policy.Hours = 0
+			policy.Hours, policy.Cron, policy.Timezone = 0, "", ""
 			next = time.Time{}
 		}
 		out = append(out, DatabaseView{Attachments: attachments, AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: policy, NextBackup: next, Backups: slices.Clone(d.Backups), Retained: !live})
@@ -336,6 +369,9 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 			if action == "provision" {
 				latest.Ready = true
 				latest.NextBackup = time.Now().UTC()
+				if latest.Backup.Cron != "" {
+					latest.NextBackup = latest.Backup.NextBackupAfter(latest.NextBackup)
+				}
 				for _, ref := range m.attachmentsLocked(id) {
 					a := m.data.Apps[ref.AppID]
 					a.Env = maps.Clone(a.Env)
@@ -347,7 +383,7 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 					reloadApps[a.ID] = true
 				}
 			} else {
-				latest.NextBackup = time.Now().UTC().Add(time.Duration(latest.Backup.Hours) * time.Hour)
+				latest.NextBackup = latest.Backup.NextBackupAfter(time.Now())
 			}
 		}
 		m.data.Databases[id] = latest
@@ -393,7 +429,7 @@ func (m *Manager) setBackupPolicy(id string, p BackupPolicy) error {
 	old := d
 	p.Keep = 1
 	d.Backup = p
-	d.NextBackup = time.Now().UTC().Add(time.Duration(p.Hours) * time.Hour)
+	d.NextBackup = p.NextBackupAfter(time.Now())
 	m.data.Databases[id] = d
 	if err := m.save(); err != nil {
 		m.data.Databases[id] = old
