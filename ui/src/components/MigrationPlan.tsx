@@ -4,6 +4,7 @@ import { ErrorBanner } from './ui';
 
 type Plan = {
   checked: string;
+  inventory_limited?: boolean;
   commit?: string;
   domains: string[];
   persistent_files: boolean;
@@ -32,7 +33,8 @@ export function MigrationPlan({ appID }: { appID: string }) {
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {plan && <>
         <p>Checked {new Date(plan.checked).toLocaleString()} · Commit {plan.commit?.slice(0, 12) || 'not deployed'}</p>
-        <p>Domains: {plan.domains.join(', ')}. Persistent files: {plan.persistent_files ? 'transfer required' : 'no managed files recorded'}. Cache: {plan.cache_mode || 'none recorded'}.</p>
+        <p>Domains: {plan.domains.join(', ')}.</p>
+        {!plan.inventory_limited && <p>Persistent files: {plan.persistent_files ? 'transfer required' : 'no managed files recorded'}. Cache: {plan.cache_mode || 'none recorded'}.</p>}
         {plan.databases.length > 0 && <ul>{plan.databases.map(db => <li key={db.id}>{db.id} ({db.mode}){db.shared_with.length ? ` · shared with ${db.shared_with.join(', ')}` : ''}</li>)}</ul>}
         {plan.tasks.length > 0 && <p>Workers and schedules to coordinate: {plan.tasks.join(', ')}.</p>}
         {plan.blockers.length > 0 && <><strong>Resolve before moving</strong><ul>{plan.blockers.map(item => <li key={item}>{item}</li>)}</ul></>}

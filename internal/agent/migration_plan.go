@@ -12,6 +12,7 @@ import (
 // or an instruction to change the source host. Execution requires a fresh plan.
 type MigrationPlan struct {
 	Version            int                 `json:"version"`
+	InventoryLimited   bool                `json:"inventory_limited,omitempty"`
 	AppID              string              `json:"app_id"`
 	Checked            time.Time           `json:"checked"`
 	Commit             string              `json:"commit,omitempty"`
