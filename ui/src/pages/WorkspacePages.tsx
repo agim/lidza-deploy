@@ -1,3 +1,4 @@
+import { usePreference } from '../state/PreferencesContext';
 import { ComponentGallery } from '../components/ComponentGallery';
 import { Input } from '../components/primitives/input';
 import { Activity, BookOpen, CheckCircle2, ChevronDown, ClipboardList, Clock3, KeyRound, Plus, RefreshCw, Route as RouteIcon, Search, Server, Settings2, ShieldCheck, Smartphone, Trash2, UploadCloud, Users } from 'lucide-react';
@@ -6,19 +7,58 @@ import { del, get, patch, post, put } from '../lib/api';
 import { formatDate } from '../lib/format';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
-import { ActionForm, Badge, Button, Card, CopyButton, LogOutputHeader, EmptyState, ErrorBanner, Field, Loading, Notice, PageHeader, SearchField, SectionHeader } from '../components/ui';
+import { ActionForm, Badge, Button, Card, CopyButton, LogOutputHeader, EmptyState, ErrorBanner, Field, Loading, Notice, PageHeader, SearchField, SectionHeader, Tabs } from '../components/ui';
+import { type DefaultsResponse, type DefaultsRuntime, defaultsRuntimeLabels, defaultsRuntimes, maxRuntimeDefaults, runtimeProfile } from '../lib/defaults';
+
+type DefaultsRow = { id: string; key: string; value: string };
+const runtimeDefaultsCopy: Record<Exclude<DefaultsRuntime, 'go'>, { description: string; empty: string; placeholder: string }> = {
+  rails: { description: 'Copied into new container Rails applications before their first deployment. Existing Rails applications, container or native, can review and apply them from Settings → Environment.', empty: 'No Ruby on Rails defaults. New Rails applications start with only their own variables.', placeholder: 'RAILS_ENV' },
+  astro: { description: 'Copied into new container Astro sites before their first deployment. Existing Astro sites, container or native, can review and apply them from Settings → Environment.', empty: 'No Astro defaults. New Astro sites start with only their own variables.', placeholder: 'NODE_ENV' },
+  node: { description: 'Node.js applications on hosts review and apply these from Settings → Environment.', empty: 'No Node.js defaults. Node.js applications keep only their own variables.', placeholder: 'NODE_ENV' },
+};
+const toRows = (values?: Record<string, string>): DefaultsRow[] => Object.entries(values || {}).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => ({ id: crypto.randomUUID(), key, value }));
 
 export function DefaultsPage() {
   const [values, setValues] = useState<Record<string, string>>({}), [error, setError] = useState(''), [busy, setBusy] = useState(false); const notify = useToast();
-  useEffect(() => { get<{ values?: Record<string, string> }>('control/application-defaults').then(value => setValues(value.values || {})).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))); }, []);
-  const save = async () => { setBusy(true); try { await put('control/application-defaults', { values }); notify('Application defaults saved. They apply only on an app’s first deployment.'); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); } };
-  return <><PageHeader eyebrow="Workspace defaults" title="Application defaults" description="Shared variables copied once, before each new application’s first deployment." actions={<Button variant="primary" onClick={save} disabled={busy}>Save defaults</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card className="form-card"><SectionHeader title="Environment variables" description="App-specific values take precedence. Existing applications never change when these defaults change." actions={<Button onClick={() => { let name = 'VARIABLE'; let index = 2; while (Object.hasOwn(values, name)) name = `VARIABLE_${index++}`; setValues(current => ({ ...current, [name]: '' })); }}><Plus size={16} />Add variable</Button>} /><div className="key-value-list">{Object.entries(values).map(([key, value]) => <div key={key}><Input aria-label="Variable name" value={key} onChange={event => { const next = { ...values }; delete next[key]; next[event.target.value] = value; setValues(next); }} /><Input aria-label={`${key} value`} type="password" value={value} onChange={event => setValues(current => ({ ...current, [key]: event.target.value }))} autoComplete="new-password" /><Button variant="ghost" size="icon" aria-label={`Remove ${key}`} onClick={() => { const next = { ...values }; delete next[key]; setValues(next); }}><Trash2 size={17} /></Button></div>)}{!Object.keys(values).length && <p className="muted-copy">No workspace defaults. Add only variables that every new application should receive.</p>}</div></Card></>;
+  const [runtime, setRuntime] = useState<DefaultsRuntime>('go');
+  const [rows, setRows] = useState<Record<Exclude<DefaultsRuntime, 'go'>, DefaultsRow[]>>({ rails: [], astro: [], node: [] });
+  const [errors, setErrors] = useState<Partial<Record<DefaultsRuntime, string>>>({});
+  const load = (response: DefaultsResponse) => { setValues(response.values || {}); setRows({ rails: toRows(runtimeProfile(response, 'rails').values), astro: toRows(runtimeProfile(response, 'astro').values), node: toRows(runtimeProfile(response, 'node').values) }); };
+  useEffect(() => { get<DefaultsResponse>('control/application-defaults').then(load).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))); }, []);
+  const fail = (target: DefaultsRuntime, message: string) => setErrors(current => ({ ...current, [target]: message }));
+  const save = async () => {
+    setBusy(true); setErrors(current => ({ ...current, [runtime]: '' }));
+    try {
+      if (runtime === 'go') {
+        await put('control/application-defaults', { values });
+        notify('Application defaults saved. They apply only on an app’s first deployment.');
+        return;
+      }
+      const next: Record<string, string> = {};
+      for (const row of rows[runtime]) {
+        const key = row.key.trim();
+        if (!key && !row.value.trim()) continue;
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`${key || 'Variable'} is not a valid environment variable name.`);
+        if (Object.hasOwn(next, key)) throw new Error(`${key} appears more than once.`);
+        next[key] = row.value;
+      }
+      if (Object.keys(next).length > maxRuntimeDefaults) throw new Error(`At most ${maxRuntimeDefaults} defaults per runtime.`);
+      const saved = await put<DefaultsResponse>('control/application-defaults', { runtime, values: next });
+      setRows(current => ({ ...current, [runtime]: toRows(runtimeProfile(saved, runtime).values) }));
+      notify(`${defaultsRuntimeLabels[runtime]} defaults saved.`);
+    } catch (reason) { fail(runtime, reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); }
+  };
+  const updateRow = (target: Exclude<DefaultsRuntime, 'go'>, id: string, change: Partial<DefaultsRow>) => setRows(current => ({ ...current, [target]: current[target].map(row => row.id === id ? { ...row, ...change } : row) }));
+  const goEditor = <Card className="form-card"><SectionHeader title="Environment variables" description="App-specific values take precedence. Existing applications never change when these defaults change." actions={<Button onClick={() => { let name = 'VARIABLE'; let index = 2; while (Object.hasOwn(values, name)) name = `VARIABLE_${index++}`; setValues(current => ({ ...current, [name]: '' })); }}><Plus size={16} />Add variable</Button>} />{errors.go && <ErrorBanner onDismiss={() => fail('go', '')}>{errors.go}</ErrorBanner>}<div className="key-value-list">{Object.entries(values).map(([key, value]) => <div key={key}><Input aria-label="Variable name" value={key} onChange={event => { const next = { ...values }; delete next[key]; next[event.target.value] = value; setValues(next); }} /><Input aria-label={`${key} value`} type="password" value={value} onChange={event => setValues(current => ({ ...current, [key]: event.target.value }))} autoComplete="new-password" /><Button variant="ghost" size="icon" aria-label={`Remove ${key}`} onClick={() => { const next = { ...values }; delete next[key]; setValues(next); }}><Trash2 size={17} /></Button></div>)}{!Object.keys(values).length && <p className="muted-copy">No workspace defaults. Add only variables that every new application should receive.</p>}</div></Card>;
+  const runtimeEditor = (target: Exclude<DefaultsRuntime, 'go'>) => { const copy = runtimeDefaultsCopy[target]; const list = rows[target]; return <Card className="form-card"><SectionHeader title={`${defaultsRuntimeLabels[target]} environment`} description={copy.description} actions={<Button disabled={list.length >= maxRuntimeDefaults} onClick={() => setRows(current => ({ ...current, [target]: [...current[target], { id: crypto.randomUUID(), key: '', value: '' }] }))}><Plus size={16} />Add variable</Button>} />{errors[target] && <ErrorBanner onDismiss={() => fail(target, '')}>{errors[target]}</ErrorBanner>}<div className="key-value-list">{list.map(row => <div key={row.id}><Input aria-label="Variable name" value={row.key} placeholder={copy.placeholder} autoComplete="off" spellCheck={false} onChange={event => updateRow(target, row.id, { key: event.target.value })} /><Input aria-label={`${row.key || 'Variable'} value`} value={row.value} placeholder="Value" autoComplete="off" maxLength={2048} onChange={event => updateRow(target, row.id, { value: event.target.value })} /><Button variant="ghost" size="icon" aria-label={`Remove ${row.key || 'variable'}`} onClick={() => setRows(current => ({ ...current, [target]: current[target].filter(item => item.id !== row.id) }))}><Trash2 size={17} /></Button></div>)}{!list.length && <p className="muted-copy">{copy.empty}</p>}</div><div className="env-help"><KeyRound size={18} /><p>Only ordinary settings belong here; values are visible to administrators. Credentials, database and service URLs, and host variables such as PATH, PORT or LIDZA_* stay on each application. Empty values are dropped when saved.</p></div></Card>; };
+  return <><PageHeader eyebrow="Workspace defaults" title="Application defaults" description="Shared variables for each runtime, copied before a new application’s first deployment and offered to existing applications for review." actions={<Button variant="primary" onClick={save} disabled={busy}>Save {defaultsRuntimeLabels[runtime]} defaults</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Tabs active={runtime} onChange={value => setRuntime(value as DefaultsRuntime)} items={defaultsRuntimes.map(id => ({ id, label: defaultsRuntimeLabels[id] }))}>{runtime === 'go' ? goEditor : runtimeEditor(runtime)}</Tabs></>;
 }
 
 type UpdateTarget = { server_id: string; name?: string; state: string; message?: string };
 type UpdateSettings = { automatic?: boolean; latest?: string; checked?: string; check_error?: string; version?: string; targets?: UpdateTarget[] };
 type UpdateServer = { server_id: string; name?: string; current?: string; state?: string; message?: string; supported?: boolean; error?: string };
-type UpdatesData = { control_version?: string; latest?: string; settings?: UpdateSettings; servers?: UpdateServer[] };
+type UpdateChannel = { configured?: boolean; repository?: string; installation?: number; keys?: string[]; keys_pinned?: boolean; bundle_version?: string; key_id?: string };
+type UpdatesData = { control_version?: string; latest?: string; settings?: UpdateSettings; servers?: UpdateServer[]; channel?: UpdateChannel; automatic_updates_supported?: boolean };
 
 export function UpdatesPage() {
   const [data, setData] = useState<UpdatesData>();
@@ -26,6 +66,8 @@ export function UpdatesPage() {
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [policyBusy, setPolicyBusy] = useState(false);
+  const [repository, setRepository] = useState('');
+  const [channelBusy, setChannelBusy] = useState(false);
   const notify = useToast();
 
   const refresh = async (background = false) => {
@@ -81,10 +123,30 @@ export function UpdatesPage() {
     } finally { setPolicyBusy(false); }
   };
 
+  const saveChannel = async (value: string) => {
+    setChannelBusy(true); setError('');
+    try {
+      const result = await post<{ settings: UpdateSettings; channel: UpdateChannel }>('control/updates/channel', { repository: value });
+      setData(current => current ? { ...current, settings: result.settings, channel: result.channel } : current);
+      notify(value ? `Signed update channel bound to ${value}.` : 'Signed update channel cleared.');
+      await refresh(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setChannelBusy(false); }
+  };
+
   const settings = data?.settings || {};
+  const channel = data?.channel || {};
+  const privateChannel = Boolean(channel.configured);
+  const privateBuild = Boolean(channel.keys_pinned);
+  const automaticSupported = Boolean(data?.automatic_updates_supported);
   const latest = settings.latest || data?.latest || '';
+  const latestLabel = privateChannel ? 'Latest signed release' : privateBuild ? 'Signed channel' : 'Latest stable';
+  const latestValue = latest || (privateChannel ? 'none published' : privateBuild ? 'not configured' : 'unknown');
   const targets = settings.targets || [];
-  const inProgress = targets.some(target => target.state === 'waiting' || target.state === 'updating');
+  // A failed target ends the batch (the panel refuses to continue past it), so a new install may be queued.
+  const failedTarget = targets.some(target => target.state === 'failed');
+  const inProgress = !failedTarget && targets.some(target => target.state === 'waiting' || target.state === 'updating');
   const panelCurrent = Boolean(latest && data?.control_version === latest);
   const allCurrent = panelCurrent && (data?.servers || []).every(server => server.current === latest);
   const targetByServer = new Map(targets.map(target => [target.server_id, target]));
@@ -93,14 +155,23 @@ export function UpdatesPage() {
     <PageHeader eyebrow="Release management" title="Updates" description="Keep the control panel and hosting agents current without interrupting running apps." actions={<div className="sticky-actions"><Button onClick={check} disabled={checking || installing}><RefreshCw className={checking ? 'spin' : ''} size={16} />{checking ? 'Checking…' : 'Check now'}</Button><Button variant="primary" onClick={install} disabled={!latest || allCurrent || inProgress || installing || checking}><UploadCloud size={16} />{installing ? 'Queuing…' : inProgress ? 'Update queued' : 'Install update'}</Button></div>} />
     {error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
     {!data ? <Loading /> : <div className="settings-stack">
-      <Card><SectionHeader title="Control panel" description={`Installed ${data.control_version || 'unknown'} · Latest stable ${latest || 'unknown'}`} actions={<Badge tone={panelCurrent ? 'success' : 'warning'}>{panelCurrent ? 'Current' : 'Update available'}</Badge>} />{inProgress && <p className="muted-copy">The control panel host is updated last, after every remote host passes its health checks.</p>}</Card>
-      <Card><SectionHeader title="Hosting agents" description="The durable queue waits for deployments, backups, restores and scheduled commands to finish, then updates one host at a time." /><div className="simple-list">{(data.servers || []).map(server => { const target = targetByServer.get(server.server_id); const state = target?.state || server.state || (server.current === latest ? 'current' : 'idle'); const message = target?.message || server.message || server.error; return <div key={server.server_id}><div><strong>{server.name || server.server_id}</strong><small>{server.current || 'unknown'} · {state}{message ? ` · ${message}` : ''}</small></div><Badge tone={state === 'succeeded' || state === 'current' ? 'success' : state === 'failed' || Boolean(server.error) ? 'danger' : state === 'waiting' || state === 'updating' ? 'warning' : 'neutral'}>{state}</Badge></div>; })}</div><label className="check-row"><Input type="checkbox" checked={Boolean(settings.automatic)} disabled={policyBusy || inProgress} onChange={event => void setAutomatic(event.target.checked)} /><span><strong>Automatically install stable releases</strong><small>Uses the same durable queue and never interrupts deployments, backups or restores.</small></span></label></Card>
+      <Card><SectionHeader title="Control panel" description={`Installed ${data.control_version || 'unknown'} · ${latestLabel} ${latestValue}`} actions={<Badge tone={panelCurrent ? 'success' : latest ? 'warning' : 'neutral'}>{panelCurrent ? 'Current' : latest ? 'Update available' : 'No release'}</Badge>} />{inProgress && <p className="muted-copy">The control panel host is updated last, after every remote host passes its health checks.</p>}</Card>
+      {privateBuild && <Card><SectionHeader title="Signed update channel" description="Signed bundles are published as releases on this distribution's own repository and verified against the signing keys compiled into every binary before anything is installed." actions={<Badge tone={privateChannel ? 'success' : 'warning'}>{privateChannel ? 'Configured' : 'Not configured'}</Badge>} />
+        <div className="simple-list">
+          <div><div><strong>Repository</strong><small>{channel.repository || 'none'}{channel.installation ? ` · GitHub App installation ${channel.installation}` : ''}</small></div></div>
+          <div><div><strong>Trusted signing keys</strong><small>{(channel.keys || []).join(' · ') || 'none pinned in this build'}</small></div></div>
+          {channel.bundle_version && <div><div><strong>Verified release</strong><small>{channel.bundle_version}{channel.key_id ? ` · signed by ${channel.key_id}` : ''}</small></div></div>}
+          {settings.check_error && <div><div><strong>Last check</strong><small>{settings.check_error}</small></div></div>}
+        </div>
+        <ActionForm onSubmit={event => { event.preventDefault(); void saveChannel(repository.trim()); }}><div className="form-grid two"><Field label="Release repository" hint="owner/name, readable by the connected GitHub App"><Input value={repository} onChange={event => setRepository(event.target.value)} placeholder={channel.repository || 'owner/deploy-private'} disabled={channelBusy || inProgress} /></Field></div><div className="sticky-actions"><Button variant="primary" disabled={channelBusy || inProgress || !repository.trim()}>{channelBusy ? 'Saving…' : 'Bind channel'}</Button>{privateChannel && <Button variant="danger" type="button" disabled={channelBusy || inProgress} onClick={() => void saveChannel('')}>Clear channel</Button>}</div></ActionForm>
+      </Card>}
+      <Card><SectionHeader title="Hosting agents" description="The durable queue waits for deployments, backups, restores and scheduled commands to finish, then updates one host at a time." /><div className="simple-list">{(data.servers || []).map(server => { const target = targetByServer.get(server.server_id); const state = target?.state || server.state || (server.current === latest ? 'current' : 'idle'); const message = target?.message || server.message || server.error; return <div key={server.server_id}><div><strong>{server.name || server.server_id}</strong><small>{server.current || 'unknown'} · {state}{message ? ` · ${message}` : ''}</small></div><Badge tone={state === 'succeeded' || state === 'current' ? 'success' : state === 'failed' || Boolean(server.error) ? 'danger' : state === 'waiting' || state === 'updating' ? 'warning' : 'neutral'}>{state}</Badge></div>; })}</div><label className="check-row"><Input type="checkbox" checked={Boolean(settings.automatic)} disabled={policyBusy || inProgress || !automaticSupported} onChange={event => void setAutomatic(event.target.checked)} /><span><strong>{privateBuild ? 'Automatically install verified private releases' : 'Automatically install stable releases'}</strong><small>{automaticSupported ? 'Uses the same durable queue and never interrupts deployments, backups or restores.' : 'Bind the private update channel first.'}</small></span></label></Card>
     </div>}
   </>;
 }
 
 export function TeamPage({ audit = false }: { audit?: boolean }) {
-  const [data, setData] = useState<any>(), [error, setError] = useState(''), [query, setQuery] = useState(''); const notify = useToast();
+  const [data, setData] = useState<any>(), [error, setError] = useState(''), [query, setQuery] = usePreference<string>(audit ? 'deploy.audit.query' : 'deploy.team.query', ''); const notify = useToast();
   const load = () => get<any>(`control/${audit ? 'audit' : 'team'}`).then(setData).catch(reason => setError(reason instanceof Error ? reason.message : String(reason)));
   useEffect(() => { void load(); }, [audit]); if (!data && !error) return <Loading overlay label={`Loading ${audit ? 'audit log' : 'team'}…`} />;
   const rows: any[] = Array.isArray(data) ? data : data?.members || data?.items || data?.entries || [];
@@ -242,12 +313,12 @@ function ActivityGroupCard({ group, security }: { group: ActivityGroup; security
 
 export function ActivityPage({ security = false, selectedID }: { security?: boolean; selectedID?: string }) {
   const { apps } = useWorkspace();
-  const [appID, setAppID] = useState(selectedID || apps[0]?.id || '');
+  const [savedAppID, setAppID] = usePreference<string>(security ? 'deploy.security.app' : 'deploy.errors.app', '');
+  const appID = selectedID || savedAppID || apps[0]?.id || '';
   const [response, setResponse] = useState<ActivityResponse>();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [query, setQuery] = useState('');
-  useEffect(() => { if (!appID && apps[0]?.id) setAppID(apps[0].id); }, [appID, apps]);
+  const [query, setQuery] = usePreference<string>(security ? 'deploy.security.query' : 'deploy.errors.query', '');
   const load = async (id = appID) => {
     if (!id) return;
     setLoading(true);
@@ -272,7 +343,7 @@ export function ActivityPage({ security = false, selectedID }: { security?: bool
     {error && <ErrorBanner>{error}</ErrorBanner>}
     {response?.collection_error && <Notice><strong>Collector warning:</strong>&nbsp; {response.collection_error}</Notice>}
     <Card>
-      <SectionHeader title={security ? 'Security events' : 'Error groups'} description={`${groups.length} ${groups.length === 1 ? 'group' : 'groups'}${collectorStatus ? ` · collector ${collectorStatus}` : ''}${response?.last_received ? ` · last report ${formatDate(response.last_received)}` : ''}${response?.truncated ? ' · newest 500 occurrences shown' : ''}`} actions={<div className="activity-filters"><SearchField value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${security ? 'security events' : 'errors'}…`} /><Field label="Application" className="toolbar-filter"><select value={appID} onChange={event => setAppID(event.target.value)}>{apps.map(app => <option key={app.id} value={app.id}>{app.id}</option>)}</select></Field></div>} />
+      <SectionHeader title={security ? 'Security events' : 'Error groups'} description={`${groups.length} ${groups.length === 1 ? 'group' : 'groups'}${collectorStatus ? ` · collector ${collectorStatus}` : ''}${response?.last_received ? ` · last report ${formatDate(response.last_received)}` : ''}${response?.truncated ? ' · newest 500 occurrences shown' : ''}`} actions={<div className="activity-filters"><SearchField value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${security ? 'security events' : 'errors'}…`} /><Field label="Application" className="toolbar-filter"><select value={appID} onChange={event => { setAppID(event.target.value); if (selectedID) location.hash = security ? 'security' : 'errors'; }}>{apps.map(app => <option key={app.id} value={app.id}>{app.id}</option>)}</select></Field></div>} />
       {loading ? <Loading /> : <div className="activity-list">{groups.map(group => <ActivityGroupCard key={group.key} group={group} security={security} />)}{!groups.length && <EmptyState icon={security ? <ShieldCheck /> : <Activity />} title={query ? 'No matching activity' : security ? 'No security events' : 'No application errors'} description={query ? 'Try a different message, route, request ID, release or container.' : 'Nothing requiring attention was reported for this application.'} />}</div>}
     </Card>
   </>;

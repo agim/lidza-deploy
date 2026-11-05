@@ -1,6 +1,7 @@
+import { usePreference } from '../state/PreferencesContext';
 import { Cloud, CloudOff, Database, Download, HardDrive, RefreshCw, RotateCcw, Search } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
-import { get, post } from '../lib/api';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { get, patch, post } from '../lib/api';
 import { formatBytes, formatDate } from '../lib/format';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
@@ -8,15 +9,75 @@ import { Badge, Button, Card, EmptyState, ErrorBanner, Field, Loading, PageHeade
 import { ResourceList, type Column } from '../components/ResourceList';
 
 interface Backup { id: string; created: string; size?: number; kind?: string; offsite?: boolean; offsite_requested?: boolean; upload_error?: string; object_key?: string; sha256?: string }
-interface DatabaseItem { app_id: string; server_id: string; mode?: string; ready?: boolean; unavailable?: boolean; error?: string; operation?: string; backup?: { hours?: number; keep?: number; offsite?: boolean }; backups?: Backup[]; attachments?: Array<{ app_id: string; env_key?: string }> }
+interface BackupPolicy { hours?: number; cron?: string; timezone?: string; keep?: number; offsite?: boolean }
+interface DatabaseItem { app_id: string; server_id: string; mode?: string; engine?: 'sqlite'; ready?: boolean; retained?: boolean; unavailable?: boolean; error?: string; operation?: string; backup?: BackupPolicy; backups?: Backup[]; attachments?: Array<{ app_id: string; env_key?: string }> }
+function databaseLabel(database: DatabaseItem) {
+  if (database.engine === 'sqlite') return 'Native SQLite';
+  return database.mode === 'external' ? 'External PostgreSQL' : 'Private PostgreSQL';
+}
+
 interface RemoteBackup { key: string; prefix?: string; size?: number; modifiedAt?: string; legacy?: boolean }
 
+function backupScheduleLabel(policy?: BackupPolicy) {
+  if (policy?.cron) return `${policy.cron} (${policy.timezone || 'UTC'})`;
+  if (policy?.hours === 1) return 'Hourly';
+  if (policy?.hours === 24) return 'Daily';
+  if (policy?.hours === 168) return 'Weekly';
+  return 'Manual';
+}
+
+function BackupScheduleForm({ database, onSaved }: { database: DatabaseItem; onSaved: () => Promise<void> }) {
+  const policy = database.backup;
+  const [frequency, setFrequency] = useState(policy?.cron ? 'calendar' : String(policy?.hours || 0));
+  const [saving, setSaving] = useState(false);
+  const notify = useToast();
+  const calendar = frequency === 'calendar';
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const fields = new FormData(event.currentTarget);
+    const cron = String(fields.get('cron') || '').trim();
+    const timezone = String(fields.get('timezone') || '').trim();
+    const next = { hours: calendar ? 0 : Number(frequency), keep: 1, offsite: fields.get('offsite') === 'on', ...(calendar ? { cron, timezone } : {}) };
+    setSaving(true);
+    try {
+      await patch(`control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backups`, next);
+      await onSaved();
+      notify('Backup schedule saved.');
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : String(reason), true);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <Card className="form-card">
+    <SectionHeader title="Backup schedule" description="Set when Līdza takes a backup of this database." />
+    <form onSubmit={submit}>
+      <div className="form-grid two">
+        <Field label="Frequency"><select value={frequency} onChange={event => setFrequency(event.target.value)}>
+          <option value="0">Manual only</option><option value="1">Hourly</option><option value="24">Daily</option>
+          <option value="168">Weekly</option><option value="calendar">Calendar schedule</option>
+        </select></Field>
+        {calendar && <>
+          <Field label="Cron schedule" hint="Use a fixed minute or an alias such as @monthly.">
+            <input name="cron" required defaultValue={policy?.cron} placeholder="0 3 * * 1" maxLength={120} />
+          </Field>
+          <Field label="Timezone" hint="Use an IANA timezone such as Europe/Tirane.">
+            <input name="timezone" defaultValue={policy?.timezone || 'UTC'} maxLength={80} />
+          </Field>
+        </>}
+      </div>
+      <label className="check-row"><input type="checkbox" name="offsite" defaultChecked={policy?.offsite} />Copy to off-site storage</label>
+      <Button type="submit" variant="primary" disabled={saving || Boolean(database.operation)}>Save backup schedule</Button>
+    </form>
+  </Card>;
+}
+
 export function DatabasesPage() {
-  const { apps } = useWorkspace(); const [data, setData] = useState<DatabaseItem[]>([]), [selected, setSelected] = useState('all'), [loading, setLoading] = useState(true), [error, setError] = useState('');
+  const { apps } = useWorkspace(); const [data, setData] = useState<DatabaseItem[]>([]), [selected, setSelected] = usePreference<string>('deploy.databases.app', 'all'), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const load = async () => { try { const value = await get<{ databases?: DatabaseItem[] } | DatabaseItem[]>('control/databases'); setData(Array.isArray(value) ? value : value.databases || []); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
   useEffect(() => { load(); }, []);
   const visible = useMemo(() => data.filter(item => selected === 'all' || item.app_id === selected || item.attachments?.some(attachment => attachment.app_id === selected)), [data, selected]);
-  return <><PageHeader eyebrow="Data protection" title="Databases & backups" description="A searchable inventory. Open one application to configure schedules, create backups, or restore." actions={<Button onClick={load}><RefreshCw size={16} />Refresh</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Toolbar><div><h2>Attached databases</h2><Badge>{data.length}</Badge></div><Field label="Application" className="toolbar-filter"><select value={selected} onChange={event => setSelected(event.target.value)}><option value="all">All applications</option>{apps.map(app => <option key={app.id}>{app.id}</option>)}</select></Field></Toolbar>{loading ? <Loading /> : <div className="database-grid">{visible.map(database => <Card className="database-card" key={`${database.server_id}-${database.app_id}`}><div className="database-card-heading"><span className="server-mark"><Database size={21} /></span><div><h2>{database.app_id}</h2><p>{database.mode === 'external' ? 'External PostgreSQL' : 'Private PostgreSQL'} · {database.server_id}</p></div><StatusBadge status={database.unavailable ? 'offline' : database.operation || (database.error ? 'needs attention' : database.ready ? 'ready' : 'not ready')} /></div><div className="database-policy"><span>Schedule <strong>{database.backup?.hours === 0 ? 'Manual' : database.backup?.hours === 1 ? 'Hourly' : database.backup?.hours === 168 ? 'Weekly' : 'Daily'}</strong></span><span>Local retention <strong>Latest backup only</strong></span><span>Off-site <strong>{database.backup?.offsite ? 'Enabled' : 'Off'}</strong></span><span>Backups <strong>{database.backups?.length || 0}</strong></span></div><Button variant="primary" onClick={() => { location.hash = `page/database/${encodeURIComponent(database.app_id)}`; }}>Manage database & backups</Button></Card>)}{!visible.length && <EmptyState icon={<Database />} title="No databases found" description={selected === 'all' ? 'Attach a database from an application’s settings.' : `No database is attached to ${selected}.`} />}</div>}</>;
+  return <><PageHeader eyebrow="Data protection" title="Databases & backups" description="A searchable inventory. Open one application to configure schedules, create backups, or restore." actions={<Button onClick={load}><RefreshCw size={16} />Refresh</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Toolbar><div><h2>Attached databases</h2><Badge>{data.length}</Badge></div><Field label="Application" className="toolbar-filter"><select value={selected} onChange={event => setSelected(event.target.value)}><option value="all">All applications</option>{apps.map(app => <option key={app.id}>{app.id}</option>)}</select></Field></Toolbar>{loading ? <Loading /> : <div className="database-grid">{visible.map(database => <Card className="database-card" key={`${database.server_id}-${database.app_id}`}><div className="database-card-heading"><span className="server-mark"><Database size={21} /></span><div><h2>{database.app_id}</h2><p>{databaseLabel(database)} · {database.server_id}</p></div><StatusBadge status={database.unavailable ? 'offline' : database.operation || (database.error ? 'needs attention' : database.ready ? 'ready' : 'not ready')} /></div><div className="database-policy"><span>Schedule <strong>{backupScheduleLabel(database.backup)}</strong></span><span>Local retention <strong>Latest backup only</strong></span><span>Off-site <strong>{database.backup?.offsite ? 'Enabled' : 'Off'}</strong></span><span>Backups <strong>{database.backups?.length || 0}</strong></span></div><Button variant="primary" onClick={() => { location.hash = `page/database/${encodeURIComponent(database.app_id)}`; }}>Manage database & backups</Button></Card>)}{!visible.length && <EmptyState icon={<Database />} title="No databases found" description={selected === 'all' ? 'Attach a database from an application’s settings.' : `No database is attached to ${selected}.`} />}</div>}</>;
 }
 
 export function DatabaseDetailPage({ appID }: { appID: string }) {
@@ -26,7 +87,7 @@ export function DatabaseDetailPage({ appID }: { appID: string }) {
   const notify = useToast();
   const load = async () => { try { const value = await get<{ databases?: DatabaseItem[] } | DatabaseItem[]>('control/databases'); const list = Array.isArray(value) ? value : value.databases || []; setDatabase(list.find(item => item.app_id === appID || item.attachments?.some(attachment => attachment.app_id === appID))); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
   useEffect(() => { load(); }, [appID]);
-  const backup = async () => { if (!database) return; try { await post(`control/apps/${encodeURIComponent(appID)}/database/backup`); notify('Backup queued.'); await load(); } catch (reason) { notify(reason instanceof Error ? reason.message : String(reason), true); } };
+  const backup = async () => { if (!database) return; try { await post(`control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backup`); notify('Backup queued.'); await load(); } catch (reason) { notify(reason instanceof Error ? reason.message : String(reason), true); } };
   const restore = async (target: string) => {
     if (!database || !restoreBackup) return;
     await post(`control/apps/${encodeURIComponent(appID)}/restore`, { source: database.app_id, backup: restoreBackup.id, target, env_key: 'DATABASE_URL' });
@@ -39,13 +100,13 @@ export function DatabaseDetailPage({ appID }: { appID: string }) {
     { id: 'purpose', label: 'Purpose', render: row => row.kind === 'predeployment' ? 'Pre-deployment' : 'Scheduled / manual' },
     { id: 'size', label: 'Size', render: row => formatBytes(row.size) },
     { id: 'copies', label: 'Copies', render: row => <div><strong>{row.offsite ? 'Local + S3 verified' : row.upload_error ? 'Local · upload failed' : row.offsite_requested ? 'Local · upload pending' : 'Local only'}</strong>{row.upload_error && <small className="text-danger">{row.upload_error}</small>}{row.object_key && <code className="object-key">{row.object_key}</code>}</div> },
-    { id: 'actions', label: 'Actions', render: row => <div className="row-actions"><a className="button button-secondary button-sm" download href={`/api/control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backups/${encodeURIComponent(row.id)}`}><Download size={15} />Download</a><Button size="sm" onClick={() => { setRestoreBackup(row); setRestoreTarget(`restore-${Date.now().toString(36)}`); }}><RotateCcw size={15} />Restore</Button>{!row.offsite && <Button size="sm" onClick={async () => { await post(`control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backups/${encodeURIComponent(row.id)}/upload`); notify('Off-site upload queued.'); }}><Cloud size={15} />Upload</Button>}</div> },
+    { id: 'actions', label: 'Actions', render: row => <div className="row-actions"><a className="button button-secondary button-sm" download href={`/api/control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backups/${encodeURIComponent(row.id)}`}><Download size={15} />Download</a>{database.engine !== 'sqlite' && <Button size="sm" onClick={() => { setRestoreBackup(row); setRestoreTarget(`restore-${Date.now().toString(36)}`); }}><RotateCcw size={15} />Restore</Button>}{!row.offsite && <Button size="sm" onClick={async () => { await post(`control/servers/${encodeURIComponent(database.server_id)}/databases/${encodeURIComponent(database.app_id)}/backups/${encodeURIComponent(row.id)}/upload`); notify('Off-site upload queued.'); }}><Cloud size={15} />Upload</Button>}</div> },
   ];
-  return <><PageHeader eyebrow="Database & backups" title={appID} description={`${database.mode === 'external' ? 'External' : 'Private'} PostgreSQL · ${database.server_id}`} back="#databases" actions={<Button variant="primary" onClick={backup}>Back up now</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card><SectionHeader title="Backup history" description="Each row explicitly shows whether the off-site object was verified." /><ResourceList rows={[...(database.backups || [])].sort((a, b) => +new Date(b.created) - +new Date(a.created))} columns={columns} rowKey={row => row.id} empty={<EmptyState icon={<HardDrive />} title="No backups yet" description="Create one now or wait for the next scheduled run." />} /></Card><PromptDialog open={Boolean(restoreBackup)} title="Restore backup into a new database" description={<>Restore backup <strong>{restoreBackup?.id}</strong> from <strong>{database.app_id}</strong>. The existing database will not be overwritten.</>} label="New database ID" value={restoreTarget} submitLabel="Start restore" inputProps={{ autoComplete: 'off', spellCheck: false, maxLength: 48, pattern: '[a-z][a-z0-9-]{0,47}', title: 'Use lowercase letters, numbers, and hyphens; begin with a letter.' }} onValueChange={setRestoreTarget} onOpenChange={open => { if (!open) { setRestoreBackup(undefined); setRestoreTarget(''); } }} onSubmit={restore} /></>;
+  return <><PageHeader eyebrow="Database & backups" title={appID} description={`${databaseLabel(database)} · ${database.server_id}`} back="#databases" actions={<Button variant="primary" onClick={backup}>Back up now</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}{database.ready && !database.retained && <BackupScheduleForm key={JSON.stringify([database.server_id, database.app_id, database.backup])} database={database} onSaved={load} />}<Card><SectionHeader title="Backup history" description="Each row explicitly shows whether the off-site object was verified." /><ResourceList rows={[...(database.backups || [])].sort((a, b) => +new Date(b.created) - +new Date(a.created))} columns={columns} rowKey={row => row.id} empty={<EmptyState icon={<HardDrive />} title="No backups yet" description="Create one now or wait for the next scheduled run." />} /></Card><PromptDialog open={Boolean(restoreBackup)} title="Restore backup into a new database" description={<>Restore backup <strong>{restoreBackup?.id}</strong> from <strong>{database.app_id}</strong>. The existing database will not be overwritten.</>} label="New database ID" value={restoreTarget} submitLabel="Start restore" inputProps={{ autoComplete: 'off', spellCheck: false, maxLength: 48, pattern: '[a-z][a-z0-9-]{0,47}', title: 'Use lowercase letters, numbers, and hyphens; begin with a letter.' }} onValueChange={setRestoreTarget} onOpenChange={open => { if (!open) { setRestoreBackup(undefined); setRestoreTarget(''); } }} onSubmit={restore} /></>;
 }
 
 export function RemoteBackupsPage() {
-  const [items, setItems] = useState<RemoteBackup[]>([]), [meta, setMeta] = useState<{ bucket?: string; prefix?: string; checked?: string }>({}), [query, setQuery] = useState(''), [loading, setLoading] = useState(true), [error, setError] = useState('');
+  const [items, setItems] = useState<RemoteBackup[]>([]), [meta, setMeta] = useState<{ bucket?: string; prefix?: string; checked?: string }>({}), [query, setQuery] = usePreference<string>('deploy.backups.query', ''), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const load = async () => { try { const value = await get<{ objects?: RemoteBackup[]; bucket?: string; prefix?: string; checked?: string }>('control/storage/backups'); setItems(value.objects || []); setMeta(value); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
   useEffect(() => { load(); }, []); const visible = items.filter(item => item.key.toLowerCase().includes(query.toLowerCase()));
   const columns: Column<RemoteBackup>[] = [{ id: 'object', label: 'Object', render: row => <div><code className="object-key">{meta.bucket}/{row.prefix || meta.prefix}/{row.key}</code>{row.legacy && <Badge tone="warning">Legacy location</Badge>}</div> }, { id: 'size', label: 'Size', render: row => formatBytes(row.size) }, { id: 'modified', label: 'Modified', render: row => formatDate(row.modifiedAt) }, { id: 'actions', label: 'Actions', render: row => <a className="button button-secondary button-sm" href={`/api/control/storage/backups/download?key=${encodeURIComponent(row.key)}${row.legacy ? '&legacy=1' : ''}`}><Download size={15} />Download</a> }];

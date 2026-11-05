@@ -11,6 +11,20 @@ export default defineConfig({
   resolve: { alias: { '@': resolve(__dirname, 'src') } },
   plugins: [
     { name: 'clean-console-assets', buildStart() { rmSync(consoleAssets, { recursive: true, force: true }); } },
+    // The toast library inserts its stylesheet as an inline <style> tag at
+    // load, which the console's style-src 'self' policy blocks. Its CSS is
+    // imported as a regular stylesheet instead (see main.tsx), so the runtime
+    // insertion is disabled here.
+    {
+      name: 'sonner-static-styles',
+      enforce: 'pre',
+      transform(code, id) {
+        if (!/node_modules[\\/]sonner[\\/]dist[\\/]index\.m?js$/.test(id)) return null;
+        const patched = code.replace('function __insertCSS(code) {', 'function __insertCSS(code) {\n  return;');
+        if (patched === code) this.error('sonner style injection hook not found; update the sonner-static-styles plugin');
+        return { code: patched, map: null };
+      },
+    },
     react(),
     tailwindcss(),
   ],

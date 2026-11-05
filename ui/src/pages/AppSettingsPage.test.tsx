@@ -4,6 +4,22 @@ import { AppSettingsPage } from './AppSettingsPage';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+it('allows scoped settings edits while protecting routing, runtime and managed values',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,status:200,json:async()=>({id:'site',runtime:'astro',native:{id:'site',name:'site',services:[]},repository:'org/site',branch:'main',domain:'site.example.com',astro:{mode:'static',output_directory:'dist'},readonly_env_keys:['HOST_VALUE'],environment:[{key:'HOST_VALUE',kind:'setting',value:'fixed-host-value'},{key:'TITLE',kind:'setting',value:'editable-title'}],capabilities:{configure:true,environment:true,routing:false,resources:false,runtime_mode:false}})})));
+  render(<AppSettingsPage appID="site"/>);
+  expect(await screen.findByRole('combobox',{name:/Branch/})).toBeEnabled();
+  expect(screen.getByRole('textbox',{name:/Application hostname/})).toBeDisabled();
+  expect(screen.getByRole('combobox',{name:'Astro output'})).toBeDisabled();
+  expect(screen.getByRole('textbox',{name:'Build output directory'})).toBeEnabled();
+  expect(screen.getByRole('button',{name:'Save changes'})).toBeEnabled();
+  fireEvent.mouseDown(screen.getByRole('tab',{name:'Environment'}),{button:0,ctrlKey:false});
+  expect(screen.getByDisplayValue('fixed-host-value')).toBeDisabled();
+  expect(screen.getByDisplayValue('editable-title')).toBeEnabled();
+  fireEvent.mouseDown(screen.getByRole('tab',{name:'Data & storage'}),{button:0,ctrlKey:false});
+  expect(screen.getByRole('button',{name:'Manage database'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Manage cache'})).toBeDisabled();
+});
+
 describe('AppSettingsPage', () => {
   it('preserves routing and safety values when saving from the environment tab', async () => {
     const requests: RequestInit[] = [];

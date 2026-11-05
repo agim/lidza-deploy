@@ -1,0 +1,7 @@
+import type { Application } from '../lib/types';
+import { Card, Badge } from './ui';
+
+export function ObservedApplicationCard({app,servers=[]}:{app:Application;servers?:Array<{id:string;name:string}>}) {
+  const automatic=app.observed?.automatic;
+  return <Card className="application-card"><div className="application-card-content"><div className="app-card-heading"><Badge>{automatic?'Discovered automatically':'Observed'}</Badge><Badge>{app.runtime==='rails'?'Rails':app.runtime==='astro'?'Astro':app.runtime==='go'?'Go':'Other runtime'}</Badge></div><strong className="app-name">{app.observed?.name}</strong>{app.domain && <a className="app-domain" href={`https://${app.domain}`} target="_blank" rel="noreferrer">{app.domain}</a>}<p>Source: {servers.find(server=>server.id===app.observed?.source)?.name || app.observed?.source}</p><p>{app.observed?.missing?'Not present in the latest successful discovery. The previous record is retained.':'Managed by the existing host setup. Runtime health has not been verified by Līdza.'}</p><details><summary>Existing services</summary><ul>{app.observed?.processes.map(process=><li key={process}>{process}</li>)}</ul></details></div><div className="application-actions app-card-footer">{automatic?'Service discovery is complete. Deployment settings are not available from the agent yet; inventory sync will add them when available.':'Retained host inventory. Connected agents synchronize their native applications automatically.'}</div></Card>;
+}

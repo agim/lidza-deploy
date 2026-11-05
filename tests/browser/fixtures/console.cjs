@@ -9,6 +9,10 @@ async function mockConsole(page) {
     const body = request.postData() ? request.postDataJSON() : undefined;
     state.calls.push({ path, method, body });
     const send = json => route.fulfill({ json });
+    if (path === 'v1/auth/preferences') {
+      if (method === 'PATCH') state.preferences = { ...(state.preferences || {}), ...body.values };
+      return send({ subject: 'fixture-operator', values: state.preferences || {} });
+    }
     if (path === 'control/servers/local/maintenance') { if (method === 'PATCH') state.maintenance.policy = body; if (state.maintenance.running && Date.now() - state.maintenanceStarted > 100) { state.maintenance.running = false; state.maintenance.messages = ['Removed 2 older local backups.', 'Total reclaimed space: 2 GB']; state.maintenance.last_run = now; } return send(state.maintenance); }
     if (path === 'control/servers/local/maintenance/run') { state.maintenance.running = true; state.maintenanceStarted = Date.now(); return send(state.maintenance); }
     if (path === 'control/status') return send({ roles: ['admin'], github_app_connected: true, github_app_configured: true, github_public_https: true });

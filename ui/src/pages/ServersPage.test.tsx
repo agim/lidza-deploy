@@ -10,6 +10,11 @@ vi.mock('../state/WorkspaceContext', () => ({ useWorkspace: () => ({
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+// Server cards also ask each agent for its host update summary; answer those
+// separately so the health request sequence below stays exact.
+const withHostUpdates = (mock: (...args: unknown[]) => unknown) => (url: unknown, init?: unknown) =>
+  String(url).includes('/host/updates') ? Promise.resolve({ ok: true, status: 200, json: async () => ({ supported: false }) }) : mock(url, init);
+
 const health = {
   server_id: 'local', checked: '2026-10-15T13:00:00Z', cpus: 4, cpu_percent: 16.3, load1: .11,
   memory_total: 8 * 1024 ** 3, memory_available: 6 * 1024 ** 3,
@@ -24,7 +29,7 @@ describe('ServersPage resources', () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ servers: [health], unavailable_servers: [] }) })
       .mockRejectedValueOnce(new Error('Agent connection failed'))
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ servers: [{ ...health, cpu_percent: 0 }], unavailable_servers: [] }) });
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withHostUpdates(fetchMock));
     const { container } = render(<ServersPage />);
     expect(await screen.findByText('16.3%')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/control/server-health', expect.any(Object));
@@ -56,7 +61,7 @@ describe('ServersPage resources', () => {
     let finish!: (value: unknown) => void;
     const fetchMock = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
       .mockResolvedValue({ ok: true, status: 200, json: async () => ({ servers: [health] }) });
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withHostUpdates(fetchMock));
     render(<ServersPage />);
     const { act } = await import('@testing-library/react');
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });

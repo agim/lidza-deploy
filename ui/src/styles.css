@@ -465,3 +465,9 @@ input:read-only { color: var(--muted-foreground); background: var(--surface-2); 
 .app-deployment-error { padding: 0 20px 16px; color: var(--destructive); font-size: .875rem; overflow-wrap: anywhere; }
 
 .service-certificate { display: grid; gap: 0.25rem; margin-top: 0.5rem; font-size: 0.75rem; }
+
+.apply-defaults-dialog { width: min(560px, calc(100vw - 32px)); }
+.apply-defaults-list { max-height: min(46vh, 420px); overflow: auto; display: grid; gap: 8px; }
+.apply-defaults-dialog .check-row { margin-top: 0; }
+.apply-defaults-dialog .check-row span { min-width: 0; overflow-wrap: anywhere; }
+.apply-defaults-dialog .check-row strong { font-weight: 500; }
