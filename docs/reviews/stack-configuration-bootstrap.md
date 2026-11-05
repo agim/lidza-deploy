@@ -36,6 +36,6 @@ providers (including optional embed), missing infrastructure, conditional option
 settings, conflicting declarations, missing original master key, mismatched sealed
 credentials, successful original-key decryption and explicit secret masking.
 
-These are platform fixtures, not a new Thura end-to-end acceptance claim. Thura
-owns its manifest integration and genuine production wizard/provider acceptance.
+These are platform fixtures, not a new application end-to-end acceptance claim. The
+application owns its manifest integration and genuine production wizard/provider acceptance.
 No running production console or customer app was used for these checks.

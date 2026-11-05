@@ -58,11 +58,12 @@ inherits retired telemetry. `/v1/retained-resources` reports the data volume
 without credentials. Local ClickHouse is separate from managed PostgreSQL
 backup schedules; configure application-specific ClickHouse backups separately.
 
-For Kulla, update the hosting agent to this release, then deploy current `main`.
-Its manifest requests ClickHouse; its existing `DB_MIGRATE=true` startup applies
-all packaged ClickHouse migrations before readiness. Existing imported app keys
-and PostgreSQL delivery jobs remain intact. Failed delivery jobs may still need
-Kulla's targeted replay command, and explicitly paused workers must be resumed.
+For an existing application that starts requesting ClickHouse, update the hosting
+agent to this release, then deploy the application. When its manifest requests
+ClickHouse, an existing `DB_MIGRATE=true` startup applies all packaged ClickHouse
+migrations before readiness. Existing app keys and PostgreSQL jobs remain intact.
+Failed jobs may still need the application's own replay command, and explicitly
+paused workers must be resumed.
 
 Acceptance covers encrypted credential persistence, failed setup and retry,
 external connection preservation, removal/recreation isolation, and a real

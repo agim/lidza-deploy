@@ -46,8 +46,8 @@ corrected to match the existing installer. That sample improvement is separate
 from the production incident. Binary upgrades do not rewrite live Caddy config;
 do not change a verified correct configuration to compensate for wrong DNS.
 
-Thura's application session reports its corrected multi-architecture source
-bc01d2e reached setup_required with all declared service health checks passing.
+An integrating application reports its corrected multi-architecture source
+reached setup_required with all declared service health checks passing.
 That is separate application evidence, not a new platform acceptance claim here.
 
 Validation passed: full Go race suite and vet; 39 UI tests/typecheck/build; all

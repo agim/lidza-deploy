@@ -26,7 +26,7 @@ The real stack lifecycle test passed:
   preserves the operator DROP.
 
 These network fixtures are not SMTP delivery, public cloud reachability, provider
-SMTP allowance or a new Thura application acceptance claim. The reproducible
+SMTP allowance or a new application acceptance claim. The reproducible
 isolated-host entry point is tests/public-ports-host.sh.
 
 Python ownership/lifecycle regressions cover idempotence, shared chain owners,

@@ -8,7 +8,7 @@ describe('console routes', () => {
   });
 
   it('preserves full-page resource routes', () => {
-    expect(parseRoute('#page/settings/kulla-lidza')).toEqual({ page: 'detail', detail: 'settings', id: 'kulla-lidza' });
+    expect(parseRoute('#page/settings/acme-analytics')).toEqual({ page: 'detail', detail: 'settings', id: 'acme-analytics' });
     expect(parseRoute('#page/console/local')).toEqual({ page: 'detail', detail: 'console', id: 'local' });
   });
 

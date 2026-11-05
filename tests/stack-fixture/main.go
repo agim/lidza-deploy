@@ -1,4 +1,4 @@
-// Platform-only acceptance fixture. Thura's application tests live in its repo.
+// Platform-only acceptance fixture. Application acceptance tests live in their own repositories.
 package main
 
 import (

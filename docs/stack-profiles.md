@@ -46,12 +46,12 @@ user-chosen capabilities or arbitrary resource limits are accepted.
 {
   "version": 1,
   "required_environment": ["LIDZA_MASTER_KEY"],
-  "generated_secrets": ["THURA_SETUP_TOKEN", "THURA_POSTFIX_TOKEN", "MAIL_RSPAMD_PASSWORD", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "COLLABORA_TOKEN_SECRET"],
+  "generated_secrets": ["WORKSPACE_SETUP_TOKEN", "WORKSPACE_POSTFIX_TOKEN", "MAIL_RSPAMD_PASSWORD", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "COLLABORA_TOKEN_SECRET"],
   "services": [
     {
       "name": "app", "role": "app", "policy": "init",
       "build": {"dockerfile": "Dockerfile", "target": "compact"},
-      "aliases": ["thura"],
+      "aliases": ["workspace"],
       "environment": {
         "DB_MIGRATE": "true", "DB_MAX_CONNS": "8",
         "CACHE_URL": "redis://127.0.0.1:6379/1",
@@ -62,25 +62,25 @@ user-chosen capabilities or arbitrary resource limits are accepted.
         "LIVEKIT_SERVER_URL": "http://127.0.0.1:7880",
         "LIVEKIT_PUBLIC_URL": "wss://${APP_DOMAIN}/rtc",
         "COLLABORA_SERVER_URL": "http://office:9980",
-        "COLLABORA_APP_URL": "http://thura:3000",
-        "THURA_SERVICE_HTTP_ORIGINS": "http://127.0.0.1:7880,http://office:9980,http://thura:3000"
+        "COLLABORA_APP_URL": "http://workspace:3000",
+        "WORKSPACE_SERVICE_HTTP_ORIGINS": "http://127.0.0.1:7880,http://office:9980,http://workspace:3000"
       },
       "public_ports": [{"port": 25, "protocol": "tcp"}, {"port": 7881, "protocol": "tcp"}, {"port": 7882, "protocol": "udp"}],
       "http_routes": [{"prefix": "/rtc", "port": 7880, "strip_prefix": true}],
-      "health_command": ["python3", "/opt/thura/app.py", "--health"]
+      "health_command": ["python3", "/opt/workspace/app.py", "--health"]
     },
     {
       "name": "mail", "role": "mail", "policy": "mail",
       "build": {"dockerfile": "deploy/compact/mail.Dockerfile"},
       "share_app_network": true,
-      "environment": {"THURA_POSTFIX_MANAGED": "true", "THURA_POSTFIX_TOKEN": "${THURA_POSTFIX_TOKEN}", "MAIL_RSPAMD_PASSWORD": "${MAIL_RSPAMD_PASSWORD}"},
-      "volumes": [{"name": "postfix-queue", "target": "/var/spool/postfix"}, {"name": "rspamd-state", "target": "/var/lib/rspamd"}, {"name": "clamav-signatures", "target": "/var/lib/clamav"}, {"name": "mail-filter-learning", "target": "/var/lib/thura-valkey"}],
-      "health_command": ["python3", "/opt/thura/compact.py", "--health"]
+      "environment": {"WORKSPACE_POSTFIX_MANAGED": "true", "WORKSPACE_POSTFIX_TOKEN": "${WORKSPACE_POSTFIX_TOKEN}", "MAIL_RSPAMD_PASSWORD": "${MAIL_RSPAMD_PASSWORD}"},
+      "volumes": [{"name": "postfix-queue", "target": "/var/spool/postfix"}, {"name": "rspamd-state", "target": "/var/lib/rspamd"}, {"name": "clamav-signatures", "target": "/var/lib/clamav"}, {"name": "mail-filter-learning", "target": "/var/lib/workspace-valkey"}],
+      "health_command": ["python3", "/opt/workspace/compact.py", "--health"]
     },
     {
       "name": "office", "role": "office", "policy": "office",
       "image": "collabora/code@sha256:REPLACE_WITH_TESTED_ARCHITECTURE_CORRECT_DIGEST",
-      "command": ["--o:ssl.enable=false", "--o:ssl.termination=true", "--o:net.service_root=/api/v1/collabora", "--o:storage.wopi.alias_groups[@mode]=groups", "--o:storage.wopi.alias_groups.group[0].host=http://thura:3000", "--o:storage.wopi.alias_groups.group[0].host[@allow]=true", "--o:admin_console.enable=false", "--o:logging.level=warning", "--o:num_prespawn_children=1", "--o:per_document.max_concurrency=1"],
+      "command": ["--o:ssl.enable=false", "--o:ssl.termination=true", "--o:net.service_root=/api/v1/collabora", "--o:storage.wopi.alias_groups[@mode]=groups", "--o:storage.wopi.alias_groups.group[0].host=http://workspace:3000", "--o:storage.wopi.alias_groups.group[0].host[@allow]=true", "--o:admin_console.enable=false", "--o:logging.level=warning", "--o:num_prespawn_children=1", "--o:per_document.max_concurrency=1"],
       "health_command": ["/usr/local/bin/office-health"]
     }
   ]
@@ -116,7 +116,7 @@ stripping `/rtc`; other paths reach the app. Office 9980 stays private.
 
 Public ports are limited to app-owned SMTP TCP25 and RTC TCP7881/UDP7882. Conflicts
 with other apps or host processes fail explicitly; other containers are never
-stopped to claim ports. `THURA_RTC_NODE_IP` must be set to the server's externally
+stopped to claim ports. `WORKSPACE_RTC_NODE_IP` must be set to the server's externally
 reachable address when automatic SFU address discovery is unsuitable. Configure
 SMTP TLS in the application/mail image. From v0.2.105, use the explicit
 [public service certificate contract](service-public-tls.md) for a managed

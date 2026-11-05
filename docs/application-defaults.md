@@ -20,10 +20,10 @@ take precedence, including empty strings and `false`. A workspace migration poli
 can override the built-in `DB_MIGRATE=true` on a newly created app, but cannot
 override an explicit app policy.
 
-For example, save `ADMIN_USERS=agim@albaspot.com` to use the same administrator
+For example, save `ADMIN_USERS=admin@example.com` to use the same administrator
 allowlist for future apps. Each app must still authenticate that account and use
 the framework allowlist; this does not grant access in unrelated role systems or
-create accounts automatically. Albaspot supports this setting.
+create accounts automatically.
 
 `AUTH_SECRET` is generated separately for each app. `APP_URL` follows the domain.
 Database, cache and persistent-storage attachments manage their own connection

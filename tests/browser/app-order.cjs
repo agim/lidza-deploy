@@ -7,7 +7,7 @@ const {chromium}=require('playwright');const assert=require('node:assert/strict'
    if(path.endsWith('/status'))json={roles:['admin']};
    else if(path.endsWith('/servers'))json=[{id:'local',name:'This server'}];
    else if(path.endsWith('/apps')){
-    json=['portal-albaspot-com','agim-dev'].map(id=>({id,repository:'acme/'+id,domain:id+'.example.com',branch:'main',server_id:'local',current:{commit:change?'bbbbbbb':'aaaaaaa'}}));
+    json=['portal-example-com','acme-site'].map(id=>({id,repository:'acme/'+id,domain:id+'.example.com',branch:'main',server_id:'local',current:{commit:change?'bbbbbbb':'aaaaaaa'}}));
     if(++polls%2===0)json.reverse();
    }else if(path.endsWith('/deployments'))json={deployments:[]};
    await route.fulfill({json});
@@ -28,7 +28,7 @@ const {chromium}=require('playwright');const assert=require('node:assert/strict'
    await page.evaluate(()=>refresh({background:true}));
    assert(await page.evaluate(()=>cards.every((c,i)=>c===document.querySelectorAll('[data-app-card]')[i]&&Math.abs(c.getBoundingClientRect().top-positions[i])<1)&&document.activeElement===action&&cards[1].querySelector('details').open&&scrollY===readingY&&cardMoves===0),'Alternating API order moved apps, focus, menu or reading position at '+width);
   }
-  assert.deepEqual(await page.locator('[data-app-card]').evaluateAll(nodes=>nodes.map(n=>n.dataset.appCard)),['agim-dev','portal-albaspot-com']);
+  assert.deepEqual(await page.locator('[data-app-card]').evaluateAll(nodes=>nodes.map(n=>n.dataset.appCard)),['acme-site','portal-example-com']);
   assert.deepEqual(errors,[]);await page.close();
  }
  console.log('PASS: alternating API list order and live app changes retain card order, DOM, focus, open menu and scroll on mobile/tablet/desktop');

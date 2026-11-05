@@ -1,14 +1,14 @@
 const { chromium } = require('playwright');
 const assert = require('node:assert/strict');
 const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
-const branches = ['main', 'codex/kulla-rails-port', 'dependabot/github_actions/actions/checkout-7', 'dependabot/github_actions/actions/setup-go-7', 'feature/' + 'a'.repeat(160)];
+const branches = ['main', 'codex/analytics-rails-port', 'dependabot/github_actions/actions/checkout-7', 'dependabot/github_actions/actions/setup-go-7', 'feature/' + 'a'.repeat(160)];
 (async () => {
  const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox'] });
  try {
   for (const width of [320, 390, 600, 960, 1440]) {
    const page = await browser.newPage({ viewport: { width, height: 844 } }), errors = [], saved = [];
    page.on('pageerror', e => errors.push(e.message));
-   const app = { id: 'kulla-lidza', server_id: 'local', repository: 'agim/kulla-lidza', branch: 'main', domain: 'kulla.example.com' };
+   const app = { id: 'acme-analytics', server_id: 'local', repository: 'acme/analytics', branch: 'main', domain: 'analytics.example.com' };
    await page.route('**/api/control/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     let json = [];
@@ -28,7 +28,7 @@ const branches = ['main', 'codex/kulla-rails-port', 'dependabot/github_actions/a
     assert(bounds.x >= 0 && bounds.x + bounds.width <= width, `${label}: branch input overflows at ${width}px`);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${label}: page overflows`);
    };
-   await page.goto(`${base}/console.html#page/settings/kulla-lidza`);
+   await page.goto(`${base}/console.html#page/settings/acme-analytics`);
    await page.getByRole('button', { name: 'Load', exact: true }).click();
    await page.locator('#settings-branches option').last().waitFor({ state: 'attached' });
    assert.equal(await page.locator('#settings-branches option').count(), branches.length);

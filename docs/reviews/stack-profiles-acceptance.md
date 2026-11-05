@@ -9,9 +9,9 @@ framework check remains enabled; no framework allowlist exception is needed.
 Platform tests deploy three real fixture services plus a real managed PostgreSQL
 container on the isolated local Docker daemon. The checkout is a local test seam;
 builds, volume/network attachment, resource enforcement, health, HTTP proxying,
-state persistence and lifecycle operations use actual Docker. This is not a Thura
-application benchmark or a vendor-image editing test. The Thura session separately
-owns its production-mode setup, SMTP/AV, office editing and RTC acceptance on an
+state persistence and lifecycle operations use actual Docker. This is not an
+application benchmark or a vendor-image editing test. The integrating application
+separately owns its production-mode setup, SMTP/AV, office editing and RTC acceptance on an
 actual 2 CPU / 4 GiB VM. No production console is used by these tests.
 
 Verified platform behavior:
@@ -29,7 +29,7 @@ Verified platform behavior:
   the app's shared network namespace. Service health is shown in inventory.
 - HTTPS-proxy upstream routing sends `/rtc/...` to the private SFU HTTP binding
   and removes the routing prefix. The remaining app paths keep the app target.
-  Browser WSS and actual SFU media are Thura-side acceptance requirements.
+  Browser WSS and actual SFU media are application-side acceptance requirements.
 - Reload, rollback, failed candidates and stop/start preserve files. Previous
   sidecar writers are stopped before replacement services start.
 - A host-owned RTC port causes candidate failure and restores the old stack;
@@ -50,7 +50,7 @@ Verified platform behavior:
 
 ## Vendor runtime findings
 
-Real Thura integration identified two requirements that the fixture cannot prove:
+A real application integration identified two requirements that the fixture cannot prove:
 
 1. The root app supervisor needs KILL to signal workers after dropping their UID.
    The fixed init policy now includes it while retaining no-new-privileges.
@@ -58,45 +58,21 @@ Real Thura integration identified two requirements that the fixture cannot prove
    policy preserves the vendor USER, requires it to be non-root, and has an
    explicit office-only exception to no-new-privileges with exactly CHOWN, FOWNER
    and SYS_CHROOT in its capability bounding set. The other policies retain NNP.
-   Actual document editing under this policy remains a Thura-side acceptance
+   Actual document editing under this policy remains an application-side acceptance
    requirement; a healthy discovery endpoint alone does not prove editing.
 
-Distroless office images need an application-owned health executable. Thura's
+Distroless office images need an application-owned health executable. The application's
 probe must query its configured `/api/v1/collabora/hosting/discovery` service root.
 The platform executes the manifest's health argv, with a bounded deadline.
 
-## Thura integration progress
+## Application integration
 
-The originating Thura session reports that native agent commit `4cc4754` on an
-actual 2 CPU / 4 GiB Linux VM passed guarded first setup, real mail/storage wizard
-probes, publication and coordinated reload to genuine `/readyz` HTTP 200 with
-`current.stack.bootstrap=false`. The same managed PostgreSQL identity remained at
-256 MiB / .25 CPU; all services were running without container OOMs. The existing
-demo and production console were not used. This is reported application-session
-evidence, separate from the platform fixture results above.
-
-The same session subsequently reports passing actual DOCX/XLSX editing and
-downloaded XML inspection; SMTP ingress, an independent outgoing probe and
-open-relay refusal; report-spam learning and ham restoration; clean/EICAR scans,
-ClamAV reload and reversible/idempotent learning. Actual agent rollback preserved
-all four immutable file-version records, exact stored object SHA256 values,
-durable Bayes values and learned feedback. Managed database identity and genuine
-readiness remained intact. The final resource report records all four container limits totaling 3584 MiB /
-2 CPUs, no host swap, and approximately 27 MiB agent RSS. Per-service memory peaks
-were app 226.1 MiB, mail 1267.0 MiB, office 886.6 MiB and PostgreSQL 80.8 MiB;
-their sum is 2.403 GiB, not a simultaneous host peak. All cgroup memory max/OOM/
-OOM-kill counters and Docker restart counts were zero. Office save/XML tests
-passed again after actual rollback, and the RTC route responded. These results
-are reported by the application session, not inferred from platform fixtures.
-This ARM64 run does not establish public DNS/TLS/MX, TURN or peer-media behavior,
-physical Android support, or throughput capacity.
-
-The application-side reproducible harness and detailed evidence are published in
-[Thura acceptance](https://github.com/agim/thura/blob/feat/thura-deployment-profiles/docs/deploy-stack-acceptance.md)
-and its [machine-readable report](https://github.com/agim/thura/blob/feat/thura-deployment-profiles/docs/benchmarks/deploy-stack-acceptance.json).
-The tested application source was `24e50db`, using native agent `4cc4754` on
-ARM64 Linux. The owned test VM and agent were stopped after checks, with retained
-state/volumes; the original demo remained untouched.
+An integrating multi-service application separately reported guarded first setup,
+mail/storage wizard probes, publication, coordinated reload to `/readyz` HTTP 200,
+document editing, mail and scanning checks, and rollback with preserved file and
+database state on a 2 CPU / 4 GiB ARM64 VM. That is application-side evidence,
+separate from the platform fixture results above. It does not establish public
+DNS/TLS/MX, TURN or peer-media behavior, or throughput capacity.
 
 ## Platform verification
 

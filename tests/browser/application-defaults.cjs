@@ -12,10 +12,10 @@ for(const width of [390,1440]){
  });
  await page.goto((process.env.TEST_WEB_URL||'http://127.0.0.1:8880')+'/console.html#defaults');
  const admin=page.locator('#defaults-form [name=ADMIN_USERS]');await page.waitForFunction(()=>document.querySelector('#defaults-form [name=ADMIN_USERS]')?.value==='shared@example.com');
- await admin.fill('agim@albaspot.com');await page.evaluate(()=>{window.defaultInput=document.querySelector('#defaults-form [name=ADMIN_USERS]');defaultInput.focus();window.savedY=scrollY;render();render()});
- assert(await page.evaluate(()=>defaultInput===document.querySelector('#defaults-form [name=ADMIN_USERS]')&&document.activeElement===defaultInput&&defaultInput.value==='agim@albaspot.com'&&scrollY===savedY));
+ await admin.fill('admin@example.com');await page.evaluate(()=>{window.defaultInput=document.querySelector('#defaults-form [name=ADMIN_USERS]');defaultInput.focus();window.savedY=scrollY;render();render()});
+ assert(await page.evaluate(()=>defaultInput===document.querySelector('#defaults-form [name=ADMIN_USERS]')&&document.activeElement===defaultInput&&defaultInput.value==='admin@example.com'&&scrollY===savedY));
  await page.locator('#defaults-form button[type=submit]').click();await page.waitForFunction(()=>!dirtyForms.size);
- assert.equal(calls[0].values.ADMIN_USERS,'agim@albaspot.com');assert(!Object.hasOwn(calls[0].values,'MAIL_FROM'),'empty defaults submitted');
+ assert.equal(calls[0].values.ADMIN_USERS,'admin@example.com');assert(!Object.hasOwn(calls[0].values,'MAIL_FROM'),'empty defaults submitted');
  await page.evaluate(()=>navigate('apps'));await page.locator('[data-action=settings]').click();await page.locator('#settings-dialog:not([hidden])').waitFor();
  assert.match(await page.locator('#settings-env-editor').textContent(),/Workspace default/);
  // Browser autofill or programmatic fill can change a value without an input event.

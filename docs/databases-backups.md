@@ -35,13 +35,13 @@ A failed dump, required off-site upload or metadata save stops activation and le
 ### Disposable table history
 
 The hosting agent supports explicit, database-scoped data exclusions in
-`/etc/lidza-agent/config.json`. For example, Kulla can omit its disposable raw
-history while retaining accounts, tokens, settings, schema and queued work:
+`/etc/lidza-agent/config.json`. For example, an analytics application can omit its
+disposable raw history while retaining accounts, tokens, settings, schema and queued work:
 
 ```json
 {
   "backup_exclude_table_data": {
-    "kulla-lidza": ["public.kulla_logs", "public.kulla_delivery_evidence"]
+    "acme-analytics": ["public.ingest_logs", "public.delivery_evidence"]
   }
 }
 ```

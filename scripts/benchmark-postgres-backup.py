@@ -26,7 +26,7 @@ try:
         time.sleep(.1)
     sql('CREATE DATABASE fixture;', 'postgres')
     sql("""
-    CREATE TABLE kulla_logs AS
+    CREATE TABLE ingest_logs AS
     SELECT i AS id, jsonb_build_object('id',md5(i::text),'app','vat','stream','job',
       'ts',now()-i*interval '1 second','attrs',jsonb_build_object('class','SteadyJob',
       'result','ok','job_id',md5((i+1)::text),'message',repeat(md5((i%1000)::text),16),
@@ -34,11 +34,11 @@ try:
     FROM generate_series(1,200000) i;
     CREATE TABLE job AS
     SELECT id, 'done'::text AS state, jsonb_build_object('id',id,'rows',jsonb_agg(payload)) AS payload
-    FROM (SELECT (id/250)::int AS id,payload FROM kulla_logs) p GROUP BY id;
+    FROM (SELECT (id/250)::int AS id,payload FROM ingest_logs) p GROUP BY id;
     ANALYZE;
     """
     )
-    proof_query = "SELECT 'logs',count(*),sum(hashtextextended(payload::text,0)::numeric) FROM kulla_logs UNION ALL SELECT 'jobs',count(*),sum(hashtextextended(payload::text,0)::numeric) FROM job ORDER BY 1"
+    proof_query = "SELECT 'logs',count(*),sum(hashtextextended(payload::text,0)::numeric) FROM ingest_logs UNION ALL SELECT 'jobs',count(*),sum(hashtextextended(payload::text,0)::numeric) FROM job ORDER BY 1"
     expected = sql(proof_query)
     print('source_bytes='+sql("SELECT pg_database_size(current_database())"), flush=True)
     durations = {'gzip':[], 'zstd':[]}

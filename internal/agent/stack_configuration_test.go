@@ -74,7 +74,7 @@ func TestStackConfigurationOptionalDependencies(t *testing.T) {
 	}
 }
 func TestStackConfigurationRejectsContradictions(t *testing.T) {
-	for _, key := range []string{"LIDZA_MASTER_KEY", "DATABASE_URL", "CACHE_URL", "CLICKHOUSE_URL", "STORAGE_PROVIDER", "AUTH_SECRET", "APP_URL", "THURA_SETUP_TOKEN"} {
+	for _, key := range []string{"LIDZA_MASTER_KEY", "DATABASE_URL", "CACHE_URL", "CLICKHOUSE_URL", "STORAGE_PROVIDER", "AUTH_SECRET", "APP_URL", "WORKSPACE_SETUP_TOKEN"} {
 		m := wizardConfiguration()
 		m.Configuration = append(m.Configuration, StackConfiguration{Name: key, Stage: "optional"})
 		if m.validate() == nil {

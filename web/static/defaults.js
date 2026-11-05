@@ -1,7 +1,7 @@
 'use strict';
 const defaultFields=[
  ['DB_MIGRATE','Apply database migrations','true or false; a predeployment backup protects an attached managed database.'],
- ['ADMIN_USERS','Administrators','Comma-separated account emails or IDs, e.g. agim@albaspot.com.'],
+ ['ADMIN_USERS','Administrators','Comma-separated account emails or IDs, e.g. admin@example.com.'],
  ['AUTH_OWNER_CLAIM','Require operator claim','true or false; use the one-time setup token for the first account.'],
  ['MAIL_FROM','Sender address','Verified sender address accepted by your mail provider.'],
  ['MAIL_PROVIDER','Mail provider','Provider supported by the app’s mail pack. Configure credentials separately in each app.'],

@@ -9,9 +9,9 @@ import (
 )
 
 func TestBackupExclusionsRequireExactDatabaseScopedTables(t *testing.T) {
-	for _, table := range []string{"public.kulla_logs", "public.*", "*.kulla_logs", "kulla_logs", "public.logs --exclude-table=users", "public.logs;DROP TABLE users", "public."} {
+	for _, table := range []string{"public.ingest_logs", "public.*", "*.ingest_logs", "ingest_logs", "public.logs --exclude-table=users", "public.logs;DROP TABLE users", "public."} {
 		t.Run(table, func(t *testing.T) {
-			cfg := Config{DataDir: t.TempDir(), APIKey: strings.Repeat("a", 32), BackupExcludeTableData: map[string][]string{"kulla-lidza": {table}}}
+			cfg := Config{DataDir: t.TempDir(), APIKey: strings.Repeat("a", 32), BackupExcludeTableData: map[string][]string{"acme-analytics": {table}}}
 			raw, err := json.Marshal(cfg)
 			if err != nil {
 				t.Fatal(err)
@@ -21,8 +21,8 @@ func TestBackupExclusionsRequireExactDatabaseScopedTables(t *testing.T) {
 				t.Fatal(err)
 			}
 			loaded, err := LoadConfig(path)
-			if table == "public.kulla_logs" {
-				if err != nil || len(loaded.BackupExcludeTableData["kulla-lidza"]) != 1 || len(loaded.BackupExcludeTableData["other-app"]) != 0 {
+			if table == "public.ingest_logs" {
+				if err != nil || len(loaded.BackupExcludeTableData["acme-analytics"]) != 1 || len(loaded.BackupExcludeTableData["other-app"]) != 0 {
 					t.Fatal(loaded.BackupExcludeTableData, err)
 				}
 			} else if err == nil {

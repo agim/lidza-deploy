@@ -26,7 +26,7 @@ copied certificate directory, not Caddy's originals or another app's resources.
 
 These tests use an explicitly trusted local test CA and Caddy's storage layout.
 They do not claim a new public ACME issuance, a production change, SMTP delivery,
-cloud firewall reachability or Thura/Postfix application acceptance. The app
+cloud firewall reachability or Postfix application acceptance. The app
 repository owns its certificate watcher/configuration and real Postfix behavior.
 No Caddy store or Docker socket is mounted into any certificate-consuming service.
 The SMTP fixture ran as uid1000 to match this executor; root-agent uid0 delivery

@@ -1,7 +1,7 @@
 const {chromium}=require('playwright');const assert=require('node:assert/strict');
 (async()=>{const browser=await chromium.launch({executablePath:'/usr/bin/chromium',args:['--no-sandbox']});try{
 const page=await browser.newPage({viewport:{width:390,height:844}}),errors=[],calls=[];page.on('pageerror',e=>errors.push(e.message));let view={mode:'automatic',ready:false,operation:false,managed:false},pending=0;
-const app={id:'portal',repository:'agim/portal',branch:'master',domain:'portal.example.com',server_id:'local',env_keys:['AUTH_SECRET'],database_bindings:{}};
+const app={id:'portal',repository:'acme/portal',branch:'master',domain:'portal.example.com',server_id:'local',env_keys:['AUTH_SECRET'],database_bindings:{}};
 await page.route('**/api/control/**',async route=>{const r=route.request(),p=new URL(r.url()).pathname;let json=[];
 if(p.endsWith('/status'))json={roles:['admin']};else if(p.endsWith('/servers'))json=[{id:'local',name:'Hosting server'}];else if(p.endsWith('/apps'))json=[app];else if(p.endsWith('/settings'))json={...app,cache:view};else if(p.endsWith('/deployments'))json={deployments:[]};else if(p.endsWith('/cache')){if(r.method()==='POST'){const data=r.postDataJSON();calls.push(data);view={mode:data.mode,ready:false,operation:true,managed:true};pending=2;json={status:'provisioning'};}else{if(pending>0&&!--pending)view={...view,ready:true,operation:false};json=view}}
 await route.fulfill({json});});

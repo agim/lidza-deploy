@@ -14,8 +14,8 @@ import (
 )
 
 func fixtureStackManifest() StackManifest {
-	return StackManifest{Version: 1, RequiredEnvironment: []string{"LIDZA_MASTER_KEY"}, GeneratedSecrets: []string{"THURA_SETUP_TOKEN", "LIVEKIT_API_SECRET"}, Services: []StackService{
-		{Name: "app", Role: "app", Policy: "init", Build: &StackBuild{Dockerfile: "Dockerfile"}, Aliases: []string{"thura"}, Environment: map[string]string{"FIXTURE_ROLE": "app"}, HTTPRoutes: []StackRoute{{Prefix: "/rtc", Port: 7880, StripPrefix: true}}, HealthCommand: []string{"/fixture", "--health"}},
+	return StackManifest{Version: 1, RequiredEnvironment: []string{"LIDZA_MASTER_KEY"}, GeneratedSecrets: []string{"WORKSPACE_SETUP_TOKEN", "LIVEKIT_API_SECRET"}, Services: []StackService{
+		{Name: "app", Role: "app", Policy: "init", Build: &StackBuild{Dockerfile: "Dockerfile"}, Aliases: []string{"workspace"}, Environment: map[string]string{"FIXTURE_ROLE": "app"}, HTTPRoutes: []StackRoute{{Prefix: "/rtc", Port: 7880, StripPrefix: true}}, HealthCommand: []string{"/fixture", "--health"}},
 		{Name: "mail", Role: "mail", Policy: "mail", Build: &StackBuild{Dockerfile: "Dockerfile"}, ShareAppNetwork: true, Environment: map[string]string{"FIXTURE_ROLE": "mail"}, Volumes: []StackVolume{{Name: "mail-state", Target: "/var/lib/fixture"}}, HealthCommand: []string{"/fixture", "--health"}},
 		{Name: "office", Role: "office", Policy: "office", Build: &StackBuild{Dockerfile: "Dockerfile"}, Environment: map[string]string{"FIXTURE_ROLE": "office"}, HealthCommand: []string{"/fixture", "--health"}},
 	}}
@@ -33,7 +33,7 @@ func TestStackManifestValidation(t *testing.T) {
 		"public-office":           func(m *StackManifest) { m.Services[2].PublicPorts = []StackPort{{9980, "tcp"}} },
 		"bad-app-port":            func(m *StackManifest) { m.Services[0].PublicPorts = []StackPort{{22, "tcp"}} },
 		"private-route-injection": func(m *StackManifest) { m.Services[0].HTTPRoutes[0].Published = "5432" },
-		"alias-collision":         func(m *StackManifest) { m.Services[1].Aliases = []string{"thura"} },
+		"alias-collision":         func(m *StackManifest) { m.Services[1].Aliases = []string{"workspace"} },
 		"missing-health":          func(m *StackManifest) { m.Services[0].HealthCommand = nil },
 		"duplicate-role":          func(m *StackManifest) { m.Services[2].Role = "mail" },
 	}
@@ -97,12 +97,12 @@ func TestStackSecretsPersistAndRemainMasked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := prepared.Env["THURA_SETUP_TOKEN"]
+	token := prepared.Env["WORKSPACE_SETUP_TOKEN"]
 	if token == "" {
 		t.Fatal("missing generated token")
 	}
 	prepared2, err := m.prepareStack(context.Background(), a, &manifest)
-	if err != nil || prepared2.Env["THURA_SETUP_TOKEN"] != token {
+	if err != nil || prepared2.Env["WORKSPACE_SETUP_TOKEN"] != token {
 		t.Fatal("generated secret rotated")
 	}
 	if prepared2.Env["LIDZA_MASTER_KEY"] != a.Env["LIDZA_MASTER_KEY"] {
@@ -110,7 +110,7 @@ func TestStackSecretsPersistAndRemainMasked(t *testing.T) {
 	}
 	settings, _ := m.Settings(a.ID)
 	for _, v := range settings.Environment {
-		if v.Key == "THURA_SETUP_TOKEN" && (v.Kind != EnvironmentCredential || v.Value != "") {
+		if v.Key == "WORKSPACE_SETUP_TOKEN" && (v.Kind != EnvironmentCredential || v.Value != "") {
 			t.Fatal("secret exposed")
 		}
 	}
@@ -132,8 +132,8 @@ func TestStackSecretsPersistAndRemainMasked(t *testing.T) {
 func TestStackMixedLiteralInterpolation(t *testing.T) {
 	a := testApp("mixed")
 	a.Env["LIVEKIT_API_SECRET"] = "private-value"
-	env, err := stackEnvironment(a, StackService{Role: "app", Environment: map[string]string{"THURA_PUBLIC_HOSTS": "thura,${APP_DOMAIN}", "LIVEKIT_PUBLIC_URL": "wss://${APP_DOMAIN}/rtc"}})
-	if err != nil || env["THURA_PUBLIC_HOSTS"] != "thura,mixed.example.com" || env["LIVEKIT_PUBLIC_URL"] != "wss://mixed.example.com/rtc" {
+	env, err := stackEnvironment(a, StackService{Role: "app", Environment: map[string]string{"WORKSPACE_PUBLIC_HOSTS": "workspace,${APP_DOMAIN}", "LIVEKIT_PUBLIC_URL": "wss://${APP_DOMAIN}/rtc"}})
+	if err != nil || env["WORKSPACE_PUBLIC_HOSTS"] != "workspace,mixed.example.com" || env["LIVEKIT_PUBLIC_URL"] != "wss://mixed.example.com/rtc" {
 		t.Fatalf("mixed interpolation failed: %v", err)
 	}
 }

@@ -1,6 +1,6 @@
 # Investigating slow PostgreSQL backups
 
-The October 26 Kulla deployment produced 313.1 MiB of a custom-format archive in
+An analytics application deployment produced 313.1 MiB of a custom-format archive in
 9m45s before the unchanged ten-minute backup gate canceled it. This is compressed
 output, not the volume of database rows read. The continuous progress rules out a
 dump that spent that entire period waiting for its initial table locks. It does
@@ -44,7 +44,7 @@ FROM pg_stat_user_tables
 ORDER BY pg_table_size(relid) DESC LIMIT 12;
 ```
 
-Kulla retains full ingest batches in job payloads as well as raw PostgreSQL logs.
+The application retains full ingest batches in job payloads as well as raw PostgreSQL logs.
 The size report must establish their actual contribution before changing retention.
 Completed jobs do not themselves prove exact delivery for old releases. Do not
 purge payloads, exclude tables or disable the backup gate merely to make deployment
