@@ -1,6 +1,6 @@
 # Līdza Deploy
 
-A deployment agent and a separate web control panel built with Līdza v0.1.113. One agent hosts multiple Līdza apps, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
+A deployment agent and a separate web control panel built with Līdza v0.1.132. One agent hosts multiple Līdza (Go), Ruby on Rails, Node and Astro applications, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
 
 The MonolithCMS agent was copied/adapted into this repository; the original repository was not changed. See [provenance](docs/provenance.md).
 
@@ -10,12 +10,24 @@ See the [deployment readiness review](docs/deployment-readiness.md) for the late
 
 See [Remote backups](docs/remote-backups.md) for saved credential indicators, off-site upload results, bucket inventory and retrying retained local backups.
 
+## Application runtimes
+
+- **Native releases for every runtime.** Līdza (Go), Rails, Node and Astro applications build into `releases/<timestamp>`, switch a `current` link and keep `shared/` files, then run as hardened systemd services under a dedicated system user per application. Static Astro sites are served directly by Caddy. Rollback re-links the previous release. See [native releases](docs/native-release.md), [application runtimes](docs/application-runtimes.md) and [Rails applications](docs/rails-applications.md).
+- **Repository detection.** The new-application wizard asks for a name and repository, then detects the runtime, processes, database and Redis needs, branch and toolchain pins, explains the choice and lets you override it. Multi-service compose projects and unrecognized Dockerfiles stay on the container runtime; the agent installs Docker on a server only when such an app needs it.
+- **Host data services.** New native apps can get their own PostgreSQL database and non-superuser role and their own Redis instance on the server, with scheduled and pre-deployment backups.
+- **Runtime defaults** per runtime seed environment values for new applications.
+- **Host care.** Each server shows pending OS, Caddy, PostgreSQL and Redis updates and applies security updates, with a configurable reboot window when a kernel update requires one. A managed host firewall can be reviewed and applied with automatic rollback if the panel loses contact.
+- **Moving applications** between servers from the panel, with a read-only plan first. See [moving applications](docs/moving-applications.md).
+- **Signed update channel** for distributions that publish their own builds; the public build updates from this project's releases. See [updates](docs/updates.md).
+
+An optional [independent application ingress](docs/independent-ingress.md) can keep routing in a separate process while the deployment manager is maintained. For a host that already runs other services, [coexist mode](docs/coexisting-host.md) disables automatic host-wide maintenance and swap provisioning while retaining management of explicitly registered resources.
+
 ## Working features
 
 - GitHub public and private repositories, selected branches, manual deploy and redeploy.
 - Līdza-managed team sessions and guided GitHub App connections. No provider or agent credentials in the browser.
 - GitHub webhook creation/update, signed payload verification, repository/branch filtering, duplicate-delivery protection, and persistent dispatch retries through Līdza jobs.
-- Docker release builds, non-root application containers, CPU/memory/process limits, loopback-only application ports, and `/readyz` checks before traffic switches.
+- Native release builds, or Docker builds for container apps; non-root processes, CPU/memory/process limits, loopback-only application ports, and `/readyz` checks before traffic switches.
 - Separate host routing per app; DNS verification and proactive Caddy certificate issuance on deployment and FQDN edits, with periodic retries. See [Domains and automatic HTTPS](docs/domains-ssl.md).
 - Deployment history, runtime logs, and rollback to the previous healthy release.
 - Application Errors dashboard: automatic agent console collection, central storage, grouping/search and masked stack details; optional framework analytics reports.

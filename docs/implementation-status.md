@@ -1,6 +1,10 @@
 # Implementation status
 
-The application pins Līdza v0.1.81. Authentication, encrypted credentials, private GitHub connections, durable job dispatch, interval/daily scheduling, mail alerts, S3 signing, scoped memberships and durable audit storage use released framework APIs.
+The application pins Līdza v0.1.132. Authentication, encrypted credentials, private GitHub connections, durable job dispatch, interval/daily/weekly scheduling, mail alerts, S3 signing, scoped memberships and durable audit storage use released framework APIs.
+
+Līdza (Go), Rails, Node and Astro applications can run natively through the
+release engine; see [native releases](native-release.md) and
+[application runtimes](application-runtimes.md).
 
 ## Available
 

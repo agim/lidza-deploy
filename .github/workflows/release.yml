@@ -45,6 +45,7 @@ jobs:
           [[ "$LIDZA_DEPLOY_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           python3 tests/scanner-firewall.py
           python3 tests/public-ports.py
+          bash tests/upgrade-signed-bundle.sh
           go test -race ./...
           go vet ./...
       - name: Build and verify both architectures

@@ -10,3 +10,5 @@
 - Use existing isolated cloud checkouts; do not create Git worktrees unless asked.
 
 - Never disable OAuth. Preserve configured OAuth connectors and existing grants. The guided GitHub App registration is the primary GUI flow; do not expose legacy reconnect UI on new installations.
+- Runtime support (Līdza/Go, Rails, Node, Astro) is generic and policy-driven: a fix or capability applies to every application of that runtime. Never special-case one application.
+- One-time work on a particular installation's hosts is done on those hosts with a reviewed plan, not added to the agent. Agent code is for behavior every installation needs.
