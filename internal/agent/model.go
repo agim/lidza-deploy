@@ -13,6 +13,12 @@ import (
 )
 
 type App struct {
+	Management           *ManagementCapabilities `json:"management_capabilities,omitempty"`
+	Astro                *AstroConfig            `json:"astro,omitempty"`
+	Build                BuildConfig             `json:"build,omitempty,omitzero"`
+	Native               *NativeApplication      `json:"native,omitempty"`
+	Runtime              string                  `json:"runtime,omitempty"`
+	Rails                *RailsConfig            `json:"rails,omitempty"`
 	RuntimeProfile       string                  `json:"runtime_profile,omitempty"`
 	StackManifest        *StackManifest          `json:"-"`
 	StackSelection       *StackSelectionSnapshot `json:"-"`
@@ -57,14 +63,29 @@ func environmentKind(key, value string) string {
 	upper := strings.ToUpper(key)
 	for _, part := range strings.FieldsFunc(upper, func(r rune) bool { return r == '_' || r == '-' }) {
 		switch part {
-		case "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "CREDENTIAL", "PRIVATE":
+		case "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "CREDENTIAL", "CREDENTIALS", "PRIVATE", "AUTH", "AUTHORIZATION", "AUTHENTICATION", "JWT", "PAT", "BEARER", "SIGNATURE":
 			return EnvironmentCredential
 		}
 	}
-	if environmentURLKey(key) {
-		if parsed, err := url.Parse(value); err == nil && parsed.User != nil {
-			if _, present := parsed.User.Password(); present {
-				return EnvironmentCredential
+	compact := strings.NewReplacer("_", "", "-", "").Replace(upper)
+	for _, part := range []string{"PASSWORD", "PASSPHRASE", "APIKEY", "ACCESSTOKEN", "CLIENTSECRET", "CREDENTIAL", "PRIVATEKEY"} {
+		if strings.Contains(compact, part) {
+			return EnvironmentCredential
+		}
+	}
+	if strings.Contains(value, "-----BEGIN") && strings.Contains(value, "PRIVATE KEY-----") {
+		return EnvironmentCredential
+	}
+	if parsed, err := url.Parse(value); err == nil {
+		if parsed.User != nil {
+			return EnvironmentCredential
+		}
+		for field, values := range parsed.Query() {
+			switch strings.ToLower(field) {
+			case "token", "access_token", "api_key", "apikey", "signature", "sig", "password", "secret", "credential":
+				if len(values) > 0 && values[0] != "" {
+					return EnvironmentCredential
+				}
 			}
 		}
 	}
@@ -88,6 +109,8 @@ func normalizeEnvironmentKinds(env map[string]string, kinds map[string]string) m
 }
 
 type Release struct {
+	HealthHost    string        `json:"health_host,omitempty"`
+	HealthPath    string        `json:"health_path,omitempty"`
 	Stack         *StackRelease `json:"stack,omitempty"`
 	CommitMessage string        `json:"commit_message,omitempty"`
 	DatabaseIDs   []string      `json:"database_ids,omitempty"`
@@ -117,15 +140,31 @@ type Deployment struct {
 	Key           string     `json:"key,omitempty"`
 }
 type DeployRequest struct {
-	resume           bool              // internal start request; never accepted from JSON
-	Defaults         map[string]string `json:"application_defaults,omitempty"`
-	CredentialURL    string            `json:"credential_url,omitempty"`
-	CredentialTicket string            `json:"credential_ticket,omitempty"`
-	CredentialServer string            `json:"credential_server,omitempty"`
-	Token            string            `json:"github_token,omitempty"`
-	Key              string            `json:"key,omitempty"`
+	resume   bool              // internal start request; never accepted from JSON
+	Defaults map[string]string `json:"application_defaults,omitempty"`
+	// DefaultsRuntime names the runtime whose workspace defaults Defaults
+	// carries; empty means the Līdza (Go) set.
+	DefaultsRuntime  string `json:"application_defaults_runtime,omitempty"`
+	CredentialURL    string `json:"credential_url,omitempty"`
+	CredentialTicket string `json:"credential_ticket,omitempty"`
+	CredentialServer string `json:"credential_server,omitempty"`
+	Token            string `json:"github_token,omitempty"`
+	Key              string `json:"key,omitempty"`
 }
+
+// diskState is decoded with encoding/json, which ignores unknown keys. Keys of
+// the retired native Rails layer (native_serving, native_managed_*,
+// native_worker_*, native_runtime_candidates, native_prepared,
+// native_retirements) may still be present in existing state files; they are
+// dropped on load and never written again.
 type diskState struct {
+	NativeDatabases   map[string]NativeDatabaseBinding   `json:"native_databases,omitempty"`
+	NativeIngress     map[string]NativeIngressRoute      `json:"native_ingress,omitempty"`
+	NativeSettings    map[string]NativeSettingsOverride  `json:"native_settings,omitempty"`
+	NativeReleases    map[string]NativeReleaseHistory    `json:"native_releases,omitempty"`
+	NativeTransitions map[string]NativeReleaseTransition `json:"native_transitions,omitempty"`
+	NativeBindings    map[string]map[string]string       `json:"native_bindings,omitempty"`
+	NativeApps        map[string]NativeApplication       `json:"native_apps,omitempty"`
 	GatewayPKI        map[string]gatewayPKI              `json:"gateway_pki,omitempty"`
 	StackSelections   map[string]*StackSelectionSnapshot `json:"stack_selections,omitempty"`
 	StackVolumes      map[string][]string                `json:"stack_volumes,omitempty"`
@@ -145,6 +184,25 @@ type diskState struct {
 	BackupStorage     *storage.Config                    `json:"backup_storage,omitempty"`
 	Apps              map[string]App                     `json:"apps"`
 	Deployments       []Deployment                       `json:"deployments"`
+
+	// NativeCreated holds the release policies of applications this agent
+	// created (POST /v1/native/apps); reviewed configuration takes
+	// precedence for the same id.
+	NativeCreated map[string]NativeReleasePolicy `json:"native_created,omitempty"`
+	// NativeCreatedSpecs keeps each created application's request without
+	// its environment or external database URL, so the application can be
+	// recreated elsewhere with the same processes (move.go).
+	NativeCreatedSpecs map[string]NativeCreateRequest `json:"native_created_specs,omitempty"`
+
+	// NativeHostData records the host PostgreSQL/Redis provisioned for each
+	// created application, with individually sealed passwords
+	// (native_hostdata.go).
+	NativeHostData map[string]NativeHostDataRecord `json:"native_host_data,omitempty"`
+
+	// Host operating-system management: update/reboot policy with its job
+	// history, and the managed firewall (host_updates.go, host_firewall.go).
+	HostUpdates  *HostUpdatesState  `json:"host_updates,omitempty"`
+	HostFirewall *HostFirewallState `json:"host_firewall,omitempty"`
 }
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)
@@ -153,6 +211,15 @@ var domainPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 var envPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (a App) Validate() error {
+	if a.Native != nil {
+		return errors.New("register native services through the dedicated native application API")
+	}
+	if err := validateApplicationRuntime(a); err != nil {
+		return err
+	}
+	if err := a.validateRuntime(); err != nil {
+		return err
+	}
 	if a.RuntimeProfile != "" {
 		if _, ok := profileByID(a.RuntimeProfile); !ok {
 			return errors.New("unknown runtime profile")

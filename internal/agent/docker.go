@@ -115,6 +115,10 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 		return nil, err
 	}
 	message, _ := command(ctx, source, nil, "git", "log", "-1", "--format=%s")
+	source, err = applicationSourceDirectory(source, a)
+	if err != nil {
+		return nil, err
+	}
 	if d.prepareRuntime != nil {
 		a, err = d.prepareRuntime(ctx, a, source)
 		if err != nil {
@@ -141,14 +145,23 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 		}
 		return release, err
 	}
-	if err = prepareBuild(source); err != nil {
+	if err = prepareAppBuild(source, a); err != nil {
 		return nil, err
 	}
 	if err = os.RemoveAll(filepath.Join(source, ".git")); err != nil {
 		return nil, err
 	}
 	image := "lidza/" + a.ID + ":" + id
-	if _, err = command(ctx, source, nil, "docker", "build", "--progress=plain", "--tag", image, "."); err != nil {
+	buildArgs := []string{"build", "--progress=plain", "--tag", image}
+	if a.Runtime == "astro" {
+		publicEnv := filepath.Join(dir, "public-build.env")
+		if err = astroPublicBuildEnvironment(a, publicEnv); err != nil {
+			return nil, err
+		}
+		buildArgs = append(buildArgs, "--secret", "id=lidza_public_env,src="+publicEnv)
+	}
+	buildArgs = append(buildArgs, ".")
+	if _, err = command(ctx, source, nil, "docker", buildArgs...); err != nil {
 		return nil, fmt.Errorf("image build: %w", err)
 	}
 	release, err = d.runImage(ctx, a, id, image, commit)
@@ -233,7 +246,7 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 	}
 	defer os.RemoveAll(dir)
 	name := "lidza-" + a.ID + "-" + id
-	release = &Release{ID: id, Commit: commit, Container: name, Image: image, Created: time.Now().UTC()}
+	release = &Release{HealthPath: a.healthPath(), HealthHost: railsHealthHost(a), ID: id, Commit: commit, Container: name, Image: image, Created: time.Now().UTC()}
 	candidate := release
 	success := false
 	created := false
@@ -248,14 +261,15 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 		}
 	}()
 	var content strings.Builder
-	for k, v := range a.Env {
+	for k, v := range a.runtimeEnvironment() {
 		fmt.Fprintf(&content, "%s=%s\n", k, v)
 	}
 	envfile := filepath.Join(dir, "runtime.env")
 	if err = os.WriteFile(envfile, []byte(content.String()), 0600); err != nil {
 		return nil, err
 	}
-	runArgs := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--label", "io.lidza.app=" + a.ID, "--restart", "unless-stopped", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--memory", "512m", "--cpus", "1", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile, "--env", "LIDZA_ADDR=0.0.0.0:3000", "--env", "LIDZA_MODE=production"}
+	runArgs := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--label", "io.lidza.app=" + a.ID, "--restart", "unless-stopped", "--read-only", "--user", a.runtimeUser(), "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--memory", "512m", "--cpus", "1", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile}
+	runArgs = append(runArgs, runtimeArgs(a)...)
 	runArgs = append(runArgs, storageMountArgs(a)...)
 	if a.Env["AUTH_OWNER_CLAIM"] == "true" {
 		claimDir, e := d.prepareOwnerClaim(ctx, a)
@@ -275,6 +289,7 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 		runArgs = append(runArgs, "--env", "APP_URL=https://"+a.Domain)
 	}
 	runArgs = append(runArgs, image)
+	runArgs = append(runArgs, runtimeCommand(a)...)
 	_, err = command(ctx, dir, nil, "docker", runArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("start container: %w", err)
@@ -323,14 +338,14 @@ func (d *Docker) waitReady(ctx context.Context, r *Release) error {
 	defer cancel()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	commandDiagnostic(ctx, "readiness", "Container started; waiting for GET /readyz to return HTTP 200.")
+	commandDiagnostic(ctx, "readiness", fmt.Sprintf("Container started; waiting for GET %s to return HTTP 200.", r.healthPath()))
 	var lastErr error
 	var lastBody string
 	nextReport := time.Time{}
 	for {
 		body, err := d.probeReady(health, r)
 		if err == nil {
-			commandDiagnostic(ctx, "readiness", "Candidate passed /readyz (HTTP 200).")
+			commandDiagnostic(ctx, "readiness", fmt.Sprintf("Candidate passed %s (HTTP 200).", r.healthPath()))
 			return nil
 		}
 		if health.Err() == nil || lastErr == nil {
@@ -344,7 +359,7 @@ func (d *Docker) waitReady(ctx context.Context, r *Release) error {
 		select {
 		case <-health.Done():
 			commandDiagnostic(ctx, "readiness", fmt.Sprintf("Candidate did not become ready. Last probe: %v\n%s", lastErr, lastBody))
-			return errors.New("candidate failed /readyz; previous release retained")
+			return fmt.Errorf("candidate failed %s; previous release retained", r.healthPath())
 		case <-ticker.C:
 		}
 	}
@@ -368,12 +383,20 @@ func (e *readinessHTTPError) Error() string {
 	return fmt.Sprintf("readiness returned HTTP %d", e.Status)
 }
 func (d *Docker) probeReady(ctx context.Context, r *Release) (string, error) {
-	return d.probeAppPath(ctx, r, "/readyz")
+	path := r.HealthPath
+	if path == "" {
+		path = "/readyz"
+	}
+	return d.probeAppPath(ctx, r, path)
 }
 func (d *Docker) probeAppPath(ctx context.Context, r *Release, path string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+r.Port+path, nil)
 	if err != nil {
 		return "", err
+	}
+	if r.HealthHost != "" && path == r.healthPath() {
+		req.Host = r.HealthHost
+		req.Header.Set("X-Forwarded-Proto", "https")
 	}
 	client := d.Client
 	if client == nil {

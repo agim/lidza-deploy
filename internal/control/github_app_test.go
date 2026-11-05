@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	gh "github.com/agim/lidza-deploy/internal/providers/github"
 	"github.com/agim/lidza/packs/auth"
 	"github.com/agim/lidza/packs/jobs"
@@ -169,6 +170,26 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 		t.Fatal(err)
 	}
 
+	// Existing applications automatically reuse an already-authorized repository
+	// connection without changing identity or deployment preferences.
+	c.mu.Lock()
+	a.GitHubInstallation = 0
+	c.data.Apps[a.ID] = a
+	c.mu.Unlock()
+	retained, retainErr := c.resolveApplicationInstallation(ctx, a)
+	if retainErr != nil || retained.GitHubInstallation != 0 {
+		t.Fatal("automatic pairing replaced working OAuth access", retainErr)
+	}
+	// This fixture already has a working OAuth grant. Use an unconnected test
+	// owner for this lookup without deleting or modifying that retained grant.
+	connectedOwner := c.operatorID
+	c.operatorID = random()
+	paired, pairErr := c.resolveApplicationInstallation(ctx, a)
+	c.operatorID = connectedOwner
+	if pairErr != nil || paired.GitHubInstallation != 7 || paired.Generation != a.Generation || paired.AutoDeploy != a.AutoDeploy || paired.Secret != a.Secret || paired.HookID != a.HookID {
+		t.Fatal("automatic repository pairing changed application ownership or preferences", pairErr)
+	}
+
 	// Explicit migration updates existing preview credential assignments too.
 	c.mu.Lock()
 	a.GitHubInstallation = 0
@@ -276,5 +297,16 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 	}
 	if w := request("GET", "/api/control/github/app/manifest-callback?code=code&state="+wrongState, ""); w.Code != 400 {
 		t.Fatal("another owner's registration accepted")
+	}
+}
+
+func TestGitHubConnectorMissingIsNotAnError(t *testing.T) {
+	if !githubConnectorMissing(errors.New(`auth: no connector "github" (Options.Connectors, AUTH_CONNECT)`)) {
+		t.Fatal("missing OAuth connector not recognized")
+	}
+	for _, err := range []error{nil, errors.New("auth: not connected"), errors.New(`auth: no connector "gitlab"`), errors.New("network down")} {
+		if githubConnectorMissing(err) {
+			t.Fatal("unrelated error treated as a missing connector", err)
+		}
 	}
 }

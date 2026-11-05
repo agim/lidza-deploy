@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Root service: only official GitHub release assets may replace managed binaries.
+# Root service: only official GitHub release assets, or signed distribution
+# bundles verified by the installed binary, may replace managed binaries.
 set -euo pipefail
 umask 077
 # lidza-swap-v1
@@ -75,7 +76,7 @@ if [[ "$version" == ssh-keys ]]; then
  exec /usr/local/bin/lidza-agent -apply-ssh-keys
 fi
 mkdir -p "$upgrade_dir"
-report(){ status_tmp=$(mktemp /var/tmp/lidza-upgrade-status.XXXXXX);printf '{"state":"%s","message":"%s"}\n' "$1" "$2" > "$status_tmp";chown lidza-agent:lidza-agent "$status_tmp";chmod 0600 "$status_tmp";mv -T "$status_tmp" "$upgrade_dir/status.json"; }
+report(){ status_tmp=$(mktemp /var/tmp/lidza-upgrade-status.XXXXXX);printf '{"state":"%s","message":"%s"}\n' "$1" "$2" > "$status_tmp";chown "$(stat -c %u:%g "$upgrade_dir")" "$status_tmp";chmod 0600 "$status_tmp";mv -T "$status_tmp" "$upgrade_dir/status.json"; }
 # lidza-console-root-v1
 # Migrate agents installed before the MFA-gated root console existed. A fixed
 # systemd override is used so no command or path supplied by a caller reaches
@@ -146,6 +147,77 @@ if [[ "$version" == control-boot ]];then
  report succeeded 'Control panel now waits for Docker and automatically recovers after reboot.'
  exit 0
 fi
+# lidza-signed-bundle-v1
+# A signed distribution bundle was staged by the agent after it verified the
+# manifest. The installed binary verifies the staged files again here, with
+# the keys compiled into it, before anything is replaced. Only the two fixed
+# managed layouts are touched: the agent and the control panel, each when its
+# unit exists on this host.
+has_unit(){ systemctl cat "$1.service" >/dev/null 2>&1; }
+install_signed_bundle(){
+ # State read by the EXIT trap stays global: the trap runs after the function frame is gone.
+ local version=$1 staged verifier verified=false rc
+ bundle_tmp='';changed=false;agent_target='';control_target=''
+ staged=$upgrade_dir/staged/$version
+ [[ -d "$staged" && ! -L "$staged" ]] || { report failed 'Signed bundle is not staged on this server.';return 1; }
+ for verifier in /usr/local/bin/lidza-agent /usr/local/bin/lidza-control;do
+  [[ -x "$verifier" && ! -L "$verifier" ]] || continue
+  # Capture the command's own status: after a failed "if" condition $? is the if statement's (zero).
+  "$verifier" -verify-bundle "$staged" >/dev/null 2>&1 && { verified=true;break; }
+  rc=$?
+  # Exit 2 means the installed binary predates signed bundles; try the next one.
+  ((rc==2)) || { report failed 'Staged bundle failed signature or digest verification by the installed binary.';return 1; }
+ done
+ $verified || { report failed 'No installed binary can verify signed bundles yet; install this release manually once.';return 1; }
+ report upgrading 'Verified signed bundle; installing'
+ bundle_tmp=$(mktemp -d /var/tmp/lidza-upgrade.XXXXXX)
+ rollback_signed(){
+  if $changed;then
+   [[ -z "$agent_target" ]] || { install -m 0755 /usr/local/bin/lidza-agent.previous /usr/local/bin/lidza-agent.rollback;mv /usr/local/bin/lidza-agent.rollback /usr/local/bin/lidza-agent;systemctl restart lidza-agent || true; }
+   [[ -z "$control_target" ]] || { install -m 0755 /usr/local/bin/lidza-control.previous /usr/local/bin/lidza-control.rollback;mv /usr/local/bin/lidza-control.rollback /usr/local/bin/lidza-control;systemctl restart lidza-control || true; }
+   report failed 'Signed bundle upgrade failed; previous managed binaries restored. Check service logs.'
+  else
+   report failed 'Signed bundle upgrade failed before replacing binaries. Check service logs.'
+  fi
+ }
+ finish_signed(){ local result=$?;trap - EXIT;if ((result!=0));then rollback_signed;fi;rm -rf "$bundle_tmp";exit "$result"; }
+ trap finish_signed EXIT
+ if tar -tzf "$staged/bundle.tar.gz" | grep -Eq '(^/|(^|/)\.\.(/|$))';then exit 1;fi
+ mkdir "$bundle_tmp/bundle"
+ tar --no-same-owner -xzf "$staged/bundle.tar.gz" -C "$bundle_tmp/bundle"
+ (cd "$bundle_tmp/bundle" && sha256sum -c SHA256SUMS >/dev/null)
+ [[ $("$bundle_tmp/bundle/bin/lidza-agent" -version) == "$version" ]]
+ [[ $("$bundle_tmp/bundle/bin/lidza-control" -version) == "$version" ]]
+ if has_unit lidza-agent;then agent_target=/usr/local/bin/lidza-agent;fi
+ if has_unit lidza-control;then control_target=/usr/local/bin/lidza-control;fi
+ [[ -n "$agent_target$control_target" ]] || { echo 'No managed unit found on this host.' >&2;exit 1; }
+ [[ -z "$agent_target" ]] || install -m 0755 "$agent_target" "$agent_target.previous"
+ [[ -z "$control_target" ]] || install -m 0755 "$control_target" "$control_target.previous"
+ [[ -z "$agent_target" ]] || install -m 0755 "$bundle_tmp/bundle/bin/lidza-agent" "$agent_target.next"
+ [[ -z "$control_target" ]] || install -m 0755 "$bundle_tmp/bundle/bin/lidza-control" "$control_target.next"
+ changed=true
+ [[ -z "$agent_target" ]] || { mv "$agent_target.next" "$agent_target";systemctl restart lidza-agent; }
+ [[ -z "$control_target" ]] || { mv "$control_target.next" "$control_target";systemctl restart lidza-control; }
+ local healthy=false attempt
+ for attempt in {1..90};do
+  if { [[ -z "$agent_target" ]] || curl --max-time 2 -fsS http://127.0.0.1:9090/health >/dev/null; } \
+   && { [[ -z "$control_target" ]] || curl --max-time 2 -fsS http://127.0.0.1:3000/readyz >/dev/null; };then healthy=true;break;fi
+  sleep 1
+ done
+ $healthy
+ changed=false
+ # Keep the helper current for the next release; units are reviewed changes, not replaced here.
+ if [[ -f "$bundle_tmp/bundle/deploy/upgrade-agent.sh" ]];then
+  install -m 0755 "$bundle_tmp/bundle/deploy/upgrade-agent.sh" /usr/local/libexec/lidza-agent-upgrade.next
+  mv /usr/local/libexec/lidza-agent-upgrade.next /usr/local/libexec/lidza-agent-upgrade
+ fi
+ rm -rf "$staged"
+ report succeeded "Signed bundle $version installed; health checks passed"
+ trap - EXIT
+ rm -rf "$bundle_tmp"
+ return 0
+}
+if [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-private\.[0-9]+$ ]];then install_signed_bundle "$version";exit $?;fi
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { report failed 'Invalid release version';exit 1; }
 case $(uname -m) in x86_64) arch=amd64;;aarch64|arm64) arch=arm64;;*) report failed 'Unsupported architecture';exit 1;;esac
 report upgrading 'Downloading and verifying official release'

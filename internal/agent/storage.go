@@ -20,7 +20,7 @@ func (m *Manager) prepareAppStorage(ctx context.Context, a App, cfg *config.Conf
 		return a, nil
 	}
 	provider := strings.ToLower(strings.TrimSpace(effective["STORAGE_PROVIDER"]))
-	if provider != "" && provider != "local" {
+	if provider != "" && provider != "local" && !a.isRails() {
 		return a, nil
 	}
 	m.mu.Lock()
@@ -40,7 +40,7 @@ func (m *Manager) prepareAppStorage(ctx context.Context, a App, cfg *config.Conf
 		}
 	}
 	m.mu.Unlock()
-	if err := prepareStorageVolume(ctx, original.resourceID(), volume); err != nil {
+	if err := prepareStorageVolumeAs(ctx, original.resourceID(), volume, a.runtimeUser()); err != nil {
 		return a, err
 	}
 	m.mu.Lock()
@@ -54,7 +54,9 @@ func (m *Manager) prepareAppStorage(ctx context.Context, a App, cfg *config.Conf
 	if updated.Env == nil {
 		updated.Env = map[string]string{}
 	}
-	updated.Env["STORAGE_DIR"] = appStorageMount
+	if !a.isRails() {
+		updated.Env["STORAGE_DIR"] = appStorageMount
+	}
 	if err := updated.Validate(); err != nil {
 		return a, err
 	}
@@ -65,11 +67,19 @@ func (m *Manager) prepareAppStorage(ctx context.Context, a App, cfg *config.Conf
 	}
 	a.Env = maps.Clone(updated.Env)
 	a.StorageVolume = volume
-	effective["STORAGE_DIR"] = appStorageMount
+	if !a.isRails() {
+		effective["STORAGE_DIR"] = appStorageMount
+	}
 	return a, nil
 }
 
 func prepareStorageVolume(ctx context.Context, id, volume string) error {
+	return prepareStorageVolumeAs(ctx, id, volume, "65532:65532")
+}
+func prepareStorageVolumeAs(ctx context.Context, id, volume, user string) error {
+	if user != "65532:65532" && user != "1000:1000" {
+		return errors.New("invalid storage owner")
+	}
 	if volume != "lidza-storage-"+id || !idPattern.MatchString(id) {
 		return errors.New("invalid managed storage identity")
 	}
@@ -88,7 +98,11 @@ func prepareStorageVolume(ctx context.Context, id, volume string) error {
 		}
 	}
 	// Initialize only the mount root. Never recursively change user uploads.
-	err = dockerStream(ctx, nil, io.Discard, nil, "run", "--rm", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--memory", "64m", "--pids-limit", "32", "--mount", "type=volume,src="+volume+",dst=/data,volume-nocopy", cacheImage, "sh", "-c", "chown 65532:65532 /data && chmod 700 /data")
+	initialize := "chown " + user + " /data && chmod 700 /data"
+	if user == "1000:1000" {
+		initialize = "mkdir -p /data/storage /data/public-system /data/public-uploads && chown 1000:1000 /data /data/storage /data/public-system /data/public-uploads && chmod 700 /data /data/storage /data/public-system /data/public-uploads"
+	}
+	err = dockerStream(ctx, nil, io.Discard, nil, "run", "--rm", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges", "--memory", "64m", "--pids-limit", "32", "--mount", "type=volume,src="+volume+",dst=/data,volume-nocopy", cacheImage, "sh", "-c", initialize)
 	if err != nil {
 		return errors.New("could not initialize persistent storage permissions")
 	}
@@ -98,6 +112,9 @@ func prepareStorageVolume(ctx context.Context, id, volume string) error {
 func storageMountArgs(a App) []string {
 	if a.StorageVolume == "" {
 		return nil
+	}
+	if a.isRails() {
+		return []string{"--mount", "type=volume,src=" + a.StorageVolume + ",dst=/rails/storage,volume-subpath=storage,volume-nocopy", "--mount", "type=volume,src=" + a.StorageVolume + ",dst=/rails/public/system,volume-subpath=public-system,volume-nocopy", "--mount", "type=volume,src=" + a.StorageVolume + ",dst=/rails/public/uploads,volume-subpath=public-uploads,volume-nocopy"}
 	}
 	return []string{"--mount", "type=volume,src=" + a.StorageVolume + ",dst=" + appStorageMount + ",volume-nocopy", "--env", "STORAGE_DIR=" + appStorageMount}
 }

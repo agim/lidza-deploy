@@ -2,8 +2,12 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/updates"
 	"net/http"
+	"time"
 )
 
 func (c *Control) appFeature(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +69,10 @@ func (c *Control) serverHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Control) upgradeServer(w http.ResponseWriter, r *http.Request) {
+	if c.channelConfigured() {
+		c.upgradeServerSigned(w, r)
+		return
+	}
 	var in any
 	if r.Method == "POST" {
 		var value struct {
@@ -94,4 +102,63 @@ func (c *Control) upgradeServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent.JSON(w, 200, out)
+}
+
+// upgradeServerSigned upgrades one host from the signed channel: the
+// newest verified signed bundle is transferred to the agent, which verifies
+// it again, and its root helper installs it with rollback.
+func (c *Control) upgradeServerSigned(w http.ResponseWriter, r *http.Request) {
+	c.updateMu.Lock()
+	defer c.updateMu.Unlock()
+	server := c.serverByID(r.PathValue("server"))
+	if server.ID == "" {
+		agent.Fail(w, 404, errors.New("server not found"))
+		return
+	}
+	var status agent.UpgradeStatus
+	if err := c.agentCall(r, server.ID, "GET", "/v1/upgrade", nil, &status); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	settings := c.updateSettingsSnapshot()
+	if r.Method == "GET" {
+		if settings.Bundle == nil || time.Since(settings.Checked) > time.Hour {
+			if err := c.checkUpdateRelease(r); err == nil {
+				settings = c.updateSettingsSnapshot()
+			}
+		}
+		latest := ""
+		if settings.Bundle != nil {
+			latest = settings.Bundle.Version
+		}
+		agent.JSON(w, 200, map[string]any{"current": status.Current, "latest": latest, "channel": "private", "state": status.State,
+			"message": status.Message, "supported": status.Supported && latest != "" && updates.Newer(latest, status.Current)})
+		return
+	}
+	if err := c.checkUpdateRelease(r); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	settings = c.updateSettingsSnapshot()
+	if settings.Bundle == nil || !updates.ValidVersion(settings.Bundle.Version) {
+		agent.Fail(w, 409, errors.New("no verified signed release is available"))
+		return
+	}
+	if !status.Supported {
+		agent.Fail(w, 409, errors.New(status.Message))
+		return
+	}
+	if !updates.Newer(settings.Bundle.Version, status.Current) {
+		agent.Fail(w, 409, fmt.Errorf("%s already runs %s", server.Name, status.Current))
+		return
+	}
+	if err := c.transferBundle(r, server, *settings.Bundle, agentArch(status)); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	if err := c.agentCall(r, server.ID, "POST", "/v1/upgrade", map[string]string{"version": settings.Bundle.Version}, nil); err != nil {
+		agent.Fail(w, 502, err)
+		return
+	}
+	agent.JSON(w, 202, map[string]string{"status": "queued", "version": settings.Bundle.Version})
 }

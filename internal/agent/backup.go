@@ -18,15 +18,18 @@ import (
 	"time"
 )
 
-const maxBackupSize int64 = 5 << 30 // S3 single PUT limit; never truncate a successful backup.
+const maxBackupSize int64 = 5 << 30
+const maxExtendedBackupSize int64 = 64 << 30
+
 type backupWriter struct {
-	w io.Writer
-	n atomic.Int64
+	w     io.Writer
+	n     atomic.Int64
+	limit int64
 }
 
 func (w *backupWriter) Write(p []byte) (int, error) {
-	if w.n.Load()+int64(len(p)) > maxBackupSize {
-		return 0, errors.New("backup exceeds 5 GiB single-object limit")
+	if int64(len(p)) > w.limit-w.n.Load() {
+		return 0, fmt.Errorf("backup exceeds its configured %d-byte limit", w.limit)
 	}
 	n, e := w.w.Write(p)
 	w.n.Add(int64(n))
@@ -34,9 +37,17 @@ func (w *backupWriter) Write(p []byte) (int, error) {
 }
 func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.Config, kind ...string) (BackupRecord, error) {
 	var record BackupRecord
+	nativePolicy, nativeErr := m.nativeDatabaseDumpPolicy(ctx, d)
+	if nativeErr != nil {
+		return record, nativeErr
+	}
 	dir := m.backupDir(d.AppID)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return record, errors.New("cannot create backup directory")
+	}
+	limit, err := m.backupDiskLimit(dir, d.AppID)
+	if err != nil {
+		return record, err
 	}
 	file, err := os.CreateTemp(dir, ".backup-*")
 	if err != nil {
@@ -45,33 +56,49 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	defer os.Remove(file.Name())
 	defer file.Close()
 	id := newID()
-	container := "lidza-backup-" + id
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_, _ = command(cleanup, "", nil, "docker", "rm", "-f", container)
-	}()
 	hash := sha256.New()
-	writer := &backupWriter{w: io.MultiWriter(file, hash)}
-	args := []string{"run", "--rm", "--name", container, "--label", "io.lidza.backup=" + d.AppID, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "512m", "--pids-limit", "128"}
-	if d.Network != "" {
-		args = append(args, "--network", d.Network)
+	writer := &backupWriter{w: io.MultiWriter(file, hash), limit: limit}
+	dumpMessage := "Dumping PostgreSQL to local disk (database lock wait limited to 30 seconds)"
+	sqlite := nativePolicy != nil && nativePolicy.SQLitePath != ""
+	if sqlite {
+		dumpMessage = "Creating and validating a read-only SQLite snapshot"
+	} else if nativePolicy != nil {
+		dumpMessage = "Dumping PostgreSQL from the existing native resource (database lock wait limited to three seconds)"
 	}
-	environment, flags := postgresEnvironment(d.URL)
-	args = append(args, flags...)
-	// Full telemetry dumps spend substantial CPU compressing repeated JSON.
-	// Keep the complete custom archive, but avoid pg_dump's moderate gzip default.
-	// PostgreSQL 17's matching pg_restore reads Zstandard without an external tool.
-	args = append(args, databaseImage, "pg_dump", "--format=custom", "--compress=zstd:1", "--no-owner", "--no-acl", "--lock-wait-timeout=30s")
-	for _, table := range m.cfg.BackupExcludeTableData[d.AppID] {
-		args = append(args, "--exclude-table-data="+table)
-		commandDiagnostic(ctx, "backup", "Omitting disposable table data by agent policy: "+table+" (schema retained).")
+	stopDump := backupProgress(ctx, dumpMessage, writer.n.Load)
+	if sqlite {
+		err = m.dumpNativeSQLite(ctx, d, *nativePolicy, writer)
+	} else if nativePolicy != nil {
+		err = m.dumpNativeDatabase(ctx, d, *nativePolicy, writer)
+	} else {
+		container := "lidza-backup-" + id
+		defer func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, _ = command(cleanup, "", nil, "docker", "rm", "-f", container)
+		}()
+		args := []string{"run", "--rm", "--name", container, "--label", "io.lidza.backup=" + d.AppID, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "512m", "--pids-limit", "128"}
+		if d.Network != "" {
+			args = append(args, "--network", d.Network)
+		}
+		environment, flags := postgresEnvironment(d.URL)
+		args = append(args, flags...)
+		// Full telemetry dumps spend substantial CPU compressing repeated JSON.
+		// Keep the complete custom archive, but avoid pg_dump's moderate gzip default.
+		// PostgreSQL 17's matching pg_restore reads Zstandard without an external tool.
+		args = append(args, databaseImage, "pg_dump", "--format=custom", "--compress=zstd:1", "--no-owner", "--no-acl", "--lock-wait-timeout=30s")
+		for _, table := range m.cfg.BackupExcludeTableData[d.AppID] {
+			args = append(args, "--exclude-table-data="+table)
+			commandDiagnostic(ctx, "backup", "Omitting disposable table data by agent policy: "+table+" (schema retained).")
+		}
+		err = dockerStream(ctx, nil, writer, environment, args...)
 	}
-	stopDump := backupProgress(ctx, "Dumping PostgreSQL to local disk (database lock wait limited to 30 seconds)", writer.n.Load)
-	err = dockerStream(ctx, nil, writer, environment, args...)
 	stopDump()
 	if err != nil {
 		if ctx.Err() != nil {
+			if sqlite {
+				return record, fmt.Errorf("SQLite snapshot interrupted: %w", ctx.Err())
+			}
 			return record, fmt.Errorf("PostgreSQL dump interrupted: %w", ctx.Err())
 		}
 		return record, err
@@ -117,9 +144,21 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 			return record, errors.New("local backup saved; S3 destination is not configured")
 		}
 		key := backupObjectKey(d.AppID, record)
+		if nativePolicy != nil {
+			if err = nativeBackupPrivacy(ctx, *target, key); err != nil {
+				record.UploadError = err.Error()
+				return record, err
+			}
+		}
 		if err = uploadBackup(ctx, *target, path, key, record.Size); err != nil {
 			record.UploadError = err.Error()
 			return record, fmt.Errorf("local backup saved; off-site upload failed: %w", err)
+		}
+		if nativePolicy != nil {
+			if err = verifyNativeOffsiteBackup(ctx, *target, key, record); err != nil {
+				record.UploadError = err.Error()
+				return record, err
+			}
 		}
 		record.Offsite = true
 		record.ObjectKey = key
@@ -130,6 +169,9 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 // Līdza supplies S3 signing; the existing presigned PUT API lets us stream a
 // file without buffering database contents in the control panel or agent RAM.
 func uploadBackup(ctx context.Context, cfg storage.Config, path, key string, size int64) error {
+	if size > maxBackupSize {
+		return uploadMultipartBackup(ctx, cfg, path, key, size)
+	}
 	stopAuthorization := backupProgress(ctx, "Authorizing required S3 upload", nil)
 	store, err := storage.New(cfg)
 	if err != nil {
@@ -181,6 +223,10 @@ func uploadBackup(ctx context.Context, cfg storage.Config, path, key string, siz
 		return fmt.Errorf("storage rejected upload (HTTP %d)", res.StatusCode)
 	}
 	res.Body.Close()
+	return verifyBackupObjectSize(ctx, store, key, size)
+}
+
+func verifyBackupObjectSize(ctx context.Context, store *storage.Storage, key string, size int64) error {
 	stopVerify := backupProgress(ctx, "Verifying uploaded S3 object size", nil)
 	object, err := store.Stat(ctx, key)
 	stopVerify()

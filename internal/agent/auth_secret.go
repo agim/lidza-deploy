@@ -10,6 +10,9 @@ import (
 // Provision the per-app auth signing secret. Master-key creation is separately
 // limited to new app identities. Never rotate a supplied signing secret.
 func provisionAuthSecret(a App) (App, bool, error) {
+	if a.isRails() {
+		return a, false, nil
+	}
 	if a.Env["AUTH_SECRET"] != "" {
 		return a, false, nil
 	}

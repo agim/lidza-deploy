@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/agim/lidza-deploy/internal/buildinfo"
 	"github.com/agim/lidza-deploy/internal/platform/state"
+	"github.com/agim/lidza-deploy/internal/updates"
 	"io"
 	"net/http"
 	"os"
@@ -17,17 +18,22 @@ import (
 var releaseVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
 type UpgradeStatus struct {
-	Current   string `json:"current"`
-	Latest    string `json:"latest,omitempty"`
-	State     string `json:"state"`
-	Message   string `json:"message,omitempty"`
-	Supported bool   `json:"supported"`
+	Current   string   `json:"current"`
+	Latest    string   `json:"latest,omitempty"`
+	State     string   `json:"state"`
+	Message   string   `json:"message,omitempty"`
+	Supported bool     `json:"supported"`
+	Channel   string   `json:"channel,omitempty"` // "private" when this build installs signed distribution bundles
+	Arch      string   `json:"arch,omitempty"`
+	Keys      []string `json:"keys,omitempty"` // fingerprints of the pinned signing keys
 }
 
 func (m *Manager) upgradeStatus() UpgradeStatus {
 	status := UpgradeStatus{Current: buildinfo.Version, State: "idle"}
-	_, err := os.Stat("/usr/local/libexec/lidza-agent-upgrade")
+	_, err := os.Stat(upgradeHelperPath)
 	status.Supported = err == nil && m.cfg.DataDir == "/var/lib/lidza-agent" && runtime.GOOS == "linux"
+	// A build that pins bundle signing keys installs only its signed bundles.
+	m.upgradeChannelStatus(&status)
 	var saved UpgradeStatus
 	if state.Load(filepath.Join(m.cfg.DataDir, "upgrade", "status.json"), &saved) == nil && saved.State != "" {
 		status.State = saved.State
@@ -39,6 +45,9 @@ func (m *Manager) upgradeStatus() UpgradeStatus {
 	return status
 }
 func LatestRelease(r *http.Request) (string, error) {
+	if upgradeTrust().Configured() {
+		return "", errors.New("this distribution installs signed bundles from its own update channel")
+	}
 	req, err := http.NewRequestWithContext(r.Context(), "GET", "https://api.github.com/repos/agim/lidza-deploy/releases/latest", nil)
 	if err != nil {
 		return "", err
@@ -63,7 +72,9 @@ func LatestRelease(r *http.Request) (string, error) {
 	}
 	return data.Tag, nil
 }
+
 func (m *Manager) upgradeRoutes(mux *http.ServeMux) {
+	m.upgradeBundleRoutes(mux)
 	mux.HandleFunc("GET /v1/upgrade", func(w http.ResponseWriter, r *http.Request) {
 		status := m.upgradeStatus()
 		if r.URL.Query().Get("check") == "1" {
@@ -84,12 +95,21 @@ func (m *Manager) upgradeRoutes(mux *http.ServeMux) {
 			Fail(w, 400, err)
 			return
 		}
-		if !releaseVersion.MatchString(in.Version) {
+		if !releaseVersion.MatchString(in.Version) && !updates.ValidVersion(in.Version) {
 			Fail(w, 400, errors.New("select a published stable version"))
 			return
 		}
 		if !m.upgradeStatus().Supported {
 			Fail(w, 409, errors.New("install the managed upgrade helper on this server first"))
+			return
+		}
+		if updates.ValidVersion(in.Version) {
+			if err := m.verifyStagedUpgrade(in.Version); err != nil {
+				Fail(w, 409, err)
+				return
+			}
+		} else if upgradeTrust().Configured() {
+			Fail(w, 409, errors.New("this distribution installs signed bundles only"))
 			return
 		}
 		m.mu.Lock()

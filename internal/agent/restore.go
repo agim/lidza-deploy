@@ -47,6 +47,9 @@ func (m *Manager) restoreDatabase(appID string, in RestoreRequest) error {
 	if !ok || source.Operation != "" {
 		return errors.New("backup source unavailable or busy")
 	}
+	if m.data.NativeDatabases[in.Source].Policy.SQLitePath != "" {
+		return errors.New("SQLite snapshots can be downloaded for an isolated restore")
+	}
 	var record BackupRecord
 	for _, b := range source.Backups {
 		if b.ID == in.Backup {
@@ -138,7 +141,7 @@ func (m *Manager) finishRestore(appID string, in RestoreRequest, err error) {
 	if err != nil {
 		target.Error = err.Error()
 	} else {
-		target.NextBackup = time.Now().UTC().Add(time.Duration(target.Backup.Hours) * time.Hour)
+		target.NextBackup = target.Backup.NextBackupAfter(time.Now())
 	}
 	m.data.Databases[in.Target] = target
 	a, exists := m.data.Apps[appID]

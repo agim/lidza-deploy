@@ -41,3 +41,9 @@ dist/
 .lidza-deploy/
 config/master.key
 config/credentials.yml.enc
+
+__pycache__/
+*.pyc
+!tests/rails-fixture/bin/
+!tests/rails-fixture/bin/rails
+!tests/rails-fixture/bin/docker-entrypoint

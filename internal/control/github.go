@@ -146,6 +146,10 @@ type pushJob struct {
 	Delivery   string `json:"delivery"`
 }
 
+// Initialization-only distribution adapter. Authentication, signed delivery
+// verification and durable job deduplication stay in the shared dispatcher.
+var alternatePushDispatch func(context.Context, *Control, Application, pushJob) (bool, error)
+
 func (c *Control) dispatchPush(ctx context.Context, payload json.RawMessage) error {
 	var job pushJob
 	if err := json.Unmarshal(payload, &job); err != nil {
@@ -154,6 +158,11 @@ func (c *Control) dispatchPush(ctx context.Context, payload json.RawMessage) err
 	a, ok := c.app(job.AppID)
 	if !ok || a.Retiring || !a.AutoDeploy || job.Generation != a.Generation {
 		return nil
+	}
+	if alternatePushDispatch != nil {
+		if handled, err := alternatePushDispatch(ctx, c, a, job); handled {
+			return err
+		}
 	}
 	check, _ := http.NewRequestWithContext(ctx, "GET", c.cfg.PublicURL, nil)
 	var settings agent.Settings

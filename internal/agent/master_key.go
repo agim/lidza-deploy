@@ -10,6 +10,9 @@ import (
 // Called only for new app identities. Never backfill a running installation:
 // its original encryption key may protect data not visible in the checkout.
 func provisionMasterKey(a App) (App, error) {
+	if a.isRails() || a.Runtime == "astro" {
+		return a, nil
+	}
 	if a.Env["LIDZA_MASTER_KEY"] != "" {
 		return a, nil
 	}
@@ -38,6 +41,9 @@ func (m *Manager) GenerateMasterKey(id string) error {
 	a, ok := m.data.Apps[id]
 	if !ok || a.Retiring {
 		return errors.New("application unavailable")
+	}
+	if a.isRails() || a.Runtime == "astro" {
+		return errors.New("import the original Rails master key as RAILS_MASTER_KEY; Rails encryption keys are never generated or replaced by the agent")
 	}
 	if a.Env["LIDZA_MASTER_KEY"] != "" {
 		return errors.New("application already has a master key; generation will not replace it")

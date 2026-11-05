@@ -55,45 +55,65 @@ type Config struct {
 	Connectors []auth.Connector
 }
 type Application struct {
-	RuntimeProfile     string        `json:"runtime_profile,omitempty"`
-	AdditionalDomains  []string      `json:"additional_domains,omitempty"`
-	CustomerHosts      bool          `json:"customer_hosts"`
-	GitHubInstallation int64         `json:"github_installation,omitempty"`
-	Previews           PreviewConfig `json:"previews,omitempty"`
-	PreviewParent      string        `json:"preview_parent,omitempty"`
-	Generation         string        `json:"generation,omitempty"`
-	Retiring           bool          `json:"retiring,omitempty"`
-	ID                 string        `json:"id"`
-	ServerID           string        `json:"server_id"`
-	Repository         string        `json:"repository"`
-	Branch             string        `json:"branch"`
-	Domain             string        `json:"domain"`
-	AutoDeploy         bool          `json:"auto_deploy"`
-	HookID             int64         `json:"hook_id,omitempty"`
-	Secret             string        `json:"secret,omitempty"`
+	Astro              *agent.AstroConfig       `json:"astro,omitempty"`
+	Build              agent.BuildConfig        `json:"build,omitempty,omitzero"`
+	Native             *agent.NativeApplication `json:"native,omitempty"`
+	Runtime            string                   `json:"runtime,omitempty"`
+	Rails              *agent.RailsConfig       `json:"rails,omitempty"`
+	RuntimeProfile     string                   `json:"runtime_profile,omitempty"`
+	AdditionalDomains  []string                 `json:"additional_domains,omitempty"`
+	CustomerHosts      bool                     `json:"customer_hosts"`
+	GitHubInstallation int64                    `json:"github_installation,omitempty"`
+	Previews           PreviewConfig            `json:"previews,omitempty"`
+	PreviewParent      string                   `json:"preview_parent,omitempty"`
+	Generation         string                   `json:"generation,omitempty"`
+	Retiring           bool                     `json:"retiring,omitempty"`
+	ID                 string                   `json:"id"`
+	ServerID           string                   `json:"server_id"`
+	Repository         string                   `json:"repository"`
+	Branch             string                   `json:"branch"`
+	Domain             string                   `json:"domain"`
+	AutoDeploy         bool                     `json:"auto_deploy"`
+	HookID             int64                    `json:"hook_id,omitempty"`
+	Secret             string                   `json:"secret,omitempty"`
 }
 type saved struct {
-	ApplicationDefaults       map[string]string      `json:"application_defaults"`
-	Updates                   UpdateSettings         `json:"updates"`
-	GitHubApp                 *githubAppConfig       `json:"github_app,omitempty"`
-	BackupStorageLegacyPrefix string                 `json:"backup_storage_legacy_prefix,omitempty"`
-	BackupStorage             *storage.Config        `json:"backup_storage,omitempty"`
-	Incidents                 map[string]Incident    `json:"incidents,omitempty"`
-	Apps                      map[string]Application `json:"apps"`
-	Servers                   []Server               `json:"servers"`
+	ObservedApps              map[string]ObservedApplication `json:"observed_apps,omitempty"`
+	ApplicationDefaults       map[string]string              `json:"application_defaults"`
+	RuntimeDefaults           map[string]map[string]string   `json:"runtime_defaults,omitempty"`
+	Updates                   UpdateSettings                 `json:"updates"`
+	GitHubApp                 *githubAppConfig               `json:"github_app,omitempty"`
+	BackupStorageLegacyPrefix string                         `json:"backup_storage_legacy_prefix,omitempty"`
+	BackupStorage             *storage.Config                `json:"backup_storage,omitempty"`
+	Incidents                 map[string]Incident            `json:"incidents,omitempty"`
+	Moves                     map[string]MoveJob             `json:"moves,omitempty"`
+	Apps                      map[string]Application         `json:"apps"`
+	Servers                   []Server                       `json:"servers"`
 }
 type Control struct {
-	releaseCheck func(*http.Request) (string, error)
-	updateMu     sync.Mutex
-	githubMu     sync.Mutex
-	cfg          Config
-	mu           sync.Mutex
-	registryMu   sync.RWMutex
-	registry     []Server
-	data         saved
-	client       *http.Client
-	operatorID   string
-	teamMu       sync.Mutex
+	// credentialsFixture replaces deploymentCredentials in unit tests that run
+	// without the framework's auth services; nil in production.
+	credentialsFixture func(context.Context, Application, string) (agent.DeployRequest, error)
+	nativeSyncMu       sync.Mutex
+	nativeSync         map[string]NativeInventoryStatus
+	releaseCheck       func(*http.Request) (string, error)
+	updateMu           sync.Mutex
+	githubMu           sync.Mutex
+	cfg                Config
+	mu                 sync.Mutex
+	registryMu         sync.RWMutex
+	registry           []Server
+	data               saved
+	client             *http.Client
+	operatorID         string
+	teamMu             sync.Mutex
+	// Application moves (move*.go). moveRunning is guarded by mu; the
+	// resolver, HTTPS probe and poll interval are replaced in tests.
+	moveRunning      map[string]bool
+	moveBase         context.Context
+	moveResolver     moveResolver
+	moveProbe        func(ctx context.Context, address, host string) error
+	movePollInterval time.Duration
 }
 
 func New(cfg Config) (*Control, error) {
@@ -183,7 +203,7 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(71924161)"); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+auth.FactorTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable+analytics.Tables+consoleTable); err != nil {
+	if _, err = tx.Exec(ctx, auth.SessionTable+auth.TokenTable+auth.AccountTable+auth.UserTable+auth.IdentityTable+auth.ConnectionTable+auth.MemberTable+auth.FactorTable+auth.PreferenceTable+audit.Table+jobs.JobTable+jobs.ScheduleTable+mail.OutboxTable+analytics.Tables+consoleTable); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -211,6 +231,13 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	}
 	jobs.FromServices(s).Handle("deploy.push", c.auditedJob("deploy.push", c.dispatchPush), jobs.Concurrency(2))
 	q := jobs.FromServices(s)
+	q.Handle("native.inventory", func(ctx context.Context, _ json.RawMessage) error { c.syncNativeInventory(ctx); return nil }, jobs.Concurrency(1))
+	if err := q.Schedule("native.inventory", jobs.Every(time.Minute), nil); err != nil {
+		return err
+	}
+	if _, err := q.Enqueue(ctx, "native.inventory", nil); err != nil {
+		return err
+	}
 	q.Handle("deploy.preview", c.auditedJob("deploy.preview", c.dispatchPreview), jobs.Concurrency(2))
 	q.Handle("deploy.task", c.auditedJob("deploy.task", c.dispatchTask), jobs.Concurrency(4))
 	q.Handle("ops.tick", c.operationsTick, jobs.Concurrency(1))
@@ -224,12 +251,19 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if err := q.Schedule("ops.tick", jobs.Every(time.Minute), nil); err != nil {
 		return err
 	}
+	c.moveBase = audit.System(context.WithoutCancel(ctx), "move")
+	q.Handle("move.tick", func(ctx context.Context, _ json.RawMessage) error { c.moveTick(ctx); return nil }, jobs.Concurrency(1))
+	if err := q.Schedule("move.tick", jobs.Every(time.Minute), nil); err != nil {
+		return err
+	}
 	q.Handle("updates.tick", func(ctx context.Context, _ json.RawMessage) error { return c.updateTick(ctx) }, jobs.Concurrency(1))
 	return q.Schedule("updates.tick", jobs.Every(time.Minute), nil)
 }
 func (c *Control) token(ctx context.Context) (string, error) {
 	conn, err := auth.From(ctx).Connection(ctx, c.operatorID, "github")
-	if errors.Is(err, auth.ErrNotConnected) {
+	if errors.Is(err, auth.ErrNotConnected) || githubConnectorMissing(err) {
+		// No personal grant (or no OAuth connector at all, as on panels
+		// that use only the GitHub App): callers fall back to the App.
 		return "", nil
 	}
 	if err != nil {
@@ -277,6 +311,11 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 	req.Header.Set("Authorization", "Bearer "+target.Token)
 	req.Header.Set("Content-Type", "application/json")
 	client := c.client
+	if timeout, ok := r.Context().Value(agentTimeoutKey{}).(time.Duration); ok && timeout > client.Timeout {
+		copy := *client
+		copy.Timeout = timeout
+		client = &copy
+	}
 	if path == "/v1/console" {
 		copy := *client
 		copy.Timeout = agent.ConsoleResponseTimeout
@@ -325,11 +364,22 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	private := http.NewServeMux()
-	handle := func(pattern string, fn http.HandlerFunc) { private.HandleFunc(pattern, c.protectedRoute(pattern, fn)) }
+	handle := func(pattern string, fn http.HandlerFunc) {
+		private.HandleFunc(pattern, c.protectedRoute(pattern, c.nativeContainerGuard(pattern, fn)))
+	}
 	for _, pattern := range []string{"GET /api/control/github/app/status", "POST /api/control/github/app/register", "GET /api/control/github/app/manifest-callback", "POST /api/control/github/app/install", "GET /api/control/github/app/install-callback", "DELETE /api/control/github/app"} {
 		handle(pattern, c.githubAppRoute)
 	}
+	handle("GET /api/control/servers/{server}/native/discovery", c.nativeDiscovery)
+	handle("GET /api/control/native-inventory", c.nativeInventoryStatus)
+	handle("POST /api/control/servers/{server}/native/apps", c.registerNative)
+	handle("GET /api/control/native-apps/{id}", c.nativeAppRoute)
+	handle("GET /api/control/native-apps/{id}/{action}", c.nativeAppRoute)
+	handle("POST /api/control/native-apps/{id}/services/{unit}/{action}", c.nativeAppRoute)
+	handle("POST /api/control/observed-apps", c.importObservedApplications)
 	handle("GET /api/control/application-defaults", c.applicationDefaults)
+	handle("GET /api/control/apps/{id}/migration-plan", c.migrationPlan)
+	c.moveRoutes(handle)
 	handle("PUT /api/control/application-defaults", c.applicationDefaults)
 	handle("POST /api/control/apps/{id}/apply-defaults", c.applyDefaults)
 	handle("GET /api/control/team", c.team)
@@ -344,6 +394,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	for _, pattern := range []string{"GET /api/control/servers/{server}/maintenance", "PATCH /api/control/servers/{server}/maintenance", "POST /api/control/servers/{server}/maintenance/run"} {
 		handle(pattern, c.serverMaintenance)
 	}
+	c.hostAdminRoutes(handle)
 	handle("GET /api/control/servers/{server}/containers", c.serverContainers)
 	handle("POST /api/control/servers/{server}/containers/restart", c.serverContainers)
 	handle("PUT /api/control/apps/{id}/previews", c.previewConfig)
@@ -393,6 +444,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/environment/{key}/reveal", c.revealCredential)
 	handle("DELETE /api/control/apps/{id}/webhook", c.disableHook)
 	handle("GET /api/control/apps", c.apps)
+	handle("GET /api/control/apps/{id}/processes", c.applicationProcesses)
 	handle("POST /api/control/apps", c.create)
 	handle("DELETE /api/control/apps/{id}", c.retire)
 	handle("POST /api/control/apps/{id}/reload", c.reloadApp)
@@ -413,6 +465,8 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("GET /api/control/deliveries", c.deliveries)
 	handle("GET /api/control/github/repos", c.repos)
 	handle("GET /api/control/github/branches", c.branches)
+	handle("GET /api/control/repos/detect", c.detectRepository)
+	handle("POST /api/control/native-apps", c.createNative)
 	handle("POST /api/control/github/config", c.configureGitHub)
 
 	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
@@ -428,7 +482,7 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 	app := c.githubApp()
 	appConfigured := app != nil
 	appConnected := appConfigured && len(app.Installations) > 0
-	agent.JSON(w, 200, map[string]any{"control_version": buildinfo.Version, "github_public_https": strings.HasPrefix(c.cfg.PublicURL, "https://"), "github_app_configured": appConfigured, "github_app_connected": appConnected, "github_app_slug": func() string {
+	agent.JSON(w, 200, map[string]any{"native_inventory": c.nativeInventoryStates(), "control_version": buildinfo.Version, "github_public_https": strings.HasPrefix(c.cfg.PublicURL, "https://"), "github_app_configured": appConfigured, "github_app_connected": appConnected, "github_app_slug": func() string {
 		if app != nil {
 			return app.App.Slug
 		}
@@ -437,6 +491,8 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 }
 func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	type view struct {
+		Management *agent.ManagementCapabilities `json:"management_capabilities,omitempty"`
+		Observed   *ObservedApplication          `json:"observed,omitempty"`
 		Application
 		Stopped        bool                 `json:"stopped"`
 		Maintenance    agent.Maintenance    `json:"maintenance"`
@@ -452,6 +508,10 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 		a.Secret = ""
 		a.Previews.Env = nil
 		out = append(out, view{Application: a})
+	}
+	for id, observation := range c.data.ObservedApps {
+		copy := observation
+		out = append(out, view{Application: Application{ID: id, ServerID: "observed:" + copy.Source, Runtime: copy.Runtime, Repository: copy.Name, Domain: copy.Domain}, Observed: &copy})
 	}
 	c.mu.Unlock()
 	for _, result := range c.readFleet(r, "/v1/apps") {
@@ -478,6 +538,8 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 					out[i].DomainStatuses = a.DomainStatuses
 					out[i].AdditionalDomains = a.AdditionalDomains
 					out[i].RuntimeProfile = a.RuntimeProfile
+					out[i].Native = a.Native
+					out[i].Management = a.Management
 					out[i].Maintenance = a.Maintenance
 					out[i].Restoring = a.Restoring
 					break
@@ -518,6 +580,9 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a := input.Application
+	if a.Runtime == "go" {
+		a.Runtime = ""
+	}
 	autoDeploy := a.AutoDeploy
 	if a.GitHubInstallation == 0 {
 		if cfg := c.githubApp(); cfg != nil {
@@ -541,7 +606,11 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 	a.AutoDeploy = autoDeploy
 	a.Retiring = false
 	a.Generation = random()
-	spec := agent.App{RuntimeProfile: a.RuntimeProfile, ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: a.AdditionalDomains, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
+	spec := agent.App{Astro: a.Astro, Build: a.Build, Runtime: a.Runtime, Rails: a.Rails, RuntimeProfile: a.RuntimeProfile, ID: a.ID, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: a.AdditionalDomains, CustomerHosts: a.CustomerHosts, Env: input.Env, EnvKinds: input.EnvKinds}
+	if err := c.verifyApplicationRuntime(r, a.ServerID, spec); err != nil {
+		agent.Fail(w, 409, err)
+		return
+	}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
 		return
@@ -608,17 +677,32 @@ func (c *Control) deploy(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	path := "/v1/apps/" + a.ID + "/deploy"
+	if a.Native != nil {
+		var status agent.NativeStatus
+		if err := c.agentCall(r, a.ServerID, "GET", "/v1/native/apps/"+a.ID, nil, &status); err != nil {
+			agent.Fail(w, 409, err)
+			return
+		}
+		if !status.DeploymentSupported {
+			agent.Fail(w, 409, errors.New("native deployment ownership requires the reviewed host configuration"))
+			return
+		}
+		path = "/v1/native/apps/" + a.ID + "/deploy"
+	}
 	credentialRequest, err := c.deploymentCredentials(r.Context(), a, "")
 	if err != nil {
 		agent.Fail(w, 409, err)
 		return
 	}
-	if err := c.syncStorageIfConfigured(r, a.ServerID); err != nil {
-		agent.Fail(w, 502, err)
-		return
+	if a.Native == nil {
+		if err := c.syncStorageIfConfigured(r, a.ServerID); err != nil {
+			agent.Fail(w, 502, err)
+			return
+		}
 	}
 	var d agent.Deployment
-	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/deploy", credentialRequest, &d); err != nil {
+	if err := c.agentCall(r, a.ServerID, "POST", path, credentialRequest, &d); err != nil {
 		agent.Fail(w, 502, err)
 		return
 	}
@@ -630,7 +714,11 @@ func (c *Control) rollback(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/rollback", nil, nil); err != nil {
+	path := "/v1/apps/" + a.ID + "/rollback"
+	if a.Native != nil {
+		path = "/v1/native/apps/" + a.ID + "/rollback"
+	}
+	if err := c.agentCall(r, a.ServerID, "POST", path, nil, nil); err != nil {
 		agent.Fail(w, 502, err)
 		return
 	}
@@ -643,7 +731,22 @@ func (c *Control) logs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out any
-	if err := c.agentCall(r, a.ServerID, "GET", "/v1/apps/"+a.ID+"/logs", nil, &out); err != nil {
+	path := "/v1/apps/" + a.ID + "/logs"
+	if a.Native != nil {
+		if len(a.Native.Services) == 0 {
+			agent.JSON(w, 200, map[string]string{"log": "This static site has no application process. Its files continue to be served by the existing web server."})
+			return
+		}
+		unit := a.Native.Services[0]
+		for _, name := range a.Native.Services {
+			if strings.HasSuffix(name, "-server.service") {
+				unit = name
+				break
+			}
+		}
+		path = "/v1/native/apps/" + a.ID + "/logs?unit=" + url.QueryEscape(unit)
+	}
+	if err := c.agentCall(r, a.ServerID, "GET", path, nil, &out); err != nil {
 		agent.Fail(w, 502, err)
 		return
 	}
@@ -761,4 +864,11 @@ func (c *Control) ownerClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent.JSON(w, 200, out)
+}
+
+// githubConnectorMissing reports the framework's error for a panel that has
+// no GitHub OAuth connector configured. The framework exposes no sentinel for
+// it, so the stable message prefix is matched.
+func githubConnectorMissing(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), `auth: no connector "github"`)
 }

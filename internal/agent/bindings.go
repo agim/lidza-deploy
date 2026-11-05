@@ -27,6 +27,11 @@ func (m *Manager) attachmentsLocked(id string) []DatabaseAttachment {
 			}
 		}
 	}
+	if binding, ok := m.data.NativeDatabases[id]; ok {
+		if _, registered := m.data.NativeApps[binding.Policy.AppID]; registered {
+			out = append(out, DatabaseAttachment{AppID: binding.Policy.AppID, EnvKey: binding.Policy.EnvironmentKey})
+		}
+	}
 	return out
 }
 func (m *Manager) bindDatabaseLocked(appID, key, id string) error {
@@ -34,6 +39,12 @@ func (m *Manager) bindDatabaseLocked(appID, key, id string) error {
 	d, ok := m.data.Databases[id]
 	if !ok || !d.Ready || d.Operation != "" {
 		return errors.New("database unavailable or busy")
+	}
+	if m.data.NativeDatabases[id].Policy.SQLitePath != "" {
+		return errors.New("an existing native SQLite file is bound to its reviewed application")
+	}
+	if m.data.NativeDatabases[id].Policy.ArchiveDatabase != "" {
+		return errors.New("standalone native backup credentials cannot be attached to an application")
 	}
 	if !validDatabaseKey(key) {
 		return errors.New("invalid database variable")

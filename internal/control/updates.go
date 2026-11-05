@@ -11,6 +11,7 @@ import (
 
 	"github.com/agim/lidza-deploy/internal/agent"
 	"github.com/agim/lidza-deploy/internal/buildinfo"
+	"github.com/agim/lidza-deploy/internal/updates"
 	"golang.org/x/mod/semver"
 )
 
@@ -28,6 +29,8 @@ type UpdateSettings struct {
 	CheckError string         `json:"check_error,omitempty"`
 	Version    string         `json:"version,omitempty"`
 	Targets    []UpdateTarget `json:"targets"`
+	Channel    *UpdateChannel `json:"channel,omitempty"`
+	Bundle     *UpdateBundle  `json:"bundle,omitempty"`
 }
 
 func localUpdateServer(s Server) bool {
@@ -73,8 +76,8 @@ func updateInProgress(v UpdateSettings) bool {
 	return false
 }
 func (c *Control) checkUpdateRelease(r *http.Request) error {
-	v := c.updateSettingsSnapshot()
 	latest, err := c.latestRelease(r)
+	v := c.updateSettingsSnapshot() // a channel check records the verified bundle itself
 	v.Checked = time.Now().UTC()
 	v.CheckError = ""
 	if err != nil {
@@ -101,6 +104,10 @@ func (c *Control) updates(w http.ResponseWriter, r *http.Request) {
 			agent.Fail(w, 400, err)
 			return
 		}
+		if in.Automatic && !c.updatesAvailable() {
+			agent.Fail(w, 409, errors.New("configure the signed update channel before enabling automatic updates"))
+			return
+		}
 		v := c.updateSettingsSnapshot()
 		v.Automatic = in.Automatic
 		if err := c.saveUpdateSettings(v); err != nil {
@@ -110,6 +117,10 @@ func (c *Control) updates(w http.ResponseWriter, r *http.Request) {
 		agent.JSON(w, 200, v)
 		return
 	case "POST":
+		if r.PathValue("action") == "channel" {
+			c.updateChannelRoute(w, r)
+			return
+		}
 		if r.PathValue("action") == "check" {
 			if err := c.checkUpdateRelease(r); err != nil {
 				agent.Fail(w, 502, err)
@@ -156,7 +167,16 @@ func (c *Control) updates(w http.ResponseWriter, r *http.Request) {
 		}
 		hosts = append(hosts, h)
 	}
-	agent.JSON(w, 200, map[string]any{"settings": c.updateSettingsSnapshot(), "control_version": buildinfo.Version, "servers": hosts})
+	settings := c.updateSettingsSnapshot()
+	supported := c.updatesAvailable()
+	if !supported {
+		settings.Automatic = false
+		settings.Latest = "" // never advertise a public release to a signed distribution
+	}
+	if settings.Bundle != nil {
+		settings.Bundle = &UpdateBundle{Version: settings.Bundle.Version, KeyID: settings.Bundle.KeyID} // manifest stays server-side
+	}
+	agent.JSON(w, 200, map[string]any{"settings": settings, "automatic_updates_supported": supported, "control_version": buildinfo.Version, "servers": hosts, "channel": c.channelView()})
 }
 func (c *Control) prepareUpdatePlan(v UpdateSettings) error {
 	hosts := c.servers()
@@ -185,6 +205,12 @@ func (c *Control) prepareUpdatePlan(v UpdateSettings) error {
 
 // The framework's durable minute schedule runs this even when the browser is closed.
 func (c *Control) updateTick(ctx context.Context) error {
+	// A retained public rollout plan must never dispatch after a signed
+	// distribution build takes over the panel, even when its last release
+	// check is still fresh.
+	if !c.updatesAvailable() {
+		return nil
+	}
 	c.updateMu.Lock()
 	defer c.updateMu.Unlock()
 	r, _ := http.NewRequestWithContext(ctx, "GET", c.cfg.PublicURL, nil)
@@ -205,8 +231,19 @@ func (c *Control) updateTick(ctx context.Context) error {
 	for i := range v.Targets {
 		t := &v.Targets[i]
 		if t.State == "failed" {
-			return nil
-		} // Do not update the panel after a failed remote host.
+			// A host that reached this release by other means (for example a
+			// manual bootstrap) no longer blocks the batch.
+			var current agent.UpgradeStatus
+			if err := c.agentCall(r, t.ServerID, "GET", "/v1/upgrade", nil, &current); err == nil && (current.Current == v.Version ||
+				semver.IsValid(current.Current) && semver.IsValid(v.Version) && semver.Compare(current.Current, v.Version) > 0) {
+				t.State, t.Message = "succeeded", "Release installed"
+				if err := c.saveUpdateSettings(v); err != nil {
+					return err
+				}
+				continue
+			}
+			return nil // Do not update the panel after a failed remote host.
+		}
 		if t.State == "succeeded" {
 			continue
 		}
@@ -266,6 +303,23 @@ func (c *Control) updateTick(ctx context.Context) error {
 			}
 			return nil
 		}
+		if c.channelConfigured() {
+			// Only signed bundles may be dispatched on the signed channel.
+			if !updates.ValidVersion(v.Version) || v.Bundle == nil || v.Bundle.Version != v.Version {
+				t.State = "failed"
+				t.Message = "Release plan is not a verified signed bundle; check for releases again"
+				return c.saveUpdateSettings(v)
+			}
+			t.Message = "Transferring verified bundle"
+			if err := c.saveUpdateSettings(v); err != nil {
+				return err
+			}
+			if err := c.transferBundle(r, c.serverByID(t.ServerID), *v.Bundle, agentArch(status)); err != nil {
+				t.State = "failed"
+				t.Message = err.Error()
+				return c.saveUpdateSettings(v)
+			}
+		}
 		// Persist intent before the root helper can restart this process.
 		t.State = "updating"
 		t.Started = time.Now().UTC()
@@ -283,9 +337,28 @@ func (c *Control) updateTick(ctx context.Context) error {
 	return nil
 }
 
+// updatesAvailable reports whether this panel has a release source. Builds
+// without pinned signing keys follow the project's published releases; a
+// build that pins keys installs only bundles from its configured channel.
+func (c *Control) updatesAvailable() bool {
+	return c.releaseCheck != nil || c.channelConfigured() || !channelTrust().Configured()
+}
+
 func (c *Control) latestRelease(r *http.Request) (string, error) {
+	if c.channelConfigured() {
+		return c.channelLatest(r)
+	}
 	if c.releaseCheck != nil {
 		return c.releaseCheck(r)
 	}
 	return agent.LatestRelease(r)
+}
+
+func (c *Control) serverByID(id string) Server {
+	for _, s := range c.servers() {
+		if s.ID == id {
+			return s
+		}
+	}
+	return Server{}
 }

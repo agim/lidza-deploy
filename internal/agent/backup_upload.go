@@ -34,6 +34,7 @@ func (m *Manager) retryBackupUpload(id, backup string) error {
 		return errors.New("backup already has an off-site copy")
 	}
 	cfg := *m.data.BackupStorage
+	_, native := m.data.NativeDatabases[id]
 	old := d
 	d.Operation = "upload"
 	d.Error = ""
@@ -55,8 +56,14 @@ func (m *Manager) retryBackupUpload(id, backup string) error {
 			err = ctx.Err()
 		}
 		key := backupObjectKey(id, record)
+		if err == nil && native {
+			err = nativeBackupPrivacy(ctx, cfg, key)
+		}
 		if err == nil {
 			err = uploadBackup(ctx, cfg, filepath.Join(m.backupDir(id), record.ID+".dump"), key, record.Size)
+		}
+		if err == nil && native {
+			err = verifyNativeOffsiteBackup(ctx, cfg, key, record)
 		}
 		m.mu.Lock()
 		defer m.mu.Unlock()

@@ -95,7 +95,7 @@ func findHostOwner(apps []App, id string) (App, bool) {
 }
 func (m *Manager) hostApplication(ctx context.Context, host string) (App, bool) {
 	host, valid := customerHostname(host)
-	if !valid {
+	if !valid || m.cfg.reservedHostname(host) {
 		return App{}, false
 	}
 	apps, generation := m.hostSnapshot()

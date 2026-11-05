@@ -1,0 +1,49 @@
+# Managed by Līdza Deploy; changes are replaced.
+[Unit]
+Description=shop web
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/srv/lidza/apps/shop/current
+
+[Service]
+Type=simple
+User=app-shop
+Group=app-shop
+WorkingDirectory=/srv/lidza/apps/shop/current
+Environment=PATH=/srv/lidza/apps/shop/current/.lidza-toolchain/bin:/srv/lidza/apps/shop/current/.lidza-toolchain/go/bin:/srv/lidza/apps/shop/current/.lidza-toolchain/node/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/srv/lidza/apps/shop
+Environment=XDG_CACHE_HOME=/tmp/.cache npm_config_cache=/tmp/.npm
+EnvironmentFile=/srv/lidza/apps/shop/shared/.env
+ExecStart=/bin/sh -c "exec bin/rails server -b 127.0.0.1 -p \"$$PORT\""
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+SyslogIdentifier=lidza-app-shop-web
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/lidza/apps/shop/shared
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryMax=1024M
+MemorySwapMax=0
+CPUQuota=150%
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

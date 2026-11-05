@@ -96,6 +96,25 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 		t.Fatal(login.Code, login.Body.String())
 	}
 	cookies := login.Result().Cookies()
+	// The dashboard bootstrap adopts the released auth preference DDL. Choices
+	// survive an actual revoked session/new login and never require an agent call.
+	if w := call("PATCH", "/api/v1/auth/preferences", `{"values":{"deploy.apps.view":"list","deploy.apps.status":"stopped"}}`, cookies, cfg.PublicURL); w.Code != 200 {
+		t.Fatal("save account display choices", w.Code, w.Body.String())
+	}
+	if w := call("POST", "/api/v1/auth/logout", `{}`, cookies, cfg.PublicURL); w.Code != 204 {
+		t.Fatal("logout", w.Code, w.Body.String())
+	}
+	if w := call("GET", "/api/v1/auth/preferences", "", cookies, ""); w.Code != 401 {
+		t.Fatal("revoked session retained preference access", w.Code)
+	}
+	login = call("POST", "/api/v1/auth/login", `{"email":"operator@example.com","password":"a-long-local-password-123"}`, nil, "")
+	if login.Code != 200 {
+		t.Fatal(login.Code, login.Body.String())
+	}
+	cookies = login.Result().Cookies()
+	if w := call("GET", "/api/v1/auth/preferences", "", cookies, ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"deploy.apps.view":"list"`) || !strings.Contains(w.Body.String(), `"deploy.apps.status":"stopped"`) {
+		t.Fatal("display choices lost across logout/login", w.Code, w.Body.String())
+	}
 	if w := call("GET", "/api/control/apps", "", cookies, ""); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -382,6 +401,7 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	}
 
 	exerciseConsoleIngest(t, c, ctx, call, cookies)
+	exerciseNativePushDispatch(t, c, ctx)
 	exerciseAppConnection(t, c, ctx, call, cookies)
 
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	"github.com/agim/lidza/pkg/credentials"
 	"os"
@@ -10,6 +11,7 @@ import (
 // Read legacy private JSON once; NewManager atomically replaces it with sealed
 // state before serving requests. Never fall back when a sealed file cannot open.
 func (m *Manager) load() error {
+	decode := func(raw []byte) error { return json.Unmarshal(raw, &m.data) }
 	data, err := os.ReadFile(m.path())
 	if os.IsNotExist(err) {
 		return nil
@@ -23,11 +25,14 @@ func (m *Manager) load() error {
 		if err != nil {
 			return err
 		}
-		return json.Unmarshal(plain, &m.data)
+		return decode(plain)
 	}
-	return json.Unmarshal(data, &m.data)
+	return decode(data)
 }
 func (m *Manager) save() error {
+	if m.cfg.IngressOnly {
+		return errors.New("independent ingress cannot write deployment inventory")
+	}
 	plain, err := json.Marshal(m.data)
 	if err != nil {
 		return err

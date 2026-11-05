@@ -55,6 +55,9 @@ func routePermission(pattern string) string {
 		return "infrastructure.manage"
 	case "GET /api/control/audit":
 		return "audit.read"
+	case "GET /api/control/apps/{id}/move-plan":
+		// Planning reads repository contents and destination inventory.
+		return "infrastructure.manage"
 	case "GET /api/control/storage/backups", "GET /api/control/storage/backups/download", "GET /api/control/servers/{server}/databases/{id}/backups/{backup}":
 		return "infrastructure.manage"
 	case "GET /api/control/github/repos", "GET /api/control/github/branches":

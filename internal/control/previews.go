@@ -51,7 +51,7 @@ func (c *Control) previewConfig(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if input.Enabled && a.RuntimeProfile != "" {
+	if input.Enabled && (a.RuntimeProfile != "" || a.Runtime != "" && a.Runtime != "go") {
 		agent.Fail(w, 400, errors.New("stack profiles do not support pull-request previews"))
 		return
 	}
@@ -121,7 +121,7 @@ func (c *Control) dispatchPreview(ctx context.Context, payload json.RawMessage) 
 	if in.Action == "closed" {
 		return c.deletePreview(r, parent.ServerID, id)
 	}
-	if !parent.Previews.Enabled || parent.Retiring || parent.RuntimeProfile != "" {
+	if !parent.Previews.Enabled || parent.Retiring || parent.RuntimeProfile != "" || parent.Runtime != "" && parent.Runtime != "go" {
 		return nil
 	}
 	// Revalidate the current PR state so an old queued open/sync cannot resurrect a closed PR.
@@ -151,7 +151,7 @@ func (c *Control) dispatchPreview(ctx context.Context, payload json.RawMessage) 
 		return errors.New("preview ID conflict")
 	}
 	if !exists {
-		a = Application{ID: id, ServerID: parent.ServerID, Repository: parent.Repository, Branch: fmt.Sprintf("pr-%d", in.Number), Domain: id + "." + parent.Previews.BaseDomain, Generation: random(), PreviewParent: parent.ID, GitHubInstallation: parent.GitHubInstallation}
+		a = Application{Build: parent.Build, ID: id, ServerID: parent.ServerID, Repository: parent.Repository, Branch: fmt.Sprintf("pr-%d", in.Number), Domain: id + "." + parent.Previews.BaseDomain, Generation: random(), PreviewParent: parent.ID, GitHubInstallation: parent.GitHubInstallation}
 		for otherID, other := range c.data.Apps {
 			if otherID != id && (agent.App{Domain: other.Domain, AdditionalDomains: other.AdditionalDomains}).HasDomain(a.Domain) {
 				c.mu.Unlock()
@@ -166,7 +166,7 @@ func (c *Control) dispatchPreview(ctx context.Context, payload json.RawMessage) 
 		}
 	}
 	c.mu.Unlock()
-	spec := agent.App{ID: id, Repository: parent.Repository, Branch: a.Branch, Domain: a.Domain, Env: parent.Previews.Env, Preview: true, PullRequest: in.Number}
+	spec := agent.App{Build: parent.Build, ID: id, Repository: parent.Repository, Branch: a.Branch, Domain: a.Domain, Env: parent.Previews.Env, Preview: true, PullRequest: in.Number}
 	var remoteApps []agent.App
 	if err = c.agentCall(r, parent.ServerID, "GET", "/v1/apps", nil, &remoteApps); err != nil {
 		return err

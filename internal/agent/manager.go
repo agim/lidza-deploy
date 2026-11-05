@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/agim/lidza-deploy/internal/release"
 	"github.com/agim/lidza/pkg/credentials"
 	"github.com/agim/lidza/pkg/gateway"
 	"golang.org/x/sync/singleflight"
@@ -28,51 +29,73 @@ type Runtime interface {
 	Logs(context.Context, *Release) (string, error)
 }
 type job struct {
-	credentials DeployRequest
-	reload      bool
-	backupIDs   []string
-	app         App
-	deployment  string
-	token       string
+	nativeRelease *nativeReleaseIntent
+	native        bool
+	credentials   DeployRequest
+	reload        bool
+	backupIDs     []string
+	app           App
+	deployment    string
+	token         string
 }
 type Manager struct {
-	serviceTLS          *serviceTLSController
-	gatewayKeys         map[string]gatewayPKI
-	gatewayMu           sync.Mutex
-	gatewayClients      map[string]*gateway.Transport
-	gatewayTLS          *tls.Config
-	gatewayVerify       func(http.Handler) http.Handler
-	lastDiagnosticSave  time.Time
-	consoleJobs         map[string]*consoleJob
-	maintenanceOnce     sync.Once
-	maintenanceRun      func(context.Context, string, ...string) (string, error)
-	clickhouseFlights   singleflight.Group
-	clickhouseProvision func(context.Context, ClickHouseResource) error
-	hostMu              sync.Mutex
-	hostCache           map[string]hostVerdict
-	hostFlights         singleflight.Group
-	hostSlots           chan struct{}
-	lifecycle           map[string]bool
-	cacheProvision      func(context.Context, CacheResource) error
-	reportMu            sync.Mutex
-	reportWake          chan struct{}
-	cpuTotal, cpuIdle   float64
-	domainWake          chan struct{}
-	domains             map[string]DomainStatus
-	databaseSlots       chan struct{}
-	mu                  sync.Mutex
-	removing            map[string]bool
-	key                 []byte
-	cfg                 Config
-	data                diskState
-	runtime             Runtime
-	queue               chan job
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	wg                  sync.WaitGroup
+	nativeBackupRun    func(context.Context, string, []string) ([]NativeDatabaseBackupProof, error) // local gate fixture only
+	nativePGExecutable string                                                                       // local acceptance override; not a host configuration field
+	nativeBuildCommand func(context.Context, NativeApplication, string, []string) (string, error)
+	nativeCheckout     func(context.Context, App, string, string) error
+	nativeCommand      func(context.Context, []string) (string, error)
+	// Release engine fixtures; nil in production.
+	nativeReleaseRun           func(context.Context, release.Command) error
+	nativeReleaseUserRun       func(context.Context, release.Command) error
+	nativeReleaseSource        func(NativeReleasePolicy, string) release.Source
+	nativeCrontabCommand       func(context.Context, string, []string) (string, string, error)
+	nativeReleaseHealthAddress string
+	nativeReleaseHealthTLS     *tls.Config
+	nativeOperations           map[string]bool
+	ingressError               error
+	serviceTLS                 *serviceTLSController
+	gatewayKeys                map[string]gatewayPKI
+	gatewayMu                  sync.Mutex
+	gatewayClients             map[string]*gateway.Transport
+	gatewayTLS                 *tls.Config
+	gatewayVerify              func(http.Handler) http.Handler
+	lastDiagnosticSave         time.Time
+	consoleJobs                map[string]*consoleJob
+	maintenanceOnce            sync.Once
+	maintenanceRun             func(context.Context, string, ...string) (string, error)
+	clickhouseFlights          singleflight.Group
+	clickhouseProvision        func(context.Context, ClickHouseResource) error
+	hostMu                     sync.Mutex
+	hostCache                  map[string]hostVerdict
+	hostFlights                singleflight.Group
+	hostSlots                  chan struct{}
+	lifecycle                  map[string]bool
+	cacheProvision             func(context.Context, CacheResource) error
+	reportMu                   sync.Mutex
+	reportWake                 chan struct{}
+	cpuTotal, cpuIdle          float64
+	domainWake                 chan struct{}
+	domains                    map[string]DomainStatus
+	databaseSlots              chan struct{}
+	mu                         sync.Mutex
+	removing                   map[string]bool
+	key                        []byte
+	cfg                        Config
+	data                       diskState
+	runtime                    Runtime
+	queue                      chan job
+	ctx                        context.Context
+	cancel                     context.CancelFunc
+	wg                         sync.WaitGroup
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
+	if err := cfg.validateHostMode(); err != nil {
+		return nil, err
+	}
+	if cfg.IngressOnly {
+		return nil, errors.New("ingress_only must use NewIngressReader, not a deployment manager")
+	}
 	ctx, cancel := context.WithCancel(parent)
 	m := &Manager{hostCache: map[string]hostVerdict{}, hostSlots: make(chan struct{}, 8), lifecycle: map[string]bool{}, reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
@@ -92,6 +115,29 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	if err := m.load(); err != nil {
 		cancel()
 		return nil, err
+	}
+	if err := m.recoverNativePublications(); err != nil {
+		cancel()
+		return nil, err
+	}
+	if cfg.NativeOnly {
+		if cfg.Native == nil {
+			cancel()
+			return nil, errors.New("native_only requires native host configuration")
+		}
+		if len(m.data.Apps) > 0 || len(m.data.Tasks) > 0 || len(m.data.Databases) > 0 || len(m.data.Caches) > 0 || len(m.data.ClickHouses) > 0 || len(m.data.StorageVolumes) > 0 {
+			cancel()
+			return nil, errors.New("native_only requires a separate data directory without container resources")
+		}
+		// No Docker reconciliation, swap, certificates, cleanup, migrations,
+		// consoles, schedulers or background service mutations on this host.
+		return m, nil
+	}
+	for _, app := range m.data.Apps {
+		if err := m.checkReservedDomains(app); err != nil {
+			cancel()
+			return nil, err
+		}
 	}
 	if err := m.initGateway(); err != nil {
 		cancel()
@@ -208,7 +254,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
-	if _, ok := rt.(*Docker); ok {
+	if _, ok := rt.(*Docker); ok && cfg.HostMode != "coexist" {
 		cleanup, stop := context.WithTimeout(ctx, 30*time.Second)
 		removeLegacyBoundedBuilder(cleanup, cfg.DataDir)
 		stop()
@@ -231,8 +277,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	go m.work()
 	m.wg.Add(1)
 	go m.consoleLoop()
-	m.wg.Add(1)
-	go m.swapLoop()
+	if cfg.HostMode != "coexist" {
+		m.wg.Add(1)
+		go m.swapLoop()
+	}
 	m.migrateConsoleService()
 	m.migrateControlBootService()
 	if cfg.TLSListen != "" {
@@ -298,7 +346,21 @@ func (m *Manager) Upsert(a App) error {
 	if m.busy(a.ID) || m.data.Apps[a.ID].Restoring {
 		return errors.New("application has an active deployment")
 	}
+	if _, native := m.data.NativeApps[a.ID]; native {
+		return errors.New("application ID belongs to a native application")
+	}
 	old, exists := m.data.Apps[a.ID]
+	if exists {
+		if a.Runtime == "" {
+			a.Runtime = old.Runtime
+		}
+		if a.Rails == nil {
+			a.Rails = old.Rails
+		}
+		if a.runtimeKind() != old.runtimeKind() {
+			return errors.New("changing application language requires a new application")
+		}
+	}
 	for key, value := range a.Env {
 		if strings.HasPrefix(key, gatewayEnvPrefix) && (!exists || old.Env[key] != value) {
 			return errors.New("gateway transport settings are managed by the agent")
@@ -314,6 +376,12 @@ func (m *Manager) Upsert(a App) error {
 		a.AdditionalDomains = slices.Clone(old.AdditionalDomains)
 	}
 	if err := a.Validate(); err != nil {
+		return err
+	}
+	if err := m.checkReservedDomains(a); err != nil {
+		return err
+	}
+	if err := m.checkNativeDomainsLocked(a); err != nil {
 		return err
 	}
 	if m.removing[a.ID] || m.data.Caches[a.ID].Operation {
@@ -359,7 +427,7 @@ func (m *Manager) Upsert(a App) error {
 	a.Maintenance = old.Maintenance
 	a.Stopped = old.Stopped
 	a.Bindings = old.Bindings
-	if exists && m.data.StorageVolumes[a.ID] != "" && a.Env != nil {
+	if exists && m.data.StorageVolumes[a.ID] != "" && a.Env != nil && !a.isRails() {
 		a.Env = maps.Clone(a.Env)
 		if dir := a.Env["STORAGE_DIR"]; dir != "" && dir != appStorageMount {
 			return errors.New("STORAGE_DIR is managed by the persistent storage attachment")
@@ -419,7 +487,7 @@ func (m *Manager) Upsert(a App) error {
 	}
 	// New applications apply their committed schema before startup. Existing
 	// applications keep their migration policy, including an explicit opt-out.
-	if _, supplied := a.Env["DB_MIGRATE"]; !supplied {
+	if _, supplied := a.Env["DB_MIGRATE"]; !supplied && !a.isRails() {
 		if value, configured := old.Env["DB_MIGRATE"]; configured || !exists {
 			a.Env = maps.Clone(a.Env)
 			if a.Env == nil {
@@ -430,6 +498,16 @@ func (m *Manager) Upsert(a App) error {
 				a.EnvSources["DB_MIGRATE"] = "built-in"
 			}
 			a.Env["DB_MIGRATE"] = value
+		}
+	}
+	if a.isRails() {
+		for _, key := range []string{"RAILS_MASTER_KEY", "SECRET_KEY_BASE", "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY", "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY", "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"} {
+			if a.Env[key] == "" && old.Env[key] != "" {
+				if a.Env == nil {
+					a.Env = map[string]string{}
+				}
+				a.Env[key] = old.Env[key]
+			}
 		}
 	}
 	// Full app updates that omit secrets must not rotate an existing identity.
@@ -484,6 +562,12 @@ func (m *Manager) busy(id string) bool {
 	return false
 }
 func (m *Manager) Enqueue(id string, req DeployRequest) (Deployment, error) {
+	m.mu.Lock()
+	_, native := m.data.NativeApps[id]
+	m.mu.Unlock()
+	if native {
+		return m.enqueueNativeStatic(id, req)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.data.Apps[id]
@@ -581,11 +665,11 @@ func (m *Manager) queueLocked(a App, req DeployRequest, reload bool, changes ...
 	// Backfill older apps only when explicitly deployed/reloaded. Persist before
 	// enqueueing so concurrent requests, retries and restarts reuse the same key.
 	oldApp := m.data.Apps[a.ID]
-	if err := ValidateAppDefaults(req.Defaults); err != nil {
+	if err := ValidateRuntimeDefaults(req.DefaultsRuntime, req.Defaults); err != nil {
 		return Deployment{}, err
 	}
 	if !reload {
-		a = m.initialDefaults(a, req.Defaults)
+		a = m.initialDefaults(a, defaultsFor(a, req))
 	}
 	var err error
 	a, _, err = provisionAuthSecret(a)
@@ -653,7 +737,7 @@ func (m *Manager) update(id, status string, release *Release, err error) error {
 		if err != nil {
 			d.Error = err.Error()
 		}
-		if status == "live" || status == "failed" || status == "setup_required" {
+		if status == "live" || status == "failed" || status == "setup_required" || status == "prepared" {
 			now := time.Now().UTC()
 			d.Finished = &now
 		}
@@ -668,6 +752,14 @@ func (m *Manager) work() {
 		case <-m.ctx.Done():
 			return
 		case j := <-m.queue:
+			if j.native {
+				if j.nativeRelease != nil {
+					m.workNativeRelease(j)
+				} else {
+					m.workNativeStatic(j)
+				}
+				continue
+			}
 			m.mu.Lock()
 			err := m.update(j.deployment, "building", nil, nil)
 			m.mu.Unlock()
@@ -678,7 +770,11 @@ func (m *Manager) work() {
 			ctx = m.deploymentDiagnostics(ctx, j)
 			commandDiagnostic(ctx, "deployment", "Preparing deployment prerequisites.")
 			var release *Release
-			if j.app.BackupBeforeDeploy == nil || *j.app.BackupBeforeDeploy {
+			if _, containers := m.runtime.(*Docker); containers {
+				// The first container application on a server installs Docker.
+				err = ensureDocker(ctx, m)
+			}
+			if err == nil && (j.app.BackupBeforeDeploy == nil || *j.app.BackupBeforeDeploy) {
 				err = m.backupBeforeRelease(ctx, j.backupIDs)
 			}
 			if err == nil && j.credentials.CredentialURL != "" {
@@ -753,6 +849,12 @@ func (m *Manager) work() {
 	}
 }
 func (m *Manager) Rollback(ctx context.Context, id string) error {
+	m.mu.Lock()
+	_, native := m.data.NativeApps[id]
+	m.mu.Unlock()
+	if native {
+		return m.rollbackNativeStatic(id)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.data.Apps[id]

@@ -26,6 +26,10 @@ func (c *Control) retire(w http.ResponseWriter, r *http.Request) {
 		agent.JSON(w, 200, map[string]string{"status": "removed"})
 		return
 	}
+	if _, moving := c.activeMoveLocked(id); moving {
+		agent.Fail(w, 409, errors.New("finish or abort the application's move before removing it"))
+		return
+	}
 	if !a.Retiring {
 		old := a
 		a.Retiring = true

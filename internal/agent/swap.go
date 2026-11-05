@@ -43,6 +43,9 @@ func (m *Manager) swapLoop() {
 	}
 }
 func (m *Manager) queueSwapCheck() {
+	if m.cfg.HostMode == "coexist" {
+		return
+	}
 	if runtime.GOOS != "linux" || m.cfg.DataDir != "/var/lib/lidza-agent" {
 		return
 	}

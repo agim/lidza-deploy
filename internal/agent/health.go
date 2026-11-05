@@ -5,6 +5,8 @@ import (
 	"github.com/prometheus/procfs"
 	"golang.org/x/sys/unix"
 	"net/http"
+	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -123,6 +125,16 @@ func (m *Manager) serverHealth(parent context.Context) ServerHealth {
 			case <-ctx.Done():
 				return
 			}
+			if n, ok, err := hostDatabaseSize(ctx, d); ok {
+				mu.Lock()
+				defer mu.Unlock()
+				if err == nil {
+					out.DatabaseBytes[d.AppID] = n
+				} else {
+					out.Errors = append(out.Errors, "database size unavailable: "+d.AppID)
+				}
+				return
+			}
 			env, flags := postgresEnvironment(d.URL)
 			name := "lidza-size-" + newID()
 			defer func() {
@@ -153,4 +165,43 @@ func (m *Manager) serverHealth(parent context.Context) ServerHealth {
 }
 func (m *Manager) healthRoute(w http.ResponseWriter, r *http.Request) {
 	JSON(w, 200, m.serverHealth(r.Context()))
+}
+
+// hostDatabaseSize measures databases the host itself serves: SQLite files by
+// their size on disk (with the write-ahead log), and external PostgreSQL with
+// the host's psql using the database's own connection settings. It reports
+// false for container databases, which are measured inside their network.
+func hostDatabaseSize(ctx context.Context, d Database) (int64, bool, error) {
+	switch {
+	case strings.HasPrefix(d.URL, "/"):
+		var total int64
+		for _, suffix := range []string{"", "-wal"} {
+			info, err := os.Stat(d.URL + suffix)
+			if err != nil {
+				if suffix == "" {
+					return 0, true, err
+				}
+				continue
+			}
+			total += info.Size()
+		}
+		return total, true, nil
+	case d.Mode == "external" && (strings.HasPrefix(d.URL, "postgres://") || strings.HasPrefix(d.URL, "postgresql://")):
+		psql, err := exec.LookPath("psql")
+		if err != nil {
+			return 0, true, err
+		}
+		env, _ := postgresEnvironment(d.URL)
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, psql, "-X", "-tAc", "SELECT pg_database_size(current_database())")
+		cmd.Env = append(env, "PATH=/usr/bin:/bin", "PGAPPNAME=lidza-size")
+		out, err := cmd.Output()
+		if err != nil {
+			return 0, true, err
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+		return n, true, err
+	}
+	return 0, false, nil
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 )
@@ -86,6 +87,10 @@ func (m *Manager) databaseRoutes(mux *http.ServeMux) {
 		id, key := r.PathValue("id"), r.PathValue("backup")
 		m.mu.Lock()
 		d, ok := m.data.Databases[id]
+		extension := ".dump"
+		if m.data.NativeDatabases[id].Policy.SQLitePath != "" {
+			extension = ".sqlite3"
+		}
 		valid := false
 		for _, b := range d.Backups {
 			if b.ID == key {
@@ -110,7 +115,7 @@ func (m *Manager) databaseRoutes(mux *http.ServeMux) {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+id+"-"+key+`.dump"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="`+id+"-"+key+extension+`"`)
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(30 * time.Minute))
 		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 	})
@@ -170,6 +175,11 @@ func (m *Manager) applicationHealth(parent context.Context) []AppHealth {
 func (m *Manager) primaryDatabaseID(id string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for resource, binding := range m.data.NativeDatabases {
+		if binding.Policy.AppID == id && slices.Contains(binding.Policy.Roles, "primary") {
+			return resource
+		}
+	}
 	if db := m.data.Apps[id].Bindings["DATABASE_URL"]; db != "" {
 		return db
 	}

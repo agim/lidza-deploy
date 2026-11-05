@@ -11,13 +11,18 @@ import (
 )
 
 func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	a, ok := c.app(r.PathValue("id"))
 	if !ok || a.Retiring {
 		http.NotFound(w, r)
 		return
 	}
 	var out agent.Settings
-	if err := c.agentCall(r, a.ServerID, "GET", "/v1/apps/"+a.ID+"/settings", nil, &out); err != nil {
+	path := "/v1/apps/" + a.ID + "/settings"
+	if a.Native != nil {
+		path = "/v1/native/apps/" + a.ID + "/settings"
+	}
+	if err := c.agentCall(r, a.ServerID, "GET", path, nil, &out); err != nil {
 		agent.Fail(w, 502, err)
 		return
 	}
@@ -35,7 +40,8 @@ func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
 		ServerID           string `json:"server_id"`
 		Repository         string `json:"repository"`
 		GitHubInstallation int64  `json:"github_installation,omitempty"`
-	}{Settings: out, ServerID: a.ServerID, Repository: a.Repository, GitHubInstallation: a.GitHubInstallation})
+		DefaultsRuntime    string `json:"defaults_runtime"`
+	}{Settings: out, ServerID: a.ServerID, Repository: a.Repository, GitHubInstallation: a.GitHubInstallation, DefaultsRuntime: applicationDefaultsRuntime(a, out.ReleaseRuntime)})
 }
 
 func (c *Control) generateMasterKey(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +80,9 @@ func (c *Control) revealCredential(w http.ResponseWriter, r *http.Request) {
 		Value string `json:"value"`
 	}
 	path := "/v1/apps/" + url.PathEscape(a.ID) + "/environment/" + url.PathEscape(key)
+	if a.Native != nil {
+		path = "/v1/native/apps/" + url.PathEscape(a.ID) + "/environment/" + url.PathEscape(key)
+	}
 	if err := c.agentCall(r, a.ServerID, "GET", path, nil, &out); err != nil {
 		agent.Fail(w, http.StatusBadGateway, err)
 		return
@@ -87,6 +96,10 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		agent.Fail(w, 400, err)
 		return
 	}
+	if app, ok := c.app(r.PathValue("id")); ok && app.Native != nil {
+		c.updateNativeSettings(w, r, app, input)
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	old, ok := c.data.Apps[r.PathValue("id")]
@@ -94,7 +107,13 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	spec := agent.App{RuntimeProfile: old.RuntimeProfile, ID: old.ID, Repository: old.Repository, Branch: input.Branch, Domain: input.Domain, AdditionalDomains: old.AdditionalDomains}
+	spec := agent.App{Astro: old.Astro, Build: old.Build, Runtime: old.Runtime, Rails: old.Rails, RuntimeProfile: old.RuntimeProfile, ID: old.ID, Repository: old.Repository, Branch: input.Branch, Domain: input.Domain, AdditionalDomains: old.AdditionalDomains}
+	if input.Build != nil {
+		spec.Build = *input.Build
+	}
+	if input.Astro != nil {
+		spec.Astro = input.Astro
+	}
 	if input.RuntimeProfile != nil {
 		spec.RuntimeProfile = *input.RuntimeProfile
 	}
@@ -137,6 +156,7 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := old
+	next.Astro, next.Build = spec.Astro, spec.Build
 	if input.CustomerHosts != nil {
 		next.CustomerHosts = *input.CustomerHosts
 	}

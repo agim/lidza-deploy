@@ -8,17 +8,22 @@ import (
 	"net/url"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/agim/lidza/packs/jobs"
 	"github.com/agim/lidza/packs/storage"
 )
 
 var postgresOptions = map[string]string{"sslmode": "PGSSLMODE", "application_name": "PGAPPNAME", "options": "PGOPTIONS", "channel_binding": "PGCHANNELBINDING", "connect_timeout": "PGCONNECT_TIMEOUT"}
 
 type BackupPolicy struct {
-	Hours   int  `json:"hours"` // 0: manual only; 1, 24, 168: scheduled.
-	Keep    int  `json:"keep"`
-	Offsite bool `json:"offsite"`
+	Hours    int    `json:"hours"` // Legacy interval in hours.
+	Cron     string `json:"cron,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
+	Keep     int    `json:"keep"`
+	Offsite  bool   `json:"offsite"`
 }
 type DatabaseRequest struct {
 	ID     string       `json:"id,omitempty"`
@@ -60,6 +65,7 @@ type Database struct {
 }
 type DatabaseView struct {
 	Attachments []DatabaseAttachment `json:"attachments"`
+	Engine      string               `json:"engine,omitempty"`
 	AppID       string               `json:"app_id"`
 	Mode        string               `json:"mode"`
 	Ready       bool                 `json:"ready"`
@@ -76,10 +82,38 @@ func (p BackupPolicy) Validate() error {
 	if p.Hours != 0 && p.Hours != 1 && p.Hours != 24 && p.Hours != 168 {
 		return errors.New("choose manual, hourly, daily or weekly backups")
 	}
+	if p.Cron != "" {
+		if p.Hours != 0 || len(p.Cron) > 120 || len(p.Timezone) > 80 {
+			return errors.New("choose one backup interval or one calendar schedule")
+		}
+		if fields := strings.Fields(p.Cron); len(fields) == 5 {
+			if _, err := strconv.Atoi(fields[0]); err != nil {
+				return errors.New("calendar backups require one fixed minute per hour")
+			}
+		}
+		if _, err := jobs.Cron(p.Cron, p.Timezone); err != nil {
+			return errors.New("enter a valid five-field backup schedule and timezone")
+		}
+	} else if p.Timezone != "" {
+		return errors.New("backup timezone requires a calendar schedule")
+	}
 	if p.Keep < 1 || p.Keep > 100 {
 		return errors.New("retain between 1 and 100 backups")
 	}
 	return nil
+}
+
+func (p BackupPolicy) Scheduled() bool { return p.Hours > 0 || p.Cron != "" }
+
+func (p BackupPolicy) NextBackupAfter(after time.Time) time.Time {
+	if p.Cron != "" {
+		schedule, err := jobs.Cron(p.Cron, p.Timezone)
+		if err != nil {
+			return time.Time{}
+		}
+		return schedule.Next(after).UTC()
+	}
+	return after.UTC().Add(time.Duration(p.Hours) * time.Hour)
 }
 func (r DatabaseRequest) Validate() error {
 	if r.ID != "" && !idPattern.MatchString(r.ID) {
@@ -130,10 +164,14 @@ func (m *Manager) databaseViews() []DatabaseView {
 		live := m.databaseInUseLocked(id)
 		policy, next := d.Backup, d.NextBackup
 		if !live {
-			policy.Hours = 0
+			policy.Hours, policy.Cron, policy.Timezone = 0, "", ""
 			next = time.Time{}
 		}
-		out = append(out, DatabaseView{Attachments: attachments, AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: policy, NextBackup: next, Backups: slices.Clone(d.Backups), Retained: !live})
+		engine := ""
+		if m.data.NativeDatabases[id].Policy.SQLitePath != "" {
+			engine = "sqlite"
+		}
+		out = append(out, DatabaseView{Attachments: attachments, Engine: engine, AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: policy, NextBackup: next, Backups: slices.Clone(d.Backups), Retained: !live})
 	}
 	return out
 }
@@ -141,6 +179,9 @@ func (m *Manager) databaseViews() []DatabaseView {
 // A retained database's owner ID may be reused by a fresh application. Only
 // actual bindings or a live release establish that it still needs backups.
 func (m *Manager) databaseInUseLocked(id string) bool {
+	if m.nativeDatabaseInUseLocked(id) {
+		return true
+	}
 	for _, a := range m.data.Apps {
 		if a.Retiring {
 			continue
@@ -189,6 +230,11 @@ func (m *Manager) configureDatabase(appID string, input DatabaseRequest) error {
 		return errors.New("at most 100 environment variables")
 	}
 	id := input.ID
+	if m.cfg.Native != nil {
+		if _, reserved := m.cfg.Native.Databases[id]; reserved {
+			return errors.New("native database identity is reserved for its reviewed adoption")
+		}
+	}
 	previous, exists := m.data.Databases[id]
 	if exists {
 		if previous.Ready {
@@ -279,8 +325,11 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 	if action == "provision" && d.Ready {
 		return errors.New("database already ready")
 	}
+	if _, native := m.data.NativeDatabases[id]; native && action != "backup" {
+		return errors.New("native databases are adopted in place; provisioning is unavailable")
+	}
 	for _, ref := range m.attachmentsLocked(id) {
-		if m.busy(ref.AppID) {
+		if m.busy(ref.AppID) || m.nativeOperations[ref.AppID] {
 			return errors.New("wait for the active deployment or reload")
 		}
 	}
@@ -336,6 +385,9 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 			if action == "provision" {
 				latest.Ready = true
 				latest.NextBackup = time.Now().UTC()
+				if latest.Backup.Cron != "" {
+					latest.NextBackup = latest.Backup.NextBackupAfter(latest.NextBackup)
+				}
 				for _, ref := range m.attachmentsLocked(id) {
 					a := m.data.Apps[ref.AppID]
 					a.Env = maps.Clone(a.Env)
@@ -347,7 +399,7 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 					reloadApps[a.ID] = true
 				}
 			} else {
-				latest.NextBackup = time.Now().UTC().Add(time.Duration(latest.Backup.Hours) * time.Hour)
+				latest.NextBackup = latest.Backup.NextBackupAfter(time.Now())
 			}
 		}
 		m.data.Databases[id] = latest
@@ -387,13 +439,16 @@ func (m *Manager) setBackupPolicy(id string, p BackupPolicy) error {
 	if d.Operation != "" {
 		return errors.New("database operation running")
 	}
+	if m.data.NativeDatabases[id].Policy.ArchiveDatabase != "" && !p.Offsite {
+		return errors.New("standalone native backups require off-site storage")
+	}
 	if p.Offsite && m.data.BackupStorage == nil {
 		return errors.New("configure S3 storage first")
 	}
 	old := d
 	p.Keep = 1
 	d.Backup = p
-	d.NextBackup = time.Now().UTC().Add(time.Duration(p.Hours) * time.Hour)
+	d.NextBackup = p.NextBackupAfter(time.Now())
 	m.data.Databases[id] = d
 	if err := m.save(); err != nil {
 		m.data.Databases[id] = old

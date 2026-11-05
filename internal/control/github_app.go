@@ -226,9 +226,13 @@ func (c *Control) validateGitHubAccess(ctx context.Context, a Application) error
 	return c.cfg.GitHub.ValidateInstallationAccess(ctx, cfg.App, a.GitHubInstallation, a.Repository)
 }
 func (c *Control) deploymentCredentials(ctx context.Context, a Application, key string) (out agent.DeployRequest, err error) {
+	a, err = c.resolveApplicationInstallation(ctx, a)
+	if err != nil {
+		return out, err
+	}
 	defer func() {
 		if err == nil {
-			out.Defaults = c.applicationDefaultsSnapshot()
+			out.Defaults, out.DefaultsRuntime = c.deployDefaults(a)
 		}
 	}()
 	if a.GitHubInstallation == 0 {
@@ -280,6 +284,10 @@ func (c *Control) checkoutToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, ok := c.app(claim.AppID)
+	if target, moving := c.moveCheckoutTarget(claim.AppID, server, claim.Generation); moving {
+		// A move's destination deploys under the same id before it is live.
+		a, ok = target, true
+	}
 	if !ok || a.Retiring || a.Generation != claim.Generation || a.ServerID != server || claim.ServerID != server || a.Repository != claim.Repository || a.GitHubInstallation != claim.Installation {
 		agent.Fail(w, 403, errors.New("checkout authorization no longer matches the assigned app"))
 		return

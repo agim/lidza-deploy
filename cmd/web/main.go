@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/agim/lidza-deploy/internal/agent"
 	"github.com/agim/lidza-deploy/internal/buildinfo"
 	"github.com/agim/lidza-deploy/internal/onboarding"
 	"github.com/agim/lidza-deploy/internal/webapp"
@@ -21,9 +22,18 @@ import (
 
 func main() {
 	version := flag.Bool("version", false, "print release version")
+	verifyBundle := flag.String("verify-bundle", "", "verify a staged signed update bundle directory with the pinned keys and print its version")
 	flag.Parse()
 	if *version {
 		fmt.Println(buildinfo.Version)
+		return
+	}
+	if *verifyBundle != "" {
+		bundleVersion, err := agent.VerifyStagedBundle(*verifyBundle)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(bundleVersion)
 		return
 	}
 	if err := run(); err != nil {
