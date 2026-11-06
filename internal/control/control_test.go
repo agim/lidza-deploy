@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"github.com/agim/lidza"
 	"github.com/agim/lidza/packs/audit"
 	"github.com/agim/lidza/packs/auth"
@@ -404,4 +405,24 @@ func TestFrameworkAuthIntegration(t *testing.T) {
 	exerciseNativePushDispatch(t, c, ctx)
 	exerciseAppConnection(t, c, ctx, call, cookies)
 
+}
+
+func TestFailAgentPassesRefusalsAndHidesCredentialProblems(t *testing.T) {
+	for _, c := range []struct {
+		err    error
+		status int
+		body   string
+	}{
+		{&agentHTTPError{status: 409, message: "an update is already running"}, 409, "an update is already running"},
+		{&agentHTTPError{status: 400, message: "invalid scope"}, 400, "invalid scope"},
+		{&agentHTTPError{status: 401, message: "Unauthorized"}, 502, "agent returned 401"},
+		{&agentHTTPError{status: 404, message: ""}, 502, "agent returned 404"},
+		{errors.New("dial tcp: connection refused"), 502, "connection refused"},
+	} {
+		w := httptest.NewRecorder()
+		failAgent(w, c.err)
+		if w.Code != c.status || !strings.Contains(w.Body.String(), c.body) {
+			t.Errorf("%v: got %d %s", c.err, w.Code, w.Body.String())
+		}
+	}
 }

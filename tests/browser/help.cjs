@@ -4,8 +4,8 @@ const base=process.env.TEST_WEB_URL||'http://127.0.0.1:8880';
 (async()=>{const browser=await chromium.launch({executablePath:'/usr/bin/chromium',args:['--no-sandbox']});try{
  for(const width of [390,1440]){
   const page=await browser.newPage({viewport:{width,height:844}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.goto(base+'/console.html?demo=1&github=connected#help/');await page.locator('#help-guides').waitFor();assert(page.url().endsWith('#help'));assert.equal(await page.locator('.app-card').count(),0);await page.reload();await page.locator('#help-guides').waitFor();assert.equal(await page.locator('#title').textContent(),'Help.');
-  await page.goto(base+'/console.html?demo=1#help/first-admin');await page.locator('[data-help-guide="first-admin"][open]').waitFor();
+  await page.goto(base+'/console/help?demo=1&github=connected');await page.locator('#help-guides').waitFor();assert(page.url().endsWith('#help'));assert.equal(await page.locator('.app-card').count(),0);await page.reload();await page.locator('#help-guides').waitFor();assert.equal(await page.locator('#title').textContent(),'Help.');
+  await page.goto(base+'/console/help?demo=1');await page.locator('[data-help-guide="first-admin"][open]').waitFor();
   assert(await page.locator('[data-help-guide="first-admin"]').textContent().then(t=>t.includes('AUTH_OWNER_CLAIM=true')));
   await page.locator('#help-search').fill('42P01');assert.equal(await page.locator('[data-help-guide]:visible').count(),1);
   await page.evaluate(()=>{window.helpSearch=document.querySelector('#help-search');window.helpArticle=document.querySelector('[data-help-guide="migrations"]');helpArticle.open=true;helpSearch.focus({preventScroll:true});window.helpY=scrollY;render();render()});

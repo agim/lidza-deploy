@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/agim/lidza-deploy/internal/release"
 	"io"
 	"net"
 	"os"
@@ -153,9 +154,6 @@ func (h nativeHostData) ensureRedisPackage(ctx context.Context) error {
 	if h.fileExists(nativeRedisServer) {
 		return nil
 	}
-	if h.coexist {
-		return errors.New("this agent shares its host; install redis-server there before creating applications with Redis")
-	}
 	if out, err := h.aptInstall(ctx, "redis-server"); err != nil {
 		if _, updateErr := h.run(ctx, "", "/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=300", "update", "-q"); updateErr != nil {
 			return fmt.Errorf("redis-server installation failed: %s", nativeTrimOutput(out))
@@ -186,8 +184,15 @@ func (h nativeHostData) ensureRedis(ctx context.Context, id string, account Nati
 	if _, err := h.writeIfChanged(nativeRedisTemplateUnit, []byte(renderNativeRedisTemplate()), 0644, 0, 0); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(h.path(nativeRedisConfigDir), 0755); err != nil {
+	// The agent runs with a restrictive umask; each instance, running as its
+	// application's account, must reach its configuration file here.
+	if err := release.MkdirAllReadable(h.path(nativeRedisConfigDir)); err != nil {
 		return err
+	}
+	for _, dir := range []string{filepath.Dir(nativeRedisConfigDir), nativeRedisConfigDir} {
+		if err := os.Chmod(h.path(dir), 0755); err != nil {
+			return err
+		}
 	}
 	unit := nativeRedisUnit(id)
 	dropIn, err := h.writeIfChanged(filepath.Join("/etc/systemd/system", unit+".d", "lidza.conf"), []byte(renderNativeRedisDropIn(account, dir, maxMiB)), 0644, 0, 0)
@@ -247,7 +252,7 @@ func (h nativeHostData) privateDir(dir string, account NativeAppAccount) error {
 	path := h.path(dir)
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		if err = os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		if err = release.MkdirAllReadable(filepath.Dir(path)); err != nil {
 			return err
 		}
 		if err = os.Mkdir(path, 0700); err != nil {
@@ -270,7 +275,7 @@ func (h nativeHostData) privateDir(dir string, account NativeAppAccount) error {
 // its content changed.
 func (h nativeHostData) writeIfChanged(name string, data []byte, mode os.FileMode, uid, gid int) (bool, error) {
 	path := h.path(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := release.MkdirAllReadable(filepath.Dir(path)); err != nil {
 		return false, err
 	}
 	if old, err := os.ReadFile(path); err == nil && string(old) == string(data) {

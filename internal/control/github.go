@@ -50,7 +50,7 @@ func (c *Control) hook(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := c.cfg.GitHub.Hook(r.Context(), token, a.Repository, strings.TrimSuffix(c.cfg.PublicURL, "/")+"/hooks/github/"+a.ID, a.Secret, a.HookID)
 	if err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	a.HookID = id
@@ -132,6 +132,11 @@ func (c *Control) enqueueGitHubEvent(w http.ResponseWriter, r *http.Request, a A
 		http.Error(w, "invalid delivery ID", 400)
 		return
 	}
+	if c.skipPushDuringMove(r.Context(), a, delivery) {
+		// Accepted and deliberately dropped: GitHub must not redeliver it.
+		agent.JSON(w, 200, map[string]string{"status": "skipped", "reason": "the application is moving to another server"})
+		return
+	}
 	id, err := jobs.From(r.Context()).Enqueue(r.Context(), "deploy.push", pushJob{AppID: a.ID, Delivery: delivery, Generation: a.Generation}, jobs.Unique(a.ID+":"+delivery), jobs.MaxAttempts(12))
 	if err != nil {
 		agent.Fail(w, 503, errors.New("could not persist delivery"))
@@ -159,8 +164,15 @@ func (c *Control) dispatchPush(ctx context.Context, payload json.RawMessage) err
 	if !ok || a.Retiring || !a.AutoDeploy || job.Generation != a.Generation {
 		return nil
 	}
+	// A delivery queued before the move started is dropped too.
+	if c.skipPushDuringMove(ctx, a, job.Delivery) {
+		return nil
+	}
 	if alternatePushDispatch != nil {
 		if handled, err := alternatePushDispatch(ctx, c, a, job); handled {
+			if err == nil {
+				c.notePushDuringMove(a.ID, job.Delivery)
+			}
 			return err
 		}
 	}
@@ -172,7 +184,11 @@ func (c *Control) dispatchPush(ctx context.Context, payload json.RawMessage) err
 	if settings.Stopped {
 		return nil
 	}
-	credentials, err := c.deploymentCredentials(ctx, a, "github:"+job.Delivery)
+	issue := c.deploymentCredentials
+	if c.credentialsFixture != nil {
+		issue = c.credentialsFixture
+	}
+	credentials, err := issue(ctx, a, "github:"+job.Delivery)
 	if err != nil {
 		return err
 	}
@@ -184,7 +200,21 @@ func (c *Control) dispatchPush(ctx context.Context, payload json.RawMessage) err
 	if err := c.syncStorageIfConfigured(req, a.ServerID); err != nil {
 		return err
 	}
-	return c.agentCall(req, a.ServerID, "POST", "/v1/apps/"+a.ID+"/deploy", credentials, &d)
+	if err := c.agentCall(req, a.ServerID, "POST", "/v1/apps/"+a.ID+"/deploy", credentials, &d); err != nil {
+		return err
+	}
+	// A push during a move's background copy deploys the source; the move
+	// redeploys the new commit on the destination before the switch.
+	c.notePushDuringMove(a.ID, job.Delivery)
+	return nil
+}
+
+// notePushDuringMove records a deployed push with the application's move,
+// if one copies in the background.
+func (c *Control) notePushDuringMove(appID, delivery string) {
+	if move, moving := c.activeMove(appID); moving {
+		c.noteMoveSourceChange(move.ID, moveChangeRelease, "push delivery "+delivery)
+	}
 }
 func (c *Control) deliveries(w http.ResponseWriter, r *http.Request) {
 	rows, err := jobs.From(r.Context()).Recent(r.Context(), 100)

@@ -87,7 +87,7 @@ func (c *Control) writeServer(w http.ResponseWriter, r *http.Request, edit bool)
 	}
 	var remote []agent.App
 	if err := c.agentRequest(r, input, "GET", "/v1/apps", nil, &remote); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	// Editing an endpoint must not silently move registered apps to an unrelated agent.

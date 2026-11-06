@@ -1,8 +1,9 @@
 package agent
 
 // Host updates: the agent reports pending operating-system updates, keeps
-// unattended-upgrades enabled for security pockets when asked, and reboots the
-// host inside an operator-chosen window when a reboot is required.
+// unattended-upgrades enabled for security pockets when asked, installs
+// updates on request, applies disruptive upgrades inside the maintenance
+// window and reboots the host inside that window when a reboot is required.
 
 import (
 	"context"
@@ -36,6 +37,16 @@ type HostUpdatesPolicy struct {
 	// the official Caddy, PostgreSQL and Docker repositories when the host has
 	// them configured. No repository is added and no binary is replaced.
 	ManagePackageSources bool `json:"manage_package_sources"`
+	// DisruptiveInWindow installs disruptive upgrades (container runtime,
+	// databases, web server, kernel, systemd) only inside RebootWindow, and
+	// keeps unattended-upgrades away from them. Unset means on; manual runs
+	// can still include them explicitly.
+	DisruptiveInWindow *bool `json:"disruptive_in_window,omitempty"`
+}
+
+// deferDisruptive reports whether disruptive upgrades wait for the window.
+func (p HostUpdatesPolicy) deferDisruptive() bool {
+	return p.DisruptiveInWindow == nil || *p.DisruptiveInWindow
 }
 
 // HostUpdatesState is the persisted part of host update management.
@@ -47,7 +58,24 @@ type HostUpdatesState struct {
 	ConfigurePending bool      `json:"configure_pending,omitempty"`
 	LastReboot       time.Time `json:"last_reboot,omitzero"`
 	RebootDeferred   string    `json:"reboot_deferred,omitempty"`
-	Jobs             []HostJob `json:"jobs,omitempty"`
+	// LastDisruptiveRun is when the maintenance window last installed, or
+	// found nothing to install; one window installs at most once.
+	LastDisruptiveRun time.Time        `json:"last_disruptive_run,omitzero"`
+	Docker            *HostDockerState `json:"docker,omitempty"`
+	Jobs              []HostJob        `json:"jobs,omitempty"`
+}
+
+// HostDockerState records what the agent did to the container runtime.
+type HostDockerState struct {
+	// InstalledByAgent is set when the agent installed Docker Engine, which
+	// makes the daemon configuration the agent's to reconcile.
+	InstalledByAgent   bool      `json:"installed_by_agent,omitempty"`
+	LiveRestoreApplied time.Time `json:"live_restore_applied,omitzero"`
+	// RestartPending is set when daemon.json enables live-restore but the
+	// running daemon did not pick it up on reload; only a restart applies it,
+	// and that happens in the maintenance window.
+	RestartPending bool   `json:"restart_pending,omitempty"`
+	ConfigBackup   string `json:"config_backup,omitempty"`
 }
 
 // HostComponent is the update state of one piece of host infrastructure.
@@ -66,14 +94,37 @@ type HostComponent struct {
 	Automatic string `json:"automatic"`
 }
 
+// HostDockerStatus is the container runtime as the host reports it.
+type HostDockerStatus struct {
+	Installed bool   `json:"installed"`
+	Running   bool   `json:"running"`
+	Version   string `json:"version,omitempty"`
+	// LiveRestore is what the running daemon reports; Configured is what
+	// /etc/docker/daemon.json asks for. They differ until a reload.
+	LiveRestore bool `json:"live_restore"`
+	Configured  bool `json:"live_restore_configured"`
+	// Managed is set when the agent installed Docker or runs containers on
+	// it, so it reconciles the daemon configuration.
+	Managed        bool   `json:"managed"`
+	RestartPending bool   `json:"restart_pending,omitempty"`
+	Warning        string `json:"warning,omitempty"`
+	// Buildx reports the BuildKit plugin image builds use
+	// (docker_buildkit.go); the agent installs it on hosts it manages.
+	Buildx bool `json:"buildx"`
+}
+
 // HostUpdatesStatus is the host observation merged with policy and history.
 type HostUpdatesStatus struct {
-	Supported           bool                 `json:"supported"`
-	Reason              string               `json:"reason,omitempty"`
-	CheckedAt           time.Time            `json:"checked_at,omitzero"`
-	Pending             int                  `json:"pending"`
-	Security            int                  `json:"security"`
+	Supported bool      `json:"supported"`
+	Reason    string    `json:"reason,omitempty"`
+	CheckedAt time.Time `json:"checked_at,omitzero"`
+	Pending   int       `json:"pending"`
+	Security  int       `json:"security"`
+	// Disruptive counts pending packages that restart shared services or
+	// need a reboot; DisruptivePackages lists them with their effect.
+	Disruptive          int                  `json:"disruptive"`
 	Packages            []HostPackageUpgrade `json:"packages,omitempty"`
+	DisruptivePackages  []HostPackageUpgrade `json:"disruptive_packages,omitempty"`
 	RebootRequired      bool                 `json:"reboot_required"`
 	RebootPackages      []string             `json:"reboot_packages,omitempty"`
 	RebootReason        string               `json:"reboot_reason,omitempty"`
@@ -82,19 +133,26 @@ type HostUpdatesStatus struct {
 	UnattendedLastRun   time.Time            `json:"unattended_last_run,omitzero"`
 	ManagedOrigins      []string             `json:"managed_origins,omitempty"`
 	Components          []HostComponent      `json:"components,omitempty"`
+	Docker              *HostDockerStatus    `json:"docker,omitempty"`
 	Policy              HostUpdatesPolicy    `json:"policy"`
 	Configured          bool                 `json:"configured"`
 	NextRebootWindow    time.Time            `json:"next_reboot_window,omitzero"`
-	LastReboot          time.Time            `json:"last_reboot,omitzero"`
-	RebootDeferred      string               `json:"reboot_deferred,omitempty"`
-	Running             string               `json:"running,omitempty"`
-	Jobs                []HostJob            `json:"jobs,omitempty"`
-	Error               string               `json:"error,omitempty"`
+	// NextDisruptiveWindow is when deferred disruptive upgrades install next.
+	NextDisruptiveWindow time.Time `json:"next_disruptive_window,omitzero"`
+	LastReboot           time.Time `json:"last_reboot,omitzero"`
+	RebootDeferred       string    `json:"reboot_deferred,omitempty"`
+	Running              string    `json:"running,omitempty"`
+	Jobs                 []HostJob `json:"jobs,omitempty"`
+	Error                string    `json:"error,omitempty"`
 }
 
 // HostUpdatesRun selects which pending updates to install now.
 type HostUpdatesRun struct {
 	Scope string `json:"scope,omitempty"` // security (default) or all
+	// IncludeDisruptive installs disruptive packages in this run instead of
+	// leaving them for the maintenance window. The panel asks for it after
+	// listing what each of them restarts.
+	IncludeDisruptive bool `json:"include_disruptive,omitempty"`
 }
 
 // HostRebootRequest must carry confirm=true.
@@ -104,6 +162,7 @@ type HostRebootRequest struct {
 
 const (
 	unattendedDropIn     = "/etc/apt/apt.conf.d/52lidza-unattended-upgrades"
+	aptPreferencesParts  = "/etc/apt/preferences.d"
 	hostStatusMaxAge     = 30 * time.Minute
 	hostRebootMinSpacing = 6 * time.Hour
 	hostPackageListLimit = 200
@@ -132,6 +191,14 @@ func (p HostUpdatesPolicy) Validate() error {
 		return errors.New("package source updates need automatic security updates turned on")
 	}
 	return nil
+}
+
+// presented returns the policy as the API shows it: every option explicit.
+func (p HostUpdatesPolicy) presented() HostUpdatesPolicy {
+	deferred := p.deferDisruptive()
+	p.DisruptiveInWindow = &deferred
+	p.RebootWindow.Weekdays = slices.Clone(p.RebootWindow.Weekdays)
+	return p
 }
 
 func (w HostRebootWindow) allows(day time.Weekday) bool {
@@ -216,6 +283,30 @@ func rebootRequirement() (bool, []string, string) {
 	return false, nil, ""
 }
 
+// pendingHostUpgrades simulates a dist-upgrade and confirms each package's
+// security classification against the repositories that offer its candidate.
+// It never refreshes package lists. The returned note names a degraded
+// classification; the error means nothing could be simulated.
+func pendingHostUpgrades(ctx context.Context) ([]HostPackageUpgrade, []aptRelease, string, error) {
+	out, err := hostCommand(ctx, "apt-get", "-s", "-q", "-o", "Debug::NoLocking=true", "dist-upgrade")
+	if err != nil {
+		return nil, nil, "", errors.New("pending updates could not be simulated")
+	}
+	pkgs := parseAptSimulation(out)
+	releasesOut, _ := hostCommand(ctx, "apt-cache", "policy")
+	releases := parseAptReleases(releasesOut)
+	note := ""
+	if len(pkgs) > 0 {
+		policyOut, err := hostCommand(ctx, "apt-cache", append([]string{"policy"}, packageNames(pkgs)...)...)
+		if err != nil {
+			note = "package origins could not be confirmed with apt-cache policy; the security classification comes from the simulation alone"
+		} else {
+			classifySecurity(pkgs, parseAptPolicy(policyOut), releases)
+		}
+	}
+	return pkgs, releases, note, nil
+}
+
 // observeHostUpdates inspects the host. It never changes packages or
 // configuration and never refreshes package lists (apt's daily timer does).
 func observeHostUpdates(ctx context.Context) HostUpdatesStatus {
@@ -227,14 +318,23 @@ func observeHostUpdates(ctx context.Context) HostUpdatesStatus {
 	status.Supported = true
 	var problems []string
 	status.RebootRequired, status.RebootPackages, status.RebootReason = rebootRequirement()
-	if out, err := hostCommand(ctx, "apt-get", "-s", "-q", "-o", "Debug::NoLocking=true", "dist-upgrade"); err != nil {
-		problems = append(problems, "pending updates could not be simulated")
+	pkgs, releases, note, err := pendingHostUpgrades(ctx)
+	if err != nil {
+		problems = append(problems, err.Error())
+		releasesOut, _ := hostCommand(ctx, "apt-cache", "policy")
+		releases = parseAptReleases(releasesOut)
 	} else {
-		pkgs := parseAptSimulation(out)
+		if note != "" {
+			problems = append(problems, note)
+		}
 		status.Pending = len(pkgs)
 		for _, p := range pkgs {
 			if p.Security {
 				status.Security++
+			}
+			if p.Disruptive {
+				status.Disruptive++
+				status.DisruptivePackages = append(status.DisruptivePackages, p)
 			}
 		}
 		slices.SortStableFunc(pkgs, func(a, b HostPackageUpgrade) int {
@@ -264,9 +364,9 @@ func observeHostUpdates(ctx context.Context) HostUpdatesStatus {
 			break
 		}
 	}
-	releasesOut, _ := hostCommand(ctx, "apt-cache", "policy")
-	status.ManagedOrigins = managedOriginPatterns(parseAptReleases(releasesOut))
+	status.ManagedOrigins = managedOriginPatterns(releases)
 	status.Components = observeComponents(ctx, installed)
+	status.Docker = observeDocker(ctx)
 	if len(problems) > 0 {
 		status.Error = strings.Join(problems, "; ")
 	}
@@ -365,38 +465,66 @@ func (m *Manager) hostUpdatesStatus(ctx context.Context, refresh bool) HostUpdat
 	if cached != nil {
 		out = *cached
 		out.Packages = slices.Clone(cached.Packages)
+		out.DisruptivePackages = slices.Clone(cached.DisruptivePackages)
 		out.Components = slices.Clone(cached.Components)
+		if cached.Docker != nil {
+			docker := *cached.Docker
+			out.Docker = &docker
+		}
 	}
+	managed := m.dockerManaged()
 	m.mu.Lock()
 	state := HostUpdatesState{Policy: defaultHostUpdatesPolicy()}
 	if m.data.HostUpdates != nil {
 		state = *m.data.HostUpdates
 	}
-	out.Policy = state.Policy
-	out.Policy.RebootWindow.Weekdays = slices.Clone(state.Policy.RebootWindow.Weekdays)
+	out.Policy = state.Policy.presented()
 	out.Configured = state.Configured
 	out.LastReboot = state.LastReboot
 	out.RebootDeferred = state.RebootDeferred
 	out.Jobs = slices.Clone(state.Jobs)
+	restartPending := state.Docker != nil && state.Docker.RestartPending
 	m.mu.Unlock()
 	if err := m.hostOperationsAllowed(); err != nil {
 		out.Supported = false
 		out.Reason = err.Error()
 	}
 	out.Running = running
+	now := time.Now()
 	if out.Policy.AutoReboot {
-		out.NextRebootWindow = out.Policy.RebootWindow.next(time.Now())
+		out.NextRebootWindow = out.Policy.RebootWindow.next(now)
+	}
+	if out.Policy.deferDisruptive() {
+		out.NextDisruptiveWindow = out.Policy.RebootWindow.next(now)
+	}
+	if out.Docker != nil {
+		out.Docker.Managed = managed
+		out.Docker.RestartPending = restartPending
+		out.Docker.Warning = dockerWarning(*out.Docker, out.Policy, out.NextDisruptiveWindow)
+		if out.Docker.Running && !out.Docker.Buildx {
+			note := "The Docker buildx plugin is missing, so image builds cannot use BuildKit. "
+			if out.Docker.Managed {
+				note += "The agent installs docker-buildx-plugin on its next hourly check."
+			} else {
+				note += "Install docker-buildx-plugin from Docker's repository."
+			}
+			out.Docker.Warning = strings.TrimSpace(out.Docker.Warning + " " + note)
+		}
 	}
 	annotateComponents(&out)
 	return out
 }
 
-func (m *Manager) refreshHostUpdatesIfStale(now time.Time) {
+func (m *Manager) refreshHostUpdatesIfStale(now time.Time) { m.refreshHostUpdates(now, false) }
+
+// refreshHostUpdates re-observes a stale status in the background. Without
+// force it refreshes only a status someone has looked at (the first read
+// observes synchronously); the maintenance window forces one so it can act.
+func (m *Manager) refreshHostUpdates(now time.Time, force bool) {
 	hc := m.host()
 	hc.mu.Lock()
-	// Refresh only a status someone has looked at; the first read observes
-	// synchronously.
-	if hc.status == nil || hc.refreshing || hc.job != "" || now.Sub(hc.status.CheckedAt) < hostStatusMaxAge {
+	stale := hc.status == nil || now.Sub(hc.status.CheckedAt) >= hostStatusMaxAge
+	if hc.refreshing || hc.job != "" || !stale || hc.status == nil && !force {
 		hc.mu.Unlock()
 		return
 	}
@@ -431,7 +559,7 @@ func (m *Manager) setHostUpdatesPolicy(p HostUpdatesPolicy) error {
 	m.mu.Lock()
 	state := m.hostUpdatesStateLocked()
 	previous := *state
-	reconfigure := !state.Configured || previous.Policy.AutoSecurity != p.AutoSecurity || previous.Policy.ManagePackageSources != p.ManagePackageSources
+	reconfigure := !state.Configured || previous.Policy.AutoSecurity != p.AutoSecurity || previous.Policy.ManagePackageSources != p.ManagePackageSources || previous.Policy.deferDisruptive() != p.deferDisruptive()
 	state.Policy = p
 	state.Configured = true
 	state.ConfigurePending = state.ConfigurePending || reconfigure
@@ -505,7 +633,7 @@ func (m *Manager) startHostJob(kind, trigger string, run func(context.Context) (
 		job.Finished = &finished
 		job.Output = strings.TrimSpace(output)
 		job.Status = "succeeded"
-		job.Summary = hostJobSummary(kind)
+		job.Summary = hostJobSummary(kind, output)
 		if err != nil {
 			job.Status = "failed"
 			job.Summary = err.Error()
@@ -526,25 +654,42 @@ func (m *Manager) startHostJob(kind, trigger string, run func(context.Context) (
 			log.Printf("host %s status: %v", kind, saveErr)
 		}
 		m.mu.Unlock()
+		if trigger == "schedule" {
+			log.Printf("host %s (%s): %s", kind, job.Status, job.Summary)
+		}
 	}()
 	return nil
 }
 
-func hostJobSummary(kind string) string {
+// hostJobSummary is the one-line result of a job: the last "Summary:" line a
+// run wrote, else a fixed sentence per kind.
+func hostJobSummary(kind, output string) string {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if summary, ok := strings.CutPrefix(strings.TrimSpace(lines[i]), "Summary: "); ok {
+			return summary
+		}
+	}
 	switch kind {
 	case "security-updates":
 		return "Security updates installed."
 	case "all-updates":
 		return "Pending updates installed."
+	case "disruptive-updates":
+		return "Disruptive updates installed in the maintenance window."
 	case "configure":
 		return "Automatic update configuration applied."
+	case "docker-live-restore":
+		return "Docker live-restore enabled."
+	case "docker-restart":
+		return "Docker restarted in the maintenance window."
 	}
 	return "Completed."
 }
 
-// configureUnattended makes the host match AutoSecurity and
-// ManagePackageSources. Off removes only the agent's own drop-in, leaving the
-// distribution's configuration as it was.
+// configureUnattended makes the host match AutoSecurity, ManagePackageSources
+// and DisruptiveInWindow. Off removes only the agent's own drop-in, leaving
+// the distribution's configuration as it was.
 func (m *Manager) configureUnattended(ctx context.Context) (string, error) {
 	m.mu.Lock()
 	policy := m.hostPolicyLocked()
@@ -581,7 +726,7 @@ func (m *Manager) configureUnattended(ctx context.Context) (string, error) {
 		origins = managedOriginPatterns(parseAptReleases(releases))
 	}
 	previous, readErr := os.ReadFile(path)
-	if err := writeHostFile(path, []byte(renderUnattendedConfig(origins)), 0644); err != nil {
+	if err := writeHostFile(path, []byte(renderUnattendedConfig(origins, policy.deferDisruptive())), 0644); err != nil {
 		return transcript.String(), err
 	}
 	// A syntax error in apt configuration breaks every apt command on the
@@ -598,6 +743,9 @@ func (m *Manager) configureUnattended(ctx context.Context) (string, error) {
 	if len(origins) > 0 {
 		transcript.WriteString(" and " + strings.Join(origins, "; "))
 	}
+	if policy.deferDisruptive() {
+		transcript.WriteString("; disruptive packages left to the maintenance window")
+	}
 	transcript.WriteString(").\n")
 	if err := run("systemctl", "enable", "--now", "apt-daily.timer", "apt-daily-upgrade.timer"); err != nil {
 		return transcript.String(), err
@@ -605,48 +753,126 @@ func (m *Manager) configureUnattended(ctx context.Context) (string, error) {
 	return transcript.String(), nil
 }
 
-// installHostUpdates refreshes package lists and installs security updates
-// (through unattended-upgrades when installed, so its origin policy and
-// blacklist apply) or all pending upgrades without removing packages.
-func installHostUpdates(scope string) func(context.Context) (string, error) {
+// aptPinDirectory builds a temporary preferences.d for one apt run: the
+// host's own fragments, unchanged, plus the run's pins. apt reads it through
+// Dir::Etc::PreferencesParts, so nothing under /etc/apt is modified.
+func aptPinDirectory(pins string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "lidza-apt-pins-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	entries, _ := os.ReadDir(hostPath(aptPreferencesParts))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(hostPath(aptPreferencesParts), entry.Name()))
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, entry.Name()), data, 0644); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "99-lidza-run"), []byte(pins), 0644); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	// apt runs as root and reads the directory itself.
+	_ = os.Chmod(dir, 0755)
+	return dir, cleanup, nil
+}
+
+func scopeLabel(scope string) string {
+	switch scope {
+	case "security":
+		return "Security updates"
+	case "disruptive":
+		return "Disruptive updates"
+	}
+	return "Updates"
+}
+
+// installHostUpdates refreshes package lists, classifies what is pending and
+// installs one selection: confirmed security updates, every pending update
+// or the disruptive ones. Everything outside the selection is pinned away
+// for the run, so apt keeps back (never pulls in) a package that would need
+// an excluded one. Services are never restarted by the agent; the packages'
+// own maintainer scripts decide, which is what makes some of them disruptive.
+func installHostUpdates(scope string, includeDisruptive bool) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var transcript strings.Builder
-		run := func(name string, args ...string) error {
+		run := func(name string, args ...string) (string, error) {
 			out, err := hostCommand(ctx, name, args...)
 			transcript.WriteString("$ " + name + " " + strings.Join(args, " ") + "\n" + out + "\n")
 			if err != nil {
-				return fmt.Errorf("%s failed: %w", name, err)
+				return out, fmt.Errorf("%s failed: %w", name, err)
 			}
-			return nil
+			return out, nil
 		}
 		lock := []string{"-o", "DPkg::Lock::Timeout=300", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"}
-		if err := run("apt-get", append([]string{"update", "-q"}, lock[:2]...)...); err != nil {
+		if _, err := run("apt-get", "update", "-q", "-o", "DPkg::Lock::Timeout=300"); err != nil {
 			return transcript.String(), err
 		}
-		if scope == "all" {
-			err := run("apt-get", append(append([]string{"-y", "-q"}, lock...), "--with-new-pkgs", "upgrade")...)
-			return transcript.String(), err
-		}
-		if hostToolAvailable("unattended-upgrade") {
-			err := run("unattended-upgrade", "-v")
-			return transcript.String(), err
-		}
-		out, err := hostCommand(ctx, "apt-get", "-s", "-q", "-o", "Debug::NoLocking=true", "dist-upgrade")
+		pending, _, note, err := pendingHostUpgrades(ctx)
 		if err != nil {
-			return transcript.String(), errors.New("pending updates could not be simulated")
+			return transcript.String(), err
 		}
-		var names []string
-		for _, p := range parseAptSimulation(out) {
-			if p.Security {
-				names = append(names, p.Name)
+		if note != "" {
+			transcript.WriteString(note + "\n")
+		}
+		selected, deferred := selectUpgrades(pending, scope, includeDisruptive)
+		if len(selected) == 0 {
+			summary := "Nothing to install: no " + strings.ToLower(scopeLabel(scope)) + " are pending."
+			if len(deferred) > 0 {
+				summary = "Nothing installed: the pending " + strings.ToLower(scopeLabel(scope)) + " are all disruptive (" + strings.Join(packageNames(deferred), ", ") + "); they wait for the maintenance window or an explicit request."
 			}
-		}
-		if len(names) == 0 {
-			transcript.WriteString("No security updates are pending.\n")
+			transcript.WriteString("Summary: " + summary + "\n")
 			return transcript.String(), nil
 		}
-		err = run("apt-get", append(append([]string{"install", "-y", "-q", "--only-upgrade"}, lock...), names...)...)
-		return transcript.String(), err
+		args := append([]string{"-y", "-q"}, lock...)
+		if len(selected) < len(pending) {
+			dir, cleanup, err := aptPinDirectory(renderAptPins(pending, selected))
+			if err != nil {
+				return transcript.String(), err
+			}
+			defer cleanup()
+			var held []string
+			keep := map[string]bool{}
+			for _, p := range selected {
+				keep[p.Name] = true
+			}
+			for _, p := range pending {
+				if !keep[p.Name] {
+					held = append(held, p.Name)
+				}
+			}
+			transcript.WriteString("Held back for this run: " + strings.Join(held, ", ") + "\n")
+			args = append(args, "-o", "Dir::Etc::PreferencesParts="+dir)
+		}
+		transcript.WriteString("Installing: " + strings.Join(packageNames(selected), ", ") + "\n")
+		out, err := run("apt-get", append(args, "--with-new-pkgs", "upgrade")...)
+		if err != nil {
+			return transcript.String(), err
+		}
+		kept := aptKeptBack(out)
+		installed := 0
+		for _, p := range selected {
+			if !slices.Contains(kept, p.Name) {
+				installed++
+			}
+		}
+		summary := fmt.Sprintf("%s installed: %d.", scopeLabel(scope), installed)
+		if len(deferred) > 0 {
+			summary += " Disruptive, not installed: " + strings.Join(packageNames(deferred), ", ") + "."
+		}
+		if len(kept) > 0 {
+			summary += " Kept back because they need a held package: " + strings.Join(kept, ", ") + "."
+		}
+		transcript.WriteString("Summary: " + summary + "\n")
+		return transcript.String(), nil
 	}
 }
 
@@ -660,12 +886,61 @@ func (m *Manager) runHostUpdates(in HostUpdatesRun) error {
 	kind := "security-updates"
 	switch in.Scope {
 	case "", "security":
+		in.Scope = "security"
 	case "all":
 		kind = "all-updates"
 	default:
 		return errors.New("scope must be security or all")
 	}
-	return m.startHostJob(kind, "manual", installHostUpdates(in.Scope))
+	return m.startHostJob(kind, "manual", installHostUpdates(in.Scope, in.IncludeDisruptive))
+}
+
+// disruptiveTick installs the pending disruptive upgrades once per
+// maintenance window when the policy defers them there. It works from a
+// fresh observation, so a window first refreshes the status and acts on the
+// next tick; a reboot the upgrades require follows through rebootTick.
+func (m *Manager) disruptiveTick(now time.Time) {
+	m.mu.Lock()
+	policy := m.hostPolicyLocked()
+	var last time.Time
+	if m.data.HostUpdates != nil {
+		last = m.data.HostUpdates.LastDisruptiveRun
+	}
+	m.mu.Unlock()
+	if !policy.deferDisruptive() {
+		return
+	}
+	start, ok := policy.RebootWindow.active(now)
+	if !ok || !last.Before(start) {
+		return
+	}
+	if ok, _ := aptHost(); !ok {
+		return
+	}
+	hc := m.host()
+	hc.mu.Lock()
+	status := hc.status
+	hc.mu.Unlock()
+	if status == nil || now.Sub(status.CheckedAt) >= hostStatusMaxAge {
+		m.refreshHostUpdates(now, true)
+		return
+	}
+	if status.Disruptive == 0 {
+		m.mu.Lock()
+		m.hostUpdatesStateLocked().LastDisruptiveRun = now.UTC()
+		_ = m.save()
+		m.mu.Unlock()
+		return
+	}
+	if err := m.startHostJob("disruptive-updates", "schedule", installHostUpdates("disruptive", true)); err != nil {
+		// Busy hosts retry every minute until the window closes.
+		return
+	}
+	log.Printf("maintenance window: installing %d disruptive update(s): %s", status.Disruptive, strings.Join(packageNames(status.DisruptivePackages), ", "))
+	m.mu.Lock()
+	m.hostUpdatesStateLocked().LastDisruptiveRun = now.UTC()
+	_ = m.save()
+	m.mu.Unlock()
 }
 
 // hostRebootCommand is replaced by tests.

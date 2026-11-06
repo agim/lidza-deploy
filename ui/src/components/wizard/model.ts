@@ -34,6 +34,9 @@ export interface WizardDraft {
   database: DatabaseChoice;
   databaseURL: string;
   redis: boolean;
+  // clickhouse provisions a ClickHouse database on the server (native) or
+  // the managed ClickHouse service (containers).
+  clickhouse: boolean;
   backupHours: string;
   offsite: boolean;
   masterKey: string;
@@ -52,7 +55,7 @@ export function emptyDraft(serverID = ''): WizardDraft {
     mode: 'native', nativeRuntime: 'go', containerRuntime: 'go', framework: '', sourceDirectory: '', staticOutput: 'dist', healthPath: '/',
     processes: [{ key: rowKey(), name: 'web', command: '', web: true }],
     runtimeProfile: '', customerHosts: false, astroMode: 'static', astroNode: '22',
-    serverID, domain: '', additionalDomains: [], database: 'none', databaseURL: '', redis: false, backupHours: '24', offsite: false,
+    serverID, domain: '', additionalDomains: [], database: 'none', databaseURL: '', redis: false, clickhouse: false, backupHours: '24', offsite: false,
     masterKey: '', env: [],
   };
 }
@@ -103,6 +106,7 @@ export function applyDetection(draft: WizardDraft, detection: RepositoryDetectio
     astroMode: framework === 'astro' && runtime === 'node' ? 'node' : 'static',
     database: detection.needs_postgres ? 'local' : 'none',
     redis: !!detection.needs_redis,
+    clickhouse: !!detection.needs_clickhouse,
     stackManifestMissing: !!detection.stack_manifest_missing,
   };
 }
@@ -226,6 +230,7 @@ export function stepErrors(step: number, draft: WizardDraft, existing: string[] 
         else if (seen.has(row.name) || row.name === keyName && draft.masterKey.trim()) set(`env-${index}`, `${row.name} is set more than once.`);
         else if (row.name === 'DATABASE_URL' && draft.database !== 'none') set(`env-${index}`, 'The database settings supply DATABASE_URL.');
         else if (row.name === 'REDIS_URL' && draft.redis && draft.mode === 'native') set(`env-${index}`, 'The Redis setting supplies REDIS_URL.');
+        else if (draft.clickhouse && clickhouseKeys.includes(row.name)) set(`env-${index}`, `The ClickHouse setting supplies ${row.name}.`);
         else if (/[\r\n]/.test(row.value)) set(`env-${index}`, 'Values must be a single line.');
         seen.add(row.name);
       });
@@ -244,7 +249,13 @@ function environment(draft: WizardDraft) {
   return { env, kinds };
 }
 
-const backupHours = (draft: WizardDraft) => draft.database === 'none' ? 0 : Number(draft.backupHours || 0);
+// The managed ClickHouse connection; the setting supplies these variables.
+export const clickhouseKeys = ['CLICKHOUSE_URL', 'CLICKHOUSE_DATABASE', 'CLICKHOUSE_USER', 'CLICKHOUSE_PASSWORD', 'CLICKHOUSE_MANAGED'];
+
+// hasBackups reports whether the application gets a database the server
+// backs up: PostgreSQL, or ClickHouse on a native server.
+export const hasBackups = (draft: WizardDraft) => draft.database !== 'none' || draft.mode === 'native' && draft.clickhouse;
+const backupHours = (draft: WizardDraft) => hasBackups(draft) ? Number(draft.backupHours || 0) : 0;
 
 export function nativeRequest(draft: WizardDraft): NativeCreateRequest {
   const { env, kinds } = environment(draft);
@@ -254,7 +265,7 @@ export function nativeRequest(draft: WizardDraft): NativeCreateRequest {
     source_directory: draft.sourceDirectory.trim().replace(/^\/+|\/+$/g, ''),
     ...(isStatic ? { static_output: draft.staticOutput.trim() } : { health_path: draft.healthPath, processes: draft.processes.map(process => ({ name: process.name, command: process.command.trim(), ...(process.web ? { web: true } : {}) })) }),
     domain: draft.domain, additional_domains: draft.additionalDomains.map(row => row.value),
-    data: { postgres: draft.database === 'local', redis: draft.redis, ...(draft.database === 'external' ? { external_database_url: draft.databaseURL.trim() } : {}), backup_hours: backupHours(draft), offsite: draft.database !== 'none' && draft.offsite },
+    data: { postgres: draft.database === 'local', redis: draft.redis, clickhouse: draft.clickhouse, ...(draft.database === 'external' ? { external_database_url: draft.databaseURL.trim() } : {}), backup_hours: backupHours(draft), offsite: hasBackups(draft) && draft.offsite },
     env, env_kinds: kinds, auto_deploy: draft.autoDeploy, server_id: draft.serverID, github_installation: draft.installation || 0,
   };
 }
@@ -262,6 +273,8 @@ export function nativeRequest(draft: WizardDraft): NativeCreateRequest {
 // containerRequest is the existing POST control/apps body.
 export function containerRequest(draft: WizardDraft) {
   const { env, kinds } = environment(draft);
+  // The managed ClickHouse service starts with the first deployment.
+  if (draft.clickhouse) { env.CLICKHOUSE_MANAGED = 'true'; kinds.CLICKHOUSE_MANAGED = 'setting'; }
   const runtime = draft.containerRuntime;
   return {
     runtime, build: { source_directory: draft.sourceDirectory.trim().replace(/^\/+|\/+$/g, '') },

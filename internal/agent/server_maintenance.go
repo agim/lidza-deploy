@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,14 +29,16 @@ type CleanupRequest struct {
 	Logs       bool `json:"logs"`
 }
 type MaintenanceState struct {
-	HostAutomationBlocked bool              `json:"host_automation_blocked,omitempty"`
-	Policy                MaintenancePolicy `json:"policy"`
-	Running               bool              `json:"running"`
-	NextRun               time.Time         `json:"next_run"`
-	NextBackupCleanup     time.Time         `json:"next_backup_cleanup"`
-	LastRun               time.Time         `json:"last_run"`
-	Messages              []string          `json:"messages,omitempty"`
-	Error                 string            `json:"error,omitempty"`
+	Policy            MaintenancePolicy `json:"policy"`
+	Running           bool              `json:"running"`
+	NextRun           time.Time         `json:"next_run"`
+	NextBackupCleanup time.Time         `json:"next_backup_cleanup"`
+	LastRun           time.Time         `json:"last_run"`
+	Messages          []string          `json:"messages,omitempty"`
+	Error             string            `json:"error,omitempty"`
+	// Preview is the dry run of the next cleanup, on request only
+	// (GET /v1/maintenance?preview=1); it is never stored.
+	Preview *CleanupPreview `json:"preview,omitempty"`
 }
 
 func defaultMaintenancePolicy() MaintenancePolicy {
@@ -54,14 +57,10 @@ func (m *Manager) maintenanceStatus() MaintenanceState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := *m.data.Maintenance
-	out.HostAutomationBlocked = m.cfg.HostMode == "coexist"
 	out.Messages = slices.Clone(out.Messages)
 	return out
 }
 func (m *Manager) setMaintenancePolicy(p MaintenancePolicy) error {
-	if m.cfg.HostMode == "coexist" {
-		return errors.New("host-wide maintenance is disabled in coexist mode")
-	}
 	if err := p.Validate(); err != nil {
 		return err
 	}
@@ -102,7 +101,7 @@ func (m *Manager) cleanupBusyLocked() bool {
 // Merely constructing a manager (for inspection or integration fixtures) must
 // never invoke host-wide Docker pruning or journal vacuuming.
 func (m *Manager) StartMaintenance() {
-	if m.cfg.HostMode == "coexist" || m.cfg.IngressOnly || m.cfg.NativeOnly {
+	if m.cfg.IngressOnly {
 		return
 	}
 	m.maintenanceOnce.Do(func() { m.wg.Add(1); go m.maintenanceLoop() })
@@ -110,6 +109,9 @@ func (m *Manager) StartMaintenance() {
 
 func (m *Manager) maintenanceLoop() {
 	defer m.wg.Done()
+	// Transfers interrupted by the previous agent process leave their
+	// temporary files behind; nothing of this process can own them yet.
+	m.sweepMoveTempsNow(time.Now().UTC())
 	m.maintenanceTick(time.Now().UTC())
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -123,10 +125,11 @@ func (m *Manager) maintenanceLoop() {
 	}
 }
 func (m *Manager) maintenanceTick(now time.Time) {
-	if m.cfg.HostMode == "coexist" || m.cfg.IngressOnly || m.cfg.NativeOnly {
+	if m.cfg.IngressOnly {
 		return
 	}
-	m.hostTick(now) // host updates, reboot window and firewall rollback (host_common.go)
+	m.hostTick(now)                // host updates, reboot window and firewall rollback (host_common.go)
+	m.startClickHouseLogsTick(now) // system log retention (clickhouse_system_logs.go)
 	m.mu.Lock()
 	state := *m.data.Maintenance
 	request := CleanupRequest{Backups: !state.NextBackupCleanup.After(now)}
@@ -143,7 +146,7 @@ func (m *Manager) maintenanceTick(now time.Time) {
 	}
 }
 func (m *Manager) startMaintenance(request CleanupRequest, now time.Time) error {
-	if m.cfg.HostMode == "coexist" || m.cfg.IngressOnly || m.cfg.NativeOnly {
+	if m.cfg.IngressOnly {
 		return errors.New("host-wide maintenance is disabled for this agent role")
 	}
 	if !request.Backups && !request.BuildCache && !request.Logs {
@@ -202,9 +205,11 @@ func (m *Manager) startMaintenance(request CleanupRequest, now time.Time) error 
 	return nil
 }
 func (m *Manager) performMaintenance(ctx context.Context, request CleanupRequest) ([]string, error) {
-	if m.cfg.HostMode == "coexist" || m.cfg.IngressOnly || m.cfg.NativeOnly {
+	if m.cfg.IngressOnly {
 		return nil, errors.New("host-wide maintenance is disabled for this agent role")
 	}
+	// Every step reports one summarised line; raw command output appears
+	// only when a step fails.
 	var messages []string
 	var failures []error
 	if request.Backups {
@@ -222,7 +227,14 @@ func (m *Manager) performMaintenance(ctx context.Context, request CleanupRequest
 			removed += before - len(m.data.Databases[id].Backups)
 		}
 		m.mu.Unlock()
-		messages = append(messages, fmt.Sprintf("Removed %d older local backup records; newest usable dump per database retained. S3 objects unchanged.", removed))
+		if removed == 0 {
+			messages = append(messages, "Local backups: nothing to prune")
+		} else {
+			messages = append(messages, fmt.Sprintf("Local backups: removed %d older backup records; the newest usable dump of every database is kept and S3 objects are unchanged", removed))
+		}
+		if message := m.sweepMoveTempsNow(time.Now().UTC()); message != "" {
+			messages = append(messages, "Move transfers: "+message)
+		}
 	}
 	m.mu.Lock()
 	policy := m.data.Maintenance.Policy
@@ -231,30 +243,119 @@ func (m *Manager) performMaintenance(ctx context.Context, request CleanupRequest
 	if runner == nil {
 		runner = maintenanceCommand
 	}
-	run := func(name string, args ...string) {
-		output, err := runner(ctx, name, args...)
-		output = strings.TrimSpace(output)
-		if len(output) > 4096 {
-			output = output[:4096] + "…"
-		}
-		if output != "" {
-			messages = append(messages, output)
-		}
-		if err != nil {
-			failures = append(failures, fmt.Errorf("%s cleanup failed: %w", name, err))
-		}
-	}
 	if request.BuildCache {
-		run("docker", "builder", "prune", "--all", "--force", "--filter", "until="+strconv.Itoa(policy.OlderThanDays*24)+"h")
+		docker := dockerCleanupAvailability(ctx)
+		if docker.ok {
+			output, err := runner(ctx, "docker", "builder", "prune", "--all", "--force", "--filter", "until="+strconv.Itoa(policy.OlderThanDays*24)+"h")
+			messages = append(messages, summarizeBuilderPrune(output, err))
+			if err != nil {
+				failures = append(failures, fmt.Errorf("docker build cache cleanup failed: %w", err))
+			}
+		} else {
+			messages = append(messages, docker.reason)
+			if docker.warning {
+				log.Print(docker.reason)
+			}
+		}
+		// Old release images, stopped builders, anonymous volumes, native
+		// release leftovers and the package cache (docker_hygiene.go,
+		// native_hygiene.go).
+		items, notes, planFailures := m.planDiskHygiene(ctx, runner, time.Now().UTC(), docker)
+		for _, note := range notes {
+			log.Print(note)
+		}
+		messages = append(messages, notes...)
+		removed, removeFailures := applyCleanupItems(ctx, runner, items)
+		for _, message := range removed {
+			log.Print(message)
+		}
+		if len(items) == 0 && len(planFailures) == 0 {
+			removed = append(removed, "Disk hygiene: nothing to remove")
+		}
+		messages = append(messages, removed...)
+		failures = append(append(failures, planFailures...), removeFailures...)
 	}
 	if request.Logs {
 		// Use journald's supported rotation/vacuum API. Never truncate live Docker
 		// JSON log files or remove arbitrary files under /var/log.
-		run("journalctl", "--rotate")
-		run("journalctl", "--vacuum-time="+strconv.Itoa(policy.OlderThanDays)+"d")
+		message, err := vacuumJournal(ctx, runner, policy.OlderThanDays)
+		messages = append(messages, message)
+		if err != nil {
+			failures = append(failures, err)
+		}
 	}
 	return messages, errors.Join(failures...)
 }
+
+// legacyBuilderNotice is Docker's deprecation banner of its legacy builder;
+// it says nothing about the cleanup.
+const legacyBuilderNotice = "DEPRECATED: The legacy builder is deprecated"
+
+// withoutLegacyNotice drops Docker's legacy-builder banner and the lines
+// that continue it.
+func withoutLegacyNotice(output string) string {
+	var kept []string
+	skip := false
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, legacyBuilderNotice):
+			skip = true
+			continue
+		case skip && (strings.HasPrefix(trimmed, "Install the buildx component") || strings.HasPrefix(trimmed, "https://docs.docker.com/go/buildx")):
+			continue
+		}
+		skip = false
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+var reclaimedSpace = regexp.MustCompile(`(?m)^Total(?: reclaimed space)?:\s*(\S+)`)
+
+// summarizeBuilderPrune turns `docker builder prune` output into one line.
+func summarizeBuilderPrune(output string, err error) string {
+	output = withoutLegacyNotice(output)
+	if err != nil {
+		return "Docker build cache: failed: " + boundedErrorText(output, 2000)
+	}
+	if match := reclaimedSpace.FindStringSubmatch(output); match != nil && match[1] != "0B" {
+		return "Docker build cache: freed " + match[1]
+	}
+	return "Docker build cache: nothing to free"
+}
+
+var journalFreed = regexp.MustCompile(`freed ([0-9.]+)([KMGT]?)B?`)
+var journalUsage = regexp.MustCompile(`take up ([0-9.]+[KMGT]?B?)`)
+
+// vacuumJournal rotates the journal, vacuums archives older than days and
+// reports one line.
+func vacuumJournal(ctx context.Context, run commandRunner, days int) (string, error) {
+	if out, err := run(ctx, "journalctl", "--rotate"); err != nil {
+		return "Journal: rotation failed: " + boundedErrorText(strings.TrimSpace(out), 2000), fmt.Errorf("journalctl cleanup failed: %w", err)
+	}
+	out, err := run(ctx, "journalctl", "--vacuum-time="+strconv.Itoa(days)+"d")
+	if err != nil {
+		return "Journal: vacuum failed: " + boundedErrorText(strings.TrimSpace(out), 2000), fmt.Errorf("journalctl cleanup failed: %w", err)
+	}
+	var freed float64
+	units := map[string]float64{"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}
+	for _, match := range journalFreed.FindAllStringSubmatch(out, -1) {
+		value, _ := strconv.ParseFloat(match[1], 64)
+		freed += value * units[match[2]]
+	}
+	if freed > 0 {
+		return "Journal: freed " + bytesText(int64(freed)) + " of archives older than " + strconv.Itoa(days) + " days", nil
+	}
+	usage := ""
+	if out, err := run(ctx, "journalctl", "--disk-usage"); err == nil {
+		if match := journalUsage.FindStringSubmatch(out); match != nil {
+			usage = " (" + match[1] + " in use)"
+		}
+	}
+	return "Journal: nothing older than " + strconv.Itoa(days) + " days to vacuum" + usage, nil
+}
+
 func maintenanceCommand(ctx context.Context, name string, args ...string) (string, error) {
 	// Bounded output avoids buffering a daemon's unbounded response in the agent.
 	out := &cappedConsoleBuffer{}
@@ -265,7 +366,16 @@ func maintenanceCommand(ctx context.Context, name string, args ...string) (strin
 	return out.String(), err
 }
 func (m *Manager) maintenanceRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/maintenance", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.maintenanceStatus()) })
+	mux.HandleFunc("GET /v1/maintenance", func(w http.ResponseWriter, r *http.Request) {
+		status := m.maintenanceStatus()
+		if r.URL.Query().Get("preview") == "1" && !m.cfg.IngressOnly {
+			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+			preview := m.cleanupPreview(ctx)
+			cancel()
+			status.Preview = &preview
+		}
+		JSON(w, 200, status)
+	})
 	mux.HandleFunc("PATCH /v1/maintenance", func(w http.ResponseWriter, r *http.Request) {
 		var p MaintenancePolicy
 		if err := Decode(w, r, &p); err != nil {

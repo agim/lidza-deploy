@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/agim/lidza-deploy/internal/agent"
 )
@@ -17,6 +18,21 @@ type ApplicationProcess struct {
 	State   string `json:"state"`
 	Startup string `json:"startup,omitempty"`
 	LogPath string `json:"log_path,omitempty"`
+	// Usage and control of native processes (systemd units); container
+	// processes report theirs on the server's process page.
+	Runtime          string    `json:"runtime,omitempty"`
+	Since            time.Time `json:"since,omitzero"`
+	MemoryBytes      *int64    `json:"memory_bytes,omitempty"`
+	MemoryLimitBytes *int64    `json:"memory_limit_bytes,omitempty"`
+	CPUPercent       *float64  `json:"cpu_percent,omitempty"`
+	Tasks            *int64    `json:"tasks,omitempty"`
+	Restarts         *int      `json:"restarts,omitempty"`
+	Preserved        bool      `json:"preserved,omitempty"`
+	// RestartPath is the panel route that restarts this process, present
+	// only when the process may be restarted; Confirm is the confirmation
+	// value the route expects.
+	RestartPath string `json:"restart_path,omitempty"`
+	Confirm     string `json:"confirm,omitempty"`
 }
 type ApplicationProcessInventory struct {
 	Processes []ApplicationProcess `json:"processes"`
@@ -38,7 +54,7 @@ func (c *Control) applicationProcesses(w http.ResponseWriter, r *http.Request) {
 	}
 	var inventory agent.ContainerInventory
 	if err := c.agentCall(r, a.ServerID, "GET", "/v1/containers", nil, &inventory); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	var tasks []agent.Task

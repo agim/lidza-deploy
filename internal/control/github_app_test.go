@@ -82,8 +82,8 @@ func exerciseAppConnection(t *testing.T, c *Control, ctx context.Context, call f
 		t.Fatal("invalid manifest form")
 	}
 	completePath := "/api/control/github/app/manifest-callback?state=" + url.QueryEscape(state) + "&code=code"
-	if w := request("GET", completePath, ""); w.Code != 303 {
-		t.Fatal("manifest callback", w.Code, w.Body)
+	if w := request("GET", completePath, ""); w.Code != 303 || w.Header().Get("Location") != "/console/integrations?github=registered" {
+		t.Fatal("manifest callback", w.Code, w.Header().Get("Location"), w.Body)
 	}
 	if w := request("GET", completePath, ""); w.Code != 400 {
 		t.Fatal("manifest replay accepted")

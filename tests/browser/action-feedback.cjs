@@ -22,7 +22,7 @@ const assert = require('node:assert/strict');
         return route.fulfill({ json: {} });
       });
       const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
-      await page.goto(`${base}/console.html#page/build-logs/build-one`);
+      await page.goto(`${base}/console/deployments/build-one`);
       await page.locator('#deployment-output').waitFor();
       const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
       const before = await refresh.boundingBox();
@@ -43,14 +43,14 @@ const assert = require('node:assert/strict');
       assert(Date.now() - started >= 1900, 'Feedback did not remain visible for the extended minimum');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'Action buttons overflow the page');
 
-      await page.goto(`${base}/console.html#applications`);
+      await page.goto(`${base}/console/applications`);
       await page.getByRole('button', { name: 'More', exact: true }).click();
       const reload = page.getByRole('menuitem', { name: 'Reload', exact: true });
       await reload.click();
       assert.equal(await reload.getAttribute('aria-busy'), 'true', 'Async menu action has no busy feedback');
       await reload.waitFor({ state: 'hidden' });
 
-      await page.goto(`${base}/console.html#page/console/local`);
+      await page.goto(`${base}/console/servers/local/console`);
       await page.locator('#console-unlock input').fill('123456');
       const unlock = page.getByRole('button', { name: 'Unlock for 15 minutes' });
       await unlock.click();

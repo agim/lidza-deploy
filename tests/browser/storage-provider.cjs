@@ -8,7 +8,7 @@ const {chromium}=require('playwright');const assert=require('node:assert/strict'
   await route.fulfill({json});
  });
  const base=process.env.TEST_WEB_URL||'http://127.0.0.1:8880';
- await page.goto(base+'/console.html#page/settings/portal');await page.locator('#workspace-loading').waitFor({state:'hidden'});
+ await page.goto(base+'/console/applications/portal/settings');await page.locator('#workspace-loading').waitFor({state:'hidden'});
  assert.match(await page.locator('#settings-storage-status').textContent(),/override controls the storage provider/);
  await page.locator('#settings-form [name=domain]').fill('unsaved.example.com');await page.locator('#settings-storage-unpin').click();
  assert.equal(patches.length,0);assert.match(await page.locator('#settings-error').textContent(),/Save or discard/);

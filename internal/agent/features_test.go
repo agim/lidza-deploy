@@ -19,7 +19,7 @@ func TestMaintenanceIsolationAndEscaping(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := m.setMaintenance("one", Maintenance{true, "<script>bad</script>"}); err != nil {
+	if err := m.setMaintenance("one", Maintenance{Enabled: true, Message: "<script>bad</script>"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {

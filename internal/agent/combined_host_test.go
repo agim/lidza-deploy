@@ -15,7 +15,6 @@ func TestCombinedHostKeepsNativeOwnershipWhileDeployingGo(t *testing.T) {
 	fixture, appDir := nativeFixture(t)
 	cfg := fixture.cfg
 	fixture.Close()
-	cfg.HostMode = "coexist"
 	m, err := NewManager(context.Background(), cfg, runtime)
 	if err != nil {
 		t.Fatal(err)
@@ -73,9 +72,5 @@ func TestCombinedHostKeepsNativeOwnershipWhileDeployingGo(t *testing.T) {
 	}
 	if m.cfg.Native.ServiceControl {
 		t.Fatal("Go deployment enabled native service control")
-	}
-	m.StartMaintenance()
-	if m.data.Maintenance.Running {
-		t.Fatal("combined host ran host-wide cleanup")
 	}
 }

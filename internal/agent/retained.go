@@ -1,10 +1,9 @@
 package agent
 
 import (
-	"cmp"
+	"errors"
 	"maps"
 	"net/http"
-	"slices"
 	"time"
 )
 
@@ -18,6 +17,70 @@ type RetainedResource struct {
 	Created       time.Time          `json:"created"`
 	StorageVolume string             `json:"storage_volume,omitempty"`
 	Cache         CacheResource      `json:"cache,omitempty"`
+	// Databases are the application's local databases that no other
+	// application used when it was removed (retained_remove.go).
+	Databases []string `json:"databases,omitempty"`
+	// WritesStopped is when the application stopped writing to its data:
+	// the start of its maintenance mode when it was removed in maintenance
+	// (a move's final sync), else the removal. A backup taken at or after
+	// it holds the data's final state. Zero for older records.
+	WritesStopped time.Time `json:"writes_stopped,omitzero"`
+	// NativeData marks the data services a removed native application had
+	// on this host (diskState.NativeHostData, still keyed by AppID): its
+	// PostgreSQL, Redis and ClickHouse (native_hostdata.go).
+	NativeData bool `json:"native_data,omitempty"`
+	// Origin is the move the removed application belonged to, when the
+	// control plane said so; nil for an application removed outside a move
+	// or by an older control plane.
+	Origin *RetainedOrigin `json:"origin,omitempty"`
+	// Error is why the last removal attempt failed.
+	Error string `json:"error,omitempty"`
+}
+
+// RetainedOrigin records the move a retained resource came from. A
+// destination that never switched holds a partial copy of data that still
+// lives on the source: removing it needs no backup. Once a move switched,
+// or when the origin is unknown, the data counts as the application's own.
+type RetainedOrigin struct {
+	MoveID       string `json:"move_id"`
+	SourceServer string `json:"source_server,omitempty"`
+	Switched     bool   `json:"switched"`
+}
+
+// copied reports data that is a never-switched move's copy.
+func (o *RetainedOrigin) copied() bool {
+	return o != nil && o.MoveID != "" && !o.Switched
+}
+
+// AppRemoveRequest is the optional body of DELETE /v1/apps/{id} and
+// DELETE /v1/native/apps/{id}. Without it the application's data is
+// retained and nothing records where it came from.
+type AppRemoveRequest struct {
+	// Origin is recorded on the retained resource the removal leaves.
+	Origin *RetainedOrigin `json:"origin,omitempty"`
+	// DeleteData removes the data services and volumes together with the
+	// application instead of retaining them. It is accepted only with an
+	// Origin that never switched, whose data is a copy of the source's.
+	DeleteData bool `json:"delete_data,omitempty"`
+}
+
+func (r AppRemoveRequest) validate() error {
+	if r.DeleteData && !r.Origin.copied() {
+		return errors.New("data is deleted with the application only on the destination of a move that never switched; otherwise it is retained")
+	}
+	return nil
+}
+
+// decodeAppRemoveRequest reads the optional removal body.
+func decodeAppRemoveRequest(w http.ResponseWriter, r *http.Request) (AppRemoveRequest, error) {
+	var req AppRemoveRequest
+	if r.ContentLength == 0 {
+		return req, nil
+	}
+	if err := Decode(w, r, &req); err != nil {
+		return req, err
+	}
+	return req, req.validate()
 }
 
 type RetainedResourceView struct {
@@ -29,6 +92,29 @@ type RetainedResourceView struct {
 	StorageVolume    string    `json:"storage_volume,omitempty"`
 	CacheMode        string    `json:"cache_mode,omitempty"`
 	CacheVolume      string    `json:"cache_volume,omitempty"`
+
+	// Kind is application (what a removed application left) or database
+	// (a database no removal record holds).
+	Kind          string                 `json:"kind"`
+	WritesStopped time.Time              `json:"writes_stopped,omitzero"`
+	Components    []RetainedComponent    `json:"components"`
+	Databases     []RetainedDatabaseView `json:"databases,omitempty"`
+	// SizeBytes sums the measured volumes; SizePending is set until every
+	// volume was measured once.
+	SizeBytes   int64 `json:"size_bytes"`
+	SizePending bool  `json:"size_pending,omitempty"`
+	// AttachedTo lists live applications that use part of the resource;
+	// removal is refused while it is not empty.
+	AttachedTo []string `json:"attached_to,omitempty"`
+	// Origin is the move the data came from, when known; Copy marks a
+	// never-switched move's partial copy, which is removed without a backup.
+	Origin *RetainedOrigin `json:"origin,omitempty"`
+	Copy   bool            `json:"copy,omitempty"`
+	// FinalBackupRequired is set when a database has no verified backup
+	// taken after its application stopped writing (never for a Copy).
+	FinalBackupRequired bool   `json:"final_backup_required"`
+	Removing            bool   `json:"removing,omitempty"`
+	Error               string `json:"error,omitempty"`
 }
 
 func (a App) resourceID() string {
@@ -39,20 +125,35 @@ func (a App) resourceID() string {
 }
 
 // The caller holds m.mu and persists this together with app removal/creation.
-func (m *Manager) archiveResourcesLocked(id string) {
+// It returns the new record's key, or "" when nothing was retained.
+func (m *Manager) archiveResourcesLocked(id string, retained ...retainedExtras) string {
 	volume, cache, clickhouse := m.data.StorageVolumes[id], m.data.Caches[id], m.data.ClickHouses[id]
-	if volume == "" && cache.Mode == "" && clickhouse.Network == "" && len(m.data.StackVolumes[id]) == 0 {
-		return
+	var extras retainedExtras
+	if len(retained) > 0 {
+		extras = retained[0]
+	}
+	if volume == "" && cache.Mode == "" && clickhouse.Network == "" && len(m.data.StackVolumes[id]) == 0 && len(extras.databases) == 0 {
+		return ""
 	}
 	if m.data.RetainedResources == nil {
 		m.data.RetainedResources = map[string]RetainedResource{}
 	}
 	key := newID()
-	m.data.RetainedResources[key] = RetainedResource{StackVolumes: m.data.StackVolumes[id], ID: key, AppID: id, Created: time.Now().UTC(), StorageVolume: volume, Cache: cache, ClickHouse: clickhouse}
+	m.data.RetainedResources[key] = RetainedResource{StackVolumes: m.data.StackVolumes[id], ID: key, AppID: id, Created: time.Now().UTC(), StorageVolume: volume, Cache: cache, ClickHouse: clickhouse,
+		Databases: extras.databases, WritesStopped: extras.writesStopped, Origin: extras.origin}
 	delete(m.data.StackVolumes, id)
 	delete(m.data.StorageVolumes, id)
 	delete(m.data.Caches, id)
 	delete(m.data.ClickHouses, id)
+	return key
+}
+
+// retainedExtras is what a removal knows beyond the resource maps: the
+// databases the application leaves behind and when its writes stopped.
+type retainedExtras struct {
+	databases     []string
+	writesStopped time.Time
+	origin        *RetainedOrigin
 }
 
 func (m *Manager) hasRetainedResourcesLocked(id string) bool {
@@ -94,52 +195,4 @@ func (m *Manager) resourceSnapshotLocked() diskState {
 	out.RetiredAppIDs = maps.Clone(m.data.RetiredAppIDs)
 	out.Tasks = maps.Clone(m.data.Tasks)
 	return out
-}
-
-func (m *Manager) retainedViews() []RetainedResourceView {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := []RetainedResourceView{}
-	for _, item := range m.data.RetainedResources {
-		view := RetainedResourceView{StackVolumes: item.StackVolumes, ID: item.ID, AppID: item.AppID, Created: item.Created, StorageVolume: item.StorageVolume, CacheMode: item.Cache.Mode}
-		if item.ClickHouse.Network != "" {
-			view.ClickHouseVolume = item.ClickHouse.Network + "-data"
-		}
-		if item.Cache.Network != "" {
-			view.CacheVolume = item.Cache.Network + "-data"
-		}
-		out = append(out, view)
-	}
-	// Expose older removals without rewriting their maps during startup. An
-	// installer rollback can still read that state until recreation is requested.
-	legacy := map[string]bool{}
-	for id := range m.data.StorageVolumes {
-		legacy[id] = true
-	}
-	for id := range m.data.ClickHouses {
-		legacy[id] = true
-	}
-	for id := range m.data.Caches {
-		legacy[id] = true
-	}
-	for id := range legacy {
-		if _, live := m.data.Apps[id]; live {
-			continue
-		}
-		cache := m.data.Caches[id]
-		view := RetainedResourceView{ID: "legacy-" + id, AppID: id, StorageVolume: m.data.StorageVolumes[id], CacheMode: cache.Mode}
-		if c := m.data.ClickHouses[id]; c.Network != "" {
-			view.ClickHouseVolume = c.Network + "-data"
-		}
-		if cache.Network != "" {
-			view.CacheVolume = cache.Network + "-data"
-		}
-		out = append(out, view)
-	}
-	slices.SortFunc(out, func(a, b RetainedResourceView) int { return cmp.Compare(a.ID, b.ID) })
-	return out
-}
-
-func (m *Manager) retainedRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/retained-resources", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.retainedViews()) })
 }

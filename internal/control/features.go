@@ -45,7 +45,7 @@ func (c *Control) appFeature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.agentCall(r, a.ServerID, r.Method, "/v1/apps/"+a.ID+"/"+action, in, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 202, map[string]string{"status": "accepted"})
@@ -91,14 +91,14 @@ func (c *Control) upgradeServer(w http.ResponseWriter, r *http.Request) {
 	var out agent.UpgradeStatus
 	if r.Method == "POST" {
 		if err := c.agentCall(r, r.PathValue("server"), r.Method, path, in, nil); err != nil {
-			agent.Fail(w, 502, err)
+			failAgent(w, err)
 			return
 		}
 		agent.JSON(w, 202, map[string]string{"status": "queued"})
 		return
 	}
 	if err := c.agentCall(r, r.PathValue("server"), r.Method, path, nil, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, out)
@@ -117,7 +117,7 @@ func (c *Control) upgradeServerSigned(w http.ResponseWriter, r *http.Request) {
 	}
 	var status agent.UpgradeStatus
 	if err := c.agentCall(r, server.ID, "GET", "/v1/upgrade", nil, &status); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	settings := c.updateSettingsSnapshot()
@@ -136,7 +136,7 @@ func (c *Control) upgradeServerSigned(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.checkUpdateRelease(r); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	settings = c.updateSettingsSnapshot()
@@ -153,11 +153,11 @@ func (c *Control) upgradeServerSigned(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.transferBundle(r, server, *settings.Bundle, agentArch(status)); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	if err := c.agentCall(r, server.ID, "POST", "/v1/upgrade", map[string]string{"version": settings.Bundle.Version}, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 202, map[string]string{"status": "queued", "version": settings.Bundle.Version})

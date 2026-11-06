@@ -69,7 +69,7 @@ func (c *Control) taskAction(w http.ResponseWriter, r *http.Request) {
 	}
 	var out any
 	if err := c.agentCall(r, a.ServerID, r.Method, path, in, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, out)

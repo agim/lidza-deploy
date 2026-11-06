@@ -25,11 +25,11 @@ const base=process.env.TEST_WEB_URL||'http://127.0.0.1:34225';
    await page.getByRole('button',{name:'Copy event details',exact:true}).first().click();
    const event=JSON.parse(await page.evaluate(()=>window.consoleCopied));assert.equal(event.container,'lidza-portal');assert(event.last_seen);assert.equal(event.recent_occurrences[0].request_id,'request-fixture');
   }
-  await page.goto(`${base}/console.html#audit`);await page.getByRole('button',{name:'Copy audit log'}).click();
+  await page.goto(`${base}/console/audit`);await page.getByRole('button',{name:'Copy audit log'}).click();
   assert.match(await page.evaluate(()=>window.consoleCopied),/ops@example.com.*server.console.unlock.*local/);
-  await page.goto(`${base}/console.html#page/cleanup/local`);await page.getByRole('button',{name:'Copy cleanup report'}).waitFor();
-  await page.goto(`${base}/console.html#page/console/local`);await page.getByRole('button',{name:'Copy output',exact:true}).waitFor();
-  await page.goto(`${base}/console.html#page/build-logs/build-one`);await page.locator('#deployment-output').waitFor();
+  await page.goto(`${base}/console/servers/local/cleanup`);await page.getByRole('button',{name:'Copy cleanup report'}).waitFor();
+  await page.goto(`${base}/console/servers/local/console`);await page.getByRole('button',{name:'Copy output',exact:true}).waitFor();
+  await page.goto(`${base}/console/deployments/build-one`);await page.locator('#deployment-output').waitFor();
   await page.evaluate(()=>navigator.clipboard.writeText=async()=>{throw Error('denied')});
   await page.getByRole('button',{name:'Copy build log',exact:true}).click();
   await page.getByRole('alert').filter({hasText:'Could not copy'}).waitFor();

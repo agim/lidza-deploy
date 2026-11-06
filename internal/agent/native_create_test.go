@@ -140,7 +140,7 @@ func TestNativeCreateGoApplicationEndToEnd(t *testing.T) {
 		t.Fatalf("env file mode: %v %v", info, err)
 	}
 	env, _ := os.ReadFile(envFile)
-	for _, line := range []string{"PORT=4100", "LIDZA_ADDR=127.0.0.1:4100", "API_TOKEN=token-value", "STORAGE_DIR=" + filepath.Join(root, "shared", "storage")} {
+	for _, line := range []string{"PORT=4100", "LIDZA_ADDR=127.0.0.1:4100", "LIDZA_MODE=production", "API_TOKEN=token-value", "STORAGE_DIR=" + filepath.Join(root, "shared", "storage")} {
 		if !strings.Contains(string(env), line+"\n") {
 			t.Fatalf("env lacks %s:\n%s", line, env)
 		}
@@ -185,14 +185,20 @@ func TestNativeCreateGoApplicationEndToEnd(t *testing.T) {
 		t.Fatal("the proxy must route the created application's domain")
 	}
 
-	removed := false
-	oldRelease := releaseNativeData
-	releaseNativeData = func(context.Context, *Manager, string) error { removed = true; return nil }
-	t.Cleanup(func() { releaseNativeData = oldRelease })
+	// Removal keeps the data services as a retained resource; it never
+	// drops them.
+	removed, dropped := false, false
+	oldRetain, oldRelease := retainNativeData, releaseNativeData
+	retainNativeData = func(context.Context, *Manager, string, *RetainedOrigin) (string, error) {
+		removed = true
+		return "", nil
+	}
+	releaseNativeData = func(context.Context, *Manager, string) error { dropped = true; return nil }
+	t.Cleanup(func() { retainNativeData, releaseNativeData = oldRetain, oldRelease })
 	if w := f.do(t, "DELETE", "/v1/native/apps/shop?purge=1", ""); w.Code != 200 {
 		t.Fatalf("delete: %d %s", w.Code, w.Body)
 	}
-	if !removed || !f.ran("systemctl disable --now --quiet "+unit) || !f.ran("userdel app-shop") {
+	if !removed || dropped || !f.ran("systemctl disable --now --quiet "+unit) || !f.ran("userdel app-shop") {
 		t.Fatalf("delete commands: %v", f.commands)
 	}
 	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
@@ -330,8 +336,10 @@ func TestNativeCreatedPlanUsesSystemUnitsAndManagedToolchains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Services != nil || len(plan.Units) != 0 || plan.Health == nil || plan.Prepare == nil || !plan.SkipBackup {
-		t.Fatalf("plan = services %v units %v health %v prepare %v skip %v", plan.Services, plan.Units, plan.Health != nil, plan.Prepare != nil, plan.SkipBackup)
+	// The engine restarts nothing itself (the health hook does, as root) but
+	// keeps the units so it can explain them after a failed check.
+	if plan.Services != nil || plan.Inspector == nil || !slices.Equal(plan.Units, policy.Units) || plan.Health == nil || plan.Prepare == nil || !plan.SkipBackup {
+		t.Fatalf("plan = services %v inspector %v units %v health %v prepare %v skip %v", plan.Services, plan.Inspector != nil, plan.Units, plan.Health != nil, plan.Prepare != nil, plan.SkipBackup)
 	}
 	if plan.Profile.Name != "go" {
 		t.Fatalf("profile = %s", plan.Profile.Name)

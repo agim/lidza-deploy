@@ -22,6 +22,9 @@ import (
 //   - GET  /v1/move/databases/{id}/tables number of tables in a database
 //   - GET  /v1/move/databases/{id}/backups/{backup} a verified dump download
 //   - POST /v1/move/databases/{id}/restore restore an uploaded dump
+//   - /v1/move/apps/{id}/files...         persistent files (see move_files.go)
+//   - /v1/move/uploads/{upload}           resumable uploads (see move_resume.go)
+//   - POST /v1/move/probe, GET /v1/move/apps/{id}/diagnostics (move_probe.go)
 //
 // Like every /v1 route they require the agent API key, which only the control
 // panel holds; the control panel never forwards them to a browser. Handlers
@@ -33,23 +36,32 @@ const MoveSHA256Header = "X-Lidza-Sha256"
 // MoveSource describes what moving an application involves. It names
 // environment keys but never carries a value.
 type MoveSource struct {
-	AppID             string               `json:"app_id"`
-	Runtime           string               `json:"runtime"` // go, rails, astro, node, static
-	Native            bool                 `json:"native"`
-	Repository        string               `json:"repository"`
-	Branch            string               `json:"branch"`
-	Domain            string               `json:"domain"`
-	AdditionalDomains []string             `json:"additional_domains,omitempty"`
-	Commit            string               `json:"commit,omitempty"`
-	EnvironmentKeys   []string             `json:"environment_keys"`
-	Databases         []MoveSourceDatabase `json:"databases"`
+	AppID             string   `json:"app_id"`
+	Runtime           string   `json:"runtime"` // go, rails, astro, node, static
+	Native            bool     `json:"native"`
+	Repository        string   `json:"repository"`
+	Branch            string   `json:"branch"`
+	Domain            string   `json:"domain"`
+	AdditionalDomains []string `json:"additional_domains,omitempty"`
+	Commit            string   `json:"commit,omitempty"`
+	EnvironmentKeys   []string `json:"environment_keys"`
+	// EnvironmentSources names where each exported variable comes from
+	// (panel, deploy defaults, image); empty when all are panel settings.
+	EnvironmentSources map[string]string    `json:"environment_sources,omitempty"`
+	Databases          []MoveSourceDatabase `json:"databases"`
 	// Redis is a data service the destination must provide again: a host
 	// Redis (native) or the managed cache (containers). Its contents are not
 	// copied.
-	Redis     bool     `json:"redis"`
-	CacheMode string   `json:"cache_mode,omitempty"`
-	Volumes   []string `json:"volumes"`
-	Tasks     []string `json:"tasks"`
+	Redis     bool   `json:"redis"`
+	CacheMode string `json:"cache_mode,omitempty"`
+	// ClickHouse is the application's managed ClickHouse database; its
+	// contents are copied (move_clickhouse.go).
+	ClickHouse *MoveSourceClickHouse `json:"clickhouse,omitempty"`
+	Volumes    []string              `json:"volumes"`
+	// Files are the persistent file sets the agent transfers; nil from
+	// agents that cannot transfer files.
+	Files *MoveFiles `json:"files,omitempty"`
+	Tasks []string   `json:"tasks"`
 	// CreateSpec recreates a native application elsewhere: no environment
 	// and no external database URL.
 	CreateSpec *NativeCreateRequest `json:"create_spec,omitempty"`
@@ -61,6 +73,9 @@ type MoveSource struct {
 	Busy      bool     `json:"busy"`
 	Blockers  []string `json:"blockers"`
 	Notes     []string `json:"notes"`
+	// BuildPeakMiB is the largest memory peak of the application's recent
+	// build steps on this host; 0 when none was measured.
+	BuildPeakMiB int `json:"build_peak_mib,omitempty"`
 }
 
 // MoveSourceDatabase is one database of a moving application.
@@ -77,6 +92,13 @@ type MoveSourceDatabase struct {
 	Backup       BackupPolicy `json:"backup"`
 	LatestBackup *time.Time   `json:"latest_backup,omitempty"`
 	Reason       string       `json:"reason,omitempty"`
+	// BeforeDeploy is the database's effective pre-deployment backup policy,
+	// carried to the destination.
+	BeforeDeploy BeforeDeployPolicy `json:"before_deploy,omitzero"`
+	// ExcludedTables are tables whose data this agent's backups leave out
+	// (backup_exclude_table_data); a move copies them separately or leaves
+	// them behind, as the operator chooses (move_table_data.go).
+	ExcludedTables []MoveExcludedTable `json:"excluded_tables,omitempty"`
 }
 
 // MoveEnvironment is an application's complete environment for copying to
@@ -86,15 +108,34 @@ type MoveEnvironment struct {
 	Native bool              `json:"native"`
 	Values map[string]string `json:"values"`
 	Kinds  map[string]string `json:"kinds"`
+	// Sources names where each value comes from: panel, deploy defaults or
+	// image (move_environment.go). Native environments are panel-complete.
+	Sources map[string]string `json:"sources,omitempty"`
 }
 
 // MoveHost describes a possible destination.
 type MoveHost struct {
-	IPv4       string `json:"ipv4,omitempty"`
-	IPv6       string `json:"ipv6,omitempty"`
-	Native     bool   `json:"native"`
-	HostData   bool   `json:"host_data"`
-	NativeOnly bool   `json:"native_only,omitempty"`
+	IPv4     string `json:"ipv4,omitempty"`
+	IPv6     string `json:"ipv6,omitempty"`
+	Native   bool   `json:"native"`
+	HostData bool   `json:"host_data"`
+	// Files reports that this agent restores transferred file sets.
+	Files bool `json:"files,omitempty"`
+	// ClickHouse reports that this agent copies managed ClickHouse data.
+	ClickHouse bool `json:"clickhouse,omitempty"`
+	// Resume reports ranged downloads and resumable uploads
+	// (move_resume.go); Probe the disk probe and move diagnostics
+	// (move_probe.go).
+	Resume bool `json:"resume,omitempty"`
+	Probe  bool `json:"probe,omitempty"`
+	// TableData reports that this agent dumps and loads the data of tables
+	// that backups leave out (move_table_data.go).
+	TableData bool `json:"table_data,omitempty"`
+	// ClickHouseFormats are the ClickHouse archive formats this agent
+	// restores (directory backups since this field exists); Zstd that it
+	// writes and reads Zstandard streams (the zstd tool is installed).
+	ClickHouseFormats []string `json:"clickhouse_formats,omitempty"`
+	Zstd              bool     `json:"zstd,omitempty"`
 }
 
 // MoveHealth is the result of an explicit readiness check.
@@ -116,10 +157,21 @@ var (
 	}
 )
 
+// moveTransfer marks a long move transfer as running for its duration, so an
+// agent upgrade does not restart the agent in the middle of it.
+func (m *Manager) moveTransfer(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m.moveTransfers.Add(1)
+		defer m.moveTransfers.Add(-1)
+		h(w, r)
+	}
+}
+
 func (m *Manager) moveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/move/host", func(w http.ResponseWriter, r *http.Request) {
 		addresses := moveDetectAddresses()
-		JSON(w, 200, MoveHost{IPv4: addresses.IPv4, IPv6: addresses.IPv6, Native: m.cfg.Native != nil, HostData: !m.cfg.IngressOnly && !m.cfg.NativeOnly, NativeOnly: m.cfg.NativeOnly})
+		JSON(w, 200, MoveHost{IPv4: addresses.IPv4, IPv6: addresses.IPv6, Native: m.cfg.Native != nil, HostData: !m.cfg.IngressOnly, Files: true, ClickHouse: !m.cfg.IngressOnly, Resume: true, Probe: true, TableData: true,
+			ClickHouseFormats: []string{clickhouseFormatDirectory, clickhouseFormatBackup, clickhouseFormatNative}, Zstd: zstdAvailable()})
 	})
 	mux.HandleFunc("GET /v1/move/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		source, err := m.moveSource(r.Context(), r.PathValue("id"))
@@ -132,7 +184,7 @@ func (m *Manager) moveRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("GET /v1/move/apps/{id}/environment", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		env, err := m.moveEnvironment(r.PathValue("id"))
+		env, err := m.moveEnvironment(r.Context(), r.PathValue("id"))
 		if err != nil {
 			Fail(w, 409, err)
 			return
@@ -154,8 +206,13 @@ func (m *Manager) moveRoutes(mux *http.ServeMux) {
 		}
 		JSON(w, 200, map[string]int{"tables": count})
 	})
-	mux.HandleFunc("GET /v1/move/databases/{id}/backups/{backup}", m.moveBackupDownload)
-	mux.HandleFunc("POST /v1/move/databases/{id}/restore", m.moveRestoreRoute)
+	mux.HandleFunc("GET /v1/move/databases/{id}/backups/{backup}", m.moveTransfer(m.moveBackupDownload))
+	mux.HandleFunc("POST /v1/move/databases/{id}/restore", m.moveTransfer(m.moveRestoreRoute))
+	m.moveFileRoutes(mux)
+	m.moveClickHouseRoutes(mux)
+	m.moveUploadRoutes(mux)
+	m.moveProbeRoutes(mux)
+	m.moveTableDataRoutes(mux)
 }
 
 // moveSource inventories an application for a move. Table counts are
@@ -174,6 +231,11 @@ func (m *Manager) moveSource(ctx context.Context, id string) (MoveSource, error)
 		}
 		source = m.containerMoveSourceLocked(a)
 		m.mu.Unlock()
+		// The container runs with more than the panel stores (manifest
+		// defaults, image ENV); the plan lists the effective keys.
+		effective := m.containerEffectiveEnvironment(ctx, a)
+		source.EnvironmentKeys = sortedKeys(effective.Values)
+		source.EnvironmentSources = effective.Sources
 	} else {
 		m.mu.Unlock()
 		var err error
@@ -191,7 +253,20 @@ func (m *Manager) moveSource(ctx context.Context, id string) (MoveSource, error)
 			database.Tables = count
 		}
 		cancel()
+		database.ExcludedTables = m.moveExcludedTables(ctx, database.ID)
 	}
+	if ch := source.ClickHouse; ch != nil && ch.Copyable {
+		if err := m.measureMoveClickHouse(ctx, id, ch); err != nil {
+			ch.Copyable, ch.Reason = false, "unreachable: "+err.Error()
+			source.Blockers = append(source.Blockers, "ClickHouse database "+ch.Database+" could not be measured on the source: "+boundedErrorText(err.Error(), 300))
+		}
+	}
+	if len(source.Blockers) == 0 || source.Container != nil || source.CreateSpec != nil {
+		if files, err := m.moveFileInventory(ctx, id); err == nil {
+			source.Files = files
+		}
+	}
+	source.BuildPeakMiB = m.buildPeakOf(id)
 	slices.Sort(source.Blockers)
 	return source, nil
 }
@@ -220,7 +295,7 @@ func (m *Manager) containerMoveSourceLocked(a App) MoveSource {
 	for dbID, keys := range migrationDatabaseReferences(a) {
 		slices.Sort(keys)
 		d, found := m.data.Databases[dbID]
-		entry := MoveSourceDatabase{ID: dbID, Engine: "postgresql", Mode: d.Mode, EnvironmentKeys: keys, Tables: -1, Backup: d.Backup}
+		entry := MoveSourceDatabase{ID: dbID, Engine: "postgresql", Mode: d.Mode, EnvironmentKeys: keys, Tables: -1, Backup: d.Backup, BeforeDeploy: m.beforeDeployPolicyLocked(dbID)}
 		if m.data.NativeDatabases[dbID].Policy.SQLitePath != "" {
 			entry.Engine = "sqlite"
 		}
@@ -271,8 +346,12 @@ func (m *Manager) containerMoveSourceLocked(a App) MoveSource {
 	for _, volume := range m.data.StackVolumes[id] {
 		s.Volumes = append(s.Volumes, "stack volume "+volume)
 	}
-	if _, found := m.data.ClickHouses[id]; found {
-		s.Blockers = append(s.Blockers, "Managed ClickHouse data is moved manually.")
+	if c, found := m.data.ClickHouses[id]; found {
+		s.ClickHouse = &MoveSourceClickHouse{Mode: "container", Database: containerClickHouseDatabase, Tables: -1, EnvironmentKeys: slices.Clone(ClickHouseEnvironmentKeys), Copyable: c.Ready}
+		if !c.Ready {
+			s.ClickHouse.Reason = "not ready"
+			s.Blockers = append(s.Blockers, "Managed ClickHouse is not ready; deploy the application on its current server before moving it.")
+		}
 	}
 	for _, task := range m.data.Tasks {
 		if task.AppID == id {
@@ -357,8 +436,16 @@ func (m *Manager) nativeMoveSource(id string) (MoveSource, error) {
 	}
 	spec.Env, spec.EnvKinds, spec.Data.ExternalDatabaseURL = nil, nil, ""
 	spec.Data.Postgres, spec.Data.Redis = record.Postgres != nil, record.Redis != nil
+	spec.Data.ClickHouse, spec.Data.ClickHouseVersion = record.ClickHouse != nil, ""
+	if ch := record.ClickHouse; ch != nil {
+		s.ClickHouse = &MoveSourceClickHouse{Mode: "host", Database: ch.Name, Tables: -1, EnvironmentKeys: slices.Clone(ClickHouseEnvironmentKeys), Copyable: ch.Ready}
+		if !ch.Ready {
+			s.ClickHouse.Reason = "not ready"
+			s.Blockers = append(s.Blockers, "ClickHouse database "+ch.Name+" is not ready.")
+		}
+	}
 	if pg := record.Postgres; pg != nil {
-		entry := MoveSourceDatabase{ID: pg.Resource, Engine: "postgresql", Mode: "host", EnvironmentKeys: []string{"DATABASE_URL"}, Tables: -1}
+		entry := MoveSourceDatabase{ID: pg.Resource, Engine: "postgresql", Mode: "host", EnvironmentKeys: []string{"DATABASE_URL"}, Tables: -1, BeforeDeploy: m.beforeDeployPolicyLocked(pg.Resource)}
 		if databaseFound {
 			entry.Backup, entry.LatestBackup = database.Backup, latestBackup(database)
 			spec.Data.BackupHours, spec.Data.Offsite = database.Backup.Hours, database.Backup.Offsite
@@ -384,7 +471,7 @@ func (m *Manager) nativeMoveSource(id string) (MoveSource, error) {
 
 // moveEnvironment returns the values an application runs with. Gateway
 // transport keys are agent-owned and never leave the host.
-func (m *Manager) moveEnvironment(id string) (MoveEnvironment, error) {
+func (m *Manager) moveEnvironment(ctx context.Context, id string) (MoveEnvironment, error) {
 	out := MoveEnvironment{AppID: id, Values: map[string]string{}, Kinds: map[string]string{}}
 	if !idPattern.MatchString(id) {
 		return out, errors.New("invalid application id")
@@ -392,16 +479,17 @@ func (m *Manager) moveEnvironment(id string) (MoveEnvironment, error) {
 	m.mu.Lock()
 	a, container := m.data.Apps[id]
 	if container {
-		defer m.mu.Unlock()
+		m.mu.Unlock()
 		if a.Retiring {
 			return out, errors.New("application unavailable")
 		}
-		kinds := normalizeEnvironmentKinds(a.Env, a.EnvKinds)
-		for key, value := range a.Env {
-			if strings.HasPrefix(key, gatewayEnvPrefix) {
-				continue
-			}
-			out.Values[key], out.Kinds[key] = value, kinds[key]
+		// The effective environment: the container's, including manifest
+		// defaults and image ENV, minus runtime-owned keys.
+		effective := m.containerEffectiveEnvironment(ctx, a)
+		kinds := normalizeEnvironmentKinds(effective.Values, a.EnvKinds)
+		out.Sources = map[string]string{}
+		for key, value := range effective.Values {
+			out.Values[key], out.Kinds[key], out.Sources[key] = value, kinds[key], effective.Sources[key]
 		}
 		return out, moveEnvironmentBounds(out.Values)
 	}

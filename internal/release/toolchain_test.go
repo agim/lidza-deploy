@@ -9,10 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -174,5 +177,92 @@ func TestNodeRequirementReadsPins(t *testing.T) {
 	}
 	if got := NodeRequirement(t.TempDir()); got != "" {
 		t.Fatalf("no pin = %q", got)
+	}
+}
+
+func TestToolchainFetchRetriesOverIPv4(t *testing.T) {
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }))
+	defer broken.Close()
+	working := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "archive") }))
+	defer working.Close()
+	// The first client reaches an edge that answers 404; the IPv4 client reaches one that serves the file.
+	redirect := func(target string) *http.Client {
+		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			u, _ := url.Parse(target)
+			r.URL.Scheme, r.URL.Host = u.Scheme, u.Host
+			return http.DefaultTransport.RoundTrip(r)
+		})}
+	}
+	tc := Toolchains{Client: redirect(broken.URL), IPv4Client: redirect(working.URL)}
+	body, err := tc.get(context.Background(), "https://dl.example.com/go1.27.3.linux-amd64.tar.gz", 1<<10)
+	if err != nil || string(body) != "archive" {
+		t.Fatalf("fetch did not fall back to IPv4: %q %v", body, err)
+	}
+	tc.IPv4Client = redirect(broken.URL)
+	if _, err := tc.get(context.Background(), "https://dl.example.com/missing.tar.gz", 1<<10); err == nil || !strings.Contains(err.Error(), "over IPv4") {
+		t.Fatalf("expected both attempts reported, got %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestNeedsRustFindsPackManifests(t *testing.T) {
+	if NeedsRust(writeTree(t, map[string]string{"go.mod": "module x\n"})) {
+		t.Fatal("a Go-only tree needs no Rust")
+	}
+	if !NeedsRust(writeTree(t, map[string]string{"packs/parser/rust/Cargo.toml": "[package]\n"})) {
+		t.Fatal("a Rust pack was not detected")
+	}
+	if !NeedsRust(writeTree(t, map[string]string{"Cargo.toml": "[package]\n"})) {
+		t.Fatal("a root Cargo manifest was not detected")
+	}
+}
+
+func TestRustInstallsVerifiedToolchainOnce(t *testing.T) {
+	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("Rust installs are supported on linux/amd64 and linux/arm64")
+	}
+	// A stand-in rustup-init that lays out what the real one installs.
+	installer := []byte("#!/bin/sh\nset -eu\n[ \"$(basename \"$0\")\" = rustup-init ] || { echo \"error: unknown proxy name: '$(basename \"$0\")'\" >&2; exit 1; }\nt=\"$RUSTUP_HOME/toolchains/stable-test\"\nmkdir -p \"$t/bin\" \"$CARGO_HOME/bin\"\nprintf '#!/bin/sh\\n' > \"$t/bin/cargo\"\nprintf '#!/bin/sh\\necho \"$@\" >> \"$RUSTUP_HOME/calls\"\\n' > \"$CARGO_HOME/bin/rustup\"\nchmod 755 \"$t/bin/cargo\" \"$CARGO_HOME/bin/rustup\"\necho \"$@\" > \"$RUSTUP_HOME/installed-with\"\n")
+	sum := sha256.Sum256(installer)
+	served := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/rustup-init.sha256"):
+			fmt.Fprintf(w, "%x  rustup-init\n", sum)
+		case strings.HasSuffix(r.URL.Path, "/rustup-init"):
+			served++
+			w.Write(installer)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	tc := Toolchains{Dir: t.TempDir(), RustDownload: server.URL}
+	root, err := tc.Rust(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(root) != "stable-test" {
+		t.Fatalf("toolchain root %s", root)
+	}
+	args, _ := os.ReadFile(filepath.Join(tc.Dir, "rust", "rustup", "installed-with"))
+	if !strings.Contains(string(args), "--profile minimal") || !strings.Contains(string(args), "--target wasm32-wasip1") {
+		t.Fatalf("installer arguments: %s", args)
+	}
+	if _, err := tc.Rust(context.Background()); err != nil || served != 1 {
+		t.Fatalf("second call reinstalled (%d downloads) or failed: %v", served, err)
+	}
+	calls, _ := os.ReadFile(filepath.Join(tc.Dir, "rust", "rustup", "calls"))
+	if !strings.Contains(string(calls), "target add wasm32-wasip1") {
+		t.Fatalf("an existing installation did not ensure its targets: %q", calls)
+	}
+
+	tampered := Toolchains{Dir: t.TempDir(), RustDownload: server.URL}
+	sum[0] ^= 0xff
+	if _, err := tampered.Rust(context.Background()); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Fatalf("a tampered installer was accepted: %v", err)
 	}
 }

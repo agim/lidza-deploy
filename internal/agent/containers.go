@@ -32,6 +32,16 @@ type ContainerView struct {
 	PIDs           string            `json:"pids,omitempty"`
 	Restartable    bool              `json:"restartable"`
 	NeedsAttention bool              `json:"needs_attention"`
+	// Native process rows (Runtime "native") are systemd units of native
+	// applications. They carry numeric usage instead of docker stats text
+	// and are restarted through the application's native service control.
+	Runtime          string    `json:"runtime,omitempty"`
+	Unit             string    `json:"unit,omitempty"`
+	Since            time.Time `json:"since,omitzero"`
+	CPUPercent       *float64  `json:"cpu_percent,omitempty"`
+	MemoryBytes      *int64    `json:"memory_bytes,omitempty"`
+	MemoryLimitBytes *int64    `json:"memory_limit_bytes,omitempty"`
+	RestartCount     *int      `json:"restart_count,omitempty"`
 }
 
 type ContainerInventory struct {
@@ -169,6 +179,19 @@ func healthFromStatus(status string) string {
 }
 
 func (m *Manager) containerInventory(ctx context.Context) ContainerInventory {
+	out := m.dockerContainerInventory(ctx)
+	rows, warning := m.nativeProcessRows(ctx)
+	out.Containers = append(out.Containers, rows...)
+	if warning != "" {
+		out.Warning = strings.TrimSpace(out.Warning + " " + warning)
+	}
+	return out
+}
+
+// dockerContainerInventory is the container part of the inventory. A host
+// without managed containers never calls Docker, so hosts that run only
+// native applications need no Docker installation.
+func (m *Manager) dockerContainerInventory(ctx context.Context) ContainerInventory {
 	managed := m.managedContainers()
 	out := ContainerInventory{CheckedAt: time.Now().UTC(), Containers: make([]ContainerView, 0, len(managed))}
 	if len(managed) == 0 {

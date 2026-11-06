@@ -12,7 +12,7 @@ const {chromium}=require('playwright');const assert=require('node:assert/strict'
    }else if(path.endsWith('/deployments'))json={deployments:[]};
    await route.fulfill({json});
   });
-  await page.goto((process.env.TEST_WEB_URL||'http://127.0.0.1:8880')+'/console.html#applications');await page.locator('.app-card').first().waitFor();
+  await page.goto((process.env.TEST_WEB_URL||'http://127.0.0.1:8880')+'/console/applications');await page.locator('.app-card').first().waitFor();
   await page.evaluate(()=>{
    clearInterval(poll);
    window.cards=[...document.querySelectorAll('[data-app-card]')];

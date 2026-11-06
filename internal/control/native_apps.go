@@ -23,8 +23,9 @@ func (c *Control) nativeContainerGuard(pattern string, next http.HandlerFunc) ht
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if app, found := c.app(r.PathValue("id")); found && app.Native != nil {
-			// Moves handle both runtimes through their own agent endpoints.
-			if pattern == "DELETE /api/control/apps/{id}/webhook" || strings.HasSuffix(pattern, "/{id}/move") || strings.HasSuffix(pattern, "/{id}/move-plan") {
+			// Moves handle both runtimes through their own agent endpoints;
+			// removal uses the native removal of the agent (retire.go).
+			if pattern == "DELETE /api/control/apps/{id}/webhook" || pattern == "DELETE /api/control/apps/{id}" || strings.HasSuffix(pattern, "/{id}/move") || strings.HasSuffix(pattern, "/{id}/move-plan") {
 				next(w, r)
 				return
 			}
@@ -62,7 +63,12 @@ func (c *Control) nativeContainerGuard(pattern string, next http.HandlerFunc) ht
 				next(w, r)
 				return
 			}
-			if pattern == "GET /api/control/apps/{id}/settings" || pattern == "GET /api/control/apps/{id}/logs" || pattern == "GET /api/control/apps/{id}/processes" {
+			// Read-only diagnostics are runtime-agnostic: errors and security
+			// activity come from the agent's console collector (journals for
+			// native units), logs and processes from the native service routes.
+			switch pattern {
+			case "GET /api/control/apps/{id}/settings", "GET /api/control/apps/{id}/logs", "GET /api/control/apps/{id}/processes",
+				"GET /api/control/apps/{id}/errors", "GET /api/control/apps/{id}/security", "GET /api/control/apps/{id}/analytics-errors":
 				next(w, r)
 				return
 			}
@@ -70,7 +76,7 @@ func (c *Control) nativeContainerGuard(pattern string, next http.HandlerFunc) ht
 				next(w, r)
 				return
 			}
-			agent.Fail(w, 409, errors.New("this app uses existing native services; container deployment, configuration and routing actions require a separate approved native change plan"))
+			agent.Fail(w, 409, errors.New(nativeUnsupportedReason(pattern, r.PathValue("feature"))))
 			return
 		}
 		next(w, r)
@@ -141,6 +147,9 @@ func (c *Control) nativeAppRoute(w http.ResponseWriter, r *http.Request) {
 		input = in
 	} else if r.PathValue("action") == "logs" {
 		path += "/logs?unit=" + url.QueryEscape(r.URL.Query().Get("unit"))
+	} else if action := r.PathValue("action"); action == "data" || action == "processes" {
+		// Data services provisioned on the host and per-unit usage.
+		path += "/" + action
 	} else if r.PathValue("action") != "" {
 		http.NotFound(w, r)
 		return
@@ -152,4 +161,61 @@ func (c *Control) nativeAppRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	agent.JSON(w, 200, out)
+}
+
+// nativeRuntimeLogs answers the application's runtime log route for a
+// native application from the journal of its units, in the reply shape of
+// container logs. Without ?unit= the log interleaves every unit; the reply
+// lists the units so the page can filter by process.
+func (c *Control) nativeRuntimeLogs(w http.ResponseWriter, r *http.Request, a Application) {
+	w.Header().Set("Cache-Control", "no-store")
+	units := slices.Clone(a.Native.Services)
+	if len(units) == 0 {
+		agent.JSON(w, 200, map[string]any{"logs": "This static site has no application process. Its files are served by the web server.", "units": []string{}})
+		return
+	}
+	unit := r.URL.Query().Get("unit")
+	if unit != "" && !slices.Contains(units, unit) {
+		agent.Fail(w, 400, errors.New("select one of the application's services"))
+		return
+	}
+	var out struct {
+		Log string `json:"log"`
+	}
+	if err := c.agentCall(r, a.ServerID, "GET", "/v1/native/apps/"+url.PathEscape(a.ID)+"/logs?unit="+url.QueryEscape(unit), nil, &out); err != nil {
+		failAgent(w, err)
+		return
+	}
+	agent.JSON(w, 200, map[string]any{"logs": out.Log, "units": units, "unit": unit})
+}
+
+// nativeUnsupportedReason explains why a container-runtime action does not
+// apply to a native application and where its native counterpart is. The
+// panel hides these actions for native applications; the refusal answers
+// direct API calls.
+func nativeUnsupportedReason(pattern, feature string) string {
+	const suffix = " does not apply to a native application"
+	switch {
+	case strings.HasSuffix(pattern, "/reload"):
+		return "reloading rebuilds a container release and" + suffix + "; restart its services from the Processes tab"
+	case strings.HasSuffix(pattern, "/{feature}") && feature == "state":
+		return "stopping or starting the whole container application" + suffix + "; start, stop or restart its services from the Processes tab"
+	case strings.HasSuffix(pattern, "/{feature}") && feature == "maintenance":
+		return "the maintenance page is served by the container proxy and" + suffix
+	case strings.HasSuffix(pattern, "/restore") || strings.HasSuffix(pattern, "/{feature}") && feature == "restore":
+		return "restoring into a new database creates a container database and" + suffix + "; download or restore its backups from Databases & backups"
+	case strings.Contains(pattern, "/cache"):
+		return "the managed container cache" + suffix + "; its Redis on the server is shown under Data & storage"
+	case strings.Contains(pattern, "/database"), strings.HasSuffix(pattern, "/backups"):
+		return "container database attachment" + suffix + "; its databases on the server are managed from Databases & backups"
+	case strings.Contains(pattern, "/previews"):
+		return "preview environments run as containers and" + suffix
+	case strings.Contains(pattern, "/tasks/"):
+		return "scheduled commands and workers run as containers and" + suffix + "; its schedules come from its release policy and its workers are services"
+	case strings.HasSuffix(pattern, "/ports"):
+		return "forwarded public ports are container publications and" + suffix
+	case strings.HasSuffix(pattern, "/master-key"):
+		return "generating a master key for a container release" + suffix + "; set it under Environment"
+	}
+	return "this action manages the container runtime and" + suffix + "; use its service and release actions instead"
 }

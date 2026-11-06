@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -123,7 +124,7 @@ func (c *Control) updates(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.PathValue("action") == "check" {
 			if err := c.checkUpdateRelease(r); err != nil {
-				agent.Fail(w, 502, err)
+				failAgent(w, err)
 				return
 			}
 			agent.JSON(w, 200, c.updateSettingsSnapshot())
@@ -139,7 +140,7 @@ func (c *Control) updates(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := c.checkUpdateRelease(r); err != nil {
-			agent.Fail(w, 502, err)
+			failAgent(w, err)
 			return
 		}
 		v = c.updateSettingsSnapshot()
@@ -270,9 +271,13 @@ func (c *Control) updateTick(ctx context.Context) error {
 			t.Message = status.Message
 			return c.saveUpdateSettings(v)
 		}
-		needsPanel := false
+		needsPanel, local := false, false
 		for _, host := range c.servers() {
-			if host.ID == t.ServerID && localUpdateServer(host) && semver.IsValid(buildinfo.Version) && semver.Compare(buildinfo.Version, v.Version) < 0 {
+			if host.ID != t.ServerID {
+				continue
+			}
+			local = localUpdateServer(host)
+			if local && semver.IsValid(buildinfo.Version) && semver.Compare(buildinfo.Version, v.Version) < 0 {
 				needsPanel = true
 			}
 		}
@@ -302,6 +307,14 @@ func (c *Control) updateTick(ctx context.Context) error {
 				return c.saveUpdateSettings(v)
 			}
 			return nil
+		}
+		// A running move must not be set back: an upgrade of this host
+		// restarts the control panel, which relays every move's streams,
+		// and an upgrade of a source or destination agent interrupts its
+		// transfers. The target waits until the move reaches a safe point.
+		if hold := c.updateMoveHold(t.ServerID, local); hold != "" {
+			t.State, t.Message = "waiting", hold
+			return c.saveUpdateSettings(v)
 		}
 		if c.channelConfigured() {
 			// Only signed bundles may be dispatched on the signed channel.
@@ -342,6 +355,46 @@ func (c *Control) updateTick(ctx context.Context) error {
 // build that pins keys installs only bundles from its configured channel.
 func (c *Control) updatesAvailable() bool {
 	return c.releaseCheck != nil || c.channelConfigured() || !channelTrust().Configured()
+}
+
+// updateMoveHold names the move an update of server must wait for: for the
+// control panel's own host (local) any move in a copy, for an agent a move
+// whose source or destination it is. A move is in a copy while it runs,
+// syncs, finishes or aborts with a step running; one waiting for the
+// operator (planned, failed, at cutover or ready for the finish) is idle,
+// and an update may proceed. The message is shown with the target on the
+// Updates page.
+func (c *Control) updateMoveHold(server string, local bool) string {
+	c.mu.Lock()
+	jobs := []MoveJob{}
+	for _, job := range c.data.Moves {
+		if moveInCopy(job) && (local || job.SourceServer == server || job.TargetServer == server) {
+			jobs = append(jobs, job)
+		}
+	}
+	c.mu.Unlock()
+	if len(jobs) == 0 {
+		return ""
+	}
+	// The oldest move names the wait, so the message is stable across ticks.
+	slices.SortFunc(jobs, func(a, b MoveJob) int { return a.Created.Compare(b.Created) })
+	job := jobs[0]
+	target := job.TargetServer
+	if s := c.serverByID(job.TargetServer); s.Name != "" {
+		target = s.Name
+	}
+	return fmt.Sprintf("Waiting for the move of %s to %s to reach a safe point", job.AppID, target)
+}
+
+// moveInCopy reports whether a move is between checkpoints: its state has
+// a runner and a step is running.
+func moveInCopy(job MoveJob) bool {
+	switch job.State {
+	case moveStateRunning, moveStateSyncing, moveStateFinishing, moveStateAborting:
+	default:
+		return false
+	}
+	return slices.ContainsFunc(job.Steps, func(s MoveStep) bool { return s.Status == "running" })
 }
 
 func (c *Control) latestRelease(r *http.Request) (string, error) {

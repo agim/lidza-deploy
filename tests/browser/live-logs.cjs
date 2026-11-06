@@ -30,7 +30,7 @@ function assert(value, message) { if (!value) throw new Error(message); }
       return route.fulfill({ json: [] });
     });
 
-    await page.goto(`${base}/console.html#page/build-logs/fixture-build`);
+    await page.goto(`${base}/console/deployments/fixture-build`);
     await page.waitForSelector('#deployment-output');
     assert(await page.locator('#deployment-output').textContent().then(text => text.includes('Waiting for build output')), 'Queued build did not show a waiting state');
 
@@ -79,8 +79,9 @@ function assert(value, message) { if (!value) throw new Error(message); }
       await page.screenshot({ path: `/tmp/lidza-log-spacing-${width}.png`, fullPage: true });
     }
 
-    const locationHash = await page.evaluate(() => { location.hash = 'applications'; return location.hash; });
-    assert(locationHash === '#applications', 'Could not leave build logs');
+    // An old hash link still leaves the page: it becomes the matching path.
+    await page.evaluate(() => { location.hash = 'applications'; });
+    await page.waitForURL(url => url.pathname === '/console/applications' && url.hash === '');
     count = calls;
     await page.waitForTimeout(1_900);
     assert(calls - count <= 1, 'Closed logs kept fast-polling');

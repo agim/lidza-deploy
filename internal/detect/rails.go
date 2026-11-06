@@ -160,6 +160,13 @@ func (s *scanner) rails(dir string) (*app, error) {
 			break
 		}
 	}
+	for _, name := range []string{"clickhouse-activerecord", "click_house", "clickhouse-ruby"} {
+		if g.has(name) {
+			a.clickhouse = true
+			a.reason("%s gem: ClickHouse", name)
+			break
+		}
+	}
 	if !a.redis && cableRedis.MatchString(cable) {
 		a.redis = true
 		a.reason("config/cable.yml uses the Redis adapter: Redis")

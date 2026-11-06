@@ -7,6 +7,7 @@ import { useToast } from './ToastProvider';
 import { ResourceList, type Column } from './ResourceList';
 import { Badge, Button, Card, ErrorBanner, Field, IconButton, Loading, Notice, SectionHeader } from './ui';
 import { Input } from './primitives/input';
+import { LiveProgress } from './LiveProgress';
 import { Switch } from './primitives/switch';
 
 type Phase = 'idle' | 'review' | 'applying' | 'confirming';
@@ -109,7 +110,7 @@ export function ServerFirewall({ serverID }: { serverID: string }) {
       <Badge tone={view.active ? 'success' : 'warning'}>{!view.installed ? 'ufw not installed' : view.active ? 'Firewall active' : 'Firewall inactive'}</Badge>
       {view.default_incoming && <Badge>Default inbound: {view.default_incoming}</Badge>}
       {view.last_applied && <Badge>Applied {formatDate(view.last_applied)}</Badge>}
-      {view.applying && <Badge tone="warning">Applying…</Badge>}
+      {(view.applying || phase === 'applying') && <LiveProgress compact label="Applying the firewall" />}
     </div>
     {pending && !view.applying && <div className="firewall-countdown" role="status"><ShieldCheck size={18} /><span><strong>Waiting for confirmation{secondsLeft ? ` · ${secondsLeft}s` : ''}</strong><small>If the change is not confirmed, the server restores its previous firewall automatically.</small></span>{phase !== 'confirming' && <Button size="sm" variant="primary" onClick={() => { confirm().catch(reason => { setError(message(reason)); void load(); }); }}><CheckCircle2 size={15} />Confirm change</Button>}</div>}
     <label className="check-row switch-row"><Switch aria-label="Enforce the host firewall" checked={draft.enabled} disabled={locked} onCheckedChange={enabled => setDraft({ ...draft, enabled })} /><span><strong>Enforce the host firewall</strong><small>SSH, HTTP and HTTPS always stay open. Existing rules on the server were imported unchanged.</small></span></label>

@@ -17,39 +17,53 @@ import (
 
 // runNativeBuild runs one static-site build or post-deploy command as the
 // application owner in a transient, resource-bounded systemd unit with the
-// application's literal environment.
+// application's literal environment. Build commands run under the host's
+// build resources (build_resources.go); post-deploy commands only get a cap.
 func (m *Manager) runNativeBuild(ctx context.Context, a NativeApplication, candidate, id string, args []string) (string, error) {
-	memoryBytes := int64(1 << 30)
-	if m.nativeBuildCommand != nil {
-		return m.nativeBuildCommand(ctx, a, candidate, args)
-	}
+	var output string
+	step := buildStep{App: a.ID, Step: buildStepName(args), Build: !strings.HasSuffix(id, "-post"), Log: deploymentNoteWriter{ctx}}
+	err := m.runBuildStep(ctx, step, func(ctx context.Context, limits buildLimits) (int, error) {
+		if m.nativeBuildCommand != nil {
+			var err error
+			output, err = m.nativeBuildCommand(ctx, a, candidate, args)
+			return 0, err
+		}
+		var peak int
+		var err error
+		output, peak, err = m.runNativeBuildUnit(ctx, a, candidate, id, args, limits)
+		return peak, err
+	})
+	return output, err
+}
+
+func (m *Manager) runNativeBuildUnit(ctx context.Context, a NativeApplication, candidate, id string, args []string, limits buildLimits) (string, int, error) {
 	if !regexp.MustCompile(`^[a-f0-9]{24}(-post)?$`).MatchString(id) || len(args) == 0 || strings.ContainsAny(m.cfg.Native.Root, " \t\r\n") {
-		return "", errors.New("invalid native build identity or directory")
+		return "", 0, errors.New("invalid native build identity or directory")
 	}
 	account, err := user.Lookup(m.cfg.Native.User)
 	if err != nil {
-		return "", errors.New("native build user is unavailable")
+		return "", 0, errors.New("native build user is unavailable")
 	}
 	uid, err := strconv.Atoi(account.Uid)
 	if err != nil || uid <= 0 {
-		return "", errors.New("native builds require a non-root user")
+		return "", 0, errors.New("native builds require a non-root user")
 	}
 	gid, err := strconv.Atoi(account.Gid)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	file, err := os.CreateTemp(candidate, ".lidza-build-env-")
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer os.Remove(file.Name())
 	if err = file.Chmod(0600); err != nil {
 		file.Close()
-		return "", err
+		return "", 0, err
 	}
 	if err = file.Chown(uid, gid); err != nil {
 		file.Close()
-		return "", err
+		return "", 0, err
 	}
 	searchPath := account.HomeDir + "/.asdf/shims:" + account.HomeDir + "/.asdf/bin:/usr/local/bin:/usr/bin:/bin"
 	var values map[string]string
@@ -60,20 +74,24 @@ func (m *Manager) runNativeBuild(ctx context.Context, a NativeApplication, candi
 	}
 	if err != nil {
 		file.Close()
-		return "", err
+		return "", 0, err
+	}
+	if _, set := values["NODE_OPTIONS"]; !set && limits.MemoryMiB > 0 {
+		// Node sizes its heap from the machine, not the unit's cap.
+		values["NODE_OPTIONS"] = "--max-old-space-size=" + strconv.Itoa(limits.MemoryMiB*3/4)
 	}
 	for key, value := range values {
 		if strings.ContainsAny(value, "\r\n\x00") {
 			file.Close()
-			return "", errors.New("native environment contains unsupported line breaks or null bytes; review it before deployment")
+			return "", 0, errors.New("native environment contains unsupported line breaks or null bytes; review it before deployment")
 		}
 		if _, err = fmt.Fprintf(file, "export %s='%s'\n", key, strings.ReplaceAll(value, "'", "'\\''")); err != nil {
 			file.Close()
-			return "", err
+			return "", 0, err
 		}
 	}
 	if err = file.Close(); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	unit := "lidza-native-build-" + id + "-" + newID()[:8] + ".service"
 	inaccessible := "/run/user /run/systemd/private /run/dbus/system_bus_socket -/var/run/docker.sock"
@@ -82,29 +100,36 @@ func (m *Manager) runNativeBuild(ctx context.Context, a NativeApplication, candi
 	// No app environment is present before entering the PID namespace. In
 	// particular LD_PRELOAD/BASH_ENV cannot execute app code outside isolation.
 	argv := []string{"--quiet", "--wait", "--pipe", "--collect", "--expand-environment=no", "--unit=" + unit,
-		"--property=User=root", "--property=WorkingDirectory=" + candidate,
-		"--property=MemoryMax=" + strconv.FormatInt(memoryBytes, 10), "--property=MemorySwapMax=0", "--property=OOMScoreAdjust=500",
-		"--property=CPUQuota=50%", "--property=IOWeight=10", "--property=TasksMax=256", "--property=RuntimeMaxSec=1200",
-		"--property=ProtectSystem=strict", "--property=ProtectHome=" + protectHome, "--property=ReadWritePaths=" + candidate,
-		"--property=TemporaryFileSystem=" + temporaryFilesystems,
-		"--property=InaccessiblePaths=" + inaccessible,
+		"--property=User=root", "--property=WorkingDirectory=" + candidate}
+	argv = append(argv, buildResourceProperties(limits)...)
+	argv = append(argv, "--property=TasksMax=256", "--property=RuntimeMaxSec=1200",
+		"--property=ProtectSystem=strict", "--property=ProtectHome="+protectHome, "--property=ReadWritePaths="+candidate,
+		"--property=TemporaryFileSystem="+temporaryFilesystems,
+		"--property=InaccessiblePaths="+inaccessible,
 		"--property=NoNewPrivileges=yes", "--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_SETPCAP", "--property=KillMode=control-group",
-		"--setenv=HOME=" + account.HomeDir, "--setenv=PATH=" + searchPath, "--setenv=npm_config_cache=/tmp/npm",
+		"--setenv=HOME="+account.HomeDir, "--setenv=PATH="+searchPath, "--setenv=npm_config_cache=/tmp/npm",
 		// The fixed root launcher creates namespaces even where unprivileged
 		// user namespaces are disabled. Repository code starts only after
 		// setpriv irreversibly drops uid/gid and the entire capability bounding
 		// set. No host namespace policy or original service unit is modified.
 		"--", "/usr/bin/unshare", "--mount", "--pid", "--fork", "--mount-proc", "--",
-		"/usr/bin/setpriv", "--reuid=" + account.Uid, "--regid=" + account.Gid, "--init-groups", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "--",
-		"/bin/sh", "-c", "set -eu; set -a; . \"$1\"; set +a; shift; exec \"$@\"", "lidza-build-env", file.Name()}
+		"/usr/bin/setpriv", "--reuid="+account.Uid, "--regid="+account.Gid, "--init-groups", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "--",
+		"/bin/sh", "-c", "set -eu; set -a; . \"$1\"; set +a; shift; exec \"$@\"", "lidza-build-env", file.Name())
 	argv = append(argv, args...)
+	stop := watchUnitMemory(unit)
 	output, err := command(ctx, "", nil, "systemd-run", argv...)
+	sampled := stop()
 	if ctx.Err() != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_, _ = command(cleanup, "", nil, "systemctl", "stop", unit)
 	}
-	return output, err
+	outcome := nativeReleaseUnitOutcome(unit, err != nil)
+	peak := int(max(sampled, outcome.PeakBytes) >> 20)
+	if err != nil && outcome.OutOfMemory {
+		return output, peak, fmt.Errorf("%s %w (build limit %d MiB)", buildStepName(args), errBuildOutOfMemory, limits.MemoryMiB)
+	}
+	return output, peak, err
 }
 
 // Imported shell files may contain expressions. Builds accept only literal

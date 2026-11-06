@@ -13,6 +13,8 @@ import (
 )
 
 func (m *Manager) databaseRoutes(mux *http.ServeMux) {
+	m.backupRetentionRoutes(mux)
+	m.backupExcludedTableRoutes(mux)
 	mux.HandleFunc("POST /v1/databases/{id}/backups/{backup}/upload", func(w http.ResponseWriter, r *http.Request) {
 		if err := m.retryBackupUpload(r.PathValue("id"), r.PathValue("backup")); err != nil {
 			Fail(w, 409, err)
@@ -39,7 +41,24 @@ func (m *Manager) databaseRoutes(mux *http.ServeMux) {
 		}
 		JSON(w, 200, map[string]string{"status": "saved"})
 	})
-	mux.HandleFunc("GET /v1/databases", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.databaseViews()) })
+	mux.HandleFunc("PATCH /v1/databases/{id}/backups/before-deploy", func(w http.ResponseWriter, r *http.Request) {
+		var p BeforeDeployPolicy
+		if err := Decode(w, r, &p); err != nil {
+			Fail(w, 400, err)
+			return
+		}
+		if err := p.Validate(); err != nil {
+			Fail(w, 400, err)
+			return
+		}
+		if err := m.setBeforeDeployPolicy(r.PathValue("id"), p); err != nil {
+			Fail(w, 409, err)
+			return
+		}
+		JSON(w, 200, map[string]string{"status": "saved"})
+	})
+	mux.HandleFunc("GET /v1/databases", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.measuredDatabaseViews(r.Context())) })
+	mux.HandleFunc("POST /v1/databases/{id}/backups/{backup}/restore", m.clickhouseRestoreBackupRoute)
 	mux.HandleFunc("POST /v1/apps/{id}/database", func(w http.ResponseWriter, r *http.Request) {
 		var in DatabaseRequest
 		if err := Decode(w, r, &in); err != nil {
@@ -90,6 +109,8 @@ func (m *Manager) databaseRoutes(mux *http.ServeMux) {
 		extension := ".dump"
 		if m.data.NativeDatabases[id].Policy.SQLitePath != "" {
 			extension = ".sqlite3"
+		} else if m.data.NativeDatabases[id].Policy.ClickHouseDatabase != "" {
+			extension = ".clickhouse.tar"
 		}
 		valid := false
 		for _, b := range d.Backups {
@@ -169,7 +190,7 @@ func (m *Manager) applicationHealth(parent context.Context) []AppHealth {
 		}()
 	}
 	wg.Wait()
-	return out
+	return append(out, m.nativeApplicationHealth(ctx)...)
 }
 
 func (m *Manager) primaryDatabaseID(id string) string {

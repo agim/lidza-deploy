@@ -4,12 +4,12 @@ const base=process.env.TEST_WEB_URL||'http://127.0.0.1:8880';
 (async()=>{const browser=await chromium.launch({executablePath:'/usr/bin/chromium',args:['--no-sandbox']});try{
  for(const width of [390,900,1440]){
  const page=await browser.newPage({viewport:{width,height:844}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto(base+'/console.html?demo=1#applications');await page.locator('.app-card').first().waitFor();
+ await page.goto(base+'/console/applications?demo=1');await page.locator('.app-card').first().waitFor();
  await page.evaluate(()=>{for(let i=0;i<12;i++){apps.push({...apps[0],id:'extra-'+i});deployments.push({...deployments[0],id:'extra-release-'+i,app_id:'extra-'+i})}render();window.cardNode=document.querySelector('.app-card');window.searchNode=document.querySelector('#search');window.buttonNode=cardNode.querySelector('[data-action="settings"]');cardNode.querySelector('details').open=true;window.scrollTo(0,500);window.beforeY=scrollY;buttonNode.focus({preventScroll:true})});
  for(let i=0;i<5;i++)await page.evaluate(i=>{deployments[0].status=i%2?'building':'live';deployments[0].log='new log '+i;deployments[0].duration_seconds=i;render()},i);
  assert(await page.evaluate(()=>cardNode===document.querySelector('.app-card')&&buttonNode===cardNode.querySelector('[data-action="settings"]')&&document.activeElement===buttonNode&&cardNode.querySelector('details').open&&scrollY===beforeY),'Changed app refresh lost card, action focus, menu or scroll at '+width);
  await page.evaluate(()=>{searchNode.focus({preventScroll:true});filter='customer';searchNode.value=filter;render()});assert(await page.evaluate(()=>searchNode===document.querySelector('#search')&&document.activeElement===searchNode),'Search replaced');
- await page.goto(base+'/console.html?demo=1#deployments');await page.locator('[data-release]').first().waitFor();
+ await page.goto(base+'/console/deployments?demo=1');await page.locator('[data-release]').first().waitFor();
  await page.evaluate(()=>{for(let i=0;i<20;i++)deployments.push({...deployments[0],id:'release-'+i,created:new Date(Date.now()-(i+10)*3600000).toISOString()});render();window.wrap=document.querySelector('#release-table');window.row=wrap.querySelector('[data-release]');window.button=row.querySelector('button');wrap.scrollLeft=120;window.left=wrap.scrollLeft;window.scrollTo(0,600);window.y=scrollY;button.focus({preventScroll:true})});
  for(let i=0;i<5;i++)await page.evaluate(i=>{deployments[0].duration_seconds=10+i;deployments[0].commit_message='changed build '+i;render()},i);
  assert(await page.evaluate(()=>wrap===document.querySelector('#release-table')&&row===wrap.querySelector('[data-release]')&&button===row.querySelector('button')&&document.activeElement===button&&wrap.scrollLeft===left&&scrollY===y),'Changed release refresh lost DOM, focus or scroll at '+width);
@@ -19,7 +19,7 @@ const base=process.env.TEST_WEB_URL||'http://127.0.0.1:8880';
  assert.deepEqual(errors,[]);await page.close();
  }
 
- const page=await browser.newPage({viewport:{width:900,height:844}});await page.goto(base+'/console.html?demo=1#applications');await page.locator('.app-card').first().waitFor();
+ const page=await browser.newPage({viewport:{width:900,height:844}});await page.goto(base+'/console/applications?demo=1');await page.locator('.app-card').first().waitFor();
  await page.evaluate(()=>{tab='backups';applicationSelections.backups='customer-portal';databases=[{app_id:'customer-portal',server_id:'eu-1',mode:'local',ready:true,backup:{hours:24},backups:Array.from({length:15},(_,i)=>({id:'backup-'+i,created:new Date().toISOString(),size:20000,kind:'manual'}))}];render();window.dbWrap=document.querySelector('[data-database-card] .table-wrap');window.dbButton=dbWrap.querySelector('button');dbWrap.scrollLeft=100;window.dbX=dbWrap.scrollLeft;window.scrollTo(0,600);window.dbY=scrollY;dbButton.focus({preventScroll:true});databases[0].operation='backing up';render()});
  assert(await page.evaluate(()=>dbWrap===document.querySelector('[data-database-card] .table-wrap')&&dbButton.isConnected&&document.activeElement===dbButton&&dbWrap.scrollLeft===dbX&&scrollY===dbY),'Database refresh replaced scroller, focused restore button, or page position');
  await page.evaluate(()=>{tab='settings';render();window.storage=document.querySelector('#storage-form');window.mailWrap=document.querySelector('#infrastructure-mail .table-wrap');infrastructure.messages=[{subject:'Alert',status:'sent',attempts:1}];render()});assert(await page.evaluate(()=>storage===document.querySelector('#storage-form')&&mailWrap===document.querySelector('#infrastructure-mail .table-wrap')),'Mail refresh replaced integration forms/scrollers');

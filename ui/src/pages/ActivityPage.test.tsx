@@ -1,12 +1,15 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActivityPage } from './WorkspacePages';
 
+const workspace = vi.hoisted(() => ({ apps: [{ id: 'portal' }] as Array<Record<string, unknown>> }));
 vi.mock('../state/WorkspaceContext', () => ({
-  useWorkspace: () => ({ apps: [{ id: 'portal' }] }),
+  useWorkspace: () => workspace,
 }));
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+const nativeApp = { id: 'shop', runtime: 'rails', native: { id: 'shop', name: 'shop', runtime: 'rails', services: ['lidza-app-shop-web.service'] } };
+
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); workspace.apps = [{ id: 'portal' }]; });
 
 describe('ActivityPage', () => {
   it('shows API timestamps and operational details on the error list', async () => {
@@ -60,5 +63,54 @@ describe('ActivityPage', () => {
     expect(screen.getByText('req-latest')).toBeInTheDocument();
     expect(screen.getByText('req-first')).toBeInTheDocument();
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/control/apps/portal/errors', expect.any(Object)));
+  });
+
+  it('renders error groups for a native application without a change-plan banner', async () => {
+    workspace.apps = [nativeApp];
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: 'ready',
+        errors: [
+          { id: 'native-second', fingerprint: 'rails-nil-total', source: 'server', message: "NoMethodError (undefined method 'total' for nil)", stack: "app/models/order.rb:12:in 'total'", method: 'GET', route: '/orders', requestId: 'a1b2c3d4-e5f6', createdAt: '2026-11-05T10:00:05Z', container: 'lidza-app-shop-web.service', release: '20261105100000', commit: 'abc123' },
+          { id: 'native-first', fingerprint: 'rails-nil-total', source: 'server', message: "NoMethodError (undefined method 'total' for nil)", createdAt: '2026-11-05T10:00:00Z', container: 'lidza-app-shop-web.service' },
+        ],
+      }),
+    }) as Response));
+
+    render(<ActivityPage selectedID="shop" />);
+
+    expect((await screen.findAllByText("NoMethodError (undefined method 'total' for nil)"))[0]).toBeInTheDocument();
+    expect(screen.getByText('2 occurrences')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/change plan/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('View details'));
+    expect(screen.getByText('Service unit')).toBeInTheDocument();
+    expect(screen.getByText('lidza-app-shop-web.service')).toBeInTheDocument();
+    expect(screen.getByText('20261105100000')).toBeInTheDocument();
+    expect(screen.getByText(/order\.rb:12/)).toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/control/apps/shop/errors', expect.any(Object)));
+  });
+
+  it('renders security events for a native application', async () => {
+    workspace.apps = [nativeApp];
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: 'ready',
+        errors: [
+          { id: 'probe-1', fingerprint: 'probe-env', source: 'server', message: 'Suspected secret-file probe: HTTP 404', method: 'GET', route: '/.env', requestId: 'b2c3d4e5-f6a7', createdAt: '2026-11-05T10:00:01Z', container: 'lidza-app-shop-web.service', security: { category: 'secret-file', status: 404, outcome: 'rejected' } },
+        ],
+      }),
+    }) as Response));
+
+    render(<ActivityPage security selectedID="shop" />);
+
+    expect(await screen.findByText('secret file')).toBeInTheDocument();
+    expect(screen.getAllByText(/\/\.env/)[0]).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/control/apps/shop/security', expect.any(Object)));
   });
 });

@@ -42,7 +42,7 @@ const assert = require('node:assert/strict');
       });
 
       const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
-      await page.goto(`${base}/console.html#updates`);
+      await page.goto(`${base}/console/updates`);
       const install = page.getByRole('button', { name: 'Install update' });
       await install.waitFor();
       assert(await page.getByText('Installed v0.2.67 · Latest stable v0.2.69', { exact: true }).isVisible());

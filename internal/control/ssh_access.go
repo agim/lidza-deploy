@@ -36,14 +36,14 @@ func (c *Control) sshAccess(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		var out agent.SSHAccess
 		if err := c.agentCall(r, r.PathValue("server"), r.Method, path, body, &out); err != nil {
-			agent.Fail(w, 502, err)
+			failAgent(w, err)
 			return
 		}
 		agent.JSON(w, 200, out)
 		return
 	}
 	if err := c.agentCall(r, r.PathValue("server"), r.Method, path, body, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 202, map[string]string{"status": "queued"})

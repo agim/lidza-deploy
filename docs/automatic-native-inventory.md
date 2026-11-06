@@ -27,3 +27,37 @@ This automates dashboard inventory only. Existing service enablement, stopped
 states, releases, environment, databases and routing are unchanged. Native
 deployments are configured separately through release policies; see
 [native releases](native-release.md).
+
+## What discovery reports
+
+A release policy is the source of truth for an application's services. The
+agent's `/v1/native/discovery` lists, in this order:
+
+1. Every registered application with the services it runs today. For an
+   application with system units (one the agent created under `apps_root`,
+   or a configured policy with `unit_scope: "system"`) those are the
+   policy's `units` and `preserve` entries that exist as unit files in
+   `/etc/systemd/system`, in policy order. User units that an earlier move
+   to system units left on the deployment user's manager are not the
+   application's services and never appear. Applications without such a
+   policy keep their user units bound to `<root>/<name>/current`.
+2. Configured system-unit policies nobody has registered, as observations
+   without an ID: metadata registration binds user units, so the panel
+   shows them and leaves registration to the operator.
+3. The directory scan of the native root. It exists to adopt existing
+   applications that were laid out there before the agent managed them, and
+   only proposes names that are not registered; it decides nothing about a
+   registered application's services.
+
+The panel compares each registration with the discovery entry of the same
+name as sets of services, so process order on one side and alphabetical order
+on the other are not a difference. Applications created through the panel are
+already registered on the agent and recorded in the panel; discovery only has
+to agree with that registration for them to stay synced, and an application
+created on a server the panel did not record is adopted on the next sync.
+
+A disagreement still retains the previous inventory, and the sync status names
+the application and what differs, for example
+`rails-shop: registered services [a,b] vs discovered [a]; previous inventory retained.`
+A unit the policy names without a unit file (removed, or masked) shows up this
+way; so does a panel record whose binding differs from the agent's.

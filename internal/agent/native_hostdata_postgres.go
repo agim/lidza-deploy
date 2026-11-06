@@ -248,8 +248,10 @@ type nativeHBAEntry struct {
 }
 
 // renderNativeHBABlock renders the managed pg_hba.conf block. For each
-// application: the role may reach only its own database, over the socket or
-// loopback with scram-sha-256; every other combination for that role is
+// application: the role may reach only its own database and that database's
+// staging copy (restores build the new contents there before renaming it
+// into place), over the socket or loopback with scram-sha-256; every other
+// combination for that role is
 // rejected, even if a later rule (for example a broad network rule added by
 // an administrator) would match. Nothing else on the server is affected.
 func renderNativeHBABlock(entries []nativeHBAEntry) string {
@@ -261,9 +263,10 @@ func renderNativeHBABlock(entries []nativeHBAEntry) string {
 	var b strings.Builder
 	b.WriteString(nativeHBABegin + "\n")
 	for _, e := range sorted {
-		fmt.Fprintf(&b, "local   %-24s %-24s %-18s scram-sha-256\n", e.Database, e.Role, "")
-		fmt.Fprintf(&b, "host    %-24s %-24s %-18s scram-sha-256\n", e.Database, e.Role, "127.0.0.1/32")
-		fmt.Fprintf(&b, "host    %-24s %-24s %-18s scram-sha-256\n", e.Database, e.Role, "::1/128")
+		databases := e.Database + "," + e.Database + pgStagingSuffix
+		fmt.Fprintf(&b, "local   %-24s %-24s %-18s scram-sha-256\n", databases, e.Role, "")
+		fmt.Fprintf(&b, "host    %-24s %-24s %-18s scram-sha-256\n", databases, e.Role, "127.0.0.1/32")
+		fmt.Fprintf(&b, "host    %-24s %-24s %-18s scram-sha-256\n", databases, e.Role, "::1/128")
 		fmt.Fprintf(&b, "local   %-24s %-24s %-18s reject\n", "all", e.Role, "")
 		fmt.Fprintf(&b, "host    %-24s %-24s %-18s reject\n", "all", e.Role, "all")
 	}
@@ -359,9 +362,6 @@ func (h nativeHostData) ensurePostgres(ctx context.Context) (pgCluster, error) {
 	}
 	if port != 0 {
 		return pgCluster{}, fmt.Errorf("no online PostgreSQL cluster listens on the configured port %d", port)
-	}
-	if h.coexist {
-		return pgCluster{}, errors.New("this agent shares its host; install PostgreSQL there before creating applications with a database")
 	}
 	if version == 0 && len(clusters) == 0 {
 		// Prefer the distribution's PostgreSQL; use the PostgreSQL project's

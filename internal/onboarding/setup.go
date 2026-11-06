@@ -139,6 +139,10 @@ func (s *Setup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+	if r.URL.Path == "/console" || strings.HasPrefix(r.URL.Path, "/console/") {
+		http.Redirect(w, r, "/setup.html", http.StatusSeeOther)
+		return
+	}
 	switch r.URL.Path {
 	case "/healthz":
 		agent.JSON(w, 200, map[string]string{"status": "ok"})

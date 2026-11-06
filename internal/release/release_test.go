@@ -228,6 +228,36 @@ func TestDeployRepublishesPreviousWhenHealthFails(t *testing.T) {
 	}
 }
 
+func TestRollbackFinishesWhenTheReleaseIsCancelled(t *testing.T) {
+	url, commit := gitFixture(t)
+	commit("VERSION", "one\n")
+	p, _, _, log := testPlan(t, url)
+	first, err := Deploy(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit("VERSION", "broken\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The agent stops during the new release's health check: the release's
+	// context is cancelled and the check fails, but republishing the
+	// previous release must still complete.
+	p.Health = func(check context.Context) error {
+		if strings.Contains(readFile(t, filepath.Join(p.Layout.Current(), "built.txt")), "broken") {
+			cancel()
+			return check.Err()
+		}
+		return check.Err()
+	}
+	result, err := Deploy(ctx, p)
+	if err == nil || !result.RolledBack || strings.Contains(err.Error(), "also failed") {
+		t.Fatal("cancelled release did not roll back cleanly", err, log.String())
+	}
+	if current, _ := p.Layout.CurrentID(); current != first.Release {
+		t.Fatal("previous release was not republished")
+	}
+}
+
 func TestDeployRefusesWhenRestartedUnitFails(t *testing.T) {
 	url, commit := gitFixture(t)
 	commit("VERSION", "one\n")

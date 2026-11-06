@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,6 +40,9 @@ type job struct {
 	token         string
 }
 type Manager struct {
+	// moveTransfers counts running move exports, downloads and restores; an
+	// agent upgrade waits for them because it restarts the agent.
+	moveTransfers      atomic.Int64
 	nativeBackupRun    func(context.Context, string, []string) ([]NativeDatabaseBackupProof, error) // local gate fixture only
 	nativePGExecutable string                                                                       // local acceptance override; not a host configuration field
 	nativeBuildCommand func(context.Context, NativeApplication, string, []string) (string, error)
@@ -74,11 +78,16 @@ type Manager struct {
 	reportMu                   sync.Mutex
 	reportWake                 chan struct{}
 	cpuTotal, cpuIdle          float64
+	ingressMu                  sync.Mutex
+	ingressDetected            *HostIngressStatus
 	domainWake                 chan struct{}
 	domains                    map[string]DomainStatus
 	databaseSlots              chan struct{}
 	mu                         sync.Mutex
 	removing                   map[string]bool
+	moveFileOps                map[string]bool // file transfers of moves, by application
+	progress                   progressRegistry
+	build                      buildResources
 	key                        []byte
 	cfg                        Config
 	data                       diskState
@@ -90,7 +99,7 @@ type Manager struct {
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
-	if err := cfg.validateHostMode(); err != nil {
+	if err := cfg.validateHostnames(); err != nil {
 		return nil, err
 	}
 	if cfg.IngressOnly {
@@ -119,19 +128,6 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	if err := m.recoverNativePublications(); err != nil {
 		cancel()
 		return nil, err
-	}
-	if cfg.NativeOnly {
-		if cfg.Native == nil {
-			cancel()
-			return nil, errors.New("native_only requires native host configuration")
-		}
-		if len(m.data.Apps) > 0 || len(m.data.Tasks) > 0 || len(m.data.Databases) > 0 || len(m.data.Caches) > 0 || len(m.data.ClickHouses) > 0 || len(m.data.StorageVolumes) > 0 {
-			cancel()
-			return nil, errors.New("native_only requires a separate data directory without container resources")
-		}
-		// No Docker reconciliation, swap, certificates, cleanup, migrations,
-		// consoles, schedulers or background service mutations on this host.
-		return m, nil
 	}
 	for _, app := range m.data.Apps {
 		if err := m.checkReservedDomains(app); err != nil {
@@ -254,7 +250,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		cancel()
 		return nil, err
 	}
-	if _, ok := rt.(*Docker); ok && cfg.HostMode != "coexist" {
+	if _, ok := rt.(*Docker); ok {
 		cleanup, stop := context.WithTimeout(ctx, 30*time.Second)
 		removeLegacyBoundedBuilder(cleanup, cfg.DataDir)
 		stop()
@@ -277,10 +273,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	go m.work()
 	m.wg.Add(1)
 	go m.consoleLoop()
-	if cfg.HostMode != "coexist" {
-		m.wg.Add(1)
-		go m.swapLoop()
-	}
+	m.wg.Add(1)
+	go m.hostIngressLoop()
+	m.wg.Add(1)
+	go m.swapLoop()
 	m.migrateConsoleService()
 	m.migrateControlBootService()
 	if cfg.TLSListen != "" {
@@ -332,8 +328,27 @@ func (m *Manager) Deployments() []Deployment {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := append([]Deployment{}, m.data.Deployments...)
+	active := ""
+	for _, d := range out {
+		if d.Status == "building" {
+			active = d.AppID
+		}
+	}
+	holder, _, building := m.build.gate.current()
 	for i := range out {
 		out[i].Duration = deploymentDuration(out[i])
+		out[i].Progress = m.progress.snapshot(deploymentProgressKey(out[i].ID))
+		if out[i].Progress != nil || out[i].Status != "queued" {
+			continue
+		}
+		// Deployments run one at a time: a queued one waits for the
+		// build (or the release) that is running.
+		switch {
+		case building && holder != out[i].AppID:
+			out[i].Progress = &Progress{Phase: buildWaitingPhase(holder), StartedAt: out[i].Created, UpdatedAt: out[i].Created}
+		case active != "" && active != out[i].AppID:
+			out[i].Progress = &Progress{Phase: "waiting for another deployment on this server (deploying " + active + ")", StartedAt: out[i].Created, UpdatedAt: out[i].Created}
+		}
 	}
 	return out
 }
@@ -768,6 +783,7 @@ func (m *Manager) work() {
 			}
 			ctx, cancel := context.WithTimeout(m.ctx, 2*time.Hour)
 			ctx = m.deploymentDiagnostics(ctx, j)
+			ctx = withBuildSlot(ctx, m.containerBuildSlot(j.app.ID))
 			commandDiagnostic(ctx, "deployment", "Preparing deployment prerequisites.")
 			var release *Release
 			if _, containers := m.runtime.(*Docker); containers {
@@ -775,7 +791,11 @@ func (m *Manager) work() {
 				err = ensureDocker(ctx, m)
 			}
 			if err == nil && (j.app.BackupBeforeDeploy == nil || *j.app.BackupBeforeDeploy) {
-				err = m.backupBeforeRelease(ctx, j.backupIDs)
+				then := "The image build starts after this completes."
+				if j.reload {
+					then = "The application restarts with its new settings after this completes."
+				}
+				err = m.backupBeforeRelease(withBackupThen(ctx, then), j.backupIDs)
 			}
 			if err == nil && j.credentials.CredentialURL != "" {
 				j.token, err = m.checkoutCredential(ctx, j.credentials)

@@ -45,12 +45,20 @@ type fakeUserUnits struct {
 	mu        sync.Mutex
 	states    map[string]string // unit -> ActiveState/SubState
 	restarted []string
+	journals  []string // journalctl --user arguments, one entry per read
 }
 
 func (f *fakeUserUnits) run(_ context.Context, c release.Command) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	args := c.Args
+	if len(args) > 2 && args[0] == "journalctl" && args[1] == "--user" {
+		f.journals = append(f.journals, strings.Join(args[2:], " "))
+		if c.Stdout != nil {
+			c.Stdout.Write([]byte("boot failed: SECRET_KEY_BASE keep-me is not accepted\n"))
+		}
+		return nil
+	}
 	if len(args) < 4 || args[0] != "systemctl" || args[1] != "--user" {
 		return errors.New("unexpected control command: " + strings.Join(args, " "))
 	}
@@ -62,6 +70,12 @@ func (f *fakeUserUnits) run(_ context.Context, c release.Command) error {
 	switch args[3] {
 	case "show":
 		unit := args[4]
+		if slices.Contains(args, "--property="+release.UnitReportProperties) {
+			if c.Stdout != nil {
+				c.Stdout.Write([]byte("ActiveState=activating\nSubState=auto-restart\nResult=exit-code\nNRestarts=3\nExecMainStatus=1\nExecMainCode=exited\n"))
+			}
+			return nil
+		}
 		state, ok := f.states[unit]
 		if !ok {
 			state = "inactive/dead"
@@ -311,16 +325,16 @@ func TestNativeReleaseDeploysAndRollsBackThroughOwnerUnits(t *testing.T) {
 func TestNativeReleaseArgvConfinesEachCommandKind(t *testing.T) {
 	account := nativeReleaseAccount{Name: "deploy", Home: "/home/deploy", UID: 1000, GID: 1000}
 	base := release.Command{Name: "x", Dir: "/home/deploy/app/releases/1", Args: []string{"true"}}
-	offline := strings.Join(nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", base), "\n")
+	offline := strings.Join(nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", base, buildLimits{MemoryMiB: 2048, CPUQuota: 100}), "\n")
 	network := base
 	network.Network = true
-	online := strings.Join(nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", network), "\n")
+	online := strings.Join(nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", network, buildLimits{MemoryMiB: 2048, CPUQuota: 100}), "\n")
 	database := network
 	database.Database = true
-	migrate := strings.Join(nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", database), "\n")
+	migrate := strings.Join(nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", database, buildLimits{MemoryMiB: 2048, CPUQuota: 100}), "\n")
 	databaseOnly := base
 	databaseOnly.Database = true
-	precompile := strings.Join(nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", databaseOnly), "\n")
+	precompile := strings.Join(nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", databaseOnly, buildLimits{MemoryMiB: 2048, CPUQuota: 100}), "\n")
 	if strings.Contains(precompile, "PrivateNetwork") || strings.Contains(precompile, "IPAddressDeny") || strings.Contains(precompile, "/run/postgresql") {
 		t.Fatal("database step without network flag must still reach TCP databases", precompile)
 	}
@@ -356,7 +370,7 @@ func TestNativeReleaseEnvironmentDropsReservedKeysAndRequiresLiterals(t *testing
 		t.Fatal(err)
 	}
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"A=1", "B=two", "PATH=/home/deploy/.asdf/shims:", "HOME=/home/deploy", "USER=deploy", "LANG=C.UTF-8"} {
+	for _, want := range []string{"A=1", "B=two", "PATH=/home/deploy/.asdf/shims:", "HOME=/home/deploy", "USER=deploy", "LANG=C.UTF-8", "npm_config_update_notifier=false", "npm_config_fund=false"} {
 		if !strings.Contains(joined, want) {
 			t.Fatal("missing", want, joined)
 		}
@@ -506,7 +520,7 @@ func TestNativeReleaseExecutorPropertiesParse(t *testing.T) {
 	database.Database = true
 	seen := map[string]bool{}
 	for _, command := range []release.Command{base, network, database} {
-		for _, arg := range nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", command) {
+		for _, arg := range nativeReleaseArgv(account, "/home/deploy/app", "u.service", "/env", command, buildLimits{MemoryMiB: 2048, CPUQuota: 100}) {
 			property, ok := strings.CutPrefix(arg, "--property=")
 			if !ok || seen[property] {
 				continue

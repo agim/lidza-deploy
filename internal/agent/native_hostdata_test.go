@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -185,14 +186,14 @@ func TestNativeHBABlock(t *testing.T) {
 	block := renderNativeHBABlock([]nativeHBAEntry{{Role: "app_b", Database: "app_b"}, {Role: "app_a", Database: "app_a"}})
 	want := [][]string{
 		{"#", "BEGIN"},
-		{"local", "app_a", "app_a", "scram-sha-256"},
-		{"host", "app_a", "app_a", "127.0.0.1/32", "scram-sha-256"},
-		{"host", "app_a", "app_a", "::1/128", "scram-sha-256"},
+		{"local", "app_a,app_a_lidza_staging", "app_a", "scram-sha-256"},
+		{"host", "app_a,app_a_lidza_staging", "app_a", "127.0.0.1/32", "scram-sha-256"},
+		{"host", "app_a,app_a_lidza_staging", "app_a", "::1/128", "scram-sha-256"},
 		{"local", "all", "app_a", "reject"},
 		{"host", "all", "app_a", "all", "reject"},
-		{"local", "app_b", "app_b", "scram-sha-256"},
-		{"host", "app_b", "app_b", "127.0.0.1/32", "scram-sha-256"},
-		{"host", "app_b", "app_b", "::1/128", "scram-sha-256"},
+		{"local", "app_b,app_b_lidza_staging", "app_b", "scram-sha-256"},
+		{"host", "app_b,app_b_lidza_staging", "app_b", "127.0.0.1/32", "scram-sha-256"},
+		{"host", "app_b,app_b_lidza_staging", "app_b", "::1/128", "scram-sha-256"},
 		{"local", "all", "app_b", "reject"},
 		{"host", "all", "app_b", "all", "reject"},
 		{"#", "END"},
@@ -481,4 +482,19 @@ func hostDataScriptStartsWith(values []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+func TestNativeHostDataDirectoriesStayReadableUnderARestrictiveUmask(t *testing.T) {
+	old := syscall.Umask(0o077) // the agent's service umask
+	defer syscall.Umask(old)
+	h := nativeHostData{root: t.TempDir()}
+	if _, err := h.writeIfChanged("/etc/lidza/redis/shop.conf", []byte("port 0\n"), 0o640, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"/etc/lidza", "/etc/lidza/redis"} {
+		info, err := os.Stat(h.path(dir))
+		if err != nil || info.Mode().Perm() != 0o755 {
+			t.Fatalf("%s: mode %v, %v; instances running as their application's account could not read their configuration", dir, info.Mode().Perm(), err)
+		}
+	}
 }

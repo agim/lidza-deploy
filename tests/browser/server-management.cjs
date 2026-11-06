@@ -36,7 +36,7 @@ const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
         await route.fulfill({ json: [] });
       });
 
-      await page.goto(`${base}/console.html#page/containers/local`);
+      await page.goto(`${base}/console/servers/local/containers`);
       await page.getByRole('heading', { name: 'Containers & resource usage' }).waitFor();
       const current = page.getByRole('row').filter({ hasText: 'lidza-site-current' });
       assert.match(await current.textContent(), /site · Web · current release/);

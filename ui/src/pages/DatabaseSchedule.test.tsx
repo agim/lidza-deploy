@@ -5,6 +5,7 @@ import { DatabaseDetailPage } from './DataPages';
 const api = vi.hoisted(() => ({ get: vi.fn(), patch: vi.fn(), post: vi.fn() }));
 vi.mock('../lib/api', () => api);
 vi.mock('../components/ToastProvider', () => ({ useToast: () => () => {} }));
+vi.mock('../state/WorkspaceContext', () => ({ useWorkspace: () => ({ apps: [] }) }));
 
 it('saves a calendar backup on the exact selected database resource', async () => {
   api.get.mockResolvedValue([{ app_id: 'database-a', server_id: 'server-a', ready: true,

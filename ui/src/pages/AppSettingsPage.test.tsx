@@ -16,8 +16,12 @@ it('allows scoped settings edits while protecting routing, runtime and managed v
   expect(screen.getByDisplayValue('fixed-host-value')).toBeDisabled();
   expect(screen.getByDisplayValue('editable-title')).toBeEnabled();
   fireEvent.mouseDown(screen.getByRole('tab',{name:'Data & storage'}),{button:0,ctrlKey:false});
-  expect(screen.getByRole('button',{name:'Manage database'})).toBeDisabled();
-  expect(screen.getByRole('button',{name:'Manage cache'})).toBeDisabled();
+  // A native application shows the data services on its server instead of
+  // the container database and cache controls.
+  expect(await screen.findByText(/No database or cache was provisioned on the server/)).toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'Manage database'})).not.toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'Manage cache'})).not.toBeInTheDocument();
+  expect(screen.queryByText(/Valkey|container/i)).not.toBeInTheDocument();
 });
 
 describe('AppSettingsPage', () => {

@@ -27,7 +27,7 @@ const base=process.env.TEST_WEB_URL||'http://127.0.0.1:8880';
    reads++;
    return route.fulfill({json:{id:'saved-command-00001',state:stopped?'cancelled':'running',output:'saved output',next_offset:12,output_size:12,exit_code:stopped?130:0,duration_seconds:5}});
   });
-  await page.goto(`${base}/console.html#page/console/local`);
+  await page.goto(`${base}/console/servers/local/console`);
   const unlock=page.getByRole('button',{name:'Unlock to cancel',exact:true});
   await unlock.waitFor();assert.equal(await unlock.isEnabled(),true);
   assert.equal(await unlock.getAttribute('data-variant'),'outline');

@@ -47,6 +47,7 @@ func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Cont
 			d := &m.data.Deployments[i]
 			if d.ID == j.deployment {
 				d.Log = deploymentLogTail(d.Log + line)
+				d.Updated = deploymentNow()
 				m.checkpointDiagnosticLocked()
 				break
 			}
@@ -69,12 +70,19 @@ func (m *Manager) deploymentDiagnostics(ctx context.Context, j job) context.Cont
 			for i := range m.data.Deployments {
 				if m.data.Deployments[i].ID == j.deployment {
 					m.data.Deployments[i].Log = line
+					m.data.Deployments[i].Updated = deploymentNow()
 					m.checkpointDiagnosticLocked()
 					break
 				}
 			}
 		}
 	})
+}
+
+// deploymentNow is the time of a deployment's latest output.
+func deploymentNow() *time.Time {
+	now := time.Now().UTC()
+	return &now
 }
 
 // Live output also needs a durable checkpoint during long builds, not only

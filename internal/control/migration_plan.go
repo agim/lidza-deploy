@@ -21,7 +21,7 @@ func (c *Control) migrationPlan(w http.ResponseWriter, r *http.Request) {
 		plan, err = c.legacyMigrationPlan(r, a)
 	}
 	if err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

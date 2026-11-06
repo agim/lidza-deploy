@@ -116,13 +116,14 @@ func nativeReleasePinToolchains(home string) func(l release.Layout, id, commit s
 
 // Managed toolchains. Applications with their own account (and Go
 // applications) do not use a version manager: the agent installs official,
-// checksum-verified Go and Node.js releases into a root-owned directory and
+// checksum-verified Go, Node.js and Ruby releases into a root-owned directory and
 // links the versions one release needs into <release>/.lidza-toolchain.
 // <root>/.lidza-build points at the release being built, so build steps
 // find its toolchains on PATH; processes use <root>/current/.lidza-toolchain
 // and therefore follow every rollback.
 
-// nativeToolchainDir holds installed toolchains: go/<version>, node/<version>.
+// nativeToolchainDir holds installed toolchains: go/<version>,
+// node/<version>, ruby/<version> and rust/.
 var nativeToolchainDir = "/usr/local/lib/lidza"
 
 // nativeToolchains is the installer; tests replace its URLs.
@@ -133,7 +134,7 @@ var nativeToolchains = func() release.Toolchains {
 const nativeSystemPath = "/usr/local/bin:/usr/bin:/bin"
 
 func nativeToolchainPath(base string) string {
-	return base + "/bin:" + base + "/go/bin:" + base + "/node/bin:" + nativeSystemPath
+	return base + "/bin:" + base + "/go/bin:" + base + "/node/bin:" + base + "/ruby/bin:" + base + "/rust/bin:" + nativeSystemPath
 }
 
 // nativeManagedBuildPath is PATH for build, release and schedule commands.
@@ -155,6 +156,7 @@ func nativeManagedCacheEnvironment(root string) map[string]string {
 		"GOMODCACHE":       filepath.Join(cache, "go", "pkg", "mod"),
 		"GOCACHE":          filepath.Join(cache, "go-build"),
 		"npm_config_cache": filepath.Join(cache, "npm"),
+		"CARGO_HOME":       filepath.Join(cache, "cargo"),
 	}
 }
 
@@ -170,11 +172,13 @@ func nativeHostHasCommand(name string) bool {
 
 // nativeReleaseManagedToolchains prepares a new release's toolchains: the
 // Go release its go.mod asks for, Node.js when it has a package.json (the
-// pinned version, else the host's node, else the newest LTS), and a clear
-// failure when a Rails application finds no system Ruby.
-func (m *Manager) nativeReleaseManagedToolchains(account nativeReleaseAccount, policy NativeReleasePolicy, log io.Writer) func(l release.Layout, id, commit string) error {
+// pinned version, else the host's node, else the newest LTS), and for a
+// Gemfile the Ruby it pins (else the host's ruby and bundle, else a clear
+// failure).
+func (m *Manager) nativeReleaseManagedToolchains(app string, account nativeReleaseAccount, policy NativeReleasePolicy, log io.Writer) func(l release.Layout, id, commit string) error {
 	return func(l release.Layout, id, _ string) error {
-		ctx, cancel := context.WithTimeout(m.ctx, 20*time.Minute)
+		// A Ruby built from source takes a while on small servers.
+		ctx, cancel := context.WithTimeout(m.ctx, time.Hour)
 		defer cancel()
 		dir := l.Release(id)
 		tools := filepath.Join(dir, release.ToolchainDir)
@@ -192,8 +196,7 @@ func (m *Manager) nativeReleaseManagedToolchains(account nativeReleaseAccount, p
 				return err
 			}
 		}
-		installer := nativeToolchains()
-		installer.Log = log
+		installer := m.nativeToolchainInstaller(app, log)
 		link := func(name, target string) error {
 			path := filepath.Join(tools, name)
 			if err := os.Symlink(target, path); err != nil {
@@ -237,15 +240,49 @@ func (m *Manager) nativeReleaseManagedToolchains(account nativeReleaseAccount, p
 				}
 			}
 		}
-		if _, err := os.Stat(filepath.Join(dir, "Gemfile")); err == nil && (!nativeHostHasCommand("ruby") || !nativeHostHasCommand("bundle")) {
-			want := ""
-			path := filepath.Join(dir, ".ruby-version")
-			if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && info.Size() < 32 {
-				if raw, err := os.ReadFile(path); err == nil && regexp.MustCompile(`^[A-Za-z0-9._-]+$`).MatchString(strings.TrimSpace(string(raw))) {
-					want = " " + strings.TrimSpace(string(raw))
+		if release.NeedsRust(dir) {
+			root, err := installer.Rust(ctx)
+			if err != nil {
+				return fmt.Errorf("Rust: %w", err)
+			}
+			if err := link("rust", root); err != nil {
+				return err
+			}
+		}
+		if _, err := os.Stat(filepath.Join(dir, "Gemfile")); err == nil {
+			want, source := release.RubyRequirement(dir)
+			switch {
+			case want != "":
+				root, err := installer.Ruby(ctx, want)
+				if err != nil {
+					return fmt.Errorf("Ruby %s (%s): %w", want, source, err)
+				}
+				if err := link("ruby", root); err != nil {
+					return err
+				}
+			case !nativeHostHasCommand("ruby") || !nativeHostHasCommand("bundle"):
+				return errors.New("this Rails application pins no Ruby version: add a .ruby-version file (for example 3.4.4) so the agent installs that Ruby, or install ruby and bundle on the host, then deploy again")
+			}
+			// The application's own gem directory (GEM_HOME), shared by its releases.
+			gems := nativeManagedGemHome(policy.Root)
+			for _, dir := range []struct {
+				path string
+				mode os.FileMode
+			}{{filepath.Dir(gems), 0o755}, {gems, 0o750}} {
+				path := dir.path
+				if err := os.Mkdir(path, dir.mode); err != nil {
+					if errors.Is(err, os.ErrExist) {
+						continue
+					}
+					return err
+				}
+				if err := os.Chmod(path, dir.mode); err != nil {
+					return err
+				}
+				if err := os.Lchown(path, account.UID, account.GID); err != nil {
+					return err
 				}
 			}
-			return fmt.Errorf("this Rails application needs Ruby%s and Bundler installed on the host (ruby and bundle in /usr/local/bin or /usr/bin); install them, then deploy again", want)
 		}
 		for _, path := range []string{filepath.Join(policy.Root, ".cache")} {
 			if err := os.Mkdir(path, 0o750); err != nil && !errors.Is(err, os.ErrExist) {

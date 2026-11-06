@@ -35,6 +35,38 @@ func (s nativeReleaseServices) Restart(ctx context.Context, unit string) error {
 	return s.inner.Restart(ctx, unit)
 }
 
+// Inspect reads a unit's state and journal from the owner's user manager
+// for the deploy log after a failed health check.
+func (s nativeReleaseServices) Inspect(ctx context.Context, unit string, since time.Time) (release.UnitReport, error) {
+	inspector, ok := s.inner.(release.Inspector)
+	if !ok {
+		return release.UnitReport{}, errors.New("the service manager cannot be inspected")
+	}
+	return inspector.Inspect(ctx, unit, since)
+}
+
+// nativeReleaseMask hides the application's environment values (its
+// secrets) in diagnostic output that reaches the deploy log, with the same
+// exemptions for small non-secret values as the application's log view.
+func nativeReleaseMask(policy NativeReleasePolicy) func(string) string {
+	values, err := nativeReleaseFileEnvironment(policy)
+	if err != nil {
+		return nil
+	}
+	secrets := nativeEnvironmentLogSecrets(values)
+	if len(secrets) == 0 {
+		return nil
+	}
+	return func(text string) string { return scrubOutput(text, secrets) }
+}
+
+// nativeHealthResponse records a refused health answer with the start of
+// its body, so the deploy log can show what the application said.
+func nativeHealthResponse(response *http.Response, where string) error {
+	body, _ := io.ReadAll(io.LimitReader(response.Body, release.HealthBodyLimit))
+	return fmt.Errorf("%w from %s", &release.HealthResponse{Status: response.StatusCode, Body: string(body)}, where)
+}
+
 func (m *Manager) nativeReleaseServices(account nativeReleaseAccount, policy NativeReleasePolicy) release.Services {
 	preserve := map[string]bool{}
 	for _, unit := range policy.Preserve {
@@ -150,6 +182,14 @@ func (m *Manager) nativeReleaseBackup(appID string, policy NativeReleasePolicy) 
 	}
 }
 
+// nativeHealthDeadline is how long a health check keeps retrying; a
+// restarted server gets that time to boot. nativeHealthRetry is the pause
+// between attempts. Tests shorten both.
+var (
+	nativeHealthDeadline = 90 * time.Second
+	nativeHealthRetry    = 2 * time.Second
+)
+
 // nativeReleaseHealth requests the application's health path through the
 // local web server with the domain as SNI and Host, without DNS. Any 2xx
 // within the deadline passes; a restarted server gets time to boot.
@@ -175,7 +215,7 @@ func (m *Manager) nativeReleaseHealth(domain, path string) func(context.Context)
 				return dialer.DialContext(ctx, "tcp", address)
 			}},
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		deadline := time.Now().Add(90 * time.Second)
+		deadline := time.Now().Add(nativeHealthDeadline)
 		var last error
 		for {
 			request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+path, nil)
@@ -185,11 +225,12 @@ func (m *Manager) nativeReleaseHealth(domain, path string) func(context.Context)
 			request.Host = domain
 			response, err := client.Do(request)
 			if err == nil {
-				response.Body.Close()
 				if response.StatusCode >= 200 && response.StatusCode < 300 {
+					response.Body.Close()
 					return nil
 				}
-				last = fmt.Errorf("HTTP %d from %s%s", response.StatusCode, domain, path)
+				last = nativeHealthResponse(response, domain+path)
+				response.Body.Close()
 			} else {
 				last = err
 			}
@@ -199,7 +240,7 @@ func (m *Manager) nativeReleaseHealth(domain, path string) func(context.Context)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(2 * time.Second):
+			case <-time.After(nativeHealthRetry):
 			}
 		}
 	}
@@ -216,7 +257,8 @@ func (s nativeSystemServices) State(ctx context.Context, unit string) (release.S
 	if !nativeReleaseUnitPattern.MatchString(unit) {
 		return release.ServiceState{}, fmt.Errorf("invalid unit %q", unit)
 	}
-	out, err := s.m.nativeRootExec(ctx, "systemctl", "show", unit, "--no-pager", "--property=ActiveState,SubState,UnitFileState")
+	// A status probe, not deployment output: keep it out of the log.
+	out, err := s.m.nativeRootExec(withoutDeploymentLog(ctx), "systemctl", "show", unit, "--no-pager", "--property=ActiveState,SubState,UnitFileState")
 	if err != nil {
 		return release.ServiceState{}, err
 	}
@@ -235,6 +277,24 @@ func (s nativeSystemServices) State(ctx context.Context, unit string) (release.S
 	return state, nil
 }
 
+// Inspect reads a unit's state and journal as the root agent for the
+// deploy log after a failed health check. The probes themselves stay out
+// of the log; the engine writes the masked report.
+func (s nativeSystemServices) Inspect(ctx context.Context, unit string, since time.Time) (release.UnitReport, error) {
+	if !nativeReleaseUnitPattern.MatchString(unit) {
+		return release.UnitReport{}, fmt.Errorf("invalid unit %q", unit)
+	}
+	quiet := withoutDeploymentLog(ctx)
+	var report release.UnitReport
+	state, err := s.m.nativeRootExec(quiet, "systemctl", "show", unit, "--no-pager", "--property="+release.UnitReportProperties)
+	if err != nil {
+		return report, err
+	}
+	report.State = state
+	report.Log, err = s.m.nativeRootExec(quiet, append([]string{"journalctl"}, release.JournalArgs(unit, since)...)...)
+	return report, err
+}
+
 func (s nativeSystemServices) Restart(ctx context.Context, unit string) error {
 	if s.preserve[unit] {
 		return fmt.Errorf("%s is preserved by the operator and is never restarted by a release", unit)
@@ -242,8 +302,22 @@ func (s nativeSystemServices) Restart(ctx context.Context, unit string) error {
 	if !nativeReleaseUnitPattern.MatchString(unit) {
 		return fmt.Errorf("invalid unit %q", unit)
 	}
-	_, err := s.m.nativeRootExec(ctx, "systemctl", "restart", unit)
+	// systemctl prints nothing on success; its message explains a failure.
+	var output strings.Builder
+	quiet := context.WithValue(withoutDeploymentLog(ctx), diagnosticKey{}, func(line string) { output.WriteString(line) })
+	_, err := s.m.nativeRootExec(quiet, "systemctl", "restart", unit)
+	if err != nil {
+		if detail := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(output.String()), "systemctl")); detail != "" {
+			commandDiagnostic(ctx, "systemctl restart "+unit, detail)
+		}
+	}
 	return err
+}
+
+// withoutDeploymentLog hides the deployment log of ctx from host commands
+// whose output is only parsed (status probes).
+func withoutDeploymentLog(ctx context.Context) context.Context {
+	return context.WithValue(context.WithValue(ctx, diagnosticKey{}, nil), diagnosticStreamKey{}, nil)
 }
 
 func (m *Manager) nativeSystemServices(policy NativeReleasePolicy) nativeSystemServices {
@@ -284,6 +358,9 @@ func nativeSystemRestart(ctx context.Context, s release.Services, units, preserv
 		for {
 			state, err := s.State(ctx, unit)
 			if err == nil && state.Running() {
+				if log != nil {
+					fmt.Fprintf(log, "%s: %s (%s)\n", unit, state.Active, state.Sub)
+				}
 				break
 			}
 			if err == nil && state.Active == "failed" {
@@ -313,7 +390,7 @@ func nativeLoopbackHealth(port, domain, path string) func(context.Context) error
 	return func(ctx context.Context) error {
 		client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true},
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		deadline := time.Now().Add(90 * time.Second)
+		deadline := time.Now().Add(nativeHealthDeadline)
 		var last error
 		for {
 			request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+port+path, nil)
@@ -326,11 +403,12 @@ func nativeLoopbackHealth(port, domain, path string) func(context.Context) error
 			request.Header.Set("X-Forwarded-Proto", "https")
 			response, err := client.Do(request)
 			if err == nil {
-				response.Body.Close()
 				if response.StatusCode >= 200 && response.StatusCode < 300 {
+					response.Body.Close()
 					return nil
 				}
-				last = fmt.Errorf("HTTP %d from %s on port %s", response.StatusCode, path, port)
+				last = nativeHealthResponse(response, path+" on port "+port)
+				response.Body.Close()
 			} else {
 				last = err
 			}
@@ -340,7 +418,7 @@ func nativeLoopbackHealth(port, domain, path string) func(context.Context) error
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(2 * time.Second):
+			case <-time.After(nativeHealthRetry):
 			}
 		}
 	}

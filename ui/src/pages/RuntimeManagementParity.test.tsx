@@ -19,7 +19,7 @@ it('provides the same settings tabs for native Rails while preserving host owner
   expect(screen.getByRole('button',{name:'Save changes'})).toBeDisabled();expect(screen.getByDisplayValue('master')).toBeDisabled();
   fireEvent.mouseDown(screen.getByRole('tab',{name:'Environment'}),{button:0,ctrlKey:false});
   expect(screen.getByDisplayValue('12376')).toHaveAttribute('type','text');expect(screen.getByDisplayValue('debug')).toBeDisabled();
-  expect(screen.queryByRole('button',{name:'Reveal credential'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'Add variable'})).toBeDisabled();expect(fetch).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('button',{name:'Reveal credential'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'Add variable'})).toBeDisabled();expect(fetch.mock.calls.map(([url])=>url).sort()).toEqual(['/api/control/apps/rails/move','/api/control/apps/rails/settings']);
 });
 
 it('keeps auto-deploy enabling disabled for native apps without publication ownership',async()=>{

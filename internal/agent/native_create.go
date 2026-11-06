@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"os"
@@ -44,7 +45,12 @@ func (m *Manager) nativeCreateRoutes(mux *http.ServeMux) {
 		ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 		defer cancel()
 		purge := r.URL.Query().Get("purge") == "1"
-		if err := m.deleteNativeApp(ctx, r.PathValue("id"), purge); err != nil {
+		req, err := decodeAppRemoveRequest(w, r)
+		if err != nil {
+			Fail(w, 400, err)
+			return
+		}
+		if err := m.deleteNativeApp(ctx, r.PathValue("id"), purge, req); err != nil {
 			Fail(w, 409, err)
 			return
 		}
@@ -171,6 +177,14 @@ func (m *Manager) validateNativeCreateRequest(req *NativeCreateRequest) error {
 	if err := validNativeCreatedID(req.ID); err != nil {
 		return err
 	}
+	m.mu.Lock()
+	_, retained := m.data.NativeHostData[req.ID]
+	_, created := m.data.NativeCreated[req.ID]
+	m.mu.Unlock()
+	if retained && !created {
+		// Database, role and Redis names derive from the id.
+		return fmt.Errorf("the data services of an earlier application %s are retained on this server; remove them under the server's retained resources, or choose another id", req.ID)
+	}
 	if err := validNativeAppsRoot(m.nativeAppsRoot()); err != nil {
 		return err
 	}
@@ -267,6 +281,9 @@ func (m *Manager) validateNativeCreateRequest(req *NativeCreateRequest) error {
 	if req.Data.ExternalDatabaseURL != "" && (req.Data.Postgres || !validEnvironmentURL(req.Data.ExternalDatabaseURL) || strings.ContainsAny(req.Data.ExternalDatabaseURL, "'\r\n\x00")) {
 		return errors.New("an external database needs an absolute URL and excludes a provisioned PostgreSQL database")
 	}
+	if req.Data.ClickHouseVersion != "" && (!req.Data.ClickHouse || !clickhouseSeriesPattern.MatchString(req.Data.ClickHouseVersion)) {
+		return errors.New("the ClickHouse version must be a release series such as 26.8, requested with ClickHouse")
+	}
 	if len(req.Env) > 100 {
 		return errors.New("at most 100 environment variables")
 	}
@@ -353,6 +370,9 @@ func nativeCreateEnvironment(req NativeCreateRequest, root, port string, grant N
 		values["PORT"] = port
 		if req.Runtime == "go" {
 			values["LIDZA_ADDR"] = "127.0.0.1:" + port
+			// The host decides the framework mode, as it does for container
+			// applications: a release on a server is production.
+			values["LIDZA_MODE"] = "production"
 		}
 	}
 	return values, nil
@@ -452,7 +472,15 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	}
 
 	var grant NativeDataGrant
-	if req.Data.Postgres || req.Data.Redis {
+	if req.Data.Postgres || req.Data.Redis || req.Data.ClickHouse {
+		// Registered before provisioning: a provision that fails part way
+		// (for example after enabling a Redis instance) is undone as well.
+		// Releasing is idempotent.
+		undo = append(undo, func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			_ = releaseNativeData(cleanup, m, req.ID)
+		})
 		grant, err = provisionNativeData(ctx, m, req.ID, account, req.Data)
 		if errors.Is(err, errNativeCreateUnavailable) {
 			return App{}, errors.New("this agent cannot provision databases yet; create the application without them or with an external database URL")
@@ -460,11 +488,6 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 		if err != nil {
 			return App{}, fmt.Errorf("data services: %w", err)
 		}
-		undo = append(undo, func() {
-			cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			_ = releaseNativeData(cleanup, m, req.ID)
-		})
 	}
 	for key, value := range grant.Env {
 		if !envPattern.MatchString(key) || nativeReleaseHostKey(key) {
@@ -487,7 +510,7 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	specs := make([]nativeUnitSpec, 0, len(req.Processes))
 	for _, process := range req.Processes {
 		specs = append(specs, nativeUnitSpec{App: req.ID, Process: process.Name, User: account.User, Root: root,
-			Command: process.Command, MemoryMiB: req.MemoryMiB, CPUPercent: req.CPUPercent})
+			Command: process.Command, MemoryMiB: req.MemoryMiB, CPUPercent: req.CPUPercent, Ruby: req.Runtime == "rails"})
 	}
 	units, err := m.writeNativeUnits(ctx, specs)
 	if len(units) > 0 {
@@ -505,7 +528,7 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	policy := NativeReleasePolicy{Enabled: true, Root: root, Repository: req.Repository, Branch: req.Branch, Runtime: req.Runtime,
 		Output: req.StaticOutput, Domain: req.Domain, Port: port, HealthPath: req.HealthPath, Units: units,
 		EnvFiles: []string{envFile}, BuildMemoryMiB: req.BuildMemoryMiB, Databases: slices.Clone(grant.Databases),
-		User: account.User, UnitScope: "system"}
+		User: account.User, UnitScope: "system", Toolchains: "managed"}
 	if err := policy.Validate(); err != nil {
 		return App{}, err
 	}
@@ -523,13 +546,17 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 		kinds[key] = EnvironmentCredential
 	}
 
-	if err := m.publishNativeCaddyRoute(ctx, req.ID, req.Domain, req.AdditionalDomains); err != nil {
+	ingressNote, err := m.publishNativeCaddyRoute(ctx, req.ID, req.Domain, req.AdditionalDomains)
+	if err != nil {
 		return App{}, fmt.Errorf("could not publish the application's hostnames: %w", err)
+	}
+	if ingressNote != "" {
+		log.Printf("native %s: %s", req.ID, ingressNote)
 	}
 	undo = append(undo, func() {
 		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer stop()
-		_ = m.withdrawNativeCaddyRoute(cleanup, req.ID)
+		_ = m.withdrawNativeCaddyRoute(cleanup, req.ID, append([]string{req.Domain}, req.AdditionalDomains...))
 	})
 
 	m.mu.Lock()
@@ -567,10 +594,11 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	m.wakeDomains()
 	for _, view := range m.nativeViews() {
 		if view.ID == req.ID {
+			view.IngressNote = ingressNote
 			return view, nil
 		}
 	}
-	return App{ID: req.ID, Native: &app, Runtime: req.Runtime, Repository: req.Repository, Branch: req.Branch, Domain: req.Domain}, nil
+	return App{ID: req.ID, Native: &app, Runtime: req.Runtime, Repository: req.Repository, Branch: req.Branch, Domain: req.Domain, IngressNote: ingressNote}, nil
 }
 
 // nativeCreatedSpec is the request as recorded for recreating the
@@ -587,8 +615,12 @@ func nativeCreatedSpec(req NativeCreateRequest) NativeCreateRequest {
 // deleteNativeApp removes a created application: its units, route, data
 // services and account; with purge also its root (releases, shared files,
 // environment). Applications registered from existing host configuration
-// are never removed here.
-func (m *Manager) deleteNativeApp(ctx context.Context, id string, purge bool) error {
+// are never removed here. The data services are retained with req.Origin,
+// or deleted when req asks so for a never-switched move's copy.
+func (m *Manager) deleteNativeApp(ctx context.Context, id string, purge bool, req AppRemoveRequest) error {
+	if err := req.validate(); err != nil {
+		return err
+	}
 	nativeCreateMu.Lock()
 	defer nativeCreateMu.Unlock()
 	policy, created := m.nativeCreatedPolicy(id)
@@ -616,10 +648,17 @@ func (m *Manager) deleteNativeApp(ctx context.Context, id string, purge bool) er
 	// The agent's own route goes with the registration: the proxy and
 	// certificate checks only serve hosts of registered applications. A
 	// fronting Caddy route is withdrawn explicitly.
-	if err := m.withdrawNativeCaddyRoute(ctx, id); err != nil {
+	m.mu.Lock()
+	registered := m.data.NativeApps[id]
+	m.mu.Unlock()
+	if err := m.withdrawNativeCaddyRoute(ctx, id, (App{Domain: registered.Domain, AdditionalDomains: registered.AdditionalDomains}).Hostnames()); err != nil {
 		return fmt.Errorf("could not withdraw the application's hostnames: %w", err)
 	}
-	if err := releaseNativeData(ctx, m, id); err != nil && !errors.Is(err, errNativeCreateUnavailable) {
+	// Data services are kept, like a container application's volumes: they
+	// become a retained resource that the operator removes separately, or
+	// that this removal deletes right after (a never-switched move's copy).
+	retained, err := retainNativeData(ctx, m, id, req.Origin)
+	if err != nil && !errors.Is(err, errNativeCreateUnavailable) {
 		return fmt.Errorf("data services: %w", err)
 	}
 	if err := m.removeNativeAppAccount(ctx, id); err != nil {
@@ -631,12 +670,19 @@ func (m *Manager) deleteNativeApp(ctx context.Context, id string, purge bool) er
 		}
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	delete(m.data.NativeCreated, id)
 	delete(m.data.NativeCreatedSpecs, id)
 	delete(m.data.NativeApps, id)
 	delete(m.data.NativeSettings, id)
 	delete(m.data.NativeReleases, id)
 	delete(m.data.NativeBindings, id)
-	return m.save()
+	err = m.save()
+	m.mu.Unlock()
+	if err != nil || retained == "" || !req.DeleteData {
+		return err
+	}
+	if err := m.removeRetainedCopy(ctx, retained); err != nil {
+		return fmt.Errorf("the application was removed, but deleting the data copied by move %s failed: %w; it stays as a retained resource", req.Origin.MoveID, err)
+	}
+	return nil
 }

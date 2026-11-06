@@ -18,9 +18,13 @@ type Command struct {
 	Env      []string // complete environment (KEY=value); nothing is inherited
 	Network  bool     // needs outbound network (fetching sources, installing packages)
 	Database bool     // needs the application's databases (migrations)
-	Stdin    io.Reader
-	Stdout   io.Writer // nil discards
-	Stderr   io.Writer // nil uses Stdout
+	// Build marks a profile build step. Build steps are idempotent within
+	// their release directory, so an executor may run one again from the
+	// start, for example with more memory after it ran out.
+	Build  bool
+	Stdin  io.Reader
+	Stdout io.Writer // nil discards
+	Stderr io.Writer // nil uses Stdout
 }
 
 // Executor runs commands as the application owner.

@@ -257,6 +257,13 @@ func (s *scanner) nodeData(dir string, pkg packageJSON, a *app) error {
 			break
 		}
 	}
+	for _, name := range []string{"@clickhouse/client", "@clickhouse/client-web", "clickhouse"} {
+		if pkg.has(name) {
+			a.clickhouse = true
+			a.reason("%s package: ClickHouse", name)
+			break
+		}
+	}
 	return nil
 }
 

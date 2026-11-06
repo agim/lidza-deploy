@@ -22,6 +22,8 @@ const rules = {
   'deploy.settings.tab': oneOf('general', 'environment', 'resources', 'processes'),
 };
 export type PreferenceKey = keyof typeof rules;
+/** validPreference applies the stored-value rule of key to a candidate value. */
+export function validPreference(key: PreferenceKey, value: unknown) { return rules[key](value); }
 type Values = Partial<Record<PreferenceKey, Choice>>;
 interface AccountState { subject: string; values: Record<string, unknown> }
 export interface PreferenceSnapshot { values: Values; ready: boolean; error: string; pending: boolean }

@@ -2,8 +2,7 @@ package agent
 
 // Host operating-system management shared by host updates, the managed host
 // firewall and on-demand Docker installation. Everything here acts on the
-// whole machine, so it is unavailable to agents that share a host (coexist),
-// observe native services only, or serve ingress only.
+// whole machine, so it is unavailable to agents that serve ingress only.
 
 import (
 	"context"
@@ -16,13 +15,14 @@ import (
 )
 
 // HostJob is one host-level operation the agent ran: package updates, a
-// reboot, unattended-upgrades configuration or a firewall change. A bounded
-// history stays in agent state so the panel can show what happened even after
-// the agent restarts (for example after a reboot).
+// reboot, unattended-upgrades configuration, a Docker reconciliation or a
+// firewall change. A bounded history stays in agent state so the panel can
+// show what happened even after the agent restarts (for example after a
+// reboot).
 type HostJob struct {
 	ID       string     `json:"id"`
-	Kind     string     `json:"kind"`    // security-updates, all-updates, configure, reboot, firewall
-	Trigger  string     `json:"trigger"` // manual or schedule
+	Kind     string     `json:"kind"`    // security-updates, all-updates, disruptive-updates, configure, reboot, docker-live-restore, docker-restart, docker-buildx, bundler-cleanup, firewall
+	Trigger  string     `json:"trigger"` // manual, schedule or move
 	Status   string     `json:"status"`  // running, succeeded, failed
 	Started  time.Time  `json:"started"`
 	Finished *time.Time `json:"finished,omitempty"`
@@ -47,6 +47,8 @@ type hostController struct {
 	fwTimer    *time.Timer
 	fwApplying bool
 	recovered  bool
+	// dockerChecked is the last hourly live-restore reconciliation.
+	dockerChecked time.Time
 }
 
 var hostControllers sync.Map // *Manager -> *hostController
@@ -85,13 +87,8 @@ func hostToolAvailable(name string) bool {
 
 // hostOperationsAllowed reports why host-wide operations are refused.
 func (m *Manager) hostOperationsAllowed() error {
-	switch {
-	case m.cfg.IngressOnly:
+	if m.cfg.IngressOnly {
 		return errors.New("host management is unavailable on an ingress-only agent")
-	case m.cfg.NativeOnly:
-		return errors.New("host management is unavailable on a native-only observer agent")
-	case m.cfg.HostMode == "coexist":
-		return errors.New("host management is disabled in coexist mode; the host is shared with another manager")
 	}
 	return nil
 }
@@ -175,7 +172,8 @@ func newHostJob(kind, trigger string, now time.Time) HostJob {
 }
 
 // hostTick runs from the agent's maintenance loop once a minute: it refreshes
-// the cached update status, enforces the reboot window and recovers a firewall
+// the cached update status, keeps Docker live-restore on, applies disruptive
+// upgrades and reboots inside the maintenance window, and recovers a firewall
 // change whose confirmation window expired while the agent was down.
 func (m *Manager) hostTick(now time.Time) {
 	if m.hostOperationsAllowed() != nil {
@@ -184,5 +182,7 @@ func (m *Manager) hostTick(now time.Time) {
 	m.firewallRecover(now)
 	m.configureTick()
 	m.refreshHostUpdatesIfStale(now)
+	m.dockerTick(now)
+	m.disruptiveTick(now)
 	m.rebootTick(now)
 }

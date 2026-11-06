@@ -41,7 +41,7 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
     await page.fill('[name=email]', cfg.CONTROL_USER);
     await page.fill('[name=password]', cfg.CONTROL_PASSWORD);
     await page.getByRole('button', {name: 'Open workspace'}).click();
-    await page.waitForURL('**/console.html');
+    await page.waitForURL('**/console/applications');
     const headers = {Origin: base};
     let response = await page.request.post(base + '/api/control/servers', {headers, data: {id: host, name: 'Errors fixture', url: 'http://127.0.0.1:' + port, token: key}});
     if (!response.ok()) throw Error('Could not connect errors fixture agent');

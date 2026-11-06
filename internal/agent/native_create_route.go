@@ -77,7 +77,7 @@ func (m *Manager) serveNativeCreated(w http.ResponseWriter, r *http.Request, hos
 		return true
 	}
 	if policy.Port == "" {
-		http.Error(w, "application unavailable", http.StatusServiceUnavailable)
+		nativeUnavailablePage(w, http.StatusServiceUnavailable)
 		return true
 	}
 	r = r.Clone(r.Context())
@@ -95,7 +95,7 @@ func (m *Manager) serveNativeCreated(w http.ResponseWriter, r *http.Request, hos
 	proxy := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: "127.0.0.1:" + policy.Port})
 	proxy.Transport = nativeCreatedTransport
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
-		http.Error(w, "application unavailable", http.StatusBadGateway)
+		nativeUnavailablePage(w, http.StatusBadGateway)
 	}
 	proxy.ServeHTTP(w, r)
 	return true

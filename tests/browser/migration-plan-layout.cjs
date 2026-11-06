@@ -12,7 +12,7 @@ async function main() {
     for (const width of [390, 1010, 1440]) {
       const page = await browser.newPage({ viewport: { width, height: 900 } });
       await page.route('**/api/control/apps/*/move', route => route.fulfill({ status: 404, json: { error: 'no move recorded for this application' } }));
-      await page.goto(base + '/console.html?demo=1#applications');
+      await page.goto(base + '/console/applications?demo=1');
       for (const view of ['Grid view', 'List view']) {
         await page.getByRole('button', { name: view }).click();
         for (const app of ['customer-portal', 'documentation']) {

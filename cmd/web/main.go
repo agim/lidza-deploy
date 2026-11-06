@@ -102,6 +102,10 @@ func run() error {
 			}
 		}
 	}
+	// The panel's own database container may come back on another port
+	// after a Docker restart; the watch corrects DATABASE_URL and ends the
+	// process cleanly so the service manager restarts it onto the new one.
+	onboarding.WatchManagedDatabase(ctx, dir, stop)
 	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 3 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	failures := make(chan error, 1)
 	go func() { failures <- server.ListenAndServe() }()

@@ -23,10 +23,10 @@ const ingressSnapshotLimit = 128 << 20
 // containers, writes inventory, or runs host maintenance. Protected requests
 // retain the shared, flock-protected replay journal used by the existing agent.
 func NewIngressReader(parent context.Context, cfg Config) (*Manager, error) {
-	if err := cfg.validateHostMode(); err != nil {
+	if err := cfg.validateHostnames(); err != nil {
 		return nil, err
 	}
-	if !cfg.IngressOnly || cfg.NativeOnly || cfg.Native != nil {
+	if !cfg.IngressOnly || cfg.Native != nil {
 		return nil, errors.New("ingress reader requires ingress_only configuration")
 	}
 	if !validateIngressListen(cfg.Listen) || !validateIngressListen(cfg.ProxyListen) {

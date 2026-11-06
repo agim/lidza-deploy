@@ -257,6 +257,19 @@ func (m *Manager) allocateNativePortLocked() (string, error) {
 	if low < 1024 || high > 65535 || low > high {
 		return "", errors.New("native app_ports must be an increasing range between 1024 and 65535")
 	}
+	used := m.reservedPortsLocked()
+	for port := low; port <= high; port++ {
+		if !used[strconv.Itoa(port)] && nativePortListenable(port) {
+			return strconv.Itoa(port), nil
+		}
+	}
+	return "", errors.New("no free loopback port is left in the configured app_ports range")
+}
+
+// reservedPortsLocked lists the ports that applications, releases and this
+// agent's listeners use or will use again, whether or not they listen right
+// now (a stopped application keeps its port). The caller holds m.mu.
+func (m *Manager) reservedPortsLocked() map[string]bool {
 	used := map[string]bool{}
 	for _, a := range m.data.NativeApps {
 		used[a.Port] = true
@@ -281,10 +294,5 @@ func (m *Manager) allocateNativePortLocked() (string, error) {
 			used[port] = true
 		}
 	}
-	for port := low; port <= high; port++ {
-		if !used[strconv.Itoa(port)] && nativePortListenable(port) {
-			return strconv.Itoa(port), nil
-		}
-	}
-	return "", errors.New("no free loopback port is left in the configured app_ports range")
+	return used
 }

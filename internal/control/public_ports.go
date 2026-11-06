@@ -14,7 +14,7 @@ func (c *Control) appPorts(w http.ResponseWriter, r *http.Request) {
 	}
 	var out agent.PortInventory
 	if err := c.agentCall(r, a.ServerID, "GET", "/v1/apps/"+url.PathEscape(a.ID)+"/ports", nil, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, out)

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -155,7 +156,7 @@ func (m *Manager) nativeDatabaseDumpPolicy(ctx context.Context, d Database) (*Na
 	if !allowed || d.Mode != "external" {
 		return nil, errors.New("native database binding/policy is unavailable; backup refused")
 	}
-	if len(m.cfg.BackupExcludeTableData[d.AppID]) > 0 {
+	if len(m.backupExcludedTables(d.AppID)) > 0 {
 		return nil, errors.New("native release backups require the complete database; exclusions refused")
 	}
 	raw, err := m.nativeDatabaseSource(binding.Policy)
@@ -201,7 +202,7 @@ func (m *Manager) dumpNativeDatabase(ctx context.Context, d Database, p NativeDa
 		return errors.New("native backup input could not be prepared")
 	}
 	unit := "lidza-native-pg-" + newID() + ".service"
-	args := []string{"--quiet", "--wait", "--pipe", "--collect", "--expand-environment=no", "--unit=" + unit, "--property=User=root", "--property=CPUQuota=50%", "--property=MemoryMax=536870912", "--property=MemorySwapMax=0", "--property=TasksMax=64", "--property=RuntimeMaxSec=1800", "--property=ProtectSystem=strict", "--property=ProtectHome=tmpfs", "--property=PrivateTmp=yes", "--property=NoNewPrivileges=yes", "--property=CapabilityBoundingSet=" + capabilities, "--property=KillMode=control-group", "--property=BindPaths=" + dir, "--property=ReadWritePaths=" + dir, "--", binary, "-native-pg-dump"}
+	args := []string{"--quiet", "--wait", "--pipe", "--collect", "--expand-environment=no", "--unit=" + unit, "--property=User=root", "--property=CPUQuota=50%", "--property=MemoryMax=536870912", "--property=MemorySwapMax=0", "--property=TasksMax=64", "--property=RuntimeMaxSec=" + nativeDumpRuntimeSeconds(ctx), "--property=ProtectSystem=strict", "--property=ProtectHome=tmpfs", "--property=PrivateTmp=yes", "--property=NoNewPrivileges=yes", "--property=CapabilityBoundingSet=" + capabilities, "--property=KillMode=control-group", "--property=BindPaths=" + dir, "--property=ReadWritePaths=" + dir, "--", binary, "-native-pg-dump"}
 	command := exec.CommandContext(ctx, "/usr/bin/systemd-run", args...)
 	command.Env = []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent", "LANG=C.UTF-8"}
 	command.Stdin = strings.NewReader(string(raw))
@@ -264,4 +265,15 @@ func verifyNativeOffsiteBackup(ctx context.Context, cfg storage.Config, key stri
 		return errors.New("native off-site readback checksum/size differs; current release retained")
 	}
 	return nil
+}
+
+// nativeDumpRuntimeSeconds bounds the isolated dump unit by the caller's
+// deadline (which follows the database's size and backup history), with a
+// minute's grace for cleanup: at least 30 minutes and at most five hours.
+func nativeDumpRuntimeSeconds(ctx context.Context) string {
+	runtime := 30 * time.Minute
+	if deadline, ok := ctx.Deadline(); ok {
+		runtime = max(runtime, time.Until(deadline)+time.Minute)
+	}
+	return strconv.Itoa(int(min(runtime, 5*time.Hour).Seconds()))
 }

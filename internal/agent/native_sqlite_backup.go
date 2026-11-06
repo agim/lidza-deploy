@@ -88,6 +88,10 @@ func nativeSQLiteIdentity(path string) (nativeSQLiteFileIdentity, error) {
 }
 
 func checkNativeBackupSource(ctx context.Context, source string, policy NativeDatabasePolicy) error {
+	if policy.ClickHouseDatabase != "" {
+		// The agent's own server: the backup reaches it with its credential.
+		return nil
+	}
 	if policy.SQLitePath != "" {
 		tool, err := openNativeBackupTool(nativeSQLiteTool, policy.DumpSHA256)
 		if err != nil {

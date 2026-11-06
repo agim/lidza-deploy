@@ -121,6 +121,23 @@ func TestUpgradeBundleStagingVerifiesEveryStep(t *testing.T) {
 	if _, err := updates.ReadStaged(staged, runtime.GOARCH, upgradeTrust()); err != nil {
 		t.Fatal("staged bundle does not verify", err)
 	}
+	// A native application's release (not in Apps) must block the restart.
+	m.mu.Lock()
+	m.data.Deployments = append(m.data.Deployments, Deployment{ID: "native-release", AppID: "rails-shop", Status: "building"})
+	m.mu.Unlock()
+	if w := call(t, h, token, "POST", "/v1/upgrade", "application/json", []byte(`{"version":"`+f.version+`"}`)); w.Code != 409 || !strings.Contains(w.Body.String(), "rails-shop") {
+		t.Fatal("upgrade queued during a native release", w.Code, w.Body)
+	}
+	m.mu.Lock()
+	m.data.Deployments = m.data.Deployments[:len(m.data.Deployments)-1]
+	m.nativeOperations = map[string]bool{"rails-shop": true}
+	m.mu.Unlock()
+	if w := call(t, h, token, "POST", "/v1/upgrade", "application/json", []byte(`{"version":"`+f.version+`"}`)); w.Code != 409 {
+		t.Fatal("upgrade queued during a native operation", w.Code, w.Body)
+	}
+	m.mu.Lock()
+	m.nativeOperations = nil
+	m.mu.Unlock()
 	if w := call(t, h, token, "POST", "/v1/upgrade", "application/json", []byte(`{"version":"`+f.version+`"}`)); w.Code != 202 {
 		t.Fatal("verified bundle not queued", w.Code, w.Body)
 	}

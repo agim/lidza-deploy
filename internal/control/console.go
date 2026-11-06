@@ -132,7 +132,7 @@ func consoleJobError(w http.ResponseWriter, err error) {
 		agent.Fail(w, remote.status, err)
 		return
 	}
-	agent.Fail(w, 502, err)
+	failAgent(w, err)
 }
 
 func (c *Control) cancelConsoleJob(w http.ResponseWriter, r *http.Request) {

@@ -36,7 +36,7 @@ const go = async (page, route) => { await page.goto(`${base}/console.html#${rout
    assert.equal(await page.locator('input[aria-label="Variable value"]').inputValue(), 'fixture-only-secret');
    assert.equal(state.calls.filter(c => c.path === 'control/apps' && c.method === 'POST').length, 0, 'Wizard created before final confirmation');
    await page.getByRole('button', { name: 'Create application', exact: true }).click();
-   await page.waitForURL(url => url.hash === '#applications');
+   await page.waitForURL(url => url.pathname === '/console/applications');
    const created = state.calls.find(c => c.path === 'control/apps' && c.method === 'POST').body;
    assert.equal(created.id, 'new-portal'); assert.equal(created.repository, 'acme/portal'); assert.equal(created.github_installation, 42);
    assert.equal(created.branch, 'main'); assert.equal(created.domain, 'new.example.com'); assert.equal(created.server_id, 'local');
@@ -59,7 +59,7 @@ const go = async (page, route) => { await page.goto(`${base}/console.html#${rout
    await page.waitForFunction(() => document.querySelector('input[value="fixture-secret-value"]'));
    await setting.locator('.env-value').fill('debug');
    await page.getByRole('button', { name: 'Save changes' }).click();
-   await page.waitForURL(url => url.hash === '#applications');
+   await page.waitForURL(url => url.pathname === '/console/applications');
    const saved = state.calls.find(c => c.path.endsWith('/portal/settings') && c.method === 'PATCH').body;
    assert.equal(saved.domain, 'portal.example.com'); assert.equal(saved.branch, 'main');
    assert.equal(saved.env_changes.LOG_LEVEL, 'debug'); assert.equal(saved.env_changes.API_TOKEN, undefined, 'Revealed secret was accidentally replaced');

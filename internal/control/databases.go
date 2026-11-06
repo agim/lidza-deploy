@@ -17,11 +17,6 @@ type fleetDatabase struct {
 	ServerID string `json:"server_id"`
 }
 
-type fleetRetainedResource struct {
-	agent.RetainedResourceView
-	ServerID string `json:"server_id"`
-}
-
 func (c *Control) databases(w http.ResponseWriter, r *http.Request) {
 	retainedResults := make(chan []fleetResult, 1)
 	go func() { retainedResults <- c.readFleet(r, "/v1/retained-resources") }()
@@ -61,15 +56,10 @@ func (c *Control) databases(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, row := range rows {
-			retained = append(retained, fleetRetainedResource{row, result.Server.ID})
+			retained = append(retained, c.retainedFor(result.Server.ID, row))
 		}
 	}
-	sort.Slice(retained, func(i, j int) bool {
-		if retained[i].ServerID != retained[j].ServerID {
-			return retained[i].ServerID < retained[j].ServerID
-		}
-		return retained[i].ID < retained[j].ID
-	})
+	sortRetained(retained)
 	sort.Strings(retainedUnavailable)
 	agent.JSON(w, 200, map[string]any{"databases": list, "unavailable_servers": unavailable, "unavailable_server_ids": unavailableIDs, "retained_resources": retained, "retained_resources_unavailable_server_ids": retainedUnavailable})
 }
@@ -93,7 +83,7 @@ func (c *Control) configureDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/database", input, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 202, map[string]string{"status": "provisioning"})
@@ -115,13 +105,13 @@ func (c *Control) databaseAction(w http.ResponseWriter, r *http.Request) {
 		c.mu.Unlock()
 		if configured {
 			if err := c.syncBackupStorage(r, a.ServerID); err != nil {
-				agent.Fail(w, 502, err)
+				failAgent(w, err)
 				return
 			}
 		}
 	}
 	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/database/"+action, nil, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 202, map[string]string{"status": "queued"})
@@ -142,7 +132,7 @@ func (c *Control) backupPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.agentCall(r, a.ServerID, "PATCH", "/v1/apps/"+a.ID+"/backups", p, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, map[string]string{"status": "saved"})
@@ -155,7 +145,13 @@ func (c *Control) syncBackupStorage(r *http.Request, server string) error {
 		return errors.New("configure off-site storage in Integrations first")
 	}
 	copy := backupStorageConfig(*cfg)
-	return c.agentCall(r, server, "PUT", "/v1/backup-storage", &copy, nil)
+	if err := c.agentCall(r, server, "PUT", "/v1/backup-storage", &copy, nil); err != nil {
+		return err
+	}
+	// Retention travels with the storage. Agents without retention support
+	// refuse the route; their uploads are unaffected.
+	_ = c.pushBackupRetention(r, server)
+	return nil
 }
 func (c *Control) downloadBackup(w http.ResponseWriter, r *http.Request) {
 	// Explicit server + app allows retrieval of retained databases after app removal.
@@ -208,12 +204,12 @@ func (c *Control) reloadApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.syncStorageIfConfigured(r, a.ServerID); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	var out agent.Deployment
 	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/reload", nil, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 202, out)
@@ -232,13 +228,13 @@ func (c *Control) databaseResourceAction(w http.ResponseWriter, r *http.Request)
 		c.mu.Unlock()
 		if configured {
 			if err := c.syncBackupStorage(r, server); err != nil {
-				agent.Fail(w, 502, err)
+				failAgent(w, err)
 				return
 			}
 		}
 	}
 	if err := c.agentCall(r, server, "POST", "/v1/databases/"+id+"/"+action, nil, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 202, map[string]string{"status": "queued"})
@@ -262,7 +258,33 @@ func (c *Control) databaseResourcePolicy(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if err := c.agentCall(r, server, "PATCH", "/v1/databases/"+id+"/backups", p, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
+		return
+	}
+	agent.JSON(w, 200, map[string]string{"status": "saved"})
+}
+
+// databaseBeforeDeploy saves one database's pre-deployment backup policy
+// (always, reuse within N hours, or scheduled backups only) on its agent.
+// The agent refuses never for a primary database.
+func (c *Control) databaseBeforeDeploy(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	server := r.PathValue("server")
+	if !regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`).MatchString(id) {
+		http.NotFound(w, r)
+		return
+	}
+	var p agent.BeforeDeployPolicy
+	if err := agent.Decode(w, r, &p); err != nil {
+		agent.Fail(w, 400, err)
+		return
+	}
+	if err := p.Validate(); err != nil {
+		agent.Fail(w, 400, err)
+		return
+	}
+	if err := c.agentCall(r, server, http.MethodPatch, "/v1/databases/"+id+"/backups/before-deploy", p, nil); err != nil {
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, map[string]string{"status": "saved"})

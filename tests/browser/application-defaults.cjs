@@ -10,7 +10,7 @@ for(const width of [390,1440]){
   if(path.endsWith('/status'))json={roles:['admin']};else if(path.endsWith('/servers'))json=[{id:'local',name:'Hosting server'}];else if(path.endsWith('/apps'))json=[app];else if(path.endsWith('/deployments'))json={deployments:[]};else if(path.endsWith('/application-defaults')){if(r.method()==='PUT'){calls.push({kind:'profile',...r.postDataJSON()});profile={values:r.postDataJSON().values,revision:'updated'}}json=profile;}else if(path.endsWith('/apply-defaults')){calls.push({kind:'apply',...r.postDataJSON()});json={saved:true};}else if(path.endsWith('/settings')){if(r.method()==='PATCH')calls.push({kind:'settings',...r.postDataJSON()});json=app;}
   await route.fulfill({json});
  });
- await page.goto((process.env.TEST_WEB_URL||'http://127.0.0.1:8880')+'/console.html#defaults');
+ await page.goto((process.env.TEST_WEB_URL||'http://127.0.0.1:8880')+'/console/defaults');
  const admin=page.locator('#defaults-form [name=ADMIN_USERS]');await page.waitForFunction(()=>document.querySelector('#defaults-form [name=ADMIN_USERS]')?.value==='shared@example.com');
  await admin.fill('admin@example.com');await page.evaluate(()=>{window.defaultInput=document.querySelector('#defaults-form [name=ADMIN_USERS]');defaultInput.focus();window.savedY=scrollY;render();render()});
  assert(await page.evaluate(()=>defaultInput===document.querySelector('#defaults-form [name=ADMIN_USERS]')&&document.activeElement===defaultInput&&defaultInput.value==='admin@example.com'&&scrollY===savedY));

@@ -22,7 +22,7 @@ const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
    if(offset && !dropped) { dropped=true; return route.abort('failed'); }
    return route.fulfill({json:{id,state:offset?'finished':'running',output:offset?'second':'first',next_offset:offset?11:5,output_size:11,exit_code:7,duration_seconds:2,truncated:false}});
   });
-  await page.goto(`${base}/console.html#page/console/local`);
+  await page.goto(`${base}/console/servers/local/console`);
   await page.locator('#console-command textarea').fill('printf first; sleep 2; printf second; exit 7');
   await page.getByRole('button',{name:'Run command',exact:true}).click();
   await page.getByRole('status').filter({hasText:'Connection interrupted'}).waitFor();

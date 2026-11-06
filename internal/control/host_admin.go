@@ -8,8 +8,9 @@ import (
 	"github.com/agim/lidza-deploy/internal/agent"
 )
 
-// hostAdminRoutes proxies per-server host updates, reboots and the managed
-// firewall to the server's agent. Mutations pass the panel's origin check,
+// hostAdminRoutes proxies per-server host updates, reboots, the managed
+// firewall, the web ingress setting and the removal of unused Bundler
+// versions to the server's agent. Mutations pass the panel's origin check,
 // role check and audit trail like every other server mutation.
 func (c *Control) hostAdminRoutes(handle func(string, http.HandlerFunc)) {
 	for _, pattern := range []string{
@@ -22,6 +23,10 @@ func (c *Control) hostAdminRoutes(handle func(string, http.HandlerFunc)) {
 		"GET /api/control/servers/{server}/host/firewall/plan",
 		"POST /api/control/servers/{server}/host/firewall/apply",
 		"POST /api/control/servers/{server}/host/firewall/confirm",
+		"GET /api/control/servers/{server}/host/ingress",
+		"PUT /api/control/servers/{server}/host/ingress",
+		"GET /api/control/servers/{server}/host/ruby/bundlers",
+		"POST /api/control/servers/{server}/host/ruby/bundlers/remove",
 	} {
 		handle(pattern, c.hostAdmin)
 	}
@@ -38,11 +43,22 @@ func (c *Control) hostAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	_, rest, _ := strings.Cut(r.URL.Path, "/servers/"+r.PathValue("server"))
 	path := "/v1" + rest
-	if r.Method == http.MethodGet && rest == "/host/updates" && r.URL.Query().Get("refresh") == "1" {
+	if r.Method == http.MethodGet && (rest == "/host/updates" || rest == "/host/ingress") && r.URL.Query().Get("refresh") == "1" {
 		path += "?refresh=1"
 	}
 	var input any
 	switch {
+	case rest == "/host/ingress" && r.Method == http.MethodPut:
+		var settings agent.HostIngressSettings
+		if err := agent.Decode(w, r, &settings); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		if err := settings.Validate(); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		input = settings
 	case r.Method == http.MethodPatch:
 		var policy agent.HostUpdatesPolicy
 		if err := agent.Decode(w, r, &policy); err != nil {
@@ -84,14 +100,25 @@ func (c *Control) hostAdmin(w http.ResponseWriter, r *http.Request) {
 		input = apply
 	case rest == "/host/firewall/confirm":
 		input = struct{}{}
+	case rest == "/host/ruby/bundlers/remove":
+		var removal agent.BundlerRemoval
+		if err := agent.Decode(w, r, &removal); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		if err := removal.Validate(); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		input = removal
 	}
 	var out json.RawMessage
 	if err := c.agentCall(r, r.PathValue("server"), r.Method, path, input, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	status := http.StatusOK
-	if rest == "/host/updates/run" || rest == "/host/reboot" {
+	if rest == "/host/updates/run" || rest == "/host/reboot" || rest == "/host/ruby/bundlers/remove" {
 		status = http.StatusAccepted
 	}
 	w.Header().Set("Content-Type", "application/json")

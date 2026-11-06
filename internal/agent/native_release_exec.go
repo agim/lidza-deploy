@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agim/lidza-deploy/internal/release"
@@ -25,41 +26,59 @@ type nativeReleaseExecutor struct {
 	account nativeReleaseAccount
 	root    string // application root; the only writable tree
 	id      string // deployment identity, for unit names
-	memory  int    // MiB per build command; 0 means the default
+	app     string // application whose build peaks are learned
+	memory  int    // MiB per build command from the policy; 0 adapts to the host
+	// writable are further directories the command may change, for example
+	// the account's Ruby gem directory when unused Bundler versions are
+	// removed (native_bundler.go).
+	writable []string
 }
 
-const nativeReleaseDefaultBuildMiB = 2048
-
-func (x nativeReleaseExecutor) memoryMiB() int {
-	if x.memory > 0 {
-		return x.memory
-	}
-	return nativeReleaseDefaultBuildMiB
-}
-
+// Run runs one command under the host's build resources: build steps get
+// a memory cap from free memory and their learned peak, wait for memory
+// when it is short, and are retried once with more memory when they run
+// out (build_resources.go).
 func (x nativeReleaseExecutor) Run(ctx context.Context, c release.Command) error {
-	if x.m.nativeReleaseRun != nil {
-		return x.m.nativeReleaseRun(ctx, c)
+	// Resource lines go to the step's log, never to its standard output,
+	// which can be data (git archive) or parsed (schedules).
+	step := buildStep{App: x.app, Step: c.Name, Explicit: x.memory, Build: c.Build, Log: c.Stderr}
+	if step.App == "" {
+		step.App = filepath.Base(x.root)
 	}
+	return x.m.runBuildStep(ctx, step, func(ctx context.Context, limits buildLimits) (int, error) {
+		if x.m.nativeReleaseRun != nil {
+			return 0, x.m.nativeReleaseRun(ctx, c)
+		}
+		return x.runUnit(ctx, c, limits)
+	})
+}
+
+// runUnit runs one attempt of c in a transient unit and reports its peak.
+func (x nativeReleaseExecutor) runUnit(ctx context.Context, c release.Command, limits buildLimits) (int, error) {
 	if os.Geteuid() != 0 {
-		return errors.New("native release commands require the root agent")
+		return 0, errors.New("native release commands require the root agent")
 	}
 	if len(c.Args) == 0 || !filepath.IsAbs(c.Dir) || !nativeReleaseInside(x.root, c.Dir) {
-		return fmt.Errorf("native release command %s must run inside the application root", c.Name)
+		return 0, fmt.Errorf("native release command %s must run inside the application root", c.Name)
 	}
 	// Node sizes its heap from the machine, not the unit's memory cap, and a
 	// large front-end build then dies at the cap instead of collecting garbage.
-	env := c.Env
-	if !slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "NODE_OPTIONS=") }) {
-		env = append(append([]string{}, env...), "NODE_OPTIONS=--max-old-space-size="+strconv.Itoa(x.memoryMiB()*3/4))
-	}
+	env := nativeReleaseNodeHeap(c.Env, limits.MemoryMiB)
 	envFile, err := nativeReleaseEnvironmentFile(x.root, x.account, env)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer os.Remove(envFile)
+	// Each attempt starts from a clean scratch directory, unless another
+	// command of the same release is using it right now (the source export
+	// streams while its consumer runs): the directory is then only kept.
+	release, err := nativeScratchUse(x.root, x.account)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	unit := "lidza-native-release-" + x.id + "-" + newID()[:8] + ".service"
-	argv := nativeReleaseArgv(x.account, x.root, unit, envFile, c, x.memoryMiB())
+	argv := nativeReleaseArgv(x.account, x.root, unit, envFile, c, limits, x.writable...)
 	cmd := exec.CommandContext(ctx, "systemd-run", argv...)
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
 	cmd.Stdin = c.Stdin
@@ -72,16 +91,32 @@ func (x nativeReleaseExecutor) Run(ctx context.Context, c release.Command) error
 		cmd.Stderr = cmd.Stdout
 	}
 	cmd.WaitDelay = 5 * time.Second
+	stop := watchUnitMemory(unit)
 	err = cmd.Run()
+	sampled := stop()
 	if ctx.Err() != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_, _ = command(cleanup, "", nil, "systemctl", "stop", unit)
 	}
+	outcome := nativeReleaseUnitOutcome(unit, err != nil)
+	peak := int(max(sampled, outcome.PeakBytes) >> 20)
 	if err != nil {
-		return fmt.Errorf("%s failed: %w", c.Name, err)
+		if outcome.OutOfMemory {
+			return peak, fmt.Errorf("%s %w (build limit %d MiB)", c.Name, errBuildOutOfMemory, limits.MemoryMiB)
+		}
+		return peak, fmt.Errorf("%s failed: %w", c.Name, err)
 	}
-	return nil
+	return peak, nil
+}
+
+// nativeReleaseNodeHeap gives Node three quarters of the step's cap as its
+// heap unless the environment already sets NODE_OPTIONS.
+func nativeReleaseNodeHeap(env []string, memoryMiB int) []string {
+	if memoryMiB <= 0 || slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "NODE_OPTIONS=") }) {
+		return env
+	}
+	return append(append([]string{}, env...), "NODE_OPTIONS=--max-old-space-size="+strconv.Itoa(memoryMiB*3/4))
 }
 
 func nativeReleaseInside(root, path string) bool {
@@ -121,25 +156,21 @@ func nativeReleaseEnvironmentFile(root string, account nativeReleaseAccount, env
 }
 
 // nativeReleaseArgv builds the systemd-run invocation for one command.
-func nativeReleaseArgv(account nativeReleaseAccount, root, unit, envFile string, c release.Command, memoryMiB ...int) []string {
-	limit := int64(nativeReleaseDefaultBuildMiB) << 20
-	if len(memoryMiB) > 0 && memoryMiB[0] > 0 {
-		limit = int64(memoryMiB[0]) << 20
-	}
+func nativeReleaseArgv(account nativeReleaseAccount, root, unit, envFile string, c release.Command, limits buildLimits, writable ...string) []string {
 	inaccessible := "/run/user /run/systemd/private /run/dbus/system_bus_socket -/var/run/docker.sock"
 	if !c.Database {
 		inaccessible += " -/run/postgresql -/var/run/postgresql -/run/mysqld -/var/run/mysqld -/run/redis -/run/mongodb"
 	}
 	searchPath := nativeReleaseSearchPath(account.Home)
 	argv := []string{"--quiet", "--wait", "--pipe", "--collect", "--expand-environment=no", "--unit=" + unit,
-		"--property=User=root", "--property=WorkingDirectory=" + c.Dir,
-		"--property=MemoryMax=" + strconv.FormatInt(limit, 10), "--property=MemorySwapMax=0", "--property=OOMScoreAdjust=500",
-		"--property=CPUQuota=50%", "--property=IOWeight=10", "--property=TasksMax=256", "--property=RuntimeMaxSec=1800",
-		"--property=ProtectSystem=strict", "--property=ProtectHome=read-only", "--property=ReadWritePaths=" + root,
+		"--property=User=root", "--property=WorkingDirectory=" + c.Dir}
+	argv = append(argv, buildResourceProperties(limits)...)
+	argv = append(argv, "--property=TasksMax=256", "--property=RuntimeMaxSec=1800",
+		"--property=ProtectSystem=strict", "--property=ProtectHome=read-only", "--property=ReadWritePaths="+strings.Join(append([]string{root}, writable...), " "),
 		"--property=TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=512M,mode=1777",
-		"--property=InaccessiblePaths=" + inaccessible,
+		"--property=InaccessiblePaths="+inaccessible,
 		"--property=NoNewPrivileges=yes", "--property=CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_SETPCAP", "--property=KillMode=control-group",
-		"--setenv=HOME=" + account.Home, "--setenv=PATH=" + searchPath}
+		"--setenv=HOME="+account.Home, "--setenv=PATH="+searchPath)
 	switch {
 	case !c.Network && !c.Database:
 		// No network at all: unix database sockets are hidden above.
@@ -164,6 +195,9 @@ func nativeReleaseArgv(account nativeReleaseAccount, root, unit, envFile string,
 		"/usr/bin/setpriv", "--reuid="+strconv.Itoa(account.UID), "--regid="+strconv.Itoa(account.GID), "--init-groups",
 		"--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "--",
 		"/usr/bin/env", "-i", "HOME="+account.Home, "PATH="+searchPath,
+		// Large temporary files (linkers, package builds) go to the
+		// application's disk, not the small private /tmp.
+		"TMPDIR="+nativeReleaseScratchDir(root), "GOTMPDIR="+nativeReleaseScratchDir(root),
 		"/bin/sh", "-c", "set -eu; set -a; . \"$1\"; set +a; shift; exec \"$@\"", "lidza-release-env", envFile)
 	return append(argv, c.Args...)
 }
@@ -220,4 +254,80 @@ func nativeReleaseLog(ctx context.Context) io.Writer {
 		writer.diagnostic = start("release")
 	}
 	return writer
+}
+
+// nativeReleaseScratchDir is a build step's temporary directory: on the
+// application's disk, inside the writable root, so a linker or package build
+// is not limited by the size of the sandbox's private /tmp.
+func nativeReleaseScratchDir(root string) string { return filepath.Join(root, ".cache", "tmp") }
+
+// nativeScratchUses counts the commands using each application root's
+// scratch directory, so concurrent commands of one release never remove it
+// from under each other.
+var (
+	nativeScratchMu   sync.Mutex
+	nativeScratchUses = map[string]int{}
+)
+
+// nativeScratchUse prepares the scratch directory for a command and marks
+// it in use until the returned function runs. The first user of a root
+// empties the directory; later concurrent users only make sure it exists.
+func nativeScratchUse(root string, account nativeReleaseAccount) (func(), error) {
+	nativeScratchMu.Lock()
+	defer nativeScratchMu.Unlock()
+	var err error
+	if nativeScratchUses[root] == 0 {
+		err = nativeReleaseScratch(root, account)
+	} else {
+		err = nativeReleaseScratchOnce(nativeReleaseScratchDir(root), account)
+	}
+	if err != nil {
+		return nil, err
+	}
+	nativeScratchUses[root]++
+	return func() {
+		nativeScratchMu.Lock()
+		defer nativeScratchMu.Unlock()
+		if nativeScratchUses[root]--; nativeScratchUses[root] <= 0 {
+			delete(nativeScratchUses, root)
+		}
+	}, nil
+}
+
+// nativeReleaseScratch empties the scratch directory before a step and
+// leaves it owned by the release account, private to it.
+func nativeReleaseScratch(root string, account nativeReleaseAccount) error {
+	dir := nativeReleaseScratchDir(root)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	// The server cleanup leaves a busy application alone, but it may have
+	// planned this directory just before the release began: a directory
+	// that disappears underneath is simply made again.
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = nativeReleaseScratchOnce(dir, account); err == nil || !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return err
+}
+
+func nativeReleaseScratchOnce(dir string, account nativeReleaseAccount) error {
+	for _, path := range []string{filepath.Dir(dir), dir} {
+		if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s must be a directory", path)
+		}
+		if err := os.Lchown(path, account.UID, account.GID); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(dir, 0o700)
 }

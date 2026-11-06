@@ -22,16 +22,25 @@ func createManagedClickHouseContainer(ctx context.Context, c ClickHouseResource,
 			return err
 		}
 	}
+	// The container is created, given its system log policy and then
+	// started, so its system log tables are created with their TTL
+	// (clickhouse_system_logs.go).
 	args := []string{
-		"run", "-d", "--name", c.Network, "--label", "io.lidza.clickhouse=" + c.Network, "--network", c.Network,
-		"--restart", "unless-stopped", "--memory", "2g", "--pids-limit", "512", "--ulimit", "nofile=262144:262144",
+		"create", "--name", c.Network, "--label", "io.lidza.clickhouse=" + c.Network, "--network", c.Network,
+		"--restart", "unless-stopped", "--pids-limit", "512", "--ulimit", "nofile=262144:262144",
 		"--log-opt", "max-size=10m", "--log-opt", "max-file=3",
 		"--mount", "type=volume,src=" + c.Network + "-data,dst=/var/lib/clickhouse",
 		"--mount", "type=volume,src=" + c.Network + "-logs,dst=/var/log/clickhouse-server",
 		"--env", "CLICKHOUSE_DB", "--env", "CLICKHOUSE_USER", "--env", "CLICKHOUSE_PASSWORD", "--env", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT",
 		"--health-cmd", `clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query 'SELECT 1'`,
 		"--health-interval", "10s", "--health-timeout", "5s", "--health-start-period", "30s", "--health-retries", "6", clickhouseImage}
-	_, err = clickhouseDockerCommand(ctx, c, stage, nil, []string{"CLICKHOUSE_DB=telemetry", "CLICKHOUSE_USER=lidza", "CLICKHOUSE_PASSWORD=" + c.Password, "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1"}, args...)
+	if _, err = clickhouseDockerCommand(ctx, c, stage, nil, []string{"CLICKHOUSE_DB=telemetry", "CLICKHOUSE_USER=lidza", "CLICKHOUSE_PASSWORD=" + c.Password, "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1"}, args...); err != nil {
+		return err
+	}
+	if _, err = clickhouseDockerCommand(ctx, c, "add ClickHouse log policy", clickhouseLogsConfigArchive(), nil, "cp", "-", c.Network+":/etc/clickhouse-server/config.d/"); err != nil {
+		return err
+	}
+	_, err = clickhouseDockerCommand(ctx, c, stage, nil, nil, "start", c.Network)
 	return err
 }
 
@@ -92,6 +101,10 @@ func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
 		if owner != c.Network {
 			return clickhouseFailure("container ownership", fmt.Errorf("%s is not owned by this managed ClickHouse service; existing container retained", c.Network), c.Password)
 		}
+		run := func(ctx context.Context, args ...string) (string, error) {
+			return clickhouseDockerCommand(ctx, c, "size ClickHouse container memory", nil, nil, args...)
+		}
+		_, _ = liftContainerCaps(ctx, run, c.Network)
 		if _, err := clickhouseDockerCommand(ctx, c, "start retained ClickHouse container", nil, nil, "start", c.Network); err != nil {
 			return err
 		}
@@ -114,6 +127,13 @@ func provisionLocalClickHouse(ctx context.Context, c ClickHouseResource) error {
 		probeTimedOut := errors.Is(queryCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 		cancel()
 		if err == nil {
+			// A retained container gets the system log policy now; the
+			// hourly reconciliation retries when this does not complete.
+			policy, stop := context.WithTimeout(ctx, 30*time.Second)
+			if _, _, logErr := reconcileContainerClickHouseLogs(policy, c); logErr != nil {
+				commandDiagnostic(ctx, "clickhouse", "The system log retention policy is applied by the next hourly check.")
+			}
+			stop()
 			return nil
 		}
 		lastErr = err

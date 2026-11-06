@@ -25,6 +25,15 @@ func backupFixture(t *testing.T, m *Manager, id string, records []BackupRecord) 
 	}
 	m.data.Databases[id] = Database{AppID: id, Backup: BackupPolicy{Keep: 7}, Backups: records}
 }
+
+// dockerPresent fixes whether the cleanup finds a reachable Docker daemon.
+func dockerPresent(t *testing.T, availability dockerAvailability) {
+	t.Helper()
+	saved := dockerCleanupAvailability
+	dockerCleanupAvailability = func(context.Context) dockerAvailability { return availability }
+	t.Cleanup(func() { dockerCleanupAvailability = saved })
+}
+
 func waitMaintenance(t *testing.T, m *Manager) MaintenanceState {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -92,6 +101,7 @@ func TestMaintenanceUsesOnlyFixedBoundedCommandsAndPersistsSchedule(t *testing.T
 	m := testManager(t, &fakeRuntime{})
 	now := time.Now().UTC()
 	backupFixture(t, m, "retained", []BackupRecord{{ID: "old"}, {ID: "new"}})
+	dockerPresent(t, dockerAvailability{ok: true})
 	calls := [][]string{}
 	m.maintenanceRun = func(_ context.Context, name string, args ...string) (string, error) {
 		calls = append(calls, append([]string{name}, args...))
@@ -99,7 +109,7 @@ func TestMaintenanceUsesOnlyFixedBoundedCommandsAndPersistsSchedule(t *testing.T
 	}
 	m.maintenanceTick(now)
 	result := waitMaintenance(t, m)
-	want := [][]string{{"docker", "builder", "prune", "--all", "--force", "--filter", "until=168h"}, {"journalctl", "--rotate"}, {"journalctl", "--vacuum-time=7d"}}
+	want := [][]string{{"docker", "builder", "prune", "--all", "--force", "--filter", "until=168h"}, {"journalctl", "--rotate"}, {"journalctl", "--vacuum-time=7d"}, {"journalctl", "--disk-usage"}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("unsafe commands: %v", calls)
 	}
@@ -169,6 +179,7 @@ func TestCleanupFailureReportedAndPolicyValidation(t *testing.T) {
 
 func TestAgentStartupRunsMaintenanceOnce(t *testing.T) {
 	m := testManager(t, &fakeRuntime{})
+	dockerPresent(t, dockerAvailability{reason: "Docker: not installed on this server; skipped"})
 	var calls atomic.Int32
 	m.maintenanceRun = func(context.Context, string, ...string) (string, error) { calls.Add(1); return "clean", nil }
 	m.StartMaintenance()

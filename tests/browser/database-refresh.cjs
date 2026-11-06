@@ -7,7 +7,7 @@ const assert=require('node:assert/strict');
   for(const width of [390,1440]){
    const page=await browser.newPage({viewport:{width,height:900}}),errors=[];
    page.on('pageerror',error=>errors.push(error.message));
-   await page.goto((process.env.TEST_WEB_URL||'http://127.0.0.1:8880')+'/console.html?demo=1#databases');
+   await page.goto((process.env.TEST_WEB_URL||'http://127.0.0.1:8880')+'/console/databases?demo=1');
    await page.evaluate(()=>{
     servers=[{id:'one',name:'Production'}];
     apps=['alpha','beta'].map(id=>({id,domain:id+'.example.com',server_id:'one'}));

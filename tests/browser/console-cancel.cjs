@@ -20,7 +20,7 @@ const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
    const offset=Number(url.searchParams.get('offset'));
    return route.fulfill({json:{id,state:stopped&&!holdStop?'cancelled':'running',output:offset?'':'partial output',next_offset:14,output_size:14,exit_code:stopped?130:0,duration_seconds:1,truncated:false}});
   });
-  await page.goto(`${base}/console.html#page/console/local`);
+  await page.goto(`${base}/console/servers/local/console`);
   const input=page.locator('#console-command textarea');
   await input.fill('sleep 30');await page.getByRole('button',{name:'Run command',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('.console-output')?.textContent==='partial output');

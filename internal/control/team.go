@@ -49,7 +49,7 @@ func routePermission(pattern string) string {
 		return "github.manage"
 	case "GET /api/control/team", "POST /api/control/team", "DELETE /api/control/team/{subject}":
 		return "team.manage"
-	case "GET /api/control/servers/{server}/ssh-access":
+	case "GET /api/control/servers/{server}/ssh-access", "GET /api/control/servers/{server}/retained-resources", "GET /api/control/servers/{server}/databases/{id}/tables":
 		return "infrastructure.manage"
 	case "POST /api/control/servers/{server}/console/jobs/{job}/cancel", "GET /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console/jobs", "GET /api/control/servers/{server}/console/jobs/{job}":
 		return "infrastructure.manage"
@@ -59,6 +59,9 @@ func routePermission(pattern string) string {
 		// Planning reads repository contents and destination inventory.
 		return "infrastructure.manage"
 	case "GET /api/control/storage/backups", "GET /api/control/storage/backups/download", "GET /api/control/servers/{server}/databases/{id}/backups/{backup}":
+		return "infrastructure.manage"
+	case "GET /api/control/storage/retention/plan", "GET /api/control/servers/{server}/backups/retention/plan":
+		// Plans list every backup object of the bucket.
 		return "infrastructure.manage"
 	case "GET /api/control/github/repos", "GET /api/control/github/branches":
 		return "deploy.repositories"

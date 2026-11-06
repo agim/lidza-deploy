@@ -102,7 +102,7 @@ func prepareStorageVolumeAs(ctx context.Context, id, volume, user string) error 
 	if user == "1000:1000" {
 		initialize = "mkdir -p /data/storage /data/public-system /data/public-uploads && chown 1000:1000 /data /data/storage /data/public-system /data/public-uploads && chmod 700 /data /data/storage /data/public-system /data/public-uploads"
 	}
-	err = dockerStream(ctx, nil, io.Discard, nil, "run", "--rm", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges", "--memory", "64m", "--pids-limit", "32", "--mount", "type=volume,src="+volume+",dst=/data,volume-nocopy", cacheImage, "sh", "-c", initialize)
+	err = dockerStream(ctx, nil, io.Discard, nil, "run", "--rm", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges", "--pids-limit", "32", "--mount", "type=volume,src="+volume+",dst=/data,volume-nocopy", cacheImage, "sh", "-c", initialize)
 	if err != nil {
 		return errors.New("could not initialize persistent storage permissions")
 	}

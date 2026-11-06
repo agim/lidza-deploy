@@ -81,6 +81,10 @@ func (s *scanner) golang(dir string) (*app, error) {
 		a.redis = true
 		a.reason("go.mod requires %s: Redis", module)
 	}
+	if module := requires("github.com/ClickHouse/clickhouse-go", "github.com/ClickHouse/ch-go"); module != "" {
+		a.clickhouse = true
+		a.reason("go.mod requires %s: ClickHouse", module)
+	}
 	if mod.Go != nil {
 		a.pin("go", mod.Go.Version)
 	}

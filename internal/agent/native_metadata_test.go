@@ -14,12 +14,12 @@ func nativeAstroFixture(t *testing.T) (*Manager, string) {
 	m, _ := nativeFixture(t)
 	app := filepath.Join(m.cfg.Native.Root, "marketing")
 	release := filepath.Join(app, "releases", "one")
-	for _, dir := range []string{filepath.Join(release, "public"), filepath.Join(app, "repo"), filepath.Join(m.cfg.Native.Root, ".config/caddy")} {
+	for _, dir := range []string{filepath.Join(release, "public"), filepath.Join(app, "repo")} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	files := map[string]string{filepath.Join(release, "package.json"): `{"dependencies":{"astro":"7.4.4"}}`, filepath.Join(release, "public/index.html"): "<h1>Live</h1>", filepath.Join(app, "repo/config"): "[remote \"origin\"]\n url = https://do-not-expose@github.com/org/marketing.git\n", filepath.Join(app, ".asdf-vars"): "export SECRET_KEY='preserve-original-key'\nPORT=9180\n"}
+	files := map[string]string{filepath.Join(release, "package.json"): `{"dependencies":{"astro":"7.4.4"}}`, filepath.Join(release, "public/index.html"): "<h1>Live</h1>", filepath.Join(app, "repo/config"): "[remote \"origin\"]\n url = https://do-not-expose@github.com/org/marketing.git\n", filepath.Join(app, "repo/HEAD"): "ref: refs/heads/main\n", filepath.Join(app, ".asdf-vars"): "export SECRET_KEY='preserve-original-key'\nPORT=9180\n"}
 	for path, data := range files {
 		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 			t.Fatal(err)
@@ -28,9 +28,6 @@ func nativeAstroFixture(t *testing.T) (*Manager, string) {
 	if err := os.Symlink(release, filepath.Join(app, "current")); err != nil {
 		t.Fatal(err)
 	}
-	config := map[string]any{"routes": []any{map[string]any{"match": []any{map[string]any{"host": []string{"marketing.example.com", "www.marketing.example.com"}}}, "handle": []any{map[string]any{"handler": "vars", "root": filepath.Join(app, "current/public")}, map[string]any{"handler": "file_server", "headers": map[string]string{"Authorization": "do-not-expose"}}}}}}
-	data, _ := json.Marshal(config)
-	os.WriteFile(filepath.Join(m.cfg.Native.Root, ".config/caddy/autosave.json"), data, 0600)
 	return m, app
 }
 
@@ -44,10 +41,12 @@ func TestNativeAstroDiscoveryRegistrationAndStatusNeverExecuteOrChangeFiles(t *t
 	if err != nil || len(units) != 0 {
 		t.Fatal("static Astro discovery", err, units)
 	}
-	discovered := m.nativeDiscoveredApplication("marketing", units, m.nativeObservedRoutes(context.Background()))
-	if discovered.ID != "astro-marketing" || discovered.Runtime != "astro" || discovered.Repository != "org/marketing" || discovered.Domain != "marketing.example.com" || len(discovered.AdditionalDomains) != 1 || discovered.DocumentRoot != "public" {
+	discovered := m.nativeDiscoveredApplication("marketing", units)
+	if discovered.ID != "astro-marketing" || discovered.Runtime != "astro" || discovered.Repository != "org/marketing" || discovered.Branch != "main" || discovered.Domain != "" || discovered.DocumentRoot != "public" {
 		t.Fatal("metadata inference", discovered)
 	}
+	// The operator confirms the domain when registering.
+	discovered.Domain = "marketing.example.com"
 	registered, err := m.nativeRegistration(discovered)
 	if err != nil {
 		t.Fatal(err)
@@ -113,11 +112,11 @@ func TestNativeSettingsShowOrdinarySettingsMaskCredentialsAndNeverExecuteShellVa
 	}
 }
 
-func TestNativeMetadataRejectsAmbiguousCanonicalDomainsAndCredentialHosts(t *testing.T) {
-	m, _ := nativeAstroFixture(t)
-	a := m.nativeDiscoveredApplication("marketing", nil, []nativeObservedRoute{{Root: filepath.Join(m.cfg.Native.Root, "marketing/current/public"), Hosts: []string{"one.example.com", "two.example.com"}}})
-	if a.Domain != "" {
-		t.Fatal("ambiguous canonical hostname guessed")
+func TestNativeMetadataRejectsUnsafeGitMetadata(t *testing.T) {
+	for _, head := range []string{"ref: refs/heads/-evil", "ref: refs/heads/a b", "0123456789abcdef", "ref: refs/tags/v1"} {
+		if nativeGitBranch([]byte(head)) != "" {
+			t.Fatalf("unsafe or detached HEAD %q accepted", head)
+		}
 	}
 	for _, raw := range []string{"[remote \"origin\"]\nurl=https://token@evil.example/org/repo.git", "[remote \"origin\"]\nurl=$(touch /tmp/no)"} {
 		if nativeGitHubRepository([]byte(raw)) != "" {
@@ -140,12 +139,20 @@ func TestNativeMetadataReadsInternalAbsoluteCurrentLinksButRejectsEscapes(t *tes
 	}
 }
 
-func TestNativeBuildEnvironmentReadsReleaseScopedValues(t *testing.T) {
+func TestNativeBranchComesFromTheRepositoryHead(t *testing.T) {
 	m, app := nativeAstroFixture(t)
 	os.WriteFile(filepath.Join(app, ".asdf-vars"), []byte("PORT=9180\n"), 0600)
-	os.WriteFile(filepath.Join(app, "current/.asdf-vars"), []byte("PUBLIC_SITE=release\n"), 0600)
+	os.WriteFile(filepath.Join(app, "current/.asdf-vars"), []byte("RELEASE_NAME=one\n"), 0600)
+	os.WriteFile(filepath.Join(app, "repo/HEAD"), []byte("ref: refs/heads/release-branch\n"), 0600)
+	if a := m.nativeDiscoveredApplication("marketing", nil); a.Branch != "release-branch" {
+		t.Fatal("repository branch was omitted", a.Branch)
+	}
+	os.Remove(filepath.Join(app, "repo/HEAD"))
+	if a := m.nativeDiscoveredApplication("marketing", nil); a.Branch != "" {
+		t.Fatal("branch guessed without metadata", a.Branch)
+	}
 	values, err := m.nativeBuildEnvironment("marketing")
-	if err != nil || values["PUBLIC_SITE"] != "release" || values["PORT"] != "9180" {
+	if err != nil || values["RELEASE_NAME"] != "one" || values["PORT"] != "9180" {
 		t.Fatal("literal build environment omitted release values", err)
 	}
 }

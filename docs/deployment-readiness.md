@@ -51,9 +51,9 @@ Statement coverage is 56.4% for the Go module (agent 64.3%, control 49.7%, onboa
 
 - One shared fleet workspace with admin/deployer/viewer access; no separate tenant isolation. Docker administrators can read container environment values.
 - Apps must have root project metadata (`lidza.json`) and a normal Līdza entrypoint. The agent generates missing Docker deployment files; app migrations remain the app's responsibility. Runtime variables are not build secrets; private build-time module/package dependencies are not supported by the clone-token workflow.
-- App containers have a read-only filesystem, UID/GID 65532, 512 MiB memory and one CPU. Persistent file uploads need external storage or another explicitly supported design.
+- App containers have a read-only filesystem and UID/GID 65532; they run without CPU or memory caps and share the server's resources like native services. Persistent file uploads need external storage or another explicitly supported design.
 - Current and rollback web containers both keep running. Avoid in-process singleton/background jobs in the web entrypoint; use managed worker tasks and account for migration compatibility. Rollback does not restore database contents.
-- External PostgreSQL backup clients support server versions up to 17. Backup objects are capped at 5 GiB; automatic restore currently reads local copies, not S3. Normal off-site retention needs bucket lifecycle rules.
+- External PostgreSQL backup clients support server versions up to 17. Backup objects are capped at 5 GiB; automatic restore currently reads local copies, not S3. Off-site history follows the workspace retention policy (7 daily and 4 weekly backups by default).
 - SMTP/queued alerts and scheduled dispatch require the control panel and its database. Use an independent external monitor for the control panel itself.
 - Review build-cache and crash-orphan resource cleanup periodically; the platform does not supply high availability or an automatic disaster recovery process.
 

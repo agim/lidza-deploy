@@ -117,6 +117,7 @@ func Handler(m *Manager) http.Handler {
 	})
 	m.maintenanceRoutes(private)
 	m.hostRoutes(private)
+	m.hostIngressRoutes(private)
 	m.databaseRoutes(private)
 	m.moveRoutes(private)
 	m.cacheRoutes(private)
@@ -185,7 +186,12 @@ func Handler(m *Manager) http.Handler {
 		JSON(w, 200, map[string]string{"status": "saved"})
 	})
 	private.HandleFunc("DELETE /v1/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := m.Retire(r.Context(), r.PathValue("id")); err != nil {
+		req, err := decodeAppRemoveRequest(w, r)
+		if err != nil {
+			Fail(w, 400, err)
+			return
+		}
+		if err := m.RetireWith(r.Context(), r.PathValue("id"), req); err != nil {
 			Fail(w, 409, err)
 			return
 		}
@@ -261,10 +267,6 @@ func Handler(m *Manager) http.Handler {
 		got := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 		if len(m.cfg.APIKey) < 32 || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
 			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		if m.cfg.NativeOnly && !strings.HasPrefix(r.URL.Path, "/v1/native/") && !(r.Method == "GET" && (r.URL.Path == "/v1/apps" || r.URL.Path == "/v1/server-health")) {
-			Fail(w, 409, errors.New("this isolated agent manages native services only; container and host mutations are unavailable"))
 			return
 		}
 		private.ServeHTTP(w, r)

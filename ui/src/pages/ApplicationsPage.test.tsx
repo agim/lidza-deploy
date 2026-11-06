@@ -25,3 +25,24 @@ it('offers runtime and server filters only when the workspace has more than one 
   expect(screen.getByRole('combobox',{name:'Filter by server'})).toHaveTextContent('All servers');
   expect(screen.queryByRole('button',{name:'Clear filters'})).toBeNull();
 });
+
+it('shows a running deployment on its card with the time since it started',()=>{state.deployment={id:'running',app_id:'new-app',status:'building',created:new Date(Date.now()-65_000).toISOString()};const {container}=render(<ApplicationsPage/>);const progress=container.querySelector('[data-app-card="new-app"] .live-progress-compact')!;expect(progress).toHaveTextContent(/Deploying1m 0\ds/);});
+
+it('disables changes on the card of an application a move holds, keeping read-only actions',async()=>{
+  state.workspace={apps:[{id:'shop',repository:'org/shop',branch:'main',domain:'shop.example.com',server_id:'a',move:{id:'m1',state:'syncing',source_server:'a',target_server:'b',locked:true,phase:'locked'}} as unknown as Record<string,string>],servers:[{id:'a',name:'Edge'},{id:'b',name:'Apps'}]};
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,status:204,json:async()=>({})}));
+  render(<ApplicationsPage/>);
+  const deploy=screen.getByRole('button',{name:'Deploy'});
+  expect(deploy).toBeDisabled();
+  expect(deploy).toHaveAttribute('title','shop is in the final sync of its move to Apps; finish or abort the move first.');
+  expect(screen.getByRole('button',{name:'Settings for shop'})).toBeEnabled();
+  cleanup();
+  // While the move copies in the background the application stays usable.
+  state.workspace={apps:[{id:'shop',repository:'org/shop',branch:'main',domain:'shop.example.com',server_id:'a',move:{id:'m1',state:'running',source_server:'a',target_server:'b',locked:false,phase:'live'}} as unknown as Record<string,string>],servers:[{id:'a',name:'Edge'},{id:'b',name:'Apps'}]};
+  render(<ApplicationsPage/>);
+  expect(screen.getByRole('button',{name:'Deploy'})).toBeEnabled();
+  cleanup();
+  state.workspace={apps:[{id:'shop',repository:'org/shop',branch:'main',domain:'shop.example.com',server_id:'a',move:{id:'m1',state:'finished',source_server:'a',target_server:'b'}} as unknown as Record<string,string>],servers:[{id:'a',name:'Edge'},{id:'b',name:'Apps'}]};
+  render(<ApplicationsPage/>);
+  expect(screen.getByRole('button',{name:'Deploy'})).toBeEnabled();
+});

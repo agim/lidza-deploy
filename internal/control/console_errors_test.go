@@ -52,6 +52,34 @@ func exerciseConsoleIngest(t *testing.T, c *Control, ctx context.Context, call f
 	if w := call("GET", "/api/control/apps/portal/security", "", cookies, ""); w.Code != 200 || !strings.Contains(w.Body.String(), "Suspected secret-file") || strings.Contains(w.Body.String(), "captured console failure") {
 		t.Fatal("security activity not isolated", w.Code, w.Body)
 	}
+	// Native applications share the collector: their reports carry the
+	// service unit where container reports carry the container, and the
+	// diagnostics routes read them without the container-runtime guard.
+	c.mu.Lock()
+	c.data.Apps["shop"] = Application{ID: "shop", ServerID: "one", Runtime: "rails", Generation: strings.Repeat("n", 32), Native: &agent.NativeApplication{ID: "shop", Name: "shop", Runtime: "rails", Domain: "shop.example.com", Services: []string{"lidza-app-shop-web.service"}}}
+	c.mu.Unlock()
+	native := event
+	native.ID = strings.Repeat("d", 64)
+	native.AppID, native.Generation, native.Container, native.Release, native.Commit = "shop", strings.Repeat("n", 32), "lidza-app-shop-web.service", "20261105100000", "abc123"
+	native.Message, native.Fingerprint = "NoMethodError (undefined method 'total' for nil)", "rails-nil-total"
+	nativeProbe := probe
+	nativeProbe.ID = strings.Repeat("e", 64)
+	nativeProbe.AppID, nativeProbe.Generation, nativeProbe.Container = "shop", strings.Repeat("n", 32), "lidza-app-shop-web.service"
+	if w := send(strings.Repeat("a", 32), []agent.ConsoleError{native, nativeProbe}); w.Code != 200 {
+		t.Fatal("native report ingestion failed", w.Code, w.Body)
+	}
+	if w := call("GET", "/api/control/apps/shop/errors", "", cookies, ""); w.Code != 200 || !strings.Contains(w.Body.String(), "undefined method 'total'") || !strings.Contains(w.Body.String(), `"container":"lidza-app-shop-web.service"`) || strings.Contains(w.Body.String(), "Suspected secret-file") || strings.Contains(w.Body.String(), "change plan") {
+		t.Fatal("native application errors not readable", w.Code, w.Body)
+	}
+	if w := call("GET", "/api/control/apps/shop/security", "", cookies, ""); w.Code != 200 || !strings.Contains(w.Body.String(), "Suspected secret-file") || strings.Contains(w.Body.String(), "undefined method 'total'") {
+		t.Fatal("native application security activity not readable", w.Code, w.Body)
+	}
+	if w := call("GET", "/api/control/apps/portal/errors", "", cookies, ""); strings.Contains(w.Body.String(), "undefined method 'total'") {
+		t.Fatal("native report attributed to another application")
+	}
+	c.mu.Lock()
+	delete(c.data.Apps, "shop")
+	c.mu.Unlock()
 	event.Generation = "stale-generation"
 	event.ID = strings.Repeat("b", 64)
 	if w := send(strings.Repeat("a", 32), []agent.ConsoleError{event}); w.Code != 200 {

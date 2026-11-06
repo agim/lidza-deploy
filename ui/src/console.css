@@ -35,12 +35,22 @@ h2 { font-size: 14px; line-height: 1.4; font-weight: 550; }
 h3 { font-size: 13px; font-weight: 550; }
 .page-description { font-size: 11px; margin-top: 10px; line-height: 1.7; }
 .page-actions, .sticky-actions, .section-actions, .dialog-actions, .server-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* Header actions keep their natural width and stay on one row beside the
+   title; the title block takes the remaining space. Phones stack them below. */
+.page-header > .page-title-row { flex: 1 1 auto; min-width: 0; }
+@media (min-width: 601px) {
+  .page-header > .page-actions { flex: 0 0 auto; justify-content: flex-end; }
+  .page-header > .page-actions, .page-header > .page-actions > .sticky-actions { flex-wrap: nowrap; }
+  .page-header > .page-actions .button { white-space: nowrap; }
+}
 .back-link { font-size: 11px; }
 /* Layout defaults must not override each card's named layout or responsive gaps. */
 :where(.card) { display: block; flex-direction: row; gap: 0; }
 .card { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); overflow: visible; box-shadow: 0 0 0 1px #20332930; }
 .button { min-height: 36px; height: auto; padding: 0 12px; border-radius: 8px; font-size: 11px; line-height: 1.35; gap: 7px; white-space: normal; font-weight: 500; flex-shrink: 0; }
 .button:disabled { opacity: .45; }
+/* A disabled primary action must not look available: drop its accent fill. */
+.button-primary:disabled { background: transparent; color: var(--muted-foreground); border-color: var(--border); opacity: .7; }
 .button[data-pending] { opacity: 1; }
 .button-primary { box-shadow: 0 0 20px #39ff8808; }
 .button-sm { min-height: 31px; padding: 0 10px; font-size: 10px; }
@@ -287,6 +297,45 @@ button[data-slot=switch] { cursor: pointer; }
 .migration-plan .settings-stack { padding-top: 12px; }
 .migration-plan ol, .migration-plan ul { padding-left: 20px; }
 
+/* A move that holds an application: status line, settings lock card, read-only forms. */
+.move-status-line { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; vertical-align: middle; }
+.move-status-icon { flex: none; color: var(--warning); }
+.move-status-failed { color: var(--danger); }
+.move-status-target { overflow-wrap: anywhere; }
+.move-status-step { color: var(--muted-foreground); overflow-wrap: anywhere; }
+.move-status-elapsed { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.migration-plan summary.move-summary-active { display: flex; align-items: center; gap: 6px; }
+.move-lock-card { display: grid; gap: 10px; padding: 14px 16px; border-color: var(--warning); background: var(--warning-bg); }
+.move-lock-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.move-lock-step, .move-lock-error { margin: 0; overflow-wrap: anywhere; }
+.move-lock-error { color: var(--danger); }
+.move-lock-fieldset { min-width: 0; border: 0; margin: 0; padding: 0; }
+.move-lock-fieldset:disabled { opacity: .72; }
+/* Move phases: the background copy keeps the application live; the final sync locks it. */
+.move-phase { padding: 1px 7px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 11px; white-space: nowrap; }
+.move-phase-live { color: var(--success); border-color: rgb(57 255 136 / .3); }
+.move-phase-locked { color: var(--warning); border-color: rgb(240 195 110 / .35); }
+.move-lock-card.move-live-card { border-color: var(--border-strong); background: transparent; }
+.move-stall, .move-stale { margin: 0; color: var(--warning); overflow-wrap: anywhere; }
+.move-failure { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid rgb(255 99 99 / .35); border-radius: 8px; background: var(--danger-bg, transparent); overflow-wrap: anywhere; }
+.move-failure-transient { border-color: rgb(240 195 110 / .35); background: var(--warning-bg); }
+.move-failure-message { margin: 0; font-weight: 600; }
+.move-failure-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; }
+.move-failure-facts dt { color: var(--muted-foreground); }
+.move-failure-facts dd { margin: 0; }
+.move-failure-remediation { margin: 0; }
+.move-failure-detail code { white-space: pre-wrap; }
+.move-estimate { display: grid; gap: 6px; }
+.move-estimate-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.move-estimate-table th, .move-estimate-table td { padding: 4px 8px 4px 0; text-align: left; border-bottom: 1px solid var(--border); }
+.move-lock-estimate { display: grid; gap: 6px; }
+.move-lock-estimate p { margin: 0; }
+.move-excluded { display: grid; gap: 6px; }
+.move-excluded h4 { margin: 0; }
+.move-excluded-tables { display: grid; gap: 6px; margin: 0; }
+.move-excluded-tables li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.move-excluded-choice { display: inline-flex; gap: 6px; }
+
 .form-card fieldset { min-width: 0; border: 0; margin: 0; padding: 0; }
 
 /* ---- New-application wizard ------------------------------------------- */
@@ -349,6 +398,12 @@ button[data-slot=switch] { cursor: pointer; }
 .host-packages ul { display: grid; gap: 4px; margin: 10px 0 0; padding-left: 18px; }
 .host-packages li { overflow-wrap: anywhere; }
 .host-packages li .badge { margin-left: 6px; }
+.host-disruptive-block { display: grid; gap: 4px; margin: 12px 0; padding: 12px; border: 1px solid rgb(240 195 110 / .3); border-radius: 8px; font-size: 12px; }
+.host-disruptive-block p { margin: 0; }
+.host-disruptive { display: grid; gap: 6px; margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+.host-disruptive li { overflow-wrap: anywhere; }
+.host-disruptive li .badge { margin-left: 6px; }
+.host-disruptive small { display: block; color: var(--muted-foreground); font-size: 11px; }
 .host-components { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 20px 0; }
 .host-components > div { display: grid; gap: 3px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; min-width: 0; }
 .host-components strong { text-transform: capitalize; }
@@ -391,13 +446,17 @@ button[data-slot=switch] { cursor: pointer; }
 .move-facts { display: grid; grid-template-columns: minmax(110px, max-content) minmax(0, 1fr); gap: 6px 14px; margin: 0; }
 .move-facts dt { color: var(--muted-foreground); font-size: 11px; }
 .move-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.move-databases, .move-notes, .move-blockers ul, .move-warnings ul { margin: 6px 0 0; padding-left: 20px; }
+.move-databases, .move-files, .move-notes, .move-blockers ul, .move-warnings ul { margin: 6px 0 0; padding-left: 20px; }
+.move-files li { overflow-wrap: anywhere; }
+.move-caution { padding: 10px 12px; border: 1px solid rgb(240 195 110 / .25); border-radius: 8px; background: var(--warning-bg); line-height: 1.5; }
+.move-caution > strong { color: var(--warning); }
 .move-notes { color: var(--muted-foreground); font-size: 12px; }
 .move-blockers { padding: 10px 12px; border: 1px solid var(--destructive); border-radius: 8px; background: var(--danger-bg); color: var(--destructive); }
 .move-warnings { padding: 10px 12px; border: 1px solid rgb(240 195 110 / .25); border-radius: 8px; background: var(--warning-bg); }
 .move-warnings > strong { color: var(--warning); }
 .move-warnings .check-row { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; }
 .move-warnings .check-row > span, .move-override .check-row > span { display: grid; gap: 2px; min-width: 0; }
+.move-progress { display: grid; gap: 14px; min-width: 0; }
 .move-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .move-steps { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .move-step { padding: 8px 0; border-top: 1px solid var(--border); }
@@ -430,3 +489,255 @@ button[data-slot=switch] { cursor: pointer; }
   .move-records td:last-child { grid-row: 1 / span 3; grid-column: 2; align-self: center; }
 }
 /* ---- End move application -------------------------------------------------- */
+
+/* ---- Build progress (deployment output) ---- */
+.build-progress { list-style: none; margin: 0 0 16px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); display: grid; gap: 6px; }
+.build-step { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; font-size: 14px; color: var(--muted-foreground); }
+.build-step.sub { padding-left: 22px; font-size: 13px; }
+.build-step-icon { display: inline-flex; }
+.build-step.done .build-step-icon { color: var(--success, #4ade80); }
+.build-step.failed .build-step-icon, .build-step.failed .build-step-label { color: var(--destructive, #f87171); }
+.build-step.running { color: var(--foreground); font-weight: 600; }
+.build-step.running .build-step-icon { color: var(--warning, #fbbf24); }
+.build-step-label { overflow-wrap: anywhere; }
+.spin { animation: build-spin 1s linear infinite; }
+@keyframes build-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+
+/* ---- Live progress (running jobs and steps) ---- */
+.live-progress { display: grid; gap: 6px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+.live-progress-heading { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; font-weight: 600; color: var(--foreground); }
+.live-progress-heading .live-progress-label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.live-progress-spinner { flex: 0 0 auto; color: var(--warning); animation: build-spin 1s linear infinite; }
+.live-progress-elapsed { flex: 0 0 auto; font-size: 12px; font-weight: 500; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.live-progress-phase, .live-progress-detail, .live-progress-note { margin: 0; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.live-progress-phase { color: var(--foreground); }
+.live-progress-detail { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.live-progress-note { color: var(--muted-foreground); font-style: italic; }
+.live-progress-bar { display: block; width: 100%; height: 6px; overflow: hidden; border: 0; border-radius: 999px; background: var(--accent); color: var(--primary); appearance: none; -webkit-appearance: none; }
+.live-progress-bar::-webkit-progress-bar { border-radius: 999px; background: var(--accent); }
+.live-progress-bar::-webkit-progress-value { border-radius: 999px; background: var(--primary); transition: width .6s ease; }
+.live-progress-bar::-moz-progress-bar { border-radius: 999px; background: var(--primary); }
+.live-progress-bar:indeterminate { background: linear-gradient(90deg, transparent 0 30%, var(--primary) 45% 55%, transparent 70% 100%) 0 0 / 250% 100% no-repeat, var(--accent); animation: live-progress-sweep 1.6s ease-in-out infinite; }
+.live-progress-bar:indeterminate::-webkit-progress-bar { background: transparent; }
+.live-progress-bar:indeterminate::-moz-progress-bar { background: transparent; }
+@keyframes live-progress-sweep { from { background-position: 100% 0, 0 0; } to { background-position: 0 0, 0 0; } }
+.live-progress-compact { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font-size: 12px; color: var(--muted-foreground); }
+.live-progress-compact .live-progress-label { color: var(--foreground); font-weight: 500; }
+.live-progress-still .live-progress-spinner, .live-progress-still .live-progress-bar:indeterminate { animation: none; }
+.live-progress-still .live-progress-bar:indeterminate { background: repeating-linear-gradient(90deg, var(--primary) 0 8px, transparent 8px 16px), var(--accent); opacity: .7; }
+@media (prefers-reduced-motion: reduce) {
+  .live-progress-spinner, .live-progress-bar:indeterminate { animation: none; }
+  .live-progress-bar::-webkit-progress-value { transition: none; }
+}
+.move-step .live-progress { margin-top: 6px; }
+.build-step .live-progress { grid-column: 2 / -1; padding: 0; border: 0; background: none; }
+.app-card-progress { margin-top: 8px; }
+.database-card .live-progress, .database-progress { margin-top: 10px; }
+.build-progress-waiting { margin-bottom: 16px; }
+
+/* ---- Scroll lock (dialogs, menus) ----
+   react-remove-scroll marks the body while a dialog or menu is open; its
+   generated stylesheet is not used (see vite.config.ts), so the lock is
+   styled here. Reserving the scrollbar gutter keeps the page from shifting
+   when scrolling is locked. */
+html { scrollbar-gutter: stable; }
+body[data-scroll-locked] { overflow: hidden !important; overscroll-behavior: contain; }
+
+/* ---- Select viewport ----
+   The select menu renders these rules as an inline <style> element on every
+   open, which the style-src 'self' policy blocks; the element is removed in
+   vite.config.ts and the rules live here instead. */
+[data-radix-select-viewport] { scrollbar-width: none; -ms-overflow-style: none; -webkit-overflow-scrolling: touch; }
+[data-radix-select-viewport]::-webkit-scrollbar { display: none; }
+
+
+/* Build memory check of a server (wizard Server step, move plan). */
+.build-memory-check { display: flex; align-items: flex-start; gap: 10px; margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; line-height: 1.5; font-size: .82rem; color: var(--muted-foreground); }
+.build-memory-check svg { flex: none; margin-top: 2px; }
+.build-memory-check small { display: block; margin-top: 2px; color: var(--muted-foreground); }
+.build-memory-warning { color: var(--warning); background: var(--warning-bg); border-color: rgb(240 195 110 / .25); }
+.build-memory-blocker { color: var(--danger); background: var(--danger-bg); border-color: #663432; }
+.move-build-memory-warning { color: var(--warning); }
+.move-build-memory-blocker { color: var(--danger); }
+/* Off-site backup retention (BackupRetention.tsx) */
+.retention-plan { display: grid; gap: 14px; margin-top: 18px; }
+.retention-plan .database-policy { margin: 0; }
+.retention-plan small.field-hint { display: block; margin-top: 3px; }
+.retention-deletions summary { cursor: pointer; }
+.retention-deletions ul { margin: 6px 0 0; padding-left: 16px; display: grid; gap: 4px; font-size: .72rem; color: var(--muted-foreground); }
+
+/* ==== Responsive / mobile ====================================================
+   One place for the phone (360–430px) and tablet (768–1024px) layout of the
+   whole console. Three stylesheets share these class names (styles.css,
+   template.css, console.css); this section is loaded last and overrides them,
+   so page-level media queries elsewhere should not be added for the same
+   problems. Rules here are mobile-first fixes with the root causes noted. */
+
+/* Toolbars: a wrapping row at every width with one consistent gap. shadcn's
+   select trigger is `w-fit`; inside the toolbar it gets a real minimum width. */
+.toolbar { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 12px; }
+.toolbar > * { min-width: 0; margin-block: 0; }
+.toolbar .search-field { flex: 1 1 220px; width: auto; max-width: 420px; }
+.toolbar .status-select, .toolbar [data-slot=select-trigger] { width: auto; min-width: 140px; height: 38px; }
+.toolbar > .toolbar-filter { margin-left: auto; }
+.toolbar .view-toggle { margin-left: auto; }
+.toolbar > .button { white-space: nowrap; }
+
+/* Notices: status lines are rows with an icon, never bare paragraphs. */
+.notice-stack { display: grid; gap: 8px; margin: 0 0 22px; }
+.notice-stack > .alert { margin: 0; }
+.notice-row { align-items: flex-start; }
+.alert > svg { flex: 0 0 auto; margin-top: 1px; }
+.alert > span, .alert > div { min-width: 0; flex: 1 1 200px; overflow-wrap: anywhere; }
+.alert-info > svg { color: var(--accent-foreground); }
+.alert-warning { color: var(--foreground); background: var(--warning-bg); border-color: rgb(240 195 110 / .3); }
+.alert-warning > svg { color: var(--warning); }
+.alert-danger > svg { color: var(--destructive); }
+/* Pages that still render a plain status paragraph between sections get the
+   same notice shape from CSS alone (settings capability reason, lead copy). */
+#main-content > p[role="status"], .settings-stack > p[role="status"], .form-card > p[role="status"]:not(.inline-guidance) { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--secondary); color: var(--muted-foreground); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+#main-content > p.muted-copy { margin: 0 0 18px; font-size: 12px; line-height: 1.6; }
+
+/* Overlays fit the viewport with safe margins on every device. */
+.dialog { max-height: calc(100dvh - 32px); }
+.menu-content, [data-slot=dropdown-menu-content], [data-slot=select-content] { max-width: calc(100vw - 24px); }
+[data-slot=select-content] { max-height: min(var(--radix-select-content-available-height), 60dvh); }
+.toast-region { width: min(390px, calc(100vw - 32px)); }
+
+/* Long identifiers, hostnames and keys wrap instead of pushing the layout. */
+.server-card-heading code, .host-metric code, .activity-occurrence code, .simple-list code, .review-box strong, .move-facts dd, .app-details > span, .page-description, .section-header p { overflow-wrap: anywhere; }
+#main-content pre, #main-content table, #main-content img { max-width: 100%; }
+#main-content [data-slot=table-container] { overflow-x: auto; }
+
+/* Sticky top bar: anchored or focused content scrolls clear of it. */
+html { scroll-padding-top: 84px; }
+.page-header h1 { scroll-margin-top: 84px; }
+
+/* Tablet (641–1024px): the drawer navigation is used; filters take a full row
+   under section titles instead of squeezing them. */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .toolbar .search-field { flex-basis: 200px; }
+  .toolbar .status-select, .toolbar [data-slot=select-trigger] { min-width: 124px; }
+  .section-header:has(.activity-filters) { flex-direction: column; align-items: stretch; gap: 14px; }
+  .activity-filters { min-width: 0; width: 100%; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+  .env-row { grid-template-columns: minmax(0, 1fr) minmax(100px, .6fr) minmax(0, 1.3fr); }
+}
+
+/* Stat grids: 3 columns from 768px, 2 columns below, 1 compact column under 480px. */
+@media (max-width: 767px) {
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 26px; }
+  .stats-grid > .card { padding: 14px 16px; }
+  .stats-grid > .card:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .stats-grid .stat-label { font-size: 10px; }
+}
+@media (max-width: 479px) {
+  .stats-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .stats-grid > .card { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label value" "bottom value"; align-items: center; column-gap: 14px; row-gap: 6px; padding: 14px 16px; }
+  .stats-grid > .card:last-child:nth-child(odd) { grid-column: auto; }
+  .stats-grid .stat-label { grid-area: label; font-size: 11px; }
+  .stats-grid .stat-label svg { display: none; }
+  .stats-grid .stat-value { grid-area: value; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; margin: 0; font-size: 26px; line-height: 1.1; text-align: right; }
+  .stats-grid .stat-value > span { display: block; width: auto; margin: 0; font-size: 10px; line-height: 1.4; }
+  .stats-grid .stat-bottom { grid-area: bottom; display: flex; min-height: 0; padding: 0; border: 0; font-size: 10px; }
+}
+
+/* Phones and small tablets. */
+@media (max-width: 860px) {
+  html { scroll-padding-top: 72px; }
+  .page-header h1 { scroll-margin-top: 72px; }
+  /* An opaque bar: the title no longer shows through it while scrolling. */
+  .topbar { gap: 10px; background: var(--background); backdrop-filter: none; }
+  .topbar-left, .breadcrumbs { flex: 1 1 auto; min-width: 0; }
+  .topbar-left strong { flex: 0 1 auto; min-width: 0; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-left > svg { flex: 0 0 auto; }
+  .topbar-right { flex: 0 0 auto; }
+  #main-content { padding-top: 24px; }
+  .page-header { margin-bottom: 24px; }
+  .mobile-sidebar { max-width: min(320px, calc(100vw - 48px)) !important; }
+  .loading-overlay { inset: 60px 0 0; }
+}
+
+@media (max-width: 640px) {
+  /* Toolbar: search on its own row (sharing it only with the view toggle),
+     selects in two columns (a lone select spans the row), buttons full width. */
+  .toolbar { gap: 12px; margin-bottom: 16px; }
+  .toolbar > h2, .toolbar > div:first-child:not(.view-toggle):not(.search-field) { flex: 1 0 100%; justify-content: flex-start; text-align: left; }
+  .toolbar .search-field { flex: 1 1 200px; width: auto; max-width: none; min-height: 40px; }
+  .toolbar .search-field input { height: 40px; min-height: 40px; }
+  .toolbar:has(.view-toggle) .search-field { order: -2; }
+  .toolbar:has(.view-toggle) .view-toggle { order: -1; }
+  .toolbar .view-toggle { flex: 0 0 auto; margin-left: auto; }
+  .toolbar .status-select, .toolbar [data-slot=select-trigger] { flex: 1 1 calc(50% - 6px); min-width: calc(50% - 6px); max-width: 100%; height: 40px; }
+  .toolbar > .toolbar-filter, .toolbar > .field { flex: 1 0 100%; width: 100%; max-width: none; margin: 0; }
+  .toolbar > .button { flex: 1 0 100%; width: 100%; min-height: 40px; white-space: normal; }
+  .toolbar .badge { flex: 0 0 auto; }
+
+  /* Section headers stack, except when the only action is a badge. */
+  .section-header { flex-direction: column; align-items: stretch; gap: 12px; }
+  .section-header:has(> .section-actions > .badge:only-child) { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+  .section-header:has(> .section-actions > .badge:only-child) .section-actions { width: auto; }
+  .section-header:has(.activity-filters) { align-items: stretch; }
+  .section-actions .search-field { width: 100%; }
+
+  /* Notices and alerts wrap their action under the text. */
+  .alert { flex-wrap: wrap; padding: 12px 14px; }
+  .alert .button { flex: 1 0 100%; margin-left: 0; }
+
+  /* Tabs wrap onto a second row instead of scrolling off-screen. */
+  .tabs { flex-wrap: wrap; row-gap: 2px; height: auto; min-height: 0; overflow: visible; }
+  .tabs button { min-height: 40px; padding: 0 12px; }
+
+  /* Headings and identifiers wrap; nothing is clipped at 360px. */
+  .server-card-heading h2, .database-card-heading h2, .application-identity h3, .container-name strong, .app-source > span, .picker button span, .wizard-step-label { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+  .server-card-heading h2 { font-size: 16px; }
+  .wizard-stepper .step.current .wizard-step-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list-heading { flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .workspace-note { padding: 16px; }
+  .card-header { flex-wrap: wrap; }
+  .firewall-add, .wizard-process, .key-value-list > div, .simple-env-list > div { grid-template-columns: minmax(0, 1fr); }
+  .wizard-process > .field:nth-child(2) { grid-column: auto; grid-row: auto; }
+  .database-policy { gap: 10px; }
+  .host-components { grid-template-columns: minmax(0, 1fr); }
+  .move-records td:last-child { white-space: normal; }
+  .env-row > .button-icon { justify-self: end; }
+}
+
+@media (max-width: 479px) {
+  /* Page header: title, description and actions stack; every page action is
+     full width so the primary action is never a narrow pill. */
+  .page-header { gap: 16px; }
+  .page-actions, .sticky-actions { width: 100%; display: flex; flex-wrap: wrap; gap: 10px; }
+  .page-actions > .button, .sticky-actions > .button, .page-actions > .sticky-actions { flex: 1 1 100%; width: 100%; }
+  .page-actions .copy-control { width: 100%; }
+  .page-actions .copy-control .button { width: 100%; justify-self: stretch; }
+  .dialog { width: calc(100vw - 24px); padding: 20px 18px; }
+  .dialog-actions { flex-wrap: wrap; }
+  .dialog-actions .button { flex: 1 1 calc(50% - 5px); min-width: 0; }
+  .application-actions.app-card-footer { gap: 6px; padding: 10px 12px; }
+  .server-actions { display: flex; flex-wrap: wrap; }
+  .server-actions > .button { flex: 1 1 calc(50% - 4px); }
+  .server-actions > .button:first-child { flex-basis: 100%; }
+  .wizard-actions { flex-wrap: wrap; }
+  .wizard-actions > .button { flex: 1 1 calc(50% - 6px); }
+  .wizard-done-actions > .button, .maintenance-actions > .button, .move-actions > .button { flex: 1 1 calc(50% - 5px); }
+}
+
+/* Touch targets: at least 40px on coarse pointers, without changing desktop. */
+@media (pointer: coarse) {
+  .button, .button-sm, .nav-group a, .menu-item, .menu-confirm-trigger, [data-slot=dropdown-menu-item], [data-slot=select-item], .tabs button, .picker button, .activity-details > summary, .host-databases summary, .account-menu summary, .step { min-height: 40px; }
+  [data-slot=select-item] { padding-block: 8px; }
+  .button-icon, .view-toggle .button, .env-value-control .env-reveal, .mobile-nav-close, .topbar .account-trigger { width: 40px; min-width: 40px; height: 40px; min-height: 40px; }
+  .view-toggle { padding: 2px; gap: 2px; }
+  .status-select, .search-field, .search-field input, select, textarea, input:not([type=checkbox]):not([type=radio]) { min-height: 40px; }
+  .check-row input, .wizard-choice input[type=radio], .wizard-web input, .log-follow-control input { width: 20px; height: 20px; flex-basis: 20px; }
+  .back-link { min-height: 40px; display: inline-flex; align-items: center; }
+  .wizard-choice, .check-row { padding: 14px; }
+}
+/* ==== End responsive / mobile ============================================== */
+.retained-name, .retained-backups, .retained-actions { display: grid; gap: 3px; min-width: 0; }
+.retained-name small, .retained-backups small { color: var(--muted-foreground); overflow-wrap: anywhere; }
+.retained-actions { justify-items: start; gap: 6px; }
+.error-pages, .error-pages-unmanaged { display: grid; gap: 10px; justify-items: start; }
+.error-pages-unmanaged ul { margin: 0; padding-left: 18px; overflow-wrap: anywhere; }

@@ -45,7 +45,7 @@ type NativeReleaseTransition struct {
 }
 
 func (m *Manager) nativeStaticPolicy(a NativeApplication) (NativeStaticPolicy, error) {
-	if m.cfg.Native == nil || m.cfg.NativeOnly {
+	if m.cfg.Native == nil {
 		return NativeStaticPolicy{}, errors.New("native deployment ownership has not been approved")
 	}
 	p := m.cfg.Native.StaticDeployments[a.ID]
@@ -257,10 +257,8 @@ func (m *Manager) prepareNativeStatic(ctx context.Context, a NativeApplication, 
 	if err := preserveNativeRuntimePins(basePath, candidate, true, uid, gid); err != nil {
 		return NativeReleaseRef{}, err
 	}
-	for _, args := range [][]string{{"npm", "ci", "--no-audit", "--no-fund"}, {"npm", "run", "build"}} {
-		if _, err := m.runNativeBuild(ctx, a, candidate, id, args); err != nil {
-			return NativeReleaseRef{}, err
-		}
+	if err := m.buildNativeStatic(ctx, a, candidate, id); err != nil {
+		return NativeReleaseRef{}, err
 	}
 	if err := validateNativeAstroSource(candidate); err != nil {
 		return NativeReleaseRef{}, err
@@ -627,6 +625,23 @@ func preserveNativeRuntimePins(base, candidate string, inherit bool, uid, gid in
 		after, err := os.ReadFile(afterPath)
 		if err != nil || string(before) != string(after) {
 			return errors.New("the requested runtime version differs from the existing release; review the runtime change first")
+		}
+	}
+	return nil
+}
+
+// buildNativeStatic runs a static site's build steps in the host's build slot.
+func (m *Manager) buildNativeStatic(ctx context.Context, a NativeApplication, candidate, id string) error {
+	log := deploymentNoteWriter{ctx}
+	release, err := m.acquireBuildSlot(ctx, a.ID, log)
+	if err != nil {
+		return err
+	}
+	defer release()
+	for _, args := range [][]string{{"npm", "ci", "--no-audit", "--no-fund"}, {"npm", "run", "build"}} {
+		buildLogf(log, "==> %s", buildStepName(args))
+		if _, err := m.runNativeBuild(ctx, a, candidate, id, args); err != nil {
+			return err
 		}
 	}
 	return nil

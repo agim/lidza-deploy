@@ -95,6 +95,7 @@ func (m *Manager) nativeSettings(id string) (Settings, error) {
 
 func (m *Manager) nativeManagementCapabilities(a NativeApplication) *ManagementCapabilities {
 	capability := &ManagementCapabilities{Logs: len(a.Services) > 0, Processes: true, Reason: "Existing runtime and deployment ownership are preserved. Configuration and deployment takeover require the reviewed host change plan."}
+	_, capability.Remove = m.nativeCreatedPolicy(a.ID)
 	if m.nativeReleaseManaged(a.ID) {
 		// The release policy owns branch, processes, schedule and backups;
 		// deploys and rollbacks run through the release engine.

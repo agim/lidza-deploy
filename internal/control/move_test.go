@@ -35,6 +35,8 @@ type moveFake struct {
 	t   *testing.T
 	srv *httptest.Server
 	mu  sync.Mutex
+	// mux takes further routes (move_clickhouse_test.go).
+	mux *http.ServeMux
 
 	calls []string
 
@@ -47,6 +49,7 @@ type moveFake struct {
 	corrupt      bool
 	maintenance  []bool
 	nativeSource *agent.NativeStatus
+	memory       []uint64 // server health: total and available bytes
 
 	// Destination side.
 	host       agent.MoveHost
@@ -63,11 +66,76 @@ type moveFake struct {
 	holdDeploy bool
 	deleted    []string
 	unitCalls  []string
+	// removals are the bodies of DELETE /v1/apps/{id} and
+	// DELETE /v1/native/apps/{id}, by URL; retained lists the retained
+	// resources, which a removal without delete_data adds to, and
+	// retainedRemovals the removal requests of retained resources. A
+	// retained row marked removing disappears at the next listing.
+	removals         map[string]agent.AppRemoveRequest
+	retained         []agent.RetainedResourceView
+	retainedRemovals []agent.RetainedRemoveRequest
+
+	// Files, source side: archive bytes by set (empty: an empty set) and
+	// the runtime files (sockets, pipes) each archive leaves behind.
+	fileData     map[string][]byte
+	fileSkipped  map[string]int64
+	corruptFiles bool
+	archives     []agent.MoveFileArchiveRequest
+	// Files, destination side.
+	fileRestores map[string][][]byte
+	fileFetches  []string
+	failFetch    bool
+	cleanups     []string
+	storage      *moveStorageFake
+
+	// Fault injection (move_retry_test.go): faults answer matching calls
+	// ("POST /v1/...") with an error, once per entry; ranges serves
+	// ranged downloads; stallAt makes the next dump download stop after
+	// that many bytes until the request is cancelled; resume enables
+	// resumable uploads on the destination, and dropAt drops the next
+	// resumable upload after that many bytes.
+	faults  map[string][]moveFault
+	ranges  bool
+	stallAt int
+	resume  bool
+	dropAt  int
+	uploads map[string][]byte
+	offsets []string
+	// uploadSize and uploadDigest describe the artifact a resuming
+	// destination stages; excluded are the tables the source's backups
+	// leave out (move_tables.go).
+	uploadSize   int64
+	uploadDigest string
+	excluded     []string
+}
+
+type moveFault struct {
+	status  int
+	message string
+}
+
+// moveStorageFake is workspace storage shared by both agents.
+type moveStorageFake struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+}
+
+func (s *moveStorageFake) keys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := []string{}
+	for key := range s.objects {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func newMoveFake(t *testing.T) *moveFake {
-	f := &moveFake{t: t, tables: map[string]int{}, dumps: map[string][]byte{}, backups: map[string][]agent.BackupRecord{}, databases: map[string]*agent.DatabaseView{}, restores: map[string][][]byte{}}
+	f := &moveFake{t: t, tables: map[string]int{}, dumps: map[string][]byte{}, backups: map[string][]agent.BackupRecord{}, databases: map[string]*agent.DatabaseView{}, restores: map[string][][]byte{},
+		fileData: map[string][]byte{}, fileRestores: map[string][][]byte{}, removals: map[string]agent.AppRemoveRequest{}}
 	mux := http.NewServeMux()
+	f.mux = mux
 	j := func(w http.ResponseWriter, status int, v any) { agent.JSON(w, status, v) }
 	mux.HandleFunc("GET /v1/move/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if f.source == nil || f.source.AppID != r.PathValue("id") {
@@ -79,7 +147,11 @@ func newMoveFake(t *testing.T) *moveFake {
 	mux.HandleFunc("GET /v1/move/host", func(w http.ResponseWriter, r *http.Request) { j(w, 200, f.host) })
 	mux.HandleFunc("GET /v1/apps", func(w http.ResponseWriter, r *http.Request) { j(w, 200, f.apps) })
 	mux.HandleFunc("GET /v1/server-health", func(w http.ResponseWriter, r *http.Request) {
-		j(w, 200, agent.ServerHealth{MemoryTotal: 4 << 30, MemoryAvailable: 2 << 30, Disks: []agent.DiskHealth{{Path: "/", Available: 50 << 30}}, DatabaseBytes: map[string]int64{"shop": 4096}})
+		health := agent.ServerHealth{MemoryTotal: 4 << 30, MemoryAvailable: 2 << 30, Disks: []agent.DiskHealth{{Path: "/", Available: 50 << 30}}, DatabaseBytes: map[string]int64{"shop": 4096}}
+		if f.memory != nil {
+			health.MemoryTotal, health.MemoryAvailable = f.memory[0], f.memory[1]
+		}
+		j(w, 200, health)
 	})
 	mux.HandleFunc("GET /v1/move/apps/{id}/environment", func(w http.ResponseWriter, r *http.Request) {
 		if f.source != nil && f.source.AppID == r.PathValue("id") {
@@ -114,7 +186,7 @@ func newMoveFake(t *testing.T) *moveFake {
 			return
 		}
 		sum := sha256.Sum256(content)
-		record := agent.BackupRecord{ID: "b" + strconv.Itoa(len(f.backups[id])+1), Created: time.Now().UTC(), Size: int64(len(content)), SHA256: hex.EncodeToString(sum[:])}
+		record := agent.BackupRecord{ID: "b" + strconv.Itoa(len(f.backups[id])+1), Created: time.Now().UTC(), Size: int64(len(content)), SHA256: hex.EncodeToString(sum[:]), ExcludedTableData: f.excluded}
 		f.backups[id] = append(f.backups[id], record)
 		j(w, 202, map[string]string{"status": "queued"})
 	})
@@ -127,8 +199,28 @@ func newMoveFake(t *testing.T) *moveFake {
 					content[len(content)-1] ^= 0xff
 				}
 				w.Header().Set(agent.MoveSHA256Header, record.SHA256)
+				status := 200
+				if start, ok := strings.CutPrefix(r.Header.Get("Range"), "bytes="); ok && f.ranges {
+					offset, _ := strconv.Atoi(strings.TrimSuffix(start, "-"))
+					w.Header().Set("Content-Range", "bytes "+strconv.Itoa(offset)+"-"+strconv.Itoa(len(content)-1)+"/"+strconv.Itoa(len(content)))
+					content, status = content[offset:], http.StatusPartialContent
+				}
+				if f.ranges {
+					w.Header().Set("Accept-Ranges", "bytes")
+				}
 				w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-				w.WriteHeader(200)
+				w.WriteHeader(status)
+				if f.stallAt > 0 {
+					stall := f.stallAt
+					f.stallAt = 0
+					w.Write(content[:stall])
+					w.(http.Flusher).Flush()
+					// A stalled source: nothing more until the request ends.
+					f.mu.Unlock()
+					<-r.Context().Done()
+					f.mu.Lock()
+					return
+				}
 				w.Write(content)
 				return
 			}
@@ -136,6 +228,10 @@ func newMoveFake(t *testing.T) *moveFake {
 		j(w, 404, map[string]string{"error": "unknown backup"})
 	})
 	mux.HandleFunc("POST /v1/move/databases/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
+		if upload := r.Header.Get(agent.MoveUploadHeader); upload != "" {
+			f.resumableRestore(w, r, upload)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil || int64(len(body)) != r.ContentLength {
 			j(w, 400, map[string]string{"error": "the upload was incomplete; nothing was restored"})
@@ -152,6 +248,89 @@ func newMoveFake(t *testing.T) *moveFake {
 		f.restores[r.PathValue("id")] = append(f.restores[r.PathValue("id")], body)
 		j(w, 200, map[string]string{"status": "restored"})
 	})
+	// Files.
+	digest := func(content []byte) string {
+		sum := sha256.Sum256(content)
+		return hex.EncodeToString(sum[:])
+	}
+	mux.HandleFunc("POST /v1/move/apps/{id}/files/{set}/archive", func(w http.ResponseWriter, r *http.Request) {
+		var in agent.MoveFileArchiveRequest
+		json.NewDecoder(r.Body).Decode(&in)
+		f.archives = append(f.archives, in)
+		set := r.PathValue("set")
+		content, ok := f.fileData[set]
+		if !ok {
+			j(w, 404, map[string]string{"error": "unknown file set"})
+			return
+		}
+		out := agent.MoveFileArchive{Set: set, Empty: len(content) == 0, Skipped: f.fileSkipped[set]}
+		if !out.Empty {
+			out.Files, out.Bytes, out.Size, out.SHA256 = 2, 3*int64(len(content)), int64(len(content)), digest(content)
+			if in.Upload && f.storage != nil {
+				key := "moves/" + in.Move + "/files/" + set + ".tar.gz"
+				f.storage.mu.Lock()
+				f.storage.objects[key] = bytes.Clone(content)
+				f.storage.mu.Unlock()
+				out.Key = key
+			}
+		}
+		j(w, 200, out)
+	})
+	mux.HandleFunc("GET /v1/move/apps/{id}/files/{set}/archive", func(w http.ResponseWriter, r *http.Request) {
+		content := bytes.Clone(f.fileData[r.PathValue("set")])
+		w.Header().Set(agent.MoveSHA256Header, digest(content))
+		if f.corruptFiles {
+			content[len(content)-1] ^= 0xff
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+		w.WriteHeader(200)
+		w.Write(content)
+	})
+	mux.HandleFunc("POST /v1/move/apps/{id}/files/{set}/restore", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil || int64(len(body)) != r.ContentLength || r.URL.Query().Get("move") == "" {
+			j(w, 400, map[string]string{"error": "the archive was incomplete; nothing was restored"})
+			return
+		}
+		if digest(body) != r.Header.Get(agent.MoveSHA256Header) {
+			j(w, 422, map[string]string{"error": "checksum mismatch"})
+			return
+		}
+		f.fileRestores[r.PathValue("set")] = append(f.fileRestores[r.PathValue("set")], body)
+		j(w, 200, agent.MoveFileRestore{Set: r.PathValue("set"), Files: 2, Bytes: 3 * int64(len(body)), Path: "volume lidza-storage-shop"})
+	})
+	mux.HandleFunc("POST /v1/move/apps/{id}/files/{set}/fetch", func(w http.ResponseWriter, r *http.Request) {
+		var in agent.MoveFileFetchRequest
+		json.NewDecoder(r.Body).Decode(&in)
+		if f.failFetch || f.storage == nil {
+			j(w, 502, map[string]string{"error": "the archive could not be downloaded from off-site storage"})
+			return
+		}
+		f.storage.mu.Lock()
+		body, ok := f.storage.objects[in.Key]
+		f.storage.mu.Unlock()
+		if !ok || digest(body) != in.SHA256 || int64(len(body)) != in.Size {
+			j(w, 422, map[string]string{"error": "checksum mismatch"})
+			return
+		}
+		f.fileFetches = append(f.fileFetches, in.Key)
+		f.fileRestores[r.PathValue("set")] = append(f.fileRestores[r.PathValue("set")], body)
+		j(w, 200, agent.MoveFileRestore{Set: r.PathValue("set"), Files: 2, Bytes: 3 * int64(len(body)), Path: "volume lidza-storage-shop"})
+	})
+	mux.HandleFunc("DELETE /v1/move/files/{move}", func(w http.ResponseWriter, r *http.Request) {
+		f.cleanups = append(f.cleanups, r.PathValue("move"))
+		if f.storage != nil {
+			f.storage.mu.Lock()
+			for key := range f.storage.objects {
+				if strings.HasPrefix(key, "moves/"+r.PathValue("move")+"/") {
+					delete(f.storage.objects, key)
+				}
+			}
+			f.storage.mu.Unlock()
+		}
+		j(w, 200, map[string]string{"status": "removed"})
+	})
+	mux.HandleFunc("PUT /v1/backup-storage", func(w http.ResponseWriter, r *http.Request) { j(w, 200, map[string]string{"status": "saved"}) })
 	// Container destination.
 	mux.HandleFunc("GET /v1/apps/{id}/settings", func(w http.ResponseWriter, r *http.Request) {
 		if f.settings == nil || f.settings.ID != r.PathValue("id") {
@@ -221,7 +400,41 @@ func newMoveFake(t *testing.T) *moveFake {
 	})
 	mux.HandleFunc("DELETE /v1/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.deleted = append(f.deleted, r.URL.Path)
+		f.removed(r)
 		j(w, 200, map[string]string{"status": "removed"})
+	})
+	mux.HandleFunc("GET /v1/retained-resources", func(w http.ResponseWriter, r *http.Request) {
+		rows := []agent.RetainedResourceView{}
+		kept := f.retained[:0]
+		for _, row := range f.retained {
+			rows = append(rows, row)
+			if !row.Removing {
+				kept = append(kept, row)
+			}
+		}
+		f.retained = kept
+		j(w, 200, rows)
+	})
+	mux.HandleFunc("DELETE /v1/retained-resources/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var req agent.RetainedRemoveRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		for i, row := range f.retained {
+			if row.ID != r.PathValue("id") {
+				continue
+			}
+			switch {
+			case req.Confirm != row.ID:
+				j(w, 409, map[string]string{"error": "confirm the retained resource id to remove it"})
+			case !req.FinalBackup && row.FinalBackupRequired:
+				j(w, 409, map[string]string{"error": "database has no verified backup taken after its application stopped writing; take a final backup first"})
+			default:
+				f.retained[i].Removing = true
+				f.retainedRemovals = append(f.retainedRemovals, req)
+				j(w, 202, map[string]string{"status": "removing"})
+			}
+			return
+		}
+		j(w, 404, map[string]string{"error": "no such retained resource on this server"})
 	})
 	// Native source and destination.
 	mux.HandleFunc("GET /v1/native/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -239,6 +452,12 @@ func newMoveFake(t *testing.T) *moveFake {
 		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil || spec.Env != nil {
 			t.Error("the destination is created without environment values", err)
 		}
+		for _, row := range f.retained {
+			if row.AppID == spec.ID {
+				j(w, 409, map[string]string{"error": "the data services of an earlier application " + spec.ID + " are retained on this server; remove them under the server's retained resources, or choose another id"})
+				return
+			}
+		}
 		f.created = &spec
 		f.native = &agent.NativeStatus{Application: agent.NativeApplication{ID: spec.ID, Name: spec.ID, Runtime: spec.Runtime, Repository: spec.Repository, Branch: spec.Branch, Domain: spec.Domain, Services: []string{"app-" + spec.ID + "-web.service"}}, ReleaseManaged: true, DeploymentSupported: true}
 		f.apps = append(f.apps, agent.App{ID: spec.ID, Domain: spec.Domain, Native: &f.native.Application})
@@ -252,6 +471,9 @@ func newMoveFake(t *testing.T) *moveFake {
 		}
 		if f.created != nil && f.created.Data.Redis {
 			view.Redis = &agent.NativeHostRedisView{Ready: true}
+		}
+		if f.created != nil && f.created.Data.ClickHouse {
+			view.ClickHouse = &agent.NativeHostClickHouseView{Engine: "clickhouse", Database: "app_" + f.created.ID, Ready: true}
 		}
 		j(w, 200, view)
 	})
@@ -268,6 +490,7 @@ func newMoveFake(t *testing.T) *moveFake {
 	})
 	mux.HandleFunc("DELETE /v1/native/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.deleted = append(f.deleted, r.URL.String())
+		f.removed(r)
 		if f.nativeSource != nil && f.nativeSource.Application.ID == r.PathValue("id") {
 			f.nativeSource = nil
 		} else {
@@ -280,9 +503,20 @@ func newMoveFake(t *testing.T) *moveFake {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/diagnostics") {
+			// Diagnostics answer while a transfer holds the fake.
+			j(w, 404, map[string]string{"error": "no diagnostics in this fake"})
+			return
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+		call := r.Method + " " + r.URL.Path
+		f.calls = append(f.calls, call)
+		if faults := f.faults[call]; len(faults) > 0 {
+			f.faults[call] = faults[1:]
+			j(w, faults[0].status, map[string]string{"error": faults[0].message})
+			return
+		}
 		mux.ServeHTTP(w, r)
 	}))
 	t.Cleanup(f.srv.Close)
@@ -293,6 +527,21 @@ func (f *moveFake) called(call string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Contains(f.calls, call)
+}
+
+// removed records an application removal's body and, unless the data is
+// deleted with the application, retains the data with the request's origin.
+func (f *moveFake) removed(r *http.Request) {
+	var req agent.AppRemoveRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			f.t.Error("removal body", err)
+		}
+	}
+	f.removals[r.URL.String()] = req
+	if !req.DeleteData {
+		f.retained = append(f.retained, agent.RetainedResourceView{ID: "r" + strconv.Itoa(len(f.retained)+1), AppID: r.PathValue("id"), Kind: "application", Origin: req.Origin, Copy: req.Origin != nil && !req.Origin.Switched})
+	}
 }
 
 func (f *moveFake) with(fn func()) {
@@ -358,6 +607,7 @@ type moveFixture struct {
 
 func (fx *moveFixture) wire(c *Control) *Control {
 	c.moveResolver, c.moveProbe, c.movePollInterval = fx.resolver, fx.probe.probe, time.Millisecond
+	c.moveRetryDelays = []time.Duration{time.Millisecond}
 	c.credentialsFixture = func(_ context.Context, a Application, key string) (agent.DeployRequest, error) {
 		return agent.DeployRequest{Key: key, Token: "short-lived-checkout"}, nil
 	}

@@ -1,4 +1,5 @@
 import '@testing-library/jest-dom/vitest';
+import { afterEach } from 'vitest';
 import { configure } from '@testing-library/react';
 
 // Match the browser APIs used by Radix and Sonner, absent from jsdom.
@@ -9,3 +10,6 @@ HTMLElement.prototype.scrollIntoView = function () {};
 HTMLElement.prototype.hasPointerCapture = () => false;
 HTMLElement.prototype.setPointerCapture = function () {};
 HTMLElement.prototype.releasePointerCapture = function () {};
+
+// Views read and write the URL (path routes, ?step=, filters); start each test at a clean entry.
+afterEach(() => { history.replaceState(null, '', '/'); });

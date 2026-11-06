@@ -53,6 +53,9 @@ func TestFailedCandidateDiagnosticsSavedBeforeRemoval(t *testing.T) {
 	if strings.Index(text, "logs --tail") < 0 || strings.Index(text, "logs --tail") > strings.Index(text, "rm --force") {
 		t.Fatalf("logs collected after deletion: %s", text)
 	}
+	if !strings.Contains(text, "logs --tail 40 --timestamps --since 20") {
+		t.Fatalf("logs not bounded to the container's lifetime: %s", text)
+	}
 	if strings.Contains(text, "previous-container") || strings.Contains(text, "lidza/one:previous") {
 		t.Fatal("previous release changed")
 	}
@@ -84,6 +87,14 @@ func TestReadinessLogsSuccessfulTransitionAndBoundsFailureBody(t *testing.T) {
 	body, err := docker.probeReady(context.Background(), &Release{Port: port})
 	if err == nil || len(body) != 4096 || strings.Contains(err.Error(), strings.Repeat("x", 10)) {
 		t.Fatal("response unbounded or included in returned error", len(body), err)
+	}
+	// The deployment log shows the start of that body, not all of it.
+	if err := (&Docker{readinessTimeout: 80 * time.Millisecond}).waitReady(ctx, &Release{Port: port}); err == nil {
+		t.Fatal("failing candidate accepted")
+	}
+	log = m.Deployments()[0].Log
+	if !strings.Contains(log, "HTTP 500") || !strings.Contains(log, strings.Repeat("x", 300)+"…") || strings.Contains(log, strings.Repeat("x", 301)) {
+		t.Fatalf("failure body not excerpted:\n%s", log)
 	}
 }
 

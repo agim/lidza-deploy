@@ -23,7 +23,7 @@ func (c *Control) settings(w http.ResponseWriter, r *http.Request) {
 		path = "/v1/native/apps/" + a.ID + "/settings"
 	}
 	if err := c.agentCall(r, a.ServerID, "GET", path, nil, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	if out.ID == "" {
@@ -52,7 +52,7 @@ func (c *Control) generateMasterKey(w http.ResponseWriter, r *http.Request) {
 	}
 	var out agent.EnvironmentEntry
 	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+url.PathEscape(a.ID)+"/master-key", nil, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -147,12 +147,12 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if c.data.BackupStorage != nil {
 		if err := c.agentCall(r, old.ServerID, "PUT", "/v1/backup-storage", c.data.BackupStorage, nil); err != nil {
-			agent.Fail(w, 502, err)
+			failAgent(w, err)
 			return
 		}
 	}
 	if err := c.agentCall(r, old.ServerID, "PATCH", "/v1/apps/"+old.ID+"/settings", input, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	next := old

@@ -20,7 +20,7 @@ const assert = require('node:assert/strict');
       });
 
       const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
-      await page.goto(`${base}/console.html#page/console/local`);
+      await page.goto(`${base}/console/servers/local/console`);
       const form = page.locator('#console-unlock');
       await form.waitFor();
       const input = form.locator('input');

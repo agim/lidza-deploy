@@ -206,6 +206,10 @@ func (m *Manager) nativeReleaseSettings(settings *Settings, policy NativeRelease
 	}
 	settings.Branch = policy.Branch
 	settings.ReleaseRuntime = policy.Runtime
+	settings.Toolchains = "account"
+	if policy.ManagedToolchains() {
+		settings.Toolchains = "managed"
+	}
 	settings.SettingsApplyOnDeploy = true
 	settings.BackupBeforeDeploy = true
 	return nil
@@ -229,6 +233,17 @@ func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatc
 	}
 	if p.Branch != "" && !nativeReleaseBranchValue.MatchString(p.Branch) {
 		return errors.New("invalid branch name")
+	}
+	if p.Toolchains != nil {
+		m.mu.Lock()
+		_, created := m.data.NativeCreated[a.ID]
+		m.mu.Unlock()
+		switch {
+		case *p.Toolchains != "managed" && *p.Toolchains != "account":
+			return errors.New("toolchains must be managed or account")
+		case created && *p.Toolchains == "account":
+			return errors.New("applications created here have no version manager of their own; they use managed toolchains")
+		}
 	}
 	for key, value := range p.EnvChanges {
 		if !envPattern.MatchString(key) {
@@ -321,6 +336,12 @@ func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatc
 		if p.Branch == a.Branch {
 			next.Branch = ""
 		}
+	}
+	if p.Toolchains != nil {
+		// Switching to managed toolchains installs the pinned Go, Node.js
+		// and Ruby on the next deploy, which then builds with them; nothing
+		// changes for the serving release until then.
+		next.Toolchains = *p.Toolchains
 	}
 	if m.data.NativeSettings == nil {
 		m.data.NativeSettings = map[string]NativeSettingsOverride{}

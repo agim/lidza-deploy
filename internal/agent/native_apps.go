@@ -107,6 +107,11 @@ func (m *Manager) nativeRoot() (string, error) {
 	return root, nil
 }
 
+// nativeBinding returns the deployment user's service units bound to
+// <root>/<name>/current, or none for a built static Astro site. It is the
+// binding of applications that run on that user's own service manager;
+// applications with system units are described by their release policy
+// instead (nativeRuntimeServices).
 func (m *Manager) nativeBinding(name string) ([]string, error) {
 	root, err := m.nativeRoot()
 	if err != nil {
@@ -192,6 +197,115 @@ func (m *Manager) nativeBinding(name string) ([]string, error) {
 		return nil, errors.New("native application needs between 1 and 32 directly bound user services")
 	}
 	return units, nil
+}
+
+// nativeSystemPolicy returns the release policy whose system units an
+// application runs: reviewed configuration first, then a policy the agent
+// created. Applications on the deployment user's service manager have none.
+func (m *Manager) nativeSystemPolicy(id string) (NativeReleasePolicy, bool) {
+	if !m.nativeCreatedSystemUnits(id) {
+		return NativeReleasePolicy{}, false
+	}
+	if m.cfg.Native != nil {
+		if policy, ok := m.cfg.Native.Releases[id]; ok {
+			return policy, true
+		}
+	}
+	return m.nativeCreatedPolicy(id)
+}
+
+// nativeSystemUnitFiles returns the units of a policy that exist as unit
+// files in the system unit directory, in policy order: the units a deploy
+// restarts, then the ones the operator preserves. A unit without a file
+// (removed, or masked) is left out, so the panel can name it.
+func nativeSystemUnitFiles(policy NativeReleasePolicy) []string {
+	units := []string{}
+	for _, unit := range slices.Concat(policy.Units, policy.Preserve) {
+		if !nativeUnitPattern.MatchString(unit) {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(nativeSystemUnitDir, unit))
+		if err == nil && info.Mode().IsRegular() {
+			units = append(units, unit)
+		}
+	}
+	return units
+}
+
+// nativeRuntimeServices reports the services an application runs today. A
+// release policy with system units is the source of truth: for applications
+// the agent created, and for configured applications that moved to their own
+// account, the user units that move left on the deployment user's manager
+// are not the application's services any more. Every other application is
+// bound through the user units of <root>/<name>/current.
+func (m *Manager) nativeRuntimeServices(a NativeApplication) ([]string, error) {
+	if policy, ok := m.nativeSystemPolicy(a.ID); ok {
+		return nativeSystemUnitFiles(policy), nil
+	}
+	return m.nativeBinding(a.Name)
+}
+
+// nativeDiscovery is the host's native inventory, read without touching a
+// service: every registered application with the services it runs today,
+// configured system-unit policies nobody has registered yet, and finally the
+// directory scan of the native root, which exists to adopt existing
+// applications and only proposes names that are not registered. The panel
+// compares the first group with the agent's registrations and adopts the rest.
+func (m *Manager) nativeDiscovery(ctx context.Context) ([]NativeApplication, error) {
+	root, err := m.nativeRoot()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, errors.New("native root unavailable")
+	}
+	m.mu.Lock()
+	apps := maps.Clone(m.data.NativeApps)
+	m.mu.Unlock()
+	out := []NativeApplication{}
+	reported := map[string]bool{}
+	for _, id := range slices.Sorted(maps.Keys(apps)) {
+		a := apps[id]
+		reported[a.Name] = true
+		units, err := m.nativeRuntimeServices(a)
+		if err != nil {
+			// A registration whose binding cannot be verified stays out of the
+			// snapshot; the panel names it and keeps its record.
+			continue
+		}
+		a.Services = units
+		a.AdditionalDomains = slices.Clone(a.AdditionalDomains)
+		out = append(out, a)
+	}
+	for _, id := range slices.Sorted(maps.Keys(m.cfg.Native.Releases)) {
+		policy := m.cfg.Native.Releases[id]
+		name := filepath.Base(policy.Root)
+		if _, registered := apps[id]; registered || reported[name] || !policy.Enabled || !policy.SystemUnits() || !nativeNamePattern.MatchString(name) || len(out) >= 100 {
+			continue
+		}
+		units := nativeSystemUnitFiles(policy)
+		if len(units) == 0 {
+			continue
+		}
+		reported[name] = true
+		// Without an ID the panel observes the application instead of
+		// registering it: metadata registration binds user units, which a
+		// system-unit policy does not have.
+		out = append(out, NativeApplication{Name: name, Runtime: policy.Runtime, Domain: policy.Domain, Repository: policy.Repository, Branch: policy.Branch, Port: policy.Port, HealthPath: policy.HealthPath, Services: units})
+	}
+	for _, e := range entries {
+		if len(out) >= 100 {
+			break
+		}
+		if !e.IsDir() || !nativeNamePattern.MatchString(e.Name()) || reported[e.Name()] {
+			continue
+		}
+		if units, err := m.nativeBinding(e.Name()); err == nil {
+			out = append(out, m.nativeDiscoveredApplication(e.Name(), units))
+		}
+	}
+	return out, nil
 }
 
 func (m *Manager) nativeExec(ctx context.Context, args ...string) (string, error) {
@@ -406,7 +520,8 @@ func (m *Manager) nativeSecrets(a NativeApplication) []string {
 }
 
 func nativeEnvironmentLogSecrets(values map[string]string) []string {
-	// Numeric and boolean runtime tuning is visible in app inventory. All other
+	// Small, non-secret values (ports, thread counts, booleans) are not
+	// masked: redacting them would corrupt unrelated log text. All other
 	// variables retain conservative value/password redaction.
 	if nativePort(values) != "" {
 		delete(values, "PORT")
@@ -434,10 +549,18 @@ func (m *Manager) nativeLogs(ctx context.Context, id, unit string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if !slices.Contains(a.Services, unit) {
+	units := []string{unit}
+	if unit == "" {
+		// Without a selection the log interleaves every process of the
+		// application, as one container's output does.
+		units = a.Services
+		if len(units) == 0 {
+			return "This application has no service process. Its files are served by the web server.", nil
+		}
+	} else if !slices.Contains(a.Services, unit) {
 		return "", errors.New("select a registered native service")
 	}
-	out, err := m.nativeServiceJournalFor(ctx, id, unit)
+	out, err := m.nativeServiceJournalFor(ctx, id, units...)
 	if err != nil {
 		return "", errors.New("native service logs unavailable")
 	}
@@ -485,14 +608,29 @@ func (m *Manager) nativeServiceMetadata(ctx context.Context, units []string) (st
 	return m.nativeExec(ctx, args...)
 }
 
-func (m *Manager) nativeServiceJournal(ctx context.Context, unit string) (string, error) {
-	return m.nativeExec(ctx, "journalctl", "--user-unit="+unit, "--no-pager", "--lines=200", "--output=cat")
+func (m *Manager) nativeServiceJournal(ctx context.Context, units ...string) (string, error) {
+	args := []string{"journalctl"}
+	for _, unit := range units {
+		args = append(args, "--user-unit="+unit)
+	}
+	return m.nativeExec(ctx, append(args, nativeJournalFormat(units)...)...)
+}
+
+// nativeJournalFormat is the journal output of one or several units: the
+// plain messages of one unit, timestamped lines naming their process when
+// several units are interleaved.
+func nativeJournalFormat(units []string) []string {
+	if len(units) > 1 {
+		return []string{"--no-pager", "--lines=400", "--output=short-iso"}
+	}
+	return []string{"--no-pager", "--lines=200", "--output=cat"}
 }
 
 func (m *Manager) nativeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/native/databases/{resource}/adopt", m.nativeDatabaseRoute)
 	m.nativeHostDataRoutes(mux)
 	m.nativeCreateRoutes(mux)
+	m.nativeUsageRoutes(mux)
 	mux.HandleFunc("GET /v1/native/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := m.nativeRoot(); err != nil {
 			Fail(w, 409, err)
@@ -501,29 +639,10 @@ func (m *Manager) nativeRoutes(mux *http.ServeMux) {
 		JSON(w, 200, map[string]bool{"status_metadata_only": true, "http_readiness_probes": false, "automatic_registration_metadata_only": true, "astro_static_inventory": true})
 	})
 	mux.HandleFunc("GET /v1/native/discovery", func(w http.ResponseWriter, r *http.Request) {
-		root, err := m.nativeRoot()
+		out, err := m.nativeDiscovery(r.Context())
 		if err != nil {
 			Fail(w, 409, err)
 			return
-		}
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			Fail(w, 409, errors.New("native root unavailable"))
-			return
-		}
-		out := []NativeApplication{}
-		routes := m.nativeObservedRoutes(r.Context())
-		for _, e := range entries {
-			if !e.IsDir() || !nativeNamePattern.MatchString(e.Name()) {
-				continue
-			}
-			units, err := m.nativeBinding(e.Name())
-			if err == nil {
-				out = append(out, m.nativeDiscoveredApplication(e.Name(), units, routes))
-			}
-			if len(out) >= 100 {
-				break
-			}
 		}
 		JSON(w, 200, out)
 	})

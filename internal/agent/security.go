@@ -16,6 +16,8 @@ type Probe struct {
 	Outcome  string `json:"outcome"`
 }
 
+// securityRecord classifies a structured request log line (Līdza's
+// middleware logs msg=request with method, path, status and request_id).
 func securityRecord(line string) (report.Error, *Probe, bool) {
 	var row struct {
 		Message   string `json:"msg"`
@@ -24,10 +26,27 @@ func securityRecord(line string) (report.Error, *Probe, bool) {
 		Status    int    `json:"status"`
 		RequestID string `json:"request_id"`
 	}
-	if json.Unmarshal([]byte(line), &row) != nil || row.Message != "request" || row.Status < 100 || row.Status >= 500 || row.Method == "" || len(row.Path) > 4096 {
+	if json.Unmarshal([]byte(line), &row) != nil || row.Message != "request" {
 		return report.Error{}, nil, false
 	}
-	path := strings.SplitN(row.Path, "?", 2)[0]
+	return classifyProbe(row.Method, row.Path, row.Status, row.RequestID)
+}
+
+// classifyProbe reports one request as a suspected probe when its path
+// matches a scanner pattern. Text request logs (Rails routing errors and
+// "Completed" lines, common access-log formats) share it with the JSON
+// form. Status codes of 500 and above are application failures, not
+// probes.
+func classifyProbe(method, path string, status int, requestID string) (report.Error, *Probe, bool) {
+	if status < 100 || status >= 500 || method == "" || len(path) > 4096 {
+		return report.Error{}, nil, false
+	}
+	row := struct {
+		Method    string
+		Status    int
+		RequestID string
+	}{method, status, requestID}
+	path = strings.SplitN(path, "?", 2)[0]
 	decoded := strings.ToLower(path)
 	for i := 0; i < 2; i++ {
 		v, err := url.PathUnescape(decoded)

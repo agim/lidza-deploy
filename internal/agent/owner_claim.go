@@ -41,7 +41,7 @@ func (d *Docker) prepareOwnerClaim(ctx context.Context, a App) (string, error) {
 	}
 	// The agent runs as deploy, which cannot chown host files to the app UID.
 	// Docker performs this narrowly scoped operation on the private bind mount.
-	if err := dockerStream(ctx, nil, io.Discard, nil, "run", "--rm", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--memory", "64m", "--pids-limit", "32", "--mount", "type=bind,src="+path+",dst=/claim", cacheImage, "sh", "-c", "chown 65532:65532 /claim && chmod 700 /claim"); err != nil {
+	if err := dockerStream(ctx, nil, io.Discard, nil, "run", "--rm", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--pids-limit", "32", "--mount", "type=bind,src="+path+",dst=/claim", cacheImage, "sh", "-c", "chown 65532:65532 /claim && chmod 700 /claim"); err != nil {
 		return "", errors.New("cannot initialize private setup directory through Docker; check agent Docker access")
 	}
 	return path, nil
@@ -115,7 +115,7 @@ func (d *Docker) readOwnerClaimFile(ctx context.Context, a App, name string, max
 	// Read as the application's UID. The deploy account cannot directly read
 	// its 0700 directory / 0600 files. Never route token bytes into deployment logs.
 	script := `test ! -L /claim/` + name + ` && test -f /claim/` + name + ` && test "$(wc -c < /claim/` + name + `)" -le 4096 && cat /claim/` + name
-	c := exec.CommandContext(ctx, "docker", "run", "--rm", "--network", "none", "--user", "65532:65532", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "64m", "--pids-limit", "32", "--log-driver", "none", "--mount", "type=bind,src="+d.ownerClaimDirectory(a)+",dst=/claim,readonly", cacheImage, "sh", "-c", script)
+	c := exec.CommandContext(ctx, "docker", "run", "--rm", "--network", "none", "--user", "65532:65532", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "32", "--log-driver", "none", "--mount", "type=bind,src="+d.ownerClaimDirectory(a)+",dst=/claim,readonly", cacheImage, "sh", "-c", script)
 	c.WaitDelay = 5 * time.Second
 	var output limitedBuffer
 	c.Stdout = &output

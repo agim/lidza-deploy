@@ -4,10 +4,11 @@ import App from './App';
 import { PreferencesProvider } from './state/PreferencesContext';
 import { ToastProvider } from './components/ToastProvider';
 import { WorkspaceProvider } from './state/WorkspaceContext';
-import { ThemeProvider } from 'next-themes';
+import { startRouter } from './lib/router';
 import 'sonner/dist/styles.css';
 import './styles.css';
 import './template.css';
 import './console.css';
 
-createRoot(document.getElementById('root')!).render(<StrictMode><ThemeProvider attribute="class" forcedTheme="dark"><ToastProvider><PreferencesProvider><WorkspaceProvider><App /></WorkspaceProvider></PreferencesProvider></ToastProvider></ThemeProvider></StrictMode>);
+startRouter();
+createRoot(document.getElementById('root')!).render(<StrictMode><ToastProvider><PreferencesProvider><WorkspaceProvider><App /></WorkspaceProvider></PreferencesProvider></ToastProvider></StrictMode>);

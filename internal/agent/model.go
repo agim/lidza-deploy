@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/agim/lidza-deploy/internal/release"
+	"github.com/agim/lidza-deploy/internal/retention"
 	"github.com/agim/lidza/packs/storage"
 	"net"
 	"net/url"
@@ -45,6 +47,7 @@ type App struct {
 	Networks             []string          `json:"-"`
 	Network              string            `json:"-"`
 	Retiring             bool              `json:"retiring,omitempty"`
+	IngressNote          string            `json:"ingress_note,omitempty"` // creation response only: how the hostnames were published
 	ID                   string            `json:"id"`
 	Repository           string            `json:"repository"` // github owner/name, never a credential-bearing URL
 	Branch               string            `json:"branch"`
@@ -137,7 +140,12 @@ type Deployment struct {
 	Error         string     `json:"error,omitempty"`
 	Created       time.Time  `json:"created"`
 	Finished      *time.Time `json:"finished,omitempty"`
-	Key           string     `json:"key,omitempty"`
+	// Updated is when the deployment last produced output.
+	Updated *time.Time `json:"updated,omitempty"`
+	Key     string     `json:"key,omitempty"`
+	// Progress is the live phase of a deployment that waits (for another
+	// build on this server, or for memory). It is reported, never stored.
+	Progress *Progress `json:"progress,omitempty"`
 }
 type DeployRequest struct {
 	resume   bool              // internal start request; never accepted from JSON
@@ -185,6 +193,11 @@ type diskState struct {
 	Apps              map[string]App                     `json:"apps"`
 	Deployments       []Deployment                       `json:"deployments"`
 
+	// BackupRetention is the workspace's off-site retention, sent by the
+	// control plane with the storage; nil until it sends one, and then no
+	// automatic cleanup runs (backup_retention.go).
+	BackupRetention *retention.Settings `json:"backup_retention,omitempty"`
+
 	// NativeCreated holds the release policies of applications this agent
 	// created (POST /v1/native/apps); reviewed configuration takes
 	// precedence for the same id.
@@ -193,16 +206,30 @@ type diskState struct {
 	// its environment or external database URL, so the application can be
 	// recreated elsewhere with the same processes (move.go).
 	NativeCreatedSpecs map[string]NativeCreateRequest `json:"native_created_specs,omitempty"`
+	// NativeRuby is the Ruby and Bundler each native application's latest
+	// release was built with, for the server health warnings (native_ruby.go).
+	NativeRuby map[string]release.RubyToolchain `json:"native_ruby,omitempty"`
 
 	// NativeHostData records the host PostgreSQL/Redis provisioned for each
 	// created application, with individually sealed passwords
 	// (native_hostdata.go).
 	NativeHostData map[string]NativeHostDataRecord `json:"native_host_data,omitempty"`
+	// NativeClickHouse records the host ClickHouse server the agent
+	// installed for created applications, with its sealed administrator
+	// password (native_hostdata_clickhouse.go).
+	NativeClickHouse *NativeClickHouseServer `json:"native_clickhouse,omitempty"`
 
 	// Host operating-system management: update/reboot policy with its job
 	// history, and the managed firewall (host_updates.go, host_firewall.go).
 	HostUpdates  *HostUpdatesState  `json:"host_updates,omitempty"`
 	HostFirewall *HostFirewallState `json:"host_firewall,omitempty"`
+	// HostIngress is the panel's web ingress override (host_ingress.go).
+	HostIngress *HostIngressState `json:"host_ingress,omitempty"`
+
+	// BuildPeaks are the measured memory peaks of recent build steps per
+	// application (build_resources.go), newest last and bounded, so later
+	// builds size their memory caps from what the steps really need.
+	BuildPeaks map[string][]BuildPeak `json:"build_peaks,omitempty"`
 }
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)

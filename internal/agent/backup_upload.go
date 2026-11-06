@@ -48,6 +48,8 @@ func (m *Manager) retryBackupUpload(id, backup string) error {
 		defer m.wg.Done()
 		ctx, cancel := context.WithTimeout(m.ctx, 2*time.Hour)
 		defer cancel()
+		ctx, endProgress := m.trackDatabase(ctx, id, "Waiting for an available database operation slot")
+		defer endProgress()
 		var err error
 		select {
 		case m.databaseSlots <- struct{}{}:
@@ -90,6 +92,9 @@ func (m *Manager) retryBackupUpload(id, backup string) error {
 		}
 		m.data.Databases[id] = latest
 		_ = m.save()
+		if err == nil {
+			m.offsiteRetentionAfterUploadLocked(id)
+		}
 	}()
 	return nil
 }

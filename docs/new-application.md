@@ -1,7 +1,9 @@
 # Create an application
 
 Open **Applications → New application**. Creation opens a full page at
-`/console.html#new-application`, with normal browser Back/Forward navigation.
+`/console/new-application`. Each step has its own address
+(`/console/new-application?step=repository` …), so browser Back/Forward and the
+wizard's Back button move between steps.
 
 1. Choose an authorized GitHub repository or enter a public `owner/repository`.
    Load and pick its deployment branch; do not assume every repository uses `main`.

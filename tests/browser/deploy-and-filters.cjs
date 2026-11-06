@@ -10,11 +10,11 @@ for(const width of [320,390,768,1440]) {
  await page.route('**/api/control/deployments/fresh-build',route=>route.fulfill({json:deployment}));
  await page.route('**/api/control/deployments',route=>route.fulfill({json:{deployments:deployment?[deployment]:[],unavailable_servers:[]}}));
  await page.route('**/api/control/apps/fresh/deploy',route=>{requests++;if(fail)return route.fulfill({status:409,json:{error:'GitHub installation unavailable'}});deployment={id:'fresh-build',app_id:'fresh',status:'queued',created:new Date().toISOString()};return route.fulfill({status:202,json:deployment});});
- await page.goto(`${base}/console.html#applications`);const card=page.locator('[data-app-card="fresh"]');await card.getByText('No release deployed').waitFor();
+ await page.goto(`${base}/console/applications`);const card=page.locator('[data-app-card="fresh"]');await card.getByText('No release deployed').waitFor();
  await card.getByRole('button',{name:'Deploy',exact:true}).click();await page.getByText('Deployment queued.',{exact:true}).waitFor();
  assert.equal(requests,1);await card.getByRole('button',{name:'Build logs',exact:true}).waitFor();await page.waitForFunction(()=>!document.querySelector('[data-app-card="fresh"] [data-history]').disabled);
- await card.getByRole('button',{name:'Build logs',exact:true}).click();await page.waitForURL(url=>url.hash==='#page/build-logs/fresh-build');
- await page.goto(`${base}/console.html#applications`);fail=true;await card.getByRole('button',{name:'Deploy',exact:true}).click();await card.getByRole('alert').filter({hasText:'GitHub installation unavailable'}).waitFor();assert.equal(requests,2);
+ await card.getByRole('button',{name:'Build logs',exact:true}).click();await page.waitForURL(url=>url.pathname==='/console/deployments/fresh-build');
+ await page.goto(`${base}/console/applications`);fail=true;await card.getByRole('button',{name:'Deploy',exact:true}).click();await card.getByRole('alert').filter({hasText:'GitHub installation unavailable'}).waitFor();assert.equal(requests,2);
  for(const route of ['errors','security']) {
   await page.goto(`${base}/console.html#${route}`);await page.locator('.activity-filters select').waitFor();
   const geometry=await page.locator('.activity-filters').evaluate(element=>{const a=element.querySelector('.search-field').getBoundingClientRect();const b=element.querySelector('select').getBoundingClientRect();return{a:{top:a.top,bottom:a.bottom,height:a.height},b:{top:b.top,bottom:b.bottom,height:b.height},columns:getComputedStyle(element).gridTemplateColumns.split(' ').length};});

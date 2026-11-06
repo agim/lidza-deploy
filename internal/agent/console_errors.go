@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/agim/lidza/packs/analytics"
-	"github.com/agim/lidza/pkg/report"
 )
 
 type ErrorReporting struct {
@@ -137,6 +136,7 @@ func (m *Manager) consoleTick(ctx context.Context) {
 			}
 		}
 	}
+	natives := m.nativeConsoleTargetsLocked(cfg.Apps)
 	cursors := maps.Clone(m.data.ErrorCursors)
 	outbox := slices.Clone(m.data.ErrorOutbox)
 	m.mu.Unlock()
@@ -168,19 +168,22 @@ func (m *Manager) consoleTick(ctx context.Context) {
 			collectionError = "Container console collection failed; existing reports remain available"
 			continue
 		}
-		if len(logs) >= 65535 || strings.Count(logs, "\n") >= 999 {
+		logs, limited := boundConsoleRead(logs)
+		if limited {
 			collectionError = "Container log read reached its size limit; some output may be missing"
-		}
-		if len(logs) >= 65535 {
-			if end := strings.LastIndex(logs, "\n"); end >= 0 {
-				logs = logs[:end]
-			} else {
-				logs = ""
-			}
 		}
 		records, next := parseConsole(logs, t.app, t.release, cfg.Apps[t.app.ID], cursor, 1000-len(outbox))
 		outbox = append(outbox, records...)
 		cursors[key] = next
+	}
+	// Native applications: the same cursors, parsers and outbox over their
+	// service units' journals.
+	if len(outbox) < 1000 {
+		records, warning := m.collectNativeConsole(ctx, cfg, natives, cursors, active, 1000-len(outbox))
+		outbox = append(outbox, records...)
+		if warning != "" {
+			collectionError = warning
+		}
 	}
 	// Bound obsolete release cursors, while preserving cursors during a full backlog.
 	if len(outbox) < 1000 {
@@ -257,8 +260,30 @@ func (m *Manager) deliverConsole(parent context.Context, cfg ErrorReporting, out
 
 }
 
+// boundConsoleRead applies the collector's per-read limits (64 KiB, 1,000
+// lines) and reports whether a read reached them.
+func boundConsoleRead(logs string) (string, bool) {
+	limited := len(logs) >= 65535 || strings.Count(logs, "\n") >= 999
+	if len(logs) >= 65535 {
+		if end := strings.LastIndex(logs, "\n"); end >= 0 {
+			logs = logs[:end]
+		} else {
+			logs = ""
+		}
+	}
+	return logs, limited
+}
+
 func parseConsole(text string, app App, release Release, generation string, cursor ConsoleCursor, capacity int) ([]ConsoleError, ConsoleCursor) {
+	return parseConsoleLines(text, app.ID, outputSecrets(app.Env), release, generation, cursor, capacity)
+}
+
+// parseConsoleLines turns "RFC3339Nano payload" lines into reports for one
+// application incarnation and process (a container or a service unit),
+// advancing the replay cursor. Container and native sources share it.
+func parseConsoleLines(text, appID string, secrets []string, release Release, generation string, cursor ConsoleCursor, capacity int) ([]ConsoleError, ConsoleCursor) {
 	out := []ConsoleError{}
+	scan := newConsoleScan()
 	next := ConsoleCursor{Time: cursor.Time, Seen: maps.Clone(cursor.Seen)}
 	if next.Seen == nil {
 		next.Seen = map[string]int{}
@@ -285,11 +310,7 @@ func parseConsole(text string, app App, release Release, generation string, curs
 		if at.Equal(cursor.Time) && counts[h] <= cursor.Seen[h] {
 			continue
 		}
-		e, found := consoleRecord(payload)
-		var probe *Probe
-		if !found {
-			e, probe, found = securityRecord(payload)
-		}
+		e, probe, found := scan.classify(payload)
 		if probe != nil {
 			if probeCount >= 25 {
 				found = false
@@ -309,24 +330,23 @@ func parseConsole(text string, app App, release Release, generation string, curs
 			next.Seen[h] = counts[h]
 		}
 		if !found {
-			if len(out) > 0 && strings.HasPrefix(strings.ToUpper(out[len(out)-1].Message), "PANIC:") && (strings.HasPrefix(payload, "goroutine ") || strings.HasPrefix(payload, "\t") || strings.HasSuffix(payload, ")")) {
+			if frame, ok := scan.continuation(payload); ok && len(out) > 0 {
 				last := &out[len(out)-1]
 				stack := ""
 				if last.Stack != nil {
-					stack = *last.Stack
+					stack = *last.Stack + "\n"
 				}
-				stack = boundedErrorText(stack+"\n"+scrubOutput(payload, outputSecrets(app.Env)), 4096)
+				stack = boundedErrorText(stack+scrubOutput(frame, secrets), 4096)
 				last.Stack = &stack
 			}
 			continue
 		}
-		secrets := outputSecrets(app.Env)
 		e.Message = boundedErrorText(scrubOutput(e.Message, secrets), 2048)
 		e.Stack = boundedErrorText(scrubOutput(e.Stack, secrets), 4096)
 		e.Route = boundedErrorText(scrubOutput(e.Route, secrets), 512)
 		e.RequestID = boundedErrorText(scrubOutput(e.RequestID, secrets), 128)
 		// App/incarnation/container/time/ordinal make replay IDs deterministic.
-		sum := sha256.Sum256([]byte(app.ID + generation + release.Container + line + strconv.Itoa(counts[h])))
+		sum := sha256.Sum256([]byte(appID + generation + release.Container + line + strconv.Itoa(counts[h])))
 		stored := analytics.StoredError{ID: hex.EncodeToString(sum[:]), Source: "server", Message: e.Message, Fingerprint: analytics.Fingerprint(e), CreatedAt: at}
 		if e.Stack != "" {
 			stored.Stack = &e.Stack
@@ -340,45 +360,7 @@ func parseConsole(text string, app App, release Release, generation string, curs
 		if e.RequestID != "" {
 			stored.RequestID = &e.RequestID
 		}
-		out = append(out, ConsoleError{Security: probe, StoredError: stored, AppID: app.ID, Generation: generation, Container: release.Container, Release: release.ID, Commit: release.Commit})
+		out = append(out, ConsoleError{Security: probe, StoredError: stored, AppID: appID, Generation: generation, Container: release.Container, Release: release.ID, Commit: release.Commit})
 	}
 	return out, next
-}
-
-func consoleRecord(line string) (report.Error, bool) {
-	e := report.Error{Source: "server"}
-	var data map[string]json.RawMessage
-	if json.Unmarshal([]byte(line), &data) == nil && data != nil {
-		text := func(key string) string { var s string; json.Unmarshal(data[key], &s); return s }
-		level := strings.ToUpper(text("level"))
-		var status int
-		json.Unmarshal(data["status"], &status)
-		if level != "ERROR" && level != "FATAL" && level != "PANIC" && status < 500 {
-			return e, false
-		}
-		e.Message = text("msg")
-		if e.Message == "" {
-			e.Message = text("message")
-		}
-		if detail := text("error"); detail != "" {
-			e.Message += ": " + detail
-		}
-		if status >= 500 && level != "ERROR" {
-			e.Message = "HTTP " + strconv.Itoa(status) + " " + e.Message
-		}
-		e.Stack = text("stack")
-		e.Route = text("route")
-		if e.Route == "" {
-			e.Route = strings.SplitN(text("path"), "?", 2)[0]
-		}
-		e.Method = text("method")
-		e.RequestID = text("request_id")
-		return e, e.Message != ""
-	}
-	upper := strings.ToUpper(strings.TrimSpace(line))
-	if strings.HasPrefix(upper, "PANIC:") || strings.HasPrefix(upper, "FATAL ERROR:") || strings.HasPrefix(upper, "ERROR:") || strings.Contains(upper, "LEVEL=ERROR") || strings.HasPrefix(upper, "[ERROR]") || strings.Contains(upper, " ERROR:") || strings.Contains(upper, " FATAL ERROR:") {
-		e.Message = line
-		return e, true
-	}
-	return e, false
 }

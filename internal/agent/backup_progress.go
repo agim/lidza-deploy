@@ -9,7 +9,15 @@ import (
 
 // Reports metadata only: never dump contents, connection URLs or signed S3 URLs.
 // Joining the reporter prevents late updates after a deployment has completed.
+// The stage also becomes the phase of the operation's live progress, when
+// ctx carries a tracker.
 func backupProgress(ctx context.Context, stage string, bytes func() int64) func() {
+	return backupProgressSized(ctx, stage, bytes, 0)
+}
+
+// backupProgressSized is backupProgress for a stage of a known total size.
+func backupProgressSized(ctx context.Context, stage string, bytes func() int64, total int64) func() {
+	progressFrom(ctx).Stage(stage, total, bytes)
 	return backupProgressEvery(ctx, stage, bytes, 15*time.Second)
 }
 

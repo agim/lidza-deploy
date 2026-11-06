@@ -23,10 +23,10 @@ afterEach(() => { cleanup(); toast.dismiss(); });
 describe('template primitives', () => {
   it('keeps button link semantics and disables unavailable actions', () => {
     const action = vi.fn();
-    render(<><Button disabled onClick={action}>Remove</Button><Button asChild><a href="#servers">Hosts</a></Button></>);
+    render(<><Button disabled onClick={action}>Remove</Button><Button asChild><a href="/console/servers">Hosts</a></Button></>);
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
     expect(action).not.toHaveBeenCalled();
-    expect(screen.getByRole('link', { name: 'Hosts' })).toHaveAttribute('href', '#servers');
+    expect(screen.getByRole('link', { name: 'Hosts' })).toHaveAttribute('href', '/console/servers');
   });
   it('preserves associated fields, credential types, and form values', () => {
     render(<form aria-label="Environment"><Label htmlFor="token">Token</Label><Input id="token" name="token" type="password" required defaultValue="secret" /></form>);

@@ -37,6 +37,7 @@ func (w *backupWriter) Write(p []byte) (int, error) {
 }
 func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.Config, kind ...string) (BackupRecord, error) {
 	var record BackupRecord
+	started := time.Now()
 	nativePolicy, nativeErr := m.nativeDatabaseDumpPolicy(ctx, d)
 	if nativeErr != nil {
 		return record, nativeErr
@@ -49,6 +50,9 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	if err != nil {
 		return record, err
 	}
+	if err := diskFits(dir, 0, "the database backup"); err != nil {
+		return record, err
+	}
 	file, err := os.CreateTemp(dir, ".backup-*")
 	if err != nil {
 		return record, errors.New("cannot create backup file")
@@ -57,17 +61,28 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	defer file.Close()
 	id := newID()
 	hash := sha256.New()
-	writer := &backupWriter{w: io.MultiWriter(file, hash), limit: limit}
+	writer := &backupWriter{w: io.MultiWriter(&reserveWriter{dir: dir}, file, hash), limit: limit}
 	dumpMessage := "Dumping PostgreSQL to local disk (database lock wait limited to 30 seconds)"
 	sqlite := nativePolicy != nil && nativePolicy.SQLitePath != ""
+	clickhouse := nativePolicy != nil && nativePolicy.ClickHouseDatabase != ""
 	if sqlite {
 		dumpMessage = "Creating and validating a read-only SQLite snapshot"
+	} else if clickhouse {
+		dumpMessage = "Creating a ClickHouse BACKUP of the database"
 	} else if nativePolicy != nil {
 		dumpMessage = "Dumping PostgreSQL from the existing native resource (database lock wait limited to three seconds)"
+	}
+	// Tables whose data backups skip (backup_excluded_tables.go); native,
+	// SQLite and ClickHouse backups always contain everything.
+	var excluded []string
+	if nativePolicy == nil {
+		excluded = m.backupExcludedTables(d.AppID)
 	}
 	stopDump := backupProgress(ctx, dumpMessage, writer.n.Load)
 	if sqlite {
 		err = m.dumpNativeSQLite(ctx, d, *nativePolicy, writer)
+	} else if clickhouse {
+		err = m.dumpHostClickHouse(ctx, d, *nativePolicy, writer)
 	} else if nativePolicy != nil {
 		err = m.dumpNativeDatabase(ctx, d, *nativePolicy, writer)
 	} else {
@@ -77,7 +92,7 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 			defer cancel()
 			_, _ = command(cleanup, "", nil, "docker", "rm", "-f", container)
 		}()
-		args := []string{"run", "--rm", "--name", container, "--label", "io.lidza.backup=" + d.AppID, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "512m", "--pids-limit", "128"}
+		args := []string{"run", "--rm", "--name", container, "--label", "io.lidza.backup=" + d.AppID, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "128"}
 		if d.Network != "" {
 			args = append(args, "--network", d.Network)
 		}
@@ -87,9 +102,9 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 		// Keep the complete custom archive, but avoid pg_dump's moderate gzip default.
 		// PostgreSQL 17's matching pg_restore reads Zstandard without an external tool.
 		args = append(args, databaseImage, "pg_dump", "--format=custom", "--compress=zstd:1", "--no-owner", "--no-acl", "--lock-wait-timeout=30s")
-		for _, table := range m.cfg.BackupExcludeTableData[d.AppID] {
+		for _, table := range excluded {
 			args = append(args, "--exclude-table-data="+table)
-			commandDiagnostic(ctx, "backup", "Omitting disposable table data by agent policy: "+table+" (schema retained).")
+			commandDiagnostic(ctx, "backup", "Skipping table data by the database's backup setting: "+table+" (schema retained).")
 		}
 		err = dockerStream(ctx, nil, writer, environment, args...)
 	}
@@ -98,6 +113,9 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 		if ctx.Err() != nil {
 			if sqlite {
 				return record, fmt.Errorf("SQLite snapshot interrupted: %w", ctx.Err())
+			}
+			if clickhouse {
+				return record, fmt.Errorf("ClickHouse backup interrupted: %w", ctx.Err())
 			}
 			return record, fmt.Errorf("PostgreSQL dump interrupted: %w", ctx.Err())
 		}
@@ -127,7 +145,7 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	if err != nil {
 		return record, errors.New("backup directory sync failed")
 	}
-	record = BackupRecord{ID: id, Created: time.Now().UTC(), Size: writer.n.Load(), SHA256: hex.EncodeToString(hash.Sum(nil)), ExcludedTableData: append([]string(nil), m.cfg.BackupExcludeTableData[d.AppID]...)}
+	record = BackupRecord{ID: id, Created: time.Now().UTC(), Size: writer.n.Load(), SHA256: hex.EncodeToString(hash.Sum(nil)), ExcludedTableData: excluded}
 	// Do not carry the disk-stage reporter into the upload stage.
 	stopSync()
 	commandDiagnostic(ctx, "backup", fmt.Sprintf("Local backup finalized: %.1f MiB; SHA-256 recorded.", float64(record.Size)/(1<<20)))
@@ -163,6 +181,7 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 		record.Offsite = true
 		record.ObjectKey = key
 	}
+	record.Seconds = time.Since(started).Seconds()
 	return record, nil
 }
 
@@ -199,7 +218,7 @@ func uploadBackup(ctx context.Context, cfg storage.Config, path, key string, siz
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/octet-stream")
 	client := &http.Client{Timeout: 2 * time.Hour, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	stopUpload := backupProgress(ctx, fmt.Sprintf("Uploading required S3 copy (%.1f MiB total)", float64(size)/(1<<20)), counted.n.Load)
+	stopUpload := backupProgressSized(ctx, fmt.Sprintf("Uploading required S3 copy (%.1f MiB total)", float64(size)/(1<<20)), counted.n.Load, size)
 	res, err := client.Do(req)
 	stopUpload()
 	if err != nil {
@@ -311,6 +330,7 @@ func (m *Manager) pruneBackupsLocked(id string) error {
 		m.data.Databases[id] = old
 		return err
 	}
-	// Normal off-site history uses bucket lifecycle; predeployment overwrites one key.
+	// Off-site history follows the retention policy (backup_retention.go);
+	// predeployment overwrites one key.
 	return pruneErr
 }

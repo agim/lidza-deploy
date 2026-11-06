@@ -3,14 +3,14 @@ const assert=require('node:assert/strict');
 const base=process.env.TEST_WEB_URL||'http://127.0.0.1:8879';
 (async()=>{const browser=await chromium.launch({executablePath:'/usr/bin/chromium',args:['--no-sandbox']});try{
 const page=await browser.newPage({viewport:{width:390,height:844}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-await page.goto(base+'/console.html?demo=1#applications');await page.locator('.app-card').first().waitFor();
+await page.goto(base+'/console/applications?demo=1');await page.locator('.app-card').first().waitFor();
 assert.equal(await page.locator('.app-card').first().locator('.app-primary-actions>button').count(),3);
 assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth),0);
 await page.locator('.app-more summary').first().click();await page.evaluate(()=>window.scrollTo(0,500));
 await page.evaluate(()=>refresh({background:true}));assert.equal(await page.locator('.app-more').first().evaluate(e=>e.open),true);
 await page.evaluate(()=>{window.stableNode=document.querySelector('.app-card');window.savedY=scrollY});
 await page.evaluate(()=>refresh({background:true}));assert(await page.evaluate(()=>stableNode===document.querySelector('.app-card')),'Unchanged poll replaces DOM');assert(await page.evaluate(()=>savedY===scrollY),'Page scroll reset');
-await page.goto(base+'/console.html?demo=1#deployments');await page.locator('[data-history]').first().waitFor();
+await page.goto(base+'/console/deployments?demo=1');await page.locator('[data-history]').first().waitFor();
 assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth),0);
 assert(await page.locator('[data-history]').first().isVisible(),'Mobile logs inaccessible');
 await page.screenshot({path:'.local/security-layout/deployments-mobile.png',fullPage:true});

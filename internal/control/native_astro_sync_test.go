@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/agim/lidza-deploy/internal/agent"
@@ -65,8 +66,14 @@ func TestNativeProcessAdapterShowsDisabledStateWithoutContainerOrActionCalls(t *
 	calls := 0
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.Method != "GET" || r.URL.Path != "/v1/native/apps/"+a.ID {
+		if r.Method != "GET" || r.URL.Path != "/v1/native/apps/"+a.ID && r.URL.Path != "/v1/native/apps/"+a.ID+"/processes" {
 			t.Error("native process view called container or mutation API", r.Method, r.URL.Path)
+		}
+		if strings.HasSuffix(r.URL.Path, "/processes") {
+			// Usage reads are read-only too; an agent without them still
+			// reports the services' states.
+			http.NotFound(w, r)
+			return
 		}
 		json.NewEncoder(w).Encode(agent.NativeStatus{Application: a, Services: []agent.NativeService{{Unit: a.Services[0], Active: "inactive", State: "dead", UnitFileState: "disabled"}}})
 	}))
@@ -79,7 +86,7 @@ func TestNativeProcessAdapterShowsDisabledStateWithoutContainerOrActionCalls(t *
 	c.applicationProcesses(w, r)
 	var out ApplicationProcessInventory
 	json.Unmarshal(w.Body.Bytes(), &out)
-	if w.Code != 200 || calls != 1 || len(out.Processes) != 1 || out.Processes[0].Startup != "disabled" || out.Processes[0].State != "inactive" {
+	if w.Code != 200 || calls != 2 || len(out.Processes) != 1 || out.Processes[0].Startup != "disabled" || out.Processes[0].State != "inactive" {
 		t.Fatal("native process metadata contract", w.Code, w.Body.String())
 	}
 }

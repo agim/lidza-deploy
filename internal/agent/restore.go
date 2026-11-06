@@ -50,6 +50,9 @@ func (m *Manager) restoreDatabase(appID string, in RestoreRequest) error {
 	if m.data.NativeDatabases[in.Source].Policy.SQLitePath != "" {
 		return errors.New("SQLite snapshots can be downloaded for an isolated restore")
 	}
+	if m.data.NativeDatabases[in.Source].Policy.ClickHouseDatabase != "" {
+		return errors.New("ClickHouse backups are restored into the application's own ClickHouse database")
+	}
 	var record BackupRecord
 	for _, b := range source.Backups {
 		if b.ID == in.Backup {
@@ -85,6 +88,8 @@ func (m *Manager) restoreDatabase(appID string, in RestoreRequest) error {
 		defer m.wg.Done()
 		ctx, cancel := context.WithTimeout(m.ctx, 2*time.Hour)
 		defer cancel()
+		ctx, endProgress := m.trackDatabase(ctx, in.Target, "Waiting for an available database operation slot")
+		defer endProgress()
 		select {
 		case m.databaseSlots <- struct{}{}:
 			defer func() { <-m.databaseSlots }()
@@ -103,19 +108,27 @@ func (m *Manager) restoreInto(ctx context.Context, source string, record BackupR
 		return errors.New("local backup unavailable")
 	}
 	defer f.Close()
+	progress := progressFrom(ctx)
 	hash := sha256.New()
-	n, err := io.Copy(hash, f)
+	verified := &progressReader{r: f}
+	progress.Stage("Verifying the backup's SHA-256", record.Size, verified.n.Load)
+	n, err := io.Copy(hash, verified)
 	if err != nil || n != record.Size || hex.EncodeToString(hash.Sum(nil)) != record.SHA256 {
 		return errors.New("backup integrity check failed")
 	}
 	if _, err = f.Seek(0, 0); err != nil {
 		return err
 	}
+	progress.Stage("Provisioning the new database", 0, nil)
 	if err = m.provisionDatabase(ctx, target); err != nil {
 		return err
 	}
+	restored := &progressReader{r: f}
+	progress.Stage("Restoring into the new database", record.Size, restored.n.Load)
 	env, flags := postgresEnvironment(target.URL)
-	args := []string{"run", "--rm", "--name", "lidza-restore-" + target.AppID, "--network", target.Network, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "512m", "--pids-limit", "128", "-i"}
+	// One transaction with session tuning (pg_restore_staging.go).
+	env, flags = append(env, "PGOPTIONS="+pgRestoreOptions), append(flags, "--env", "PGOPTIONS")
+	args := []string{"run", "--rm", "--name", "lidza-restore-" + target.AppID, "--network", target.Network, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "128", "-i"}
 	args = append(args, flags...)
 	args = append(args, databaseImage, "pg_restore", "--dbname=app", "--no-owner", "--no-acl", "--exit-on-error", "--single-transaction")
 	defer func() {
@@ -123,9 +136,10 @@ func (m *Manager) restoreInto(ctx context.Context, source string, record BackupR
 		defer cancel()
 		_, _ = command(cleanup, "", nil, "docker", "rm", "-f", "lidza-restore-"+target.AppID)
 	}()
-	if err = dockerStream(ctx, f, io.Discard, env, args...); err != nil {
+	if err = dockerStream(ctx, restored, io.Discard, env, args...); err != nil {
 		return errors.New("restore failed; original database remains attached")
 	}
+	progress.Stage("Finishing the new database", 0, nil)
 	return m.provisionDatabase(ctx, target)
 }
 func (m *Manager) finishRestore(appID string, in RestoreRequest, err error) {

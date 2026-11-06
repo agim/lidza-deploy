@@ -19,7 +19,33 @@ export interface ServerHealth {
   swap_provisioning?: { state?: string; message?: string };
   disks?: Array<{ path: string; total?: number; available?: number; used_percent?: number }>;
   database_bytes?: Record<string, number>;
+  /** Databases no application uses any more, with their last backup; one that still answers is also in database_bytes. */
+  retained_databases?: Record<string, { backup_bytes?: number; backup_created?: string }>;
   errors?: string[];
+  /** Host conditions to tidy up that do not stop deployments (for example stale Bundler versions). */
+  warnings?: string[];
+  /** Host conditions the agent already handles; nothing is required of the operator. */
+  notes?: string[];
+  /** A disk is at least 85% full or inside its free-space reserve: new backups, builds and move transfers are refused. */
+  disk_low?: boolean;
+  /** Disk space of each managed ClickHouse's system log tables, by application ("host" for the host server). */
+  clickhouse_system_logs?: Record<string, number>;
+  ingress?: HostIngressStatus;
+  /** Present only when Docker is installed on the server. */
+  docker?: { version?: string; containers: number; running: number };
+  /** Native applications and systemd; present whenever the server has systemd. */
+  native?: NativeHostHealth;
+}
+
+export interface NativeHostHealth {
+  applications: number;
+  units: number;
+  active: number;
+  inactive: number;
+  failed_units: string[];
+  failed_host_units: string[];
+  journal_bytes?: number;
+  releases: Array<{ app_id: string; path: string; bytes: number; releases: number; measured: string }>;
 }
 
 export interface ServerHealthResponse {
@@ -36,7 +62,7 @@ export interface DomainStatus {
 }
 
 export interface Application {
- management_capabilities?: {deploy?:boolean;rollback?:boolean;configure?:boolean;environment?:boolean};
+ management_capabilities?: {deploy?:boolean;rollback?:boolean;configure?:boolean;environment?:boolean;remove?:boolean};
   native?: { id: string; name: string; services: string[]; runtime?: string; document_root?:string };
   observed?: { name: string; source: string; processes: string[]; observed_at: string; automatic?: boolean; missing?: boolean };
   runtime?: "go" | "rails" | "astro";
@@ -63,6 +89,8 @@ export interface Application {
   agent_error?: string;
   maintenance?: { enabled?: boolean };
   previews?: { enabled?: boolean; database?: boolean; base_domain?: string };
+  /** The application's active move; locked during its final sync, when changes are refused until it finishes or is aborted. */
+  move?: { id: string; state: string; source_server: string; target_server: string; locked?: boolean; phase?: string; step?: string; error?: string; retry?: string };
 }
 
 export interface Deployment {
@@ -74,6 +102,13 @@ export interface Deployment {
   commit?: string;
   commit_message?: string;
   created: string;
+  /** When the build started running; absent while queued. */
+  started?: string;
+  /** When the deployment last produced output. */
+  updated?: string;
+  /** Live phase while the deployment waits (for another build on the server, or for memory). */
+  progress?: { phase: string; done_bytes: number; total_bytes?: number; started_at?: string; updated_at?: string };
+  finished?: string;
   duration_seconds?: number;
   error?: string;
   log?: string;
@@ -147,6 +182,10 @@ export interface ContainerInfo {
   memory_bytes?: number;
   memory_limit_bytes?: number;
   restart_count?: number;
+  /** "native" for systemd units of native applications. */
+  runtime?: string;
+  unit?: string;
+  since?: string;
   [key: string]: unknown;
 }
 
@@ -167,12 +206,14 @@ export interface WorkspaceData {
 export type PageKey =
   | 'applications' | 'deployments' | 'errors' | 'security' | 'servers'
   | 'databases' | 'remote-backups' | 'integrations' | 'defaults' | 'updates'
-  | 'team' | 'audit' | 'help' | 'new-application' | 'detail';
+  | 'team' | 'audit' | 'help' | 'new-application' | 'detail' | 'not-found';
 
 export interface Route {
   page: PageKey;
   detail?: string;
   id?: string;
+  /** Selected tab of a tabbed detail view (application settings). */
+  tab?: string;
 }
 
 export interface ForwardedPort {
@@ -216,6 +257,7 @@ export interface RepositoryDetection {
   processes?: DetectedProcess[];
   needs_postgres: boolean;
   needs_redis: boolean;
+  needs_clickhouse?: boolean;
   pins?: Record<string, string>;
   health_path?: string;
   static_output?: string;
@@ -227,6 +269,26 @@ export interface RepositoryDetection {
   stack_manifest_missing?: boolean;
   candidates?: string[];
   reasons: string[];
+  /** Estimated memory of the build's largest step. */
+  build_memory?: BuildMemoryEstimate;
+}
+
+/** The memory a build is expected to need, with the reasons. */
+export interface BuildMemoryEstimate {
+  mib: number;
+  basis: string[];
+  /** Measured on earlier builds rather than estimated from the stack. */
+  learned?: boolean;
+}
+
+/** A build estimate compared with a server's memory. */
+export interface BuildMemoryAssessment {
+  estimate: BuildMemoryEstimate;
+  total_mib?: number;
+  available_mib?: number;
+  reserve_mib?: number;
+  level: 'ok' | 'warning' | 'blocker';
+  message?: string;
 }
 
 export interface NativeCreateRequest {
@@ -240,7 +302,7 @@ export interface NativeCreateRequest {
   additional_domains?: string[];
   health_path?: string;
   processes?: DetectedProcess[];
-  data: { postgres?: boolean; redis?: boolean; external_database_url?: string; backup_hours?: number; offsite?: boolean };
+  data: { postgres?: boolean; redis?: boolean; clickhouse?: boolean; external_database_url?: string; backup_hours?: number; offsite?: boolean };
   env?: Record<string, string>;
   env_kinds?: Record<string, string>;
   auto_deploy?: boolean;
@@ -251,18 +313,19 @@ export interface NativeCreateRequest {
 
 // Host management (agent host_updates.go / host_firewall.go).
 export interface HostRebootWindow { weekdays?: number[]; hour: number; duration_minutes: number }
-export interface HostUpdatesPolicy { auto_security: boolean; auto_reboot: boolean; reboot_window: HostRebootWindow; manage_package_sources: boolean }
-export interface HostPackageUpgrade { name: string; current?: string; candidate: string; security: boolean }
+export interface HostUpdatesPolicy { auto_security: boolean; auto_reboot: boolean; reboot_window: HostRebootWindow; manage_package_sources: boolean; disruptive_in_window?: boolean }
+export interface HostPackageUpgrade { name: string; current?: string; candidate: string; security: boolean; disruptive?: boolean; effect?: string }
+export interface HostDockerStatus { installed: boolean; running: boolean; version?: string; live_restore: boolean; live_restore_configured: boolean; managed: boolean; restart_pending?: boolean; warning?: string }
 export interface HostComponent { name: string; package?: string; installed?: string; candidate?: string; upgrade_available: boolean; source: 'package' | 'binary' | 'absent'; repository?: string; automatic: 'security' | 'all' | 'none' }
 export interface HostJob { id: string; kind: string; trigger: string; status: 'running' | 'succeeded' | 'failed'; started: string; finished?: string; summary?: string; output?: string }
 export interface HostUpdatesStatus {
   supported: boolean; reason?: string; checked_at?: string;
-  pending: number; security: number; packages?: HostPackageUpgrade[];
+  pending: number; security: number; disruptive?: number; packages?: HostPackageUpgrade[]; disruptive_packages?: HostPackageUpgrade[];
   reboot_required: boolean; reboot_packages?: string[]; reboot_reason?: string;
   unattended_installed: boolean; unattended_enabled: boolean; unattended_last_run?: string;
-  managed_origins?: string[]; components?: HostComponent[];
+  managed_origins?: string[]; components?: HostComponent[]; docker?: HostDockerStatus;
   policy: HostUpdatesPolicy; configured: boolean;
-  next_reboot_window?: string; last_reboot?: string; reboot_deferred?: string;
+  next_reboot_window?: string; next_disruptive_window?: string; last_reboot?: string; reboot_deferred?: string;
   running?: string; jobs?: HostJob[]; error?: string;
 }
 export interface HostFirewallRule { port: string; proto: 'tcp' | 'udp' | 'any'; from?: string[]; comment?: string; source: string; enforced?: 'ufw' | 'docker' }
@@ -273,4 +336,12 @@ export interface HostFirewallView {
   pending_deadline?: string; pending_seconds?: number; applying?: boolean;
   last_applied?: string; last_error?: string; notes?: string[];
 }
+export interface HostIngressCaddy { admin: string; server?: string }
+export interface HostIngressStatus {
+  mode: 'agent' | 'caddy'; source: 'config' | 'setting' | 'detected'; caddy_admin?: string; caddy_server?: string;
+  admin_api: boolean; web_ports?: number[]; detail?: string; checked: string; detected?: 'agent' | 'caddy';
+  override?: HostIngressCaddy; configured: boolean; error_pages?: HostErrorPages;
+}
+export interface HostErrorPageRoot { server: string; root: string; exists: boolean; hosts: string[] }
+export interface HostErrorPages { dir: string; ready: boolean; problem?: string; caddy_user?: string; managed: number; unmanaged?: HostErrorPageRoot[]; unmanaged_hosts: number; detail?: string }
 export interface HostFirewallPlan { changes: { action: string; command: string }[]; unmanaged?: string[]; kept?: string[]; warnings?: string[]; fingerprint: string; confirm_seconds: number }

@@ -53,3 +53,41 @@ func TestUIUpgradeInvalidatesWarmAssetValidators(t *testing.T) {
 		}
 	}
 }
+
+func TestConsoleViewsServeConsolePage(t *testing.T) {
+	h := Handler()
+	page := httptest.NewRecorder()
+	h.ServeHTTP(page, httptest.NewRequest("GET", "/console.html", nil))
+	if page.Code != 200 || !strings.Contains(page.Body.String(), `<div id="root">`) {
+		t.Fatal("console page", page.Code)
+	}
+	for _, path := range []string{"/console", "/console/", "/console/applications", "/console/applications/acme-analytics/settings/environment", "/console/applications/a%2Fb/logs", "/console/deployments/build-one", "/console/servers/local/console", "/console/new-application?step=repository&server=local", "/console/unknown/deep/link"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 200 || w.Body.String() != page.Body.String() {
+			t.Fatalf("%s: status=%d, want the console page", path, w.Code)
+		}
+		for _, header := range []string{"Cache-Control", "Content-Type", "ETag", "X-Lidza-Deploy-Version", "Content-Security-Policy"} {
+			if w.Header().Get(header) != page.Header().Get(header) {
+				t.Fatalf("%s: %s=%q, console.html has %q", path, header, w.Header().Get(header), page.Header().Get(header))
+			}
+		}
+		head := httptest.NewRecorder()
+		h.ServeHTTP(head, httptest.NewRequest("HEAD", path, nil))
+		if head.Code != 200 || head.Body.Len() != 0 {
+			t.Fatalf("HEAD %s: status=%d", path, head.Code)
+		}
+	}
+	for _, path := range []string{"/consoles", "/console-old", "/assets/console/missing.js", "/missing.html"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code == 200 && w.Body.String() == page.Body.String() {
+			t.Fatalf("%s served the console page", path)
+		}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != ConsoleHome {
+		t.Fatal("root does not open the console", w.Code, w.Header().Get("Location"))
+	}
+}

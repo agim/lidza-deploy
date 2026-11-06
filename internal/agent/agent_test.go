@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/agim/lidza-deploy/internal/buildmem"
 	"github.com/agim/lidza/pkg/credentials"
 	"io"
 	"net/http"
@@ -60,6 +61,10 @@ func testManager(t *testing.T, f Runtime) *Manager {
 		t.Fatal(err)
 	}
 	t.Cleanup(m.Close)
+	// Builds see a fixed, roomy host, so tests never wait for the
+	// memory of the machine they run on.
+	m.build.memory = func() buildmem.Host { return buildmem.Host{TotalMiB: 16384, AvailableMiB: 12288} }
+	m.build.cpus = func() int { return 4 }
 	return m
 }
 func testApp(id string) App {

@@ -6,7 +6,7 @@ for(const width of [390,1440]){
  await page.route('**/api/control/**',async route=>{const r=route.request(),p=new URL(r.url()).pathname;let json=[];
  if(p.endsWith('/status'))json={roles:['admin']};else if(p.endsWith('/servers'))json=[{id:'local',name:'Hosting server'}];else if(p.endsWith('/apps'))json=[app];else if(p.endsWith('/deployments'))json={deployments:[]};else if(p.endsWith('/state')){calls.push(r.postDataJSON());app.stopped=r.postDataJSON().stopped;json={status:'accepted'}}
  await route.fulfill({json});});
- await page.goto((process.env.TEST_WEB_URL||'http://127.0.0.1:8880')+'/console.html#applications');await page.locator('[data-app-menu] summary').click();
+ await page.goto((process.env.TEST_WEB_URL||'http://127.0.0.1:8880')+'/console/applications');await page.locator('[data-app-menu] summary').click();
  await page.locator('[data-app-state]').click();await page.locator('#confirm-app-state').waitFor();assert.match(await page.locator('#feature-dialog').textContent(),/database, backups, files/);assert.equal(calls.length,0,'stopped without confirmation');
  await page.locator('#confirm-app-state').click();await page.waitForFunction(()=>document.querySelector('[data-app-state]')?.textContent==='Start application');
  assert.equal(await page.locator('[data-action=deploy]').isDisabled(),true);assert.equal(await page.locator('[data-action=reload]').isDisabled(),true);assert.match(await page.locator('.card-head .pill').textContent(),/stopped/);

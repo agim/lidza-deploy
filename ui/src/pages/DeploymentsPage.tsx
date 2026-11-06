@@ -1,4 +1,5 @@
 import { usePreference } from '../state/PreferencesContext';
+import { detailHref, navigate } from '../lib/router';
 import { FileClock, PackageOpen } from 'lucide-react';
 import { useMemo } from 'react';
 import { formatDate } from '../lib/format';
@@ -16,7 +17,7 @@ export function DeploymentsPage() {
     { id: 'status', label: 'Status', render: row => <StatusBadge status={row.status} /> },
     { id: 'commit', label: 'Commit', render: row => <code>{row.commit?.slice(0, 8) || 'pending'}</code> },
     { id: 'started', label: 'Started', render: row => formatDate(row.created) },
-    { id: 'result', label: 'Result', render: row => <div className="row-result"><span>{Math.round(row.duration_seconds || 0)}s · {row.error || row.commit_message || 'Completed'}</span><Button size="sm" onClick={() => { location.hash = `page/build-logs/${encodeURIComponent(row.id)}`; }}><FileClock size={15} />View logs</Button></div> },
+    { id: 'result', label: 'Result', render: row => <div className="row-result"><span>{Math.round(row.duration_seconds || 0)}s · {row.error || row.commit_message || 'Completed'}</span><Button size="sm" onClick={() => { navigate(detailHref('build-logs', row.id)); }}><FileClock size={15} />View logs</Button></div> },
   ];
   return <><PageHeader eyebrow="Release history" title="Deployments" description="Every release, from queued to live, without live updates moving the table." /><Card><Toolbar><h2>Release history</h2><Field label="Application" className="toolbar-filter"><select value={appID} onChange={event => setAppID(event.target.value)}><option value="all">All applications</option>{apps.map(app => <option key={app.id}>{app.id}</option>)}</select></Field></Toolbar><ResourceList rows={visible} columns={columns} rowKey={row => row.id} empty={<EmptyState icon={<PackageOpen />} title="No deployments yet" description="A deployment appears here as soon as it is queued." />} /></Card></>;
 }

@@ -7,7 +7,7 @@ const ignored=['data-1p-ignore','data-lpignore','data-bwignore','data-form-type'
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_BIN||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
  try{
   const page=await browser.newPage();
-  await page.goto(base+'/console.html?demo=1');
+  await page.goto(base+'/console/applications?demo=1');
   await page.waitForSelector('.app-card');
   const unsafe=await page.locator('form').evaluateAll((forms,attributes)=>forms.flatMap(form=>{
    const missing=attributes.filter(attribute=>!form.hasAttribute(attribute));

@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"time"
 )
 
 var maintenanceTemplate = template.Must(template.New("maintenance").Parse(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Maintenance · Līdza</title><style>body{background:#171214;color:#eee7e3;font:18px system-ui;margin:0;min-height:100vh;display:grid;place-items:center}main{max-width:38rem;padding:3rem}small{color:oklch(76% 0.1 345)}h1{font-size:2rem}</style><main><small>LĪDZA</small><h1>We’ll be back soon</h1><p>{{.}}</p></main></html>`))
@@ -12,6 +13,8 @@ var maintenanceTemplate = template.Must(template.New("maintenance").Parse(`<!doc
 type Maintenance struct {
 	Enabled bool   `json:"enabled"`
 	Message string `json:"message"`
+	// Since is when maintenance was turned on; the agent sets it.
+	Since time.Time `json:"since,omitzero"`
 }
 
 func (m *Manager) setMaintenance(id string, in Maintenance) error {
@@ -25,6 +28,13 @@ func (m *Manager) setMaintenance(id string, in Maintenance) error {
 		return errors.New("application unavailable")
 	}
 	old := a
+	in.Since = time.Time{}
+	if in.Enabled {
+		in.Since = time.Now().UTC()
+		if old.Maintenance.Enabled && !old.Maintenance.Since.IsZero() {
+			in.Since = old.Maintenance.Since
+		}
+	}
 	a.Maintenance = in
 	m.data.Apps[id] = a
 	if err := m.save(); err != nil {

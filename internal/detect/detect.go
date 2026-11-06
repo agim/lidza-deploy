@@ -16,6 +16,8 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/agim/lidza-deploy/internal/buildmem"
 )
 
 // Deployment modes.
@@ -84,15 +86,18 @@ type Result struct {
 	SourceDirectory  string `json:"source_directory,omitempty"`
 	// Processes are the long-running processes; exactly one is the web
 	// process. Static sites have none.
-	Processes     []Process         `json:"processes,omitempty"`
-	NeedsPostgres bool              `json:"needs_postgres"`
-	NeedsRedis    bool              `json:"needs_redis"`
-	Pins          map[string]string `json:"pins,omitempty"`
-	HealthPath    string            `json:"health_path,omitempty"`
-	StaticOutput  string            `json:"static_output,omitempty"`
-	Dockerfile    bool              `json:"dockerfile,omitempty"`
-	ComposeFile   string            `json:"compose_file,omitempty"`
-	Services      []ComposeService  `json:"services,omitempty"`
+	Processes     []Process `json:"processes,omitempty"`
+	NeedsPostgres bool      `json:"needs_postgres"`
+	NeedsRedis    bool      `json:"needs_redis"`
+	// NeedsClickHouse reports that the application uses ClickHouse: the
+	// host provides a ClickHouse database for it.
+	NeedsClickHouse bool              `json:"needs_clickhouse"`
+	Pins            map[string]string `json:"pins,omitempty"`
+	HealthPath      string            `json:"health_path,omitempty"`
+	StaticOutput    string            `json:"static_output,omitempty"`
+	Dockerfile      bool              `json:"dockerfile,omitempty"`
+	ComposeFile     string            `json:"compose_file,omitempty"`
+	Services        []ComposeService  `json:"services,omitempty"`
 	// StackManifest is the container stack definition the agent deploys
 	// (deploy/lidza.stack.json); StackServices are its service names.
 	StackManifest string   `json:"stack_manifest,omitempty"`
@@ -106,16 +111,27 @@ type Result struct {
 	Candidates []string `json:"candidates,omitempty"`
 	// Reasons explain each decision in plain language.
 	Reasons []string `json:"reasons"`
+	// BuildMemory estimates the memory the build needs at its largest
+	// step, so a server can be checked before the first build.
+	BuildMemory *buildmem.Estimate `json:"build_memory,omitempty"`
 }
 
 // Detect inspects the repository and proposes a deployment.
 func Detect(src Source) (Result, error) {
 	s := &scanner{src: src, lists: map[string][]string{}}
 	result, err := s.detectAt("")
-	if err != nil || result.Detected {
-		return result, err
+	if err == nil && !result.Detected {
+		result, err = s.detectMonorepo(result)
 	}
-	return s.detectMonorepo(result)
+	return s.withBuildMemory(result, err)
+}
+
+func (s *scanner) withBuildMemory(r Result, err error) (Result, error) {
+	if err != nil {
+		return r, err
+	}
+	r.BuildMemory, err = s.estimateBuildMemory(r)
+	return r, err
 }
 
 // DetectDirectory inspects one directory of the repository, for example a
@@ -130,14 +146,14 @@ func DetectDirectory(src Source, dir string) (Result, error) {
 	if err == nil && !r.Detected {
 		r.Reasons = append(r.Reasons, fmt.Sprintf("No supported application was found in %s/; choose the runtime and commands manually", dir))
 	}
-	return r, err
+	return s.withBuildMemory(r, err)
 }
 
 // app is a recognised buildable application in one directory.
 type app struct {
 	runtime, framework, version string
 	processes                   []Process
-	postgres, redis             bool
+	postgres, redis, clickhouse bool
 	pins                        map[string]string
 	health, static              string
 	reasons                     []string
@@ -280,7 +296,7 @@ func (s *scanner) detectAt(dir string) (Result, error) {
 	if found != nil {
 		r.Detected = true
 		r.Runtime, r.Framework, r.FrameworkVersion = found.runtime, found.framework, found.version
-		r.Processes, r.NeedsPostgres, r.NeedsRedis = found.processes, found.postgres, found.redis
+		r.Processes, r.NeedsPostgres, r.NeedsRedis, r.NeedsClickHouse = found.processes, found.postgres, found.redis, found.clickhouse
 		r.Pins, r.HealthPath, r.StaticOutput = found.pins, found.health, found.static
 		r.Reasons = append(r.Reasons, found.reasons...)
 	}
@@ -316,7 +332,9 @@ func (s *scanner) detectAt(dir string) (Result, error) {
 				if service.Role != "data" {
 					continue
 				}
-				if isRedisImage(service.Image) {
+				if isClickHouseImage(service.Image) {
+					r.NeedsClickHouse = true
+				} else if isRedisImage(service.Image) {
 					r.NeedsRedis = true
 				} else {
 					r.NeedsPostgres = true

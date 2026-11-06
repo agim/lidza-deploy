@@ -19,7 +19,7 @@ func (c Config) validateNativeIngressTargets() error {
 	if len(c.NativeIngressTargets) == 0 {
 		return nil
 	}
-	if !c.IngressOnly || c.NativeOnly || c.Native != nil {
+	if !c.IngressOnly || c.Native != nil {
 		return errors.New("native ingress targets require a separate read-only ingress role")
 	}
 	if len(c.NativeIngressTargets) > 100 {

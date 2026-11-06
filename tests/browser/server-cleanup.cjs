@@ -7,7 +7,7 @@ const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
  try { for (const width of [320,390,768,1440,2560]) {
   const page = await browser.newPage({ viewport: { width, height: 900 } }), errors=[];
   page.on('pageerror', e=>errors.push(e.message));const state=await mockConsole(page);
-  await page.goto(`${base}/console.html#servers`);
+  await page.goto(`${base}/console/servers`);
   await page.getByRole('button',{name:'More actions'}).click();
   await page.getByRole('menuitem',{name:'Disk cleanup & retention'}).click();
   await page.getByRole('heading',{name:'Automatic cleanup',exact:true}).waitFor();

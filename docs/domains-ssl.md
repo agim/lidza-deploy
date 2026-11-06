@@ -9,3 +9,11 @@ Once all addresses are verified, the agent initiates an HTTPS connection to loca
 Caddy's issuance authorization also verifies DNS afresh, so stale DNS status cannot authorize a new certificate. Removed and previous domains lose authorization. The worker resumes after agent restarts and continuously rechecks deployed apps. `tls_listen` in the agent config defaults to `127.0.0.1:443`; set it to the local TLS listener if you use a custom port. An explicit empty value disables this worker for an isolated development agent without Caddy.
 
 Existing installations need the updated agent and the installer's updated Caddy configuration. Run the installer upgrade using the original required GUI `--fqdn` and any agent hostname options. If you maintain Caddy manually, add the HTTP verification route shown in `scripts/install-agent.sh` and reload Caddy. There is no need to change DNS for an already correct domain.
+
+## Error and maintenance pages behind an existing Caddy
+
+When the host's web ports belong to an existing Caddy configured through its admin API (see **Servers → Web ingress**), the agent keeps neutral, self-contained pages in `/etc/lidza/pages`: `error.html` ("This site is temporarily unavailable…") and `maintenance.html` ("Down for maintenance…"). They have no external assets, follow the visitor's light or dark preference, and are written idempotently at startup and whenever an application is published. The directory is root-owned with mode 0755 and the pages 0644, so Caddy can read them under its own account while only root can change them.
+
+Each created application published to that Caddy also gets an error route for its hostnames (`@id` `lidza-errors-<app>`): a 503 is answered with `maintenance.html`, any other error with `<status>.html` when present, else `error.html`. Created applications whose processes do not answer get the same error page from the agent proxy.
+
+If existing error routes serve pages from another directory (for example one that no longer exists), **Web ingress** reports how many hostnames are affected and offers **Use Līdza error pages**. It rewrites only those error-page roots to `/etc/lidza/pages`, loads the modified configuration through the admin API (`POST /load`) and verifies the result.

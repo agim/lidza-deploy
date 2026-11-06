@@ -174,7 +174,7 @@ func TestNativeDatabasePolicySourceAndSchedulerPreserveInactiveApps(t *testing.T
 }
 
 func TestNativeDatabaseRejectsUnreviewedSourcesRolesAndAdoption(t *testing.T) {
-	for _, scenario := range []string{"no-policy", "wrong-host", "wrong-port", "config-drift", "shell-expression", "invalid-role", "duplicate-role", "bad-client", "native-observer", "ingress-role"} {
+	for _, scenario := range []string{"no-policy", "wrong-host", "wrong-port", "config-drift", "shell-expression", "invalid-role", "duplicate-role", "bad-client", "ingress-role"} {
 		t.Run(scenario, func(t *testing.T) {
 			m, _, p, app := nativeDatabaseFixture(t, "postgresql://fixture:fixture-password@127.0.0.1:15435/native_fixture")
 			switch scenario {
@@ -194,8 +194,6 @@ func TestNativeDatabaseRejectsUnreviewedSourcesRolesAndAdoption(t *testing.T) {
 				p.Roles = []string{"primary", "primary"}
 			case "bad-client":
 				p.PostgresMajor = 15
-			case "native-observer":
-				m.cfg.NativeOnly = true
 			case "ingress-role":
 				m.cfg.IngressOnly = true
 			}

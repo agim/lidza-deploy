@@ -41,7 +41,7 @@ func uploadMultipartBackup(ctx context.Context, cfg storage.Config, path, key st
 	}
 	defer file.Close()
 	counted := &backupUploadReader{ReadCloser: file}
-	stopUpload := backupProgress(ctx, fmt.Sprintf("Uploading required multipart S3 copy (%.1f MiB total)", float64(size)/(1<<20)), counted.n.Load)
+	stopUpload := backupProgressSized(ctx, fmt.Sprintf("Uploading required multipart S3 copy (%.1f MiB total)", float64(size)/(1<<20)), counted.n.Load, size)
 	_, err = store.PutMultipart(ctx, key, counted, size, storage.PutOptions{ContentType: "application/octet-stream"})
 	stopUpload()
 	if err != nil {

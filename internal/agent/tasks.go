@@ -306,7 +306,7 @@ func (m *Manager) startTaskContainer(ctx context.Context, a App, t Task, old str
 	if err = os.WriteFile(envfile, []byte(env.String()), 0600); err != nil {
 		return "", "", err
 	}
-	args := []string{"create", "--name", name, "--label", "io.lidza.task=" + a.ID, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", a.runtimeUser(), "--memory", "512m", "--cpus", "1", "--pids-limit", "256", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", envfile, "--entrypoint", t.Command[0]}
+	args := []string{"create", "--name", name, "--label", "io.lidza.task=" + a.ID, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", a.runtimeUser(), "--pids-limit", "256", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", envfile, "--entrypoint", t.Command[0]}
 	args = append(args, runtimeArgs(a)...)
 	if t.Mode == "worker" {
 		args = append(args, "--restart", "unless-stopped")

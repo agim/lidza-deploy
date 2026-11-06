@@ -66,7 +66,8 @@ func buildStackImage(ctx context.Context, source, service string, args []string)
 			}
 		}
 	})
-	_, err := command(ctx, source, nil, "docker", args...)
+	args, env := dockerBuildInvocation(ctx, args)
+	_, err := command(ctx, source, env, "docker", args...)
 	if mismatch {
 		return fmt.Errorf("stack service %s Dockerfile base image architecture does not match the Docker host; use a native or multi-architecture FROM digest", service)
 	}

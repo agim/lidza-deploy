@@ -1,9 +1,11 @@
 package control
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/agim/lidza"
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/buildmem"
 	"github.com/agim/lidza-deploy/internal/detect"
 	"github.com/agim/lidza/packs/audit"
 	"github.com/agim/lidza/packs/auth"
@@ -24,16 +27,18 @@ import (
 // A move is a job in control state with one record per step. The source
 // application stays the live record (c.data.Apps) and keeps serving until
 // the operator finishes the move; the job holds the destination side under
-// the same application id. DNS is switched by hand: the move pauses at
-// cutover with the records to set and continues once every hostname resolves
-// to the destination. Every step is idempotent, so a failed or interrupted
-// step (including a control panel restart) is retried from its start.
+// the same application id. Databases move as dumps and persistent files as
+// verified archives (move_files.go). DNS is switched by hand: the move pauses
+// at cutover with the records to set and continues once every hostname
+// resolves to the destination. Every step is idempotent, so a failed or
+// interrupted step (including a control panel restart) is retried from its
+// start.
 //
 //   POST /api/control/apps/{id}/move          start {target_server, runtime_override?}
 //   GET  /api/control/apps/{id}/move-plan     review before starting
 //   GET  /api/control/apps/{id}/move          the application's latest move
 //   GET  /api/control/moves/{id}              one move
-//   POST /api/control/moves/{id}/{action}     continue, recheck-dns, final-sync, finish, abort
+//   POST /api/control/moves/{id}/{action}     continue, recheck-dns, final-sync, finish, abort, remove-retained
 
 const (
 	moveStatePlanned   = "planned"
@@ -51,6 +56,7 @@ const (
 	moveStepPrepare     = "prepare"
 	moveStepEnvironment = "environment"
 	moveStepData        = "data"
+	moveStepFiles       = "files"
 	moveStepDeploy      = "deploy"
 	moveStepCutover     = "cutover"
 	moveStepFinalSync   = "final_sync"
@@ -68,9 +74,10 @@ var moveStepTitles = []struct{ key, title string }{
 	{moveStepPrepare, "Prepare destination"},
 	{moveStepEnvironment, "Copy environment"},
 	{moveStepData, "Copy data"},
+	{moveStepFiles, "Copy files"},
 	{moveStepDeploy, "Deploy on destination"},
 	{moveStepCutover, "Switch DNS"},
-	{moveStepFinalSync, "Final data sync (optional)"},
+	{moveStepFinalSync, "Final sync (application locked)"},
 	{moveStepFinish, "Finish"},
 }
 
@@ -92,6 +99,8 @@ type MoveJob struct {
 	NativeSpec    *agent.NativeCreateRequest `json:"native_spec,omitempty"`
 	ContainerSpec *agent.App                 `json:"container_spec,omitempty"`
 	Databases     []MoveDatabase             `json:"databases"`
+	Files         []MoveFileCopy             `json:"files,omitempty"`
+	ClickHouse    *MoveClickHouse            `json:"clickhouse,omitempty"`
 	Redis         bool                       `json:"redis"`
 	CacheLocal    bool                       `json:"cache_local,omitempty"`
 	Commit        string                     `json:"commit,omitempty"`
@@ -99,16 +108,50 @@ type MoveJob struct {
 	Addresses     []string                   `json:"addresses"`
 	DNS           []MoveDNSStatus            `json:"dns"`
 	DNSChecked    *time.Time                 `json:"dns_checked,omitempty"`
-	TLSReady      bool                       `json:"tls_ready"`
-	TLSDetail     string                     `json:"tls_detail,omitempty"`
-	TargetCreated bool                       `json:"target_created"`
-	Deployment    string                     `json:"deployment,omitempty"`
-	DeployAttempt int                        `json:"deploy_attempt,omitempty"`
-	SourceFrozen  bool                       `json:"source_frozen,omitempty"`
-	FinalSynced   bool                       `json:"final_synced,omitempty"`
-	Switched      bool                       `json:"switched"`
-	Created       time.Time                  `json:"created"`
-	Updated       time.Time                  `json:"updated"`
+	// DNSAhead records that a hostname resolved to the destination before
+	// the application was deployed there.
+	DNSAhead      bool      `json:"dns_ahead,omitempty"`
+	TLSReady      bool      `json:"tls_ready"`
+	TLSDetail     string    `json:"tls_detail,omitempty"`
+	TargetCreated bool      `json:"target_created"`
+	Deployment    string    `json:"deployment,omitempty"`
+	DeployAttempt int       `json:"deploy_attempt,omitempty"`
+	SourceFrozen  bool      `json:"source_frozen,omitempty"`
+	FinalSynced   bool      `json:"final_synced,omitempty"`
+	Switched      bool      `json:"switched"`
+	Created       time.Time `json:"created"`
+	Updated       time.Time `json:"updated"`
+
+	// The fields below were added with retries, checkpoints and the
+	// final-sync lock; jobs recorded before them load with their zero values
+	// and continue under the same rules.
+
+	// Failure is the current step's last failure: while a transient failure
+	// waits for its automatic retry, and once the move stopped
+	// (move_retry.go).
+	Failure *MoveFailure `json:"failure,omitempty"`
+	// MaxAttempts bounds the automatic attempts of one step; 0 is the
+	// default (moveDefaultAttempts).
+	MaxAttempts int `json:"max_attempts,omitempty"`
+	// Checkpoints record what each engine finished, by phase, engine and
+	// object (move_engine.go), so a retried step continues instead of
+	// starting over.
+	Checkpoints map[string]MoveCheckpoint `json:"checkpoints,omitempty"`
+	// SourceChanges are changes made to the live source while the move
+	// copied in the background (move_reconcile.go); the final sync picks
+	// them up.
+	SourceChanges []MoveSourceChange `json:"source_changes,omitempty"`
+	// DeployedCommit is the commit the destination last deployed. Stale
+	// marks a destination release the source has since replaced: the
+	// destination redeploys the source's commit before the switch.
+	DeployedCommit string `json:"deployed_commit,omitempty"`
+	Stale          bool   `json:"destination_stale,omitempty"`
+	// EnvDigests fingerprint the copied environment (keyed HMAC, never the
+	// values), so the final sync can show what changed on the source.
+	EnvDigests map[string]string `json:"env_digests,omitempty"`
+	// Stall is set while the running step's progress stands still
+	// (move_progress.go).
+	Stall *MoveStall `json:"stall,omitempty"`
 }
 
 // MoveStep is one step's status and log.
@@ -119,11 +162,18 @@ type MoveStep struct {
 	Started  *time.Time    `json:"started,omitempty"`
 	Finished *time.Time    `json:"finished,omitempty"`
 	Log      []MoveLogLine `json:"log"`
+	// Progress is the step's live progress while it runs (from memory, see
+	// move_progress.go) and its last progress once it ended. Absent in
+	// steps recorded before progress existed.
+	Progress *agent.Progress `json:"progress,omitempty"`
 }
 
 type MoveLogLine struct {
 	Time    time.Time `json:"time"`
 	Message string    `json:"message"`
+	// Heartbeat marks a "still working" line, which the next heartbeat
+	// replaces; it is not output of the step itself.
+	Heartbeat bool `json:"heartbeat,omitempty"`
 }
 
 // MoveDatabase is one database being copied.
@@ -134,9 +184,51 @@ type MoveDatabase struct {
 	Mode     string             `json:"mode"`
 	Copyable bool               `json:"copyable"`
 	Backup   agent.BackupPolicy `json:"backup"`
-	Copied   string             `json:"copied_sha256,omitempty"`
-	Bytes    int64              `json:"bytes,omitempty"`
-	Skipped  string             `json:"skipped,omitempty"`
+	// BeforeDeploy is the source database's pre-deployment backup policy,
+	// set again on the destination database once it exists.
+	BeforeDeploy agent.BeforeDeployPolicy `json:"before_deploy,omitzero"`
+	Copied       string                   `json:"copied_sha256,omitempty"`
+	Bytes        int64                    `json:"bytes,omitempty"`
+	Skipped      string                   `json:"skipped,omitempty"`
+	// Excluded are the tables whose data the source's backups leave out,
+	// each with the operator's choice to copy its data or leave it behind
+	// (move_tables.go).
+	Excluded []MoveExcludedTable `json:"excluded_tables,omitempty"`
+}
+
+// MoveFileCopy is one set of persistent files being copied.
+type MoveFileCopy struct {
+	ID     string `json:"id"`
+	Path   string `json:"path"`
+	Source string `json:"source"`
+	Files  int64  `json:"files"`
+	Bytes  int64  `json:"bytes"`
+	// Transfer is false for sets the plan could not move; the operator
+	// acknowledged a warning for them.
+	Transfer bool `json:"transfer"`
+	// Method is the planned transfer (s3 or direct); Used is how the last
+	// copy went.
+	Method       string `json:"method,omitempty"`
+	Used         string `json:"used,omitempty"`
+	Copied       string `json:"copied_sha256,omitempty"`
+	ArchiveBytes int64  `json:"archive_bytes,omitempty"`
+	Skipped      string `json:"skipped,omitempty"`
+}
+
+// MoveClickHouse is the application's managed ClickHouse database: copied
+// as a verified archive (move_clickhouse.go).
+type MoveClickHouse struct {
+	SourceMode     string `json:"source_mode"` // container or host
+	SourceDatabase string `json:"source_database"`
+	SourceVersion  string `json:"source_version,omitempty"`
+	TargetDatabase string `json:"target_database,omitempty"`
+	TargetVersion  string `json:"target_version,omitempty"`
+	Format         string `json:"format,omitempty"` // backup or native, of the last copy
+	Copied         string `json:"copied_sha256,omitempty"`
+	Bytes          int64  `json:"bytes,omitempty"`
+	Tables         int    `json:"tables,omitempty"`
+	Rows           uint64 `json:"rows,omitempty"`
+	Skipped        string `json:"skipped,omitempty"`
 }
 
 // MoveDNSStatus is the last observed resolution of one hostname.
@@ -170,16 +262,26 @@ type MovePlan struct {
 	Hostnames       []string           `json:"hostnames"`
 	EnvironmentKeys []string           `json:"environment_keys"`
 	CopiedKeys      []string           `json:"copied_keys"`
+	CopiedSources   map[string]int     `json:"copied_sources,omitempty"` // copied variables by origin: panel, deploy defaults, image
 	DestinationKeys []string           `json:"destination_keys"`
 	Databases       []MovePlanDatabase `json:"databases"`
+	Files           []MovePlanFileSet  `json:"files"`
 	Redis           bool               `json:"redis"`
 	Volumes         []string           `json:"volumes"`
 	Addresses       []string           `json:"addresses"`
 	Capacity        *MoveCapacity      `json:"capacity,omitempty"`
-	Warnings        []string           `json:"warnings"`
-	Notes           []string           `json:"notes"`
-	Blockers        []string           `json:"blockers"`
-	Checked         time.Time          `json:"checked"`
+	// BuildMemory compares the memory the application's build needs with
+	// the destination's memory.
+	BuildMemory *buildmem.Assessment `json:"build_memory,omitempty"`
+	// Estimate is each engine's size and estimated bulk-copy and
+	// final-sync duration (move_estimate.go).
+	Estimate *MoveEstimate `json:"estimate,omitempty"`
+	// MaxAttempts is the attempt limit of each step.
+	MaxAttempts int       `json:"max_attempts"`
+	Warnings    []string  `json:"warnings"`
+	Notes       []string  `json:"notes"`
+	Blockers    []string  `json:"blockers"`
+	Checked     time.Time `json:"checked"`
 }
 
 type MoveDetection struct {
@@ -198,6 +300,28 @@ type MovePlanDatabase struct {
 	SizeBytes int64  `json:"size_bytes,omitempty"`
 	Action    string `json:"action"` // copy, skip_empty, external, manual
 	Note      string `json:"note,omitempty"`
+	// BeforeDeploy names the database's pre-deployment backup policy
+	// ("always", "reuse within 24h", "never"), which the move carries over.
+	BeforeDeploy string `json:"before_deploy,omitempty"`
+	// ExcludedTables are the tables whose data the source's backups leave
+	// out, with their estimated rows and sizes; each is copied unless the
+	// operator leaves it behind (move_tables.go).
+	ExcludedTables []MoveExcludedTable `json:"excluded_tables,omitempty"`
+}
+
+// MovePlanFileSet is one set of persistent files in a plan.
+type MovePlanFileSet struct {
+	ID     string `json:"id"`
+	Path   string `json:"path"`
+	Source string `json:"source"`
+	Files  int64  `json:"files"`            // -1 when not measured
+	Bytes  int64  `json:"bytes"`            // -1 when not measured
+	Action string `json:"action"`           // copy, skip_empty, manual, blocked
+	Method string `json:"method,omitempty"` // s3 or direct
+	Note   string `json:"note,omitempty"`
+	// Skipped counts runtime files (sockets, pipes, devices) the copy
+	// leaves behind; the service recreates them on the destination.
+	Skipped int64 `json:"skipped,omitempty"`
 }
 
 type MoveCapacity struct {
@@ -211,6 +335,12 @@ type moveStartInput struct {
 	RuntimeOverride     string   `json:"runtime_override,omitempty"`
 	AcknowledgeWarnings bool     `json:"acknowledge_warnings,omitempty"`
 	Addresses           []string `json:"addresses,omitempty"`
+	// MaxAttempts bounds the automatic attempts of each step (1–10; 0 is
+	// the default of six).
+	MaxAttempts int `json:"max_attempts,omitempty"`
+	// ExcludedTables chooses, by database and table, "copy" (the default)
+	// or "leave" for tables whose data the source's backups leave out.
+	ExcludedTables map[string]map[string]string `json:"excluded_tables,omitempty"`
 }
 
 // moveResolver resolves hostnames; tests replace it.
@@ -232,11 +362,28 @@ func (c *Control) moveJob(id string) (MoveJob, bool) {
 }
 
 func cloneMoveJob(job MoveJob) MoveJob {
+	if job.Failure != nil {
+		failure := *job.Failure
+		failure.Diagnostics = slices.Clone(failure.Diagnostics)
+		job.Failure = &failure
+	}
+	if job.Stall != nil {
+		stall := *job.Stall
+		job.Stall = &stall
+	}
+	if job.ClickHouse != nil {
+		ch := *job.ClickHouse
+		job.ClickHouse = &ch
+	}
+	job.Checkpoints = maps.Clone(job.Checkpoints)
+	job.SourceChanges = slices.Clone(job.SourceChanges)
+	job.EnvDigests = maps.Clone(job.EnvDigests)
 	job.Steps = slices.Clone(job.Steps)
 	for i := range job.Steps {
 		job.Steps[i].Log = slices.Clone(job.Steps[i].Log)
 	}
 	job.Databases = slices.Clone(job.Databases)
+	job.Files = slices.Clone(job.Files)
 	job.DNS = slices.Clone(job.DNS)
 	job.Hostnames = slices.Clone(job.Hostnames)
 	job.Addresses = slices.Clone(job.Addresses)
@@ -304,11 +451,18 @@ func (job *MoveJob) setStep(key, status string) {
 	now := time.Now().UTC()
 	switch status {
 	case "running":
-		s.Started, s.Finished = &now, nil
+		s.Started, s.Finished, s.Progress = &now, nil, nil
 	case "done", "skipped", "failed":
 		s.Finished = &now
 	}
 	s.Status = status
+}
+
+// setProgress records a step's last progress at a transition.
+func (job *MoveJob) setProgress(key string, p *agent.Progress) {
+	if s := job.step(key); s != nil {
+		s.Progress = p
+	}
 }
 
 func (c *Control) moveLog(id, step, format string, args ...any) {
@@ -317,11 +471,20 @@ func (c *Control) moveLog(id, step, format string, args ...any) {
 
 // moveAudit records a move transition when the audit pack is available.
 func moveAudit(ctx context.Context, job MoveJob, action string, failed bool) {
+	moveAuditMeta(ctx, job, action, failed, nil)
+}
+
+// moveAuditMeta records a move transition with extra metadata.
+func moveAuditMeta(ctx context.Context, job MoveJob, action string, failed bool, extra map[string]string) {
 	log, ok := lidza.Optional[*audit.Audit](ctx)
 	if !ok || log == nil {
 		return
 	}
-	e := audit.Event{Action: "move." + action, Scope: fleetScope, Resource: "app/" + job.AppID, Meta: map[string]string{"move": job.ID, "source": job.SourceServer, "target": job.TargetServer}}
+	meta := map[string]string{"move": job.ID, "source": job.SourceServer, "target": job.TargetServer}
+	for key, value := range extra {
+		meta[key] = value
+	}
+	e := audit.Event{Action: "move." + action, Scope: fleetScope, Resource: "app/" + job.AppID, Meta: meta}
 	if failed {
 		e.Outcome = audit.Failed
 	}
@@ -367,12 +530,27 @@ type moveView struct {
 	MoveJob
 	Records []MoveDNSRecord `json:"records"`
 	Actions []string        `json:"actions"`
+	// Locked reports the final-sync lock (move_lock.go); Phase is live,
+	// locked or done.
+	Locked bool   `json:"locked"`
+	Phase  string `json:"phase"`
+	// LockEstimate is the expected duration of the final-sync lock.
+	LockEstimate *MoveLockEstimate `json:"lock_estimate,omitempty"`
+	// TargetServerName is the destination's display name, for pages
+	// that show the move without the server list.
+	TargetServerName string `json:"target_server_name,omitempty"`
 }
 
 func moveJobView(job MoveJob) moveView {
 	job.Target.Secret = ""
 	job.Target.Previews.Env = nil
-	view := moveView{MoveJob: job, Records: moveRecords(job), Actions: moveActions(job)}
+	for i := range job.Steps {
+		job.Steps[i].Title = moveStepTitle(job.Steps[i].Key, job.Steps[i].Title)
+	}
+	view := moveView{MoveJob: job, Records: moveRecords(job), Actions: moveActions(job), Locked: moveLocks(job), Phase: movePhase(job)}
+	if !terminalMoveState(job.State) && !job.Switched {
+		view.LockEstimate = moveLockEstimate(job)
+	}
 	return view
 }
 
@@ -402,11 +580,20 @@ func moveActions(job MoveJob) []string {
 	case moveStateReady:
 		actions = append(actions, "recheck-dns", "finish")
 	}
-	if (job.State == moveStateCutover || job.State == moveStateReady) && moveHasCopyableData(job) {
+	if (job.State == moveStateCutover || job.State == moveStateReady) && moveCanFinalSync(job) {
 		actions = append(actions, "final-sync")
 	}
 	if !job.Switched && !terminalMoveState(job.State) && job.State != moveStateAborting && job.State != moveStateFinishing {
 		actions = append(actions, "abort")
+	}
+	if job.Failure != nil && job.Failure.NextRetry != nil {
+		actions = append(actions, "retry-now")
+	}
+	if job.State == moveStateFailed && job.Failure != nil && job.Failure.Retained != nil {
+		actions = append(actions, "remove-retained")
+	}
+	if moveHasExcludedTables(job) && !terminalMoveState(job.State) && job.State != moveStateSyncing && job.State != moveStateFinishing && !job.Switched {
+		actions = append(actions, "excluded-tables")
 	}
 	return actions
 }
@@ -418,6 +605,29 @@ func moveHasCopyableData(job MoveJob) bool {
 		}
 	}
 	return false
+}
+
+func moveHasExcludedTables(job MoveJob) bool {
+	for _, d := range job.Databases {
+		if len(d.Excluded) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func moveHasFiles(job MoveJob) bool {
+	for _, f := range job.Files {
+		if f.Transfer {
+			return true
+		}
+	}
+	return false
+}
+
+// moveCanFinalSync reports whether a final sync has anything to copy.
+func moveCanFinalSync(job MoveJob) bool {
+	return moveHasCopyableData(job) || moveHasFiles(job) || job.ClickHouse != nil
 }
 
 // ---- routes -------------------------------------------------------------------
@@ -460,11 +670,14 @@ func (c *Control) appMoveRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Unlock()
 	if !found {
-		agent.Fail(w, 404, errors.New("no move recorded for this application"))
+		// No move yet is a normal answer, not an error: browsers log every 4xx
+		// response as a console error, and the panel asks on each card expand.
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	agent.JSON(w, 200, moveJobView(latest))
+	agent.JSON(w, 200, c.moveLiveView(latest))
 }
 
 func (c *Control) moveRoute(w http.ResponseWriter, r *http.Request) {
@@ -474,7 +687,7 @@ func (c *Control) moveRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	agent.JSON(w, 200, moveJobView(job))
+	agent.JSON(w, 200, c.moveLiveView(job))
 }
 
 func (c *Control) startMoveRoute(w http.ResponseWriter, r *http.Request) {
@@ -503,7 +716,7 @@ func (c *Control) startMoveRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	moveAudit(r.Context(), job, "start", false)
 	c.startMoveRunner(context.WithoutCancel(r.Context()), job.ID)
-	agent.JSON(w, 202, moveJobView(job))
+	agent.JSON(w, 202, withoutActiveResume(moveJobView(job), true))
 }
 
 func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
@@ -511,6 +724,14 @@ func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		OverrideDNS bool   `json:"override_dns,omitempty"`
 		Confirm     string `json:"confirm,omitempty"`
+		// ConfirmLock accepts a final-sync lock expected to last longer
+		// than 15 minutes.
+		ConfirmLock bool `json:"confirm_lock,omitempty"`
+		// Database and Tables choose copy or leave for excluded tables.
+		Database string            `json:"database,omitempty"`
+		Tables   map[string]string `json:"tables,omitempty"`
+		// FinalBackup asks remove-retained to back the databases up first.
+		FinalBackup bool `json:"final_backup,omitempty"`
 	}
 	if r.ContentLength != 0 {
 		if err := agent.Decode(w, r, &in); err != nil {
@@ -531,6 +752,8 @@ func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
 			switch job.State {
 			case moveStateFailed:
 				job.Error = ""
+				// The operator's retry starts a new series of attempts.
+				job.Failure = nil
 				for i := range job.Steps {
 					if job.Steps[i].Status == "failed" && job.Steps[i].Key != moveStepFinalSync {
 						job.Steps[i].Status = "pending"
@@ -549,6 +772,27 @@ func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			c.startMoveRunner(ctx, id)
 		}
+	case "remove-retained":
+		job, err = c.moveRemoveRetainedAction(r, job, in.Confirm, in.FinalBackup)
+		if err == nil {
+			c.startMoveRunner(ctx, id)
+		}
+	case "retry-now":
+		job, err = c.updateMove(id, func(job *MoveJob) error {
+			if job.Failure == nil || job.Failure.NextRetry == nil {
+				return errors.New("no retry is scheduled")
+			}
+			now := time.Now().UTC()
+			job.Failure.NextRetry = &now
+			return nil
+		})
+	case "excluded-tables":
+		job, err = c.updateMove(id, func(job *MoveJob) error {
+			if terminalMoveState(job.State) || job.Switched || job.State == moveStateSyncing || job.State == moveStateFinishing {
+				return errors.New("choose before the final sync starts")
+			}
+			return moveSetExcludedChoices(job, in.Database, in.Tables)
+		})
 	case "recheck-dns":
 		if job.State != moveStateCutover && job.State != moveStateReady {
 			err = errors.New("DNS is checked during the cutover")
@@ -561,11 +805,23 @@ func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
 			if job.State != moveStateCutover && job.State != moveStateReady {
 				return errors.New("the final sync runs during the cutover, before finishing")
 			}
-			if !moveHasCopyableData(*job) {
-				return errors.New("this application has no database to synchronize")
+			if !moveCanFinalSync(*job) {
+				return errors.New("this application has no databases or files to synchronize")
+			}
+			if estimate := moveLockEstimate(*job); estimate.Confirm && !in.ConfirmLock {
+				return fmt.Errorf("the final sync is expected to lock the application for about %s (%s); confirm the lock to start it", moveSeconds(estimate.Seconds), estimate.Basis)
+			}
+			for _, d := range job.Databases {
+				for _, table := range d.Excluded {
+					if table.Choice == "" {
+						return fmt.Errorf("choose whether to copy or leave behind the data of %s in %s first", table.Name, d.SourceID)
+					}
+				}
 			}
 			job.State = moveStateSyncing
-			job.Error = ""
+			job.Error, job.Failure = "", nil
+			// The final sync copies the frozen source anew.
+			job.clearMoveCheckpoints(movePhaseFinal)
 			job.setStep(moveStepFinalSync, "pending")
 			return nil
 		})
@@ -611,8 +867,12 @@ func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
 		agent.Fail(w, 409, err)
 		return
 	}
-	moveAudit(r.Context(), job, strings.ReplaceAll(action, "-", "_"), false)
-	agent.JSON(w, 202, moveJobView(job))
+	if action == "excluded-tables" {
+		moveAuditMeta(r.Context(), job, "excluded_tables", false, map[string]string{"database": in.Database})
+	} else {
+		moveAudit(r.Context(), job, strings.ReplaceAll(action, "-", "_"), false)
+	}
+	agent.JSON(w, 202, c.moveLiveView(job))
 }
 
 // ---- plan -----------------------------------------------------------------------
@@ -626,7 +886,7 @@ func moveRequestFor(ctx context.Context) *http.Request {
 // chooses the destination runtime. It changes nothing.
 func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInput) (MovePlan, int, error) {
 	plan := MovePlan{AppID: appID, TargetServer: in.TargetServer, Checked: time.Now().UTC(), RuntimeChoices: []string{}, Hostnames: []string{}, EnvironmentKeys: []string{}, CopiedKeys: []string{}, DestinationKeys: []string{},
-		Databases: []MovePlanDatabase{}, Volumes: []string{}, Addresses: []string{}, Warnings: []string{}, Notes: []string{}, Blockers: []string{}}
+		Databases: []MovePlanDatabase{}, Files: []MovePlanFileSet{}, Volumes: []string{}, Addresses: []string{}, Warnings: []string{}, Notes: []string{}, Blockers: []string{}}
 	src, ok := c.app(appID)
 	if !ok || src.Retiring {
 		return plan, 404, errors.New("application not found")
@@ -637,13 +897,21 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	if len(in.Addresses) > 8 {
 		return plan, 400, errors.New("at most eight destination addresses")
 	}
+	if in.MaxAttempts < 0 || in.MaxAttempts > moveMaxAttempts {
+		return plan, 400, fmt.Errorf("max_attempts must be between 1 and %d", moveMaxAttempts)
+	}
+	plan.MaxAttempts = cmp.Or(in.MaxAttempts, moveDefaultAttempts)
 	plan.SourceServer = src.ServerID
 	plan.Repository, plan.Branch = src.Repository, src.Branch
 	var target *Server
+	sourceName := src.ServerID
 	for _, s := range c.servers() {
 		if s.ID == in.TargetServer {
 			copy := s
 			target = &copy
+		}
+		if s.ID == src.ServerID && s.Name != "" {
+			sourceName = s.Name
 		}
 	}
 	if target == nil {
@@ -751,9 +1019,6 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	if plan.TargetRuntime == moveRuntimeNative && !host.Native {
 		plan.Blockers = append(plan.Blockers, "Native management is not configured on the destination agent.")
 	}
-	if plan.TargetRuntime == moveRuntimeContainer && host.NativeOnly {
-		plan.Blockers = append(plan.Blockers, "The destination agent manages native services only.")
-	}
 
 	// Databases.
 	copyable := 0
@@ -764,7 +1029,17 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	}
 	needed := uint64(1 << 30)
 	for _, d := range source.Databases {
-		entry := MovePlanDatabase{ID: d.ID, Engine: d.Engine, Mode: d.Mode, Tables: d.Tables, SizeBytes: sizes[d.ID], Note: d.Reason}
+		entry := MovePlanDatabase{ID: d.ID, Engine: d.Engine, Mode: d.Mode, Tables: d.Tables, SizeBytes: sizes[d.ID], Note: d.Reason, BeforeDeploy: d.BeforeDeploy.String()}
+		if d.Copyable {
+			entry.ExcludedTables = moveExcludedChoices(d.ExcludedTables, in.ExcludedTables[d.ID])
+			if moveExcludedUnmeasured(entry.ExcludedTables) {
+				var listing agent.DatabaseTables
+				if c.agentCall(req, src.ServerID, http.MethodGet, "/v1/databases/"+url.PathEscape(d.ID)+"/tables", nil, &listing) == nil {
+					moveFillExcludedEstimates(entry.ExcludedTables, listing)
+				}
+			}
+			planMoveExcludedTables(&plan, entry, host)
+		}
 		switch {
 		case d.Copyable && d.Tables == 0:
 			entry.Action, entry.Note = "skip_empty", "no tables; nothing to copy"
@@ -789,6 +1064,8 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	if plan.TargetRuntime == moveRuntimeNative && (copyable > 0 || source.Redis) && !host.HostData {
 		plan.Blockers = append(plan.Blockers, "The destination agent cannot provision PostgreSQL or Redis.")
 	}
+	needed += planMoveClickHouse(&plan, source, host)
+	needed += c.planMoveFiles(&plan, source, host)
 	var targetHealth agent.ServerHealth
 	if c.agentCall(req, target.ID, http.MethodGet, "/v1/server-health", nil, &targetHealth) == nil {
 		capacity := &MoveCapacity{MemoryAvailable: targetHealth.MemoryAvailable, Needed: needed}
@@ -802,11 +1079,19 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 		if targetHealth.MemoryTotal > 0 && targetHealth.MemoryAvailable < 256<<20 {
 			plan.Warnings = append(plan.Warnings, "The destination has less than 256 MiB of memory available.")
 		}
+		// The destination builds the application: compare what its build
+		// needs (measured on the source when known) with its memory.
+		estimate := moveBuildEstimate(source, detection).Refine(source.BuildPeakMiB, sourceName)
+		assessment := buildmem.Assess(estimate, buildmem.HostFromBytes(targetHealth.MemoryTotal, targetHealth.MemoryAvailable, targetHealth.SwapTotal, targetHealth.SwapFree), cmp.Or(target.Name, target.ID))
+		plan.BuildMemory = &assessment
+		switch assessment.Level {
+		case buildmem.LevelBlocker:
+			plan.Blockers = append(plan.Blockers, assessment.Message)
+		case buildmem.LevelWarning:
+			plan.Warnings = append(plan.Warnings, assessment.Message)
+		}
 	} else {
 		plan.Notes = append(plan.Notes, "The destination's capacity could not be measured.")
-	}
-	for _, volume := range source.Volumes {
-		plan.Warnings = append(plan.Warnings, "Files are not moved automatically: "+volume+". Copy them to the destination before finishing.")
 	}
 	plan.Warnings = append(plan.Warnings, source.Notes...)
 	if plan.TargetRuntime == moveRuntimeContainer {
@@ -815,10 +1100,10 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	if source.Redis {
 		plan.Notes = append(plan.Notes, "Redis is provisioned on the destination; its contents (cache and queues) are not copied.")
 	}
-	if copyable > 0 {
+	if copyable > 0 || source.ClickHouse != nil {
 		plan.Notes = append(plan.Notes, "Writes made on the source after the data copy are not on the destination. Use the final sync during the cutover to copy them with the source in maintenance.")
 	}
-	keys := MoveJob{TargetRuntime: plan.TargetRuntime, Redis: source.Redis, CacheLocal: source.Container != nil && source.Redis}
+	keys := MoveJob{TargetRuntime: plan.TargetRuntime, Redis: source.Redis, CacheLocal: source.Container != nil && source.Redis, ClickHouse: moveClickHouseFrom(source)}
 	for _, d := range source.Databases {
 		if d.Copyable {
 			keys.Databases = append(keys.Databases, MoveDatabase{SourceID: d.ID, EnvKeys: d.EnvironmentKeys, Copyable: true})
@@ -828,12 +1113,17 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	for _, key := range source.EnvironmentKeys {
 		values[key] = ""
 	}
-	_, _, report := moveEnvironmentChanges(keys, agent.MoveEnvironment{Values: values}, nil)
+	_, _, report := moveEnvironmentChanges(keys, agent.MoveEnvironment{Values: values, Sources: source.EnvironmentSources}, nil)
 	plan.CopiedKeys = report.copied
-	plan.DestinationKeys = append(slices.Clone(report.owned), report.mapped...)
+	if moveSourceSummary(report.sources) != "" {
+		plan.CopiedSources = report.sources
+	}
+	plan.DestinationKeys = append(append(slices.Clone(report.owned), report.mapped...), report.rebuilt...)
 	slices.Sort(plan.DestinationKeys)
 	slices.Sort(plan.Blockers)
 	plan.Blockers = slices.Compact(plan.Blockers)
+	estimate := c.movePlanEstimate(r.Context(), plan, source, host)
+	plan.Estimate = &estimate
 	return plan, 200, nil
 }
 
@@ -900,8 +1190,19 @@ func (c *Control) createMove(r *http.Request, plan MovePlan) (MoveJob, error) {
 	job := MoveJob{ID: random()[:24], AppID: src.ID, SourceServer: src.ServerID, TargetServer: plan.TargetServer, SourceRuntime: plan.SourceRuntime, TargetRuntime: plan.TargetRuntime,
 		Runtime: plan.Runtime, State: moveStateRunning, Plan: plan, Commit: plan.Commit, Hostnames: slices.Clone(plan.Hostnames), Addresses: slices.Clone(plan.Addresses),
 		Redis: source.Redis, CacheLocal: source.Container != nil && source.Redis, DNS: []MoveDNSStatus{}, Databases: []MoveDatabase{}, Created: now, Updated: now}
+	job.MaxAttempts = plan.MaxAttempts
 	for _, d := range source.Databases {
-		job.Databases = append(job.Databases, MoveDatabase{SourceID: d.ID, EnvKeys: slices.Clone(d.EnvironmentKeys), Mode: d.Mode, Copyable: d.Copyable, Backup: d.Backup})
+		entry := MoveDatabase{SourceID: d.ID, EnvKeys: slices.Clone(d.EnvironmentKeys), Mode: d.Mode, Copyable: d.Copyable, Backup: d.Backup, BeforeDeploy: d.BeforeDeploy}
+		for _, p := range plan.Databases {
+			if p.ID == d.ID && p.Engine != moveEngineClickHouse && d.Copyable {
+				entry.Excluded = slices.Clone(p.ExcludedTables)
+			}
+		}
+		job.Databases = append(job.Databases, entry)
+	}
+	job.ClickHouse = moveClickHouseFrom(source)
+	for _, f := range plan.Files {
+		job.Files = append(job.Files, MoveFileCopy{ID: f.ID, Path: f.Path, Source: f.Source, Files: f.Files, Bytes: f.Bytes, Method: f.Method, Transfer: f.Action == "copy" || f.Action == "skip_empty"})
 	}
 	job.Target = Application{ID: src.ID, ServerID: plan.TargetServer, Repository: src.Repository, Branch: src.Branch, Domain: source.Domain, AdditionalDomains: slices.Clone(source.AdditionalDomains),
 		CustomerHosts: src.CustomerHosts, GitHubInstallation: src.GitHubInstallation, Generation: random()}
@@ -935,6 +1236,11 @@ func (c *Control) createMove(r *http.Request, plan MovePlan) (MoveJob, error) {
 	job.logf(moveStepPlan, "Moving %s from %s to %s as a %s application (%s).", src.ID, src.ServerID, plan.TargetServer, plan.TargetRuntime, plan.Runtime)
 	for _, warning := range plan.Warnings {
 		job.logf(moveStepPlan, "Acknowledged: %s", warning)
+	}
+	for _, d := range job.Databases {
+		if copied, left := moveExcludedNames(d, moveTableCopy), moveExcludedNames(d, moveTableLeave); len(copied)+len(left) > 0 {
+			job.logf(moveStepPlan, "Tables of %s whose data the backups leave out: copied separately %s; left behind (schema only) %s.", d.SourceID, moveKeyList(copied), moveKeyList(left))
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1014,8 +1320,34 @@ func (c *Control) moveNativeSpec(ctx context.Context, src Application, source ag
 	spec.ID, spec.Repository, spec.Branch, spec.Domain, spec.AdditionalDomains = src.ID, src.Repository, src.Branch, source.Domain, slices.Clone(source.AdditionalDomains)
 	spec.Env, spec.EnvKinds, spec.SourceDirectory, spec.AutoDeploy = nil, nil, "", false
 	spec.Data = agent.NativeDataRequest{Postgres: hasDatabase, Redis: source.Redis, BackupHours: backupHours, Offsite: offsite}
+	if ch := moveClickHouseFrom(source); ch != nil {
+		// The destination installs the source's release series when it has
+		// no ClickHouse yet, so the database moves as a native BACKUP.
+		spec.Data.ClickHouse, spec.Data.ClickHouseVersion = true, moveClickHouseSeries(ch.SourceVersion)
+	}
 	if !nativeRuntimes[spec.Runtime] {
 		return spec, fmt.Errorf("the %s runtime cannot be created natively", spec.Runtime)
 	}
 	return spec, nil
+}
+
+// moveBuildEstimate estimates the build memory of a moving application:
+// from repository detection when it ran, otherwise from its runtime.
+func moveBuildEstimate(source agent.MoveSource, detection *RepositoryDetection) buildmem.Estimate {
+	if detection != nil && detection.BuildMemory != nil {
+		return *detection.BuildMemory
+	}
+	stack := buildmem.Stack{Mode: detect.ModeNative, Runtime: source.Runtime, Framework: source.Runtime}
+	switch source.Runtime {
+	case "astro":
+		stack.Runtime, stack.Frontend = detect.RuntimeStatic, true
+	case "node":
+		stack.Frontend = true
+	case "rails":
+		stack.Assets = true
+	case "go", "static":
+	default:
+		stack = buildmem.Stack{Mode: detect.ModeContainer}
+	}
+	return buildmem.EstimateStack(stack)
 }

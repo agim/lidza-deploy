@@ -91,6 +91,11 @@ func validateNativeCreate(in agent.NativeCreateRequest) error {
 	if _, set := in.Env["REDIS_URL"]; set && d.Redis {
 		return errors.New("Redis settings supply REDIS_URL automatically")
 	}
+	for _, key := range agent.ClickHouseEnvironmentKeys {
+		if _, set := in.Env[key]; set && d.ClickHouse {
+			return fmt.Errorf("ClickHouse settings supply %s automatically", key)
+		}
+	}
 	if d.BackupHours < 0 || d.BackupHours > 8760 {
 		return errors.New("choose a backup frequency")
 	}

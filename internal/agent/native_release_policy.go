@@ -35,16 +35,29 @@ type NativeReleasePolicy struct {
 	EnvFiles []string `json:"env_files,omitempty"`
 	// Shared overrides the profile's shared directories.
 	Shared []string `json:"shared,omitempty"`
+	// BundleClean, for Rails applications, removes gems the lockfile no
+	// longer needs from the application's own bundle path after each
+	// install. Unset means true; false keeps every installed gem version.
+	BundleClean *bool `json:"bundle_clean,omitempty"`
 	// Schedule is the crontab block identifier; default is the directory name of Root.
 	Schedule string `json:"schedule,omitempty"`
 	Keep     int    `json:"keep,omitempty"`
 
-	// BuildMemoryMiB caps the memory of each build command (default 2048).
-	// JavaScript builds get three quarters of it as their heap limit.
+	// BuildMemoryMiB caps the memory of each build command. Empty adapts
+	// to the host: 1.5 × the step's learned peak (or a quarter of the
+	// host's memory, 2–8 GiB, before one is known), bounded by the free
+	// memory. JavaScript builds get three quarters of the cap as their heap.
 	BuildMemoryMiB int `json:"build_memory_mib,omitempty"`
 
 	// Databases names the protected native database resources that are
 	// backed up (and verified off-site) before any release step runs.
+	// Every database bound to the application is backed up, listed or not;
+	// leaving one out does not exempt it. Only a database's own
+	// before-deploy policy (before_deploy.go: set from the panel, with the
+	// database policy's before_deploy or legacy skip_release_backup as the
+	// initial default) can reuse a recent verified backup or, for a
+	// secondary database, leave it to its scheduled backups; listing such a
+	// database is allowed and its roles count as reviewed.
 	Databases []string `json:"databases,omitempty"`
 
 	// User is the account releases build and run as; empty is the native

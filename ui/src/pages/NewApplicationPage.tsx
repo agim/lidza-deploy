@@ -1,14 +1,16 @@
 import { ArrowLeft, ArrowRight, Boxes, Check, ChevronRight, Cpu, Database, GitBranch, Github, Globe, KeyRound, LoaderCircle, Plus, Rocket, Search, Server as ServerIcon, ShieldCheck, Tag, X } from 'lucide-react';
+import { detailHref, goBack, href, navigate, previousEntry, searchHref, useSearchParam, withSticky } from '../lib/router';
 import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { RuntimeProfileField } from '../components/RuntimeProfileField';
 import { useToast } from '../components/ToastProvider';
 import { Badge, Button, Card, ErrorBanner, Field, Notice, PageHeader } from '../components/ui';
 import { Input } from '../components/primitives/input';
 import { Switch } from '../components/primitives/switch';
-import { type DatabaseChoice, type EnvRow, type StepErrors, type WizardDraft, applyDetection, changeNativeRuntime, containerRequest, containerRuntimeLabels, defaultsKind, demoDetection, emptyDraft, frameworkLabel, idError, isLidza, lastStep, masterKeyName, mergeDefaults, nativeRequest, pinLabel, rowKey, runtimeLabels, stepErrors, steps } from '../components/wizard/model';
+import { type DatabaseChoice, type EnvRow, type StepErrors, type WizardDraft, applyDetection, changeNativeRuntime, containerRequest, containerRuntimeLabels, defaultsKind, demoDetection, emptyDraft, frameworkLabel, hasBackups, idError, isLidza, lastStep, masterKeyName, mergeDefaults, nativeRequest, pinLabel, rowKey, runtimeLabels, stepErrors, steps } from '../components/wizard/model';
 import { get, post } from '../lib/api';
 import { type DefaultsResponse, defaultsRuntimeLabels, runtimeProfile } from '../lib/defaults';
-import type { ContainerRuntime, NativeRuntime, RepositoryDetection } from '../lib/types';
+import type { ContainerRuntime, NativeRuntime, RepositoryDetection, ServerHealth, ServerHealthResponse } from '../lib/types';
+import { assessBuildMemory } from '../lib/buildMemory';
 import { useWorkspace } from '../state/WorkspaceContext';
 
 type Repo = { full_name: string; default_branch?: string; private?: boolean; installation_id?: number };
@@ -16,6 +18,9 @@ type Detection = { state: 'idle' | 'loading' | 'done' | 'error'; result?: Reposi
 type Created = { id: string; mode: WizardDraft['mode']; warning?: string };
 
 const demoRepos: Repo[] = [{ full_name: 'acme/storefront', default_branch: 'main', private: true, installation_id: 1 }, { full_name: 'acme/workspace', default_branch: 'main', private: true, installation_id: 1 }];
+const stepSlugs: string[] = steps.map(label => label.toLowerCase());
+const stepSlug = (index: number) => stepSlugs[index] || stepSlugs[0];
+const stepIndex = (slug?: string) => Math.max(0, stepSlugs.indexOf(slug || ''));
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 
 export function NewApplicationPage({ serverID }: { serverID?: string }) {
@@ -23,8 +28,17 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
   const demo = new URLSearchParams(location.search).get('demo') === '1';
   const notify = useToast();
   const [draft, setDraft] = useState<WizardDraft>(() => emptyDraft(serverID || ''));
-  const [step, setStep] = useState(0);
+  // Each step is its own history entry (?step=repository …), so the browser
+  // Back button returns to the previous step. Steps beyond the furthest one
+  // reached in this draft (a reload or a stale entry) fall back to it.
   const [reached, setReached] = useState(0);
+  const reachedRef = useRef(0);
+  const stepParam = useSearchParam('step');
+  const routed = stepIndex(stepParam);
+  const step = Math.min(routed, Math.max(reached, reachedRef.current));
+  const stepURL = (target: number) => searchHref({ step: target === 0 ? undefined : stepSlug(target) });
+  const setStep = (target: number) => navigate(stepURL(target));
+  useEffect(() => { if (stepIndex(stepParam) !== step || (stepParam !== undefined && step === 0)) navigate(stepURL(step), { replace: true }); });
   const [attempted, setAttempted] = useState<Set<number>>(new Set());
   const [error, setError] = useState('');
   const [repos, setRepos] = useState<Repo[]>();
@@ -36,12 +50,17 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
   const [busy, setBusy] = useState(false);
   const detectRequest = useRef(0);
   const existing = useMemo(() => (apps || []).map(app => app.id), [apps]);
-  const errors = stepErrors(step, draft, existing);
+  const [health, setHealth] = useState<ServerHealth[]>();
+  // The Server step compares the detected build's memory with each server's.
+  const memory = assessBuildMemory(detection.result?.build_memory, health?.find(item => item.server_id === draft.serverID), servers.find(item => item.id === draft.serverID)?.name);
+  const memoryBlocker = memory?.level === 'blocker' ? memory.message : undefined;
+  const errorsAt = (index: number): StepErrors => ({ ...stepErrors(index, draft, existing), ...(index === 3 && memoryBlocker ? { server_id: memoryBlocker } : {}) });
+  const errors = errorsAt(step);
   const shown = (field: string) => attempted.has(step) || (field === 'id' && draft.id !== '') ? errors[field] : undefined;
   const update = (patch: Partial<WizardDraft>) => setDraft(current => ({ ...current, ...patch }));
   const server = servers.find(item => item.id === draft.serverID);
 
-  useEffect(() => { if (!loading && !servers.length && !demo) location.hash = 'servers'; }, [servers.length, loading, demo]);
+  useEffect(() => { if (!loading && !servers.length && !demo) navigate(href('servers'), { replace: true }); }, [servers.length, loading, demo]);
   useEffect(() => { if (!draft.serverID && servers.length) update({ serverID: serverID && servers.some(item => item.id === serverID) ? serverID : servers[0].id }); }, [servers, serverID, draft.serverID]);
 
   // Authorized repositories load when the repository step opens.
@@ -50,6 +69,12 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
     if (demo) { setRepos(demoRepos); return; }
     get<Repo[]>('control/github/repos').then(rows => setRepos([...rows].sort((a, b) => a.full_name.localeCompare(b.full_name)))).catch(reason => { setRepos([]); setReposError(message(reason)); });
   }, [step, repos, demo]);
+
+  // Server memory loads when the server step opens.
+  useEffect(() => {
+    if (step !== 3 || health || demo) return;
+    get<ServerHealthResponse>('control/server-health').then(response => setHealth(response.servers || [])).catch(() => setHealth([]));
+  }, [step, health, demo]);
 
   // Workspace defaults of the chosen runtime prefill the environment once.
   const kind = defaultsKind(draft);
@@ -87,7 +112,9 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
     if (draft.repository) void detect(draft.repository, branch, draft.installation);
   };
 
-  const go = (target: number) => { setError(''); setStep(target); setReached(current => Math.max(current, target)); };
+  const go = (target: number) => { setError(''); reachedRef.current = Math.max(reachedRef.current, target); setReached(reachedRef.current); setStep(target); };
+  // The wizard's Back matches the browser Back button when that is the previous step.
+  const back = () => { setError(''); if (previousEntry() === stepURL(step - 1)) history.back(); else setStep(step - 1); };
   const focusFirst = (found: StepErrors) => requestAnimationFrame(() => document.getElementById(`wizard-${Object.keys(found)[0]}`)?.focus());
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -96,7 +123,7 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
     if (step === 1 && detection.state !== 'loading' && (detection.result?.repository !== draft.repository || detection.result?.branch !== draft.branch)) void detect(draft.repository, draft.branch, draft.installation);
     if (step < lastStep) { go(step + 1); return; }
     for (let index = 0; index < lastStep; index++) {
-      const found = stepErrors(index, draft, existing);
+      const found = errorsAt(index);
       if (Object.keys(found).length) { setAttempted(current => new Set(current).add(index)); setStep(index); focusFirst(found); return; }
     }
     if (busy) return;
@@ -118,19 +145,19 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
     try {
       if (!demo) await post(`control/apps/${encodeURIComponent(created.id)}/deploy`);
       notify(`Deployment of ${created.id} started.`);
-      location.hash = 'deployments';
+      navigate(href('deployments'));
     } catch (reason) { setError(message(reason)); }
   };
 
-  if (created) return <div className="form-page"><PageHeader eyebrow="Create application" title={`${created.id} is ready`} description="The application is registered. Deploy its first release now, or later from Applications." back="#applications" />
+  if (created) return <div className="form-page"><PageHeader eyebrow="Create application" title={`${created.id} is ready`} description="The application is registered. Deploy its first release now, or later from Applications." back={href('applications')} />
     <Card className="form-card wizard-done">{error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
       <div className="section-title"><Check size={21} /><div><h2>Application created</h2><p>{created.mode === 'native' ? 'Its account, services and route are prepared on the server.' : 'Its container configuration is saved on the server.'}</p></div></div>
       {created.warning && <Notice>{created.warning}</Notice>}
-      <div className="wizard-done-actions"><Button variant="primary" onClick={deployNow}><Rocket size={15} />Deploy now</Button><a className="button button-secondary" href={`#page/settings/${encodeURIComponent(created.id)}`}>Open settings</a><a className="button button-ghost" href="#applications">Back to applications</a></div>
+      <div className="wizard-done-actions"><Button variant="primary" onClick={deployNow}><Rocket size={15} />Deploy now</Button><a className="button button-secondary" href={withSticky(detailHref('settings', created.id))}>Open settings</a><a className="button button-ghost" href={withSticky(href('applications'))}>Back to applications</a></div>
     </Card></div>;
 
   const result = detection.result;
-  return <div className="form-page"><PageHeader eyebrow="Create application" title="A new home for your code" description="Name it. Point it at a repository. Review what was detected. Make it live." back="#applications" />
+  return <div className="form-page"><PageHeader eyebrow="Create application" title="A new home for your code" description="Name it. Point it at a repository. Review what was detected. Make it live." back={href('applications')} />
     <nav className="stepper wizard-stepper" aria-label="Application setup progress"><ol>{steps.map((label, index) => { const done = index !== step && (index < step || index < reached); return <li key={label}><button type="button" disabled={index > reached} className={`step ${index === step ? 'current' : done ? 'complete' : ''}`} aria-current={index === step ? 'step' : undefined} onClick={() => go(index)}><span>{done ? <Check size={13} aria-label="Complete" /> : String(index + 1).padStart(2, '0')}</span><b className="wizard-step-label">{label}</b>{index < lastStep && <ChevronRight size={14} aria-hidden="true" />}</button></li>; })}</ol></nav>
     <form id="app-form" noValidate onSubmit={submit} aria-busy={busy || undefined}>{error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
       <div className="wizard-panels">
@@ -177,13 +204,15 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
           <div className="wizard-needs">
             <label className="check-row switch-row"><Switch checked={draft.database !== 'none'} onCheckedChange={value => update({ database: value ? (draft.database === 'external' ? 'external' : 'local') : 'none' })} aria-label="PostgreSQL database" /><span><strong>PostgreSQL database</strong><small>{result?.needs_postgres ? 'Detected from the repository.' : 'Not detected.'} Configure it in the Database step.</small></span></label>
             {draft.mode === 'native' && <label className="check-row switch-row"><Switch checked={draft.redis} onCheckedChange={value => update({ redis: value })} aria-label="Redis" /><span><strong>Redis</strong><small>{result?.needs_redis ? 'Detected from the repository.' : 'Not detected.'} A private Redis instance and REDIS_URL are created.</small></span></label>}
+            <label className="check-row switch-row"><Switch checked={draft.clickhouse} onCheckedChange={value => update({ clickhouse: value })} aria-label="ClickHouse" /><span><strong>ClickHouse</strong><small>{result?.needs_clickhouse ? 'Detected from the repository.' : 'Not detected.'} Configure it in the Database step.</small></span></label>
           </div>
           {result?.pins && Object.keys(result.pins).length > 0 && <div className="wizard-pins"><strong>Toolchain versions from the repository</strong><ul>{Object.entries(result.pins).map(([key, value]) => <li key={key}><span>{pinLabel(key)}</span><code>{value}</code></li>)}</ul></div>}
         </Panel>}
 
         {step === 3 && <Panel icon={<ServerIcon size={21} />} title="Server" description="The server builds and runs the application.">
           <fieldset className="wizard-choices"><legend className="field-label">Hosting server</legend>{servers.map(item => <Choice key={item.id} id={draft.serverID === item.id ? 'wizard-server_id' : undefined} name="server_id" value={item.id} checked={draft.serverID === item.id} onChange={() => update({ serverID: item.id })} title={item.name} description={item.url} />)}</fieldset>
-          {shown('server_id') && <p className="field-error">{shown('server_id')}</p>}
+          {shown('server_id') && shown('server_id') !== memoryBlocker && <p className="field-error">{shown('server_id')}</p>}
+          {memory && <p className={`build-memory-check build-memory-${memory.level}`} role={memory.level === 'ok' ? undefined : 'alert'}><Cpu size={18} /><span>{memory.message}{memory.estimate.basis.length > 0 && <small>Estimate: {memory.estimate.basis.join(', ')}.</small>}</span></p>}
           {draft.mode === 'container' ? <p className="inline-guidance"><Boxes size={18} />Container applications need Docker. If {server?.name || 'the server'} does not have it yet, Docker is installed and started automatically before the first deployment.</p> : <p className="inline-guidance"><ShieldCheck size={18} />Native applications run under systemd in their own system account. Docker is not required.</p>}
         </Panel>}
 
@@ -201,7 +230,8 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
           </fieldset>
           {draft.database === 'external' && <Field label="PostgreSQL connection URL" hint="Use a server-reachable host and require TLS." error={shown('database_url')}><Input id="wizard-database_url" name="database_url" type="password" autoComplete="new-password" value={draft.databaseURL} onChange={event => update({ databaseURL: event.target.value })} placeholder="postgres://…?sslmode=require" /></Field>}
           {draft.mode === 'native' ? <label className="check-row switch-row"><Switch checked={draft.redis} onCheckedChange={value => update({ redis: value })} aria-label="Create Redis on the server" /><span><strong>Create Redis on the server</strong><small>A private Redis instance; REDIS_URL is set automatically.</small></span></label> : <p className="inline-guidance">Redis for container applications is defined by the repository's service configuration.</p>}
-          {draft.database !== 'none' && <div className="backup-options"><div className="form-grid two"><Field label="Backup frequency"><select name="backup_hours" value={draft.backupHours} onChange={event => update({ backupHours: event.target.value })}><option value="0">Manual only</option><option value="1">Hourly</option><option value="24">Daily</option><option value="168">Weekly</option></select></Field></div><label className="check-row"><Input type="checkbox" checked={draft.offsite} onChange={event => update({ offsite: event.target.checked })} /><span><strong>Also copy to S3-compatible storage</strong><small>Requires verified workspace storage credentials.</small></span></label></div>}
+          <label className="check-row switch-row"><Switch checked={draft.clickhouse} onCheckedChange={value => update({ clickhouse: value })} aria-label="ClickHouse on this server" /><span><strong>ClickHouse on this server</strong><small>{result?.needs_clickhouse ? 'Detected from the repository. ' : ''}{draft.mode === 'native' ? 'A private ClickHouse database and user, backed up like PostgreSQL; ClickHouse is installed on first use.' : 'A private ClickHouse service started with the first deployment.'} CLICKHOUSE_URL, CLICKHOUSE_DATABASE, CLICKHOUSE_USER and CLICKHOUSE_PASSWORD are set automatically.</small></span></label>
+          {hasBackups(draft) && <div className="backup-options"><div className="form-grid two"><Field label="Backup frequency"><select name="backup_hours" value={draft.backupHours} onChange={event => update({ backupHours: event.target.value })}><option value="0">Manual only</option><option value="1">Hourly</option><option value="24">Daily</option><option value="168">Weekly</option></select></Field></div><label className="check-row"><Input type="checkbox" checked={draft.offsite} onChange={event => update({ offsite: event.target.checked })} /><span><strong>Also copy to S3-compatible storage</strong><small>Requires verified workspace storage credentials.</small></span></label></div>}
         </Panel>}
 
         {step === 6 && <Panel icon={<KeyRound size={21} />} title="Environment" description="Values the application needs before its first deployment.">
@@ -214,7 +244,7 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
           <Review draft={draft} serverName={server?.name} />
         </Panel>}
       </div>
-      <div className="wizard-actions"><Button type="button" variant="ghost" disabled={busy} onClick={() => step > 0 ? go(step - 1) : (location.hash = 'applications')}>{step > 0 ? <><ArrowLeft size={14} />Back</> : 'Cancel'}</Button><Button type="submit" variant="primary" pending={busy}>{step < lastStep ? <>Continue<ArrowRight size={15} /></> : <><Rocket size={15} />Create application</>}</Button></div>
+      <div className="wizard-actions"><Button type="button" variant="ghost" disabled={busy} onClick={() => step > 0 ? back() : goBack(href('applications'))}>{step > 0 ? <><ArrowLeft size={14} />Back</> : 'Cancel'}</Button><Button type="submit" variant="primary" pending={busy}>{step < lastStep ? <>Continue<ArrowRight size={15} /></> : <><Rocket size={15} />Create application</>}</Button></div>
     </form><p className="form-reassurance"><ShieldCheck size={14} />Your infrastructure. Your code. One place to deploy.</p></div>;
 }
 
@@ -281,7 +311,7 @@ function Review({ draft, serverName }: { draft: WizardDraft; serverName?: string
   const keyName = masterKeyName(draft);
   const variables = [...draft.env.map(row => row.name), ...(keyName && draft.masterKey.trim() ? [keyName] : [])];
   const database = draft.database === 'local' ? 'PostgreSQL on the server' : draft.database === 'external' ? 'Existing PostgreSQL' : 'None';
-  const backups = draft.database === 'none' ? '—' : `${({ '0': 'Manual only', '1': 'Hourly', '24': 'Daily', '168': 'Weekly' } as Record<string, string>)[draft.backupHours] || `${draft.backupHours} h`}${draft.offsite ? ' · offsite copy' : ''}`;
+  const backups = !hasBackups(draft) ? '—' : `${({ '0': 'Manual only', '1': 'Hourly', '24': 'Daily', '168': 'Weekly' } as Record<string, string>)[draft.backupHours] || `${draft.backupHours} h`}${draft.offsite ? ' · offsite copy' : ''}`;
   const rows: Array<[string, ReactNode]> = [
     ['Application', draft.id], ['Repository', `${draft.repository} @ ${draft.branch}`],
     ['Deployment', native ? 'Native (systemd)' : 'Containers (Docker)'], ['Runtime', `${runtime}${native && draft.framework && !['lidza', 'rails', 'go', draft.nativeRuntime].includes(draft.framework) ? ` · ${frameworkLabel(draft.framework)}` : ''}`],
@@ -289,7 +319,7 @@ function Review({ draft, serverName }: { draft: WizardDraft; serverName?: string
     ...(native && draft.nativeRuntime === 'static' ? [['Published directory', draft.staticOutput] as [string, ReactNode]] : []),
     ...(native && draft.nativeRuntime !== 'static' ? [['Processes', <ul className="wizard-review-list">{draft.processes.map(process => <li key={process.key}><code>{process.name}</code> {process.command}{process.web ? ' (web)' : ''}</li>)}</ul>] as [string, ReactNode], ['Readiness path', draft.healthPath || '—'] as [string, ReactNode]] : []),
     ['Server', serverName || draft.serverID], ['Hostnames', [draft.domain, ...draft.additionalDomains.map(row => row.value)].join(', ')],
-    ['Database', database], ...(native ? [['Redis', draft.redis ? 'Redis on the server' : 'None'] as [string, ReactNode]] : []), ['Backups', backups],
+    ['Database', database], ...(native ? [['Redis', draft.redis ? 'Redis on the server' : 'None'] as [string, ReactNode]] : []), ['ClickHouse', draft.clickhouse ? 'ClickHouse on the server' : 'None'], ['Backups', backups],
     ['Environment', variables.length ? variables.join(', ') : 'No variables'], ['Auto-deploy', draft.autoDeploy ? 'On branch pushes' : 'Manual'],
   ];
   return <dl className="review-box wizard-review">{rows.map(([label, value]) => <div key={label}><dt><span>{label}</span></dt><dd><strong>{value}</strong></dd></div>)}</dl>;

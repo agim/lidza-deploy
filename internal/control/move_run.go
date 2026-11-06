@@ -1,6 +1,7 @@
 package control
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -18,9 +19,17 @@ import (
 // The move runner executes a job's pending steps in order until it reaches
 // the cutover, fails, or finishes. One runner per job runs at a time; the
 // minute tick resumes jobs whose runner stopped, for example after a
-// restart of the control panel.
+// restart of the control panel. Every step runs through moveAttempt, which
+// retries transient failures with backoff (move_retry.go), cancels a
+// stalled attempt (move_progress.go) and stops an attempt the operator
+// aborted.
 
-var errMoveTimeout = errors.New("timed out")
+var (
+	errMoveTimeout = errors.New("timed out")
+	// errMoveStopped ends an attempt without a failure: the control panel
+	// shuts down (the tick resumes the step) or the move's state changed.
+	errMoveStopped = errors.New("the attempt stopped")
+)
 
 func (c *Control) startMoveRunner(ctx context.Context, id string) {
 	go c.runMove(ctx, id)
@@ -53,7 +62,7 @@ func (c *Control) runMove(ctx context.Context, id string) {
 	defer c.releaseMove(id)
 	for {
 		job, ok := c.moveJob(id)
-		if !ok {
+		if !ok || ctx.Err() != nil {
 			return
 		}
 		switch job.State {
@@ -63,43 +72,64 @@ func (c *Control) runMove(ctx context.Context, id string) {
 				c.enterMoveCutover(ctx, id)
 				return
 			}
+			// A destination prepared earlier may have been removed since (an
+			// operator deleted the application there, or an abort of another
+			// attempt cleaned it up): prepare it again instead of failing later.
+			if key != moveStepPrepare && job.TargetCreated && c.moveDestinationGone(ctx, job) {
+				if _, err := c.updateMove(id, func(job *MoveJob) error {
+					job.setStep(moveStepPrepare, "pending")
+					job.setStep(moveStepEnvironment, "pending")
+					job.logf(moveStepPrepare, "%s no longer has %s; preparing the destination and copying the environment again before %s.", job.TargetServer, job.AppID, key)
+					return nil
+				}); err != nil {
+					return
+				}
+				continue
+			}
 			if _, err := c.updateMove(id, func(job *MoveJob) error { job.setStep(key, "running"); return nil }); err != nil {
 				return
 			}
-			var err error
-			switch key {
-			case moveStepPrepare:
-				err = c.movePrepare(ctx, id)
-			case moveStepEnvironment:
-				err = c.moveCopyEnvironment(ctx, id)
-			case moveStepData:
-				err = c.moveCopyData(ctx, id, moveStepData)
-			case moveStepDeploy:
-				err = c.moveDeploy(ctx, id, moveStepDeploy, false)
-			default:
-				err = fmt.Errorf("unknown step %s", key)
-			}
-			if err != nil {
-				if ctx.Err() != nil {
-					// Shutting down: the step stays running and the tick
-					// resumes it after the restart.
-					return
+			progress, failure, err := c.moveAttempt(ctx, id, key, moveStateRunning, func(ctx context.Context) error {
+				switch key {
+				case moveStepPrepare:
+					return c.movePrepare(ctx, id)
+				case moveStepEnvironment:
+					return c.moveCopyEnvironment(ctx, id)
+				case moveStepData:
+					return c.moveCopyData(ctx, id, moveStepData)
+				case moveStepFiles:
+					return c.moveCopyFiles(ctx, id, moveStepFiles)
+				case moveStepDeploy:
+					return c.moveDeploy(ctx, id, moveStepDeploy, false)
 				}
-				c.failMove(ctx, id, key, err)
+				return fmt.Errorf("unknown step %s", key)
+			})
+			switch {
+			case err != nil:
+				// Shutting down (the step stays running and the tick resumes
+				// it after the restart) or the state changed (an abort).
+				continue
+			case failure != nil:
+				c.failMove(ctx, id, key, *failure, progress)
 				return
 			}
-			if _, err := c.updateMove(id, func(job *MoveJob) error { job.setStep(key, "done"); return nil }); err != nil {
+			if _, err := c.updateMove(id, func(job *MoveJob) error { job.setStep(key, "done"); job.setProgress(key, progress); return nil }); err != nil {
 				return
 			}
-		case moveStateSyncing:
-			c.runFinalSync(ctx, id)
-			return
-		case moveStateFinishing:
-			c.runMoveFinish(ctx, id)
-			return
-		case moveStateAborting:
-			c.runMoveAbort(ctx, id)
-			return
+		case moveStateSyncing, moveStateFinishing, moveStateAborting:
+			switch job.State {
+			case moveStateSyncing:
+				c.runFinalSync(ctx, id)
+			case moveStateFinishing:
+				c.runMoveFinish(ctx, id)
+			default:
+				c.runMoveAbort(ctx, id)
+			}
+			// Continue while the state moved on (an abort during a final
+			// sync); stop when the step left it unchanged.
+			if next, ok := c.moveJob(id); !ok || next.State == job.State {
+				return
+			}
 		default:
 			return
 		}
@@ -119,15 +149,118 @@ func nextMoveStep(job MoveJob) string {
 	return ""
 }
 
-func (c *Control) failMove(ctx context.Context, id, key string, cause error) {
+// moveAttempt runs one step until it succeeds, fails for good, or stops.
+// Transient failures are retried after their backoff while the move stays
+// in state. It returns the step's last progress; failure is set when the
+// step failed for good, err (errMoveStopped) when the attempt stopped
+// without a failure.
+func (c *Control) moveAttempt(ctx context.Context, id, step, state string, run func(context.Context) error) (*agent.Progress, *MoveFailure, error) {
+	for {
+		if !c.moveWaitRetry(ctx, id, step, state) {
+			return nil, nil, errMoveStopped
+		}
+		_, _ = c.updateMove(id, func(job *MoveJob) error {
+			if job.Failure == nil || job.Failure.NextRetry == nil {
+				return errMoveUnchanged
+			}
+			job.Failure.NextRetry = nil
+			job.logf(step, "Attempt %d/%d started.", job.Failure.Attempt+1, job.Failure.MaxAttempts)
+			return nil
+		})
+		attemptCtx, cancel := context.WithCancelCause(ctx)
+		end := c.beginMoveLive(attemptCtx, id, step)
+		c.watchMoveAttempt(id, state, cancel)
+		err := run(attemptCtx)
+		diagnostics := c.moveTakeDiagnostics(id)
+		progress := end()
+		cause := context.Cause(attemptCtx)
+		cancel(nil)
+		if err == nil {
+			_, _ = c.updateMove(id, func(job *MoveJob) error {
+				if job.Failure == nil && job.Stall == nil {
+					return errMoveUnchanged
+				}
+				if job.Failure != nil {
+					job.logf(step, "Succeeded after %d failed attempts.", job.Failure.Attempt)
+				}
+				job.Failure, job.Stall = nil, nil
+				return nil
+			})
+			return progress, nil, nil
+		}
+		if ctx.Err() != nil || errors.Is(cause, errMoveInterrupted) {
+			return progress, nil, errMoveStopped
+		}
+		if errors.Is(cause, errMoveStalled) {
+			err = moveTransientError("stalled", fmt.Errorf("%w for %s; the attempt was cancelled (%v)", errMoveStalled, moveDuration(c.moveStallLimits().cancel), err))
+		}
+		job, _ := c.moveJob(id)
+		failure := c.moveFailureFor(job, step, moveEngineOf(err), err)
+		failure.Diagnostics = diagnostics
+		if failure.Class == moveClassTransient && failure.Attempt < failure.MaxAttempts {
+			delay := c.moveRetryDelay(failure.Attempt + 1)
+			next := time.Now().UTC().Add(delay)
+			failure.NextRetry = &next
+			job, _ = c.updateMove(id, func(job *MoveJob) error {
+				job.Failure = &failure
+				job.Stall = nil
+				job.logf(step, "Transient failure (%s); attempt %d/%d in %s: %s", failure.Code, failure.Attempt+1, failure.MaxAttempts, moveDuration(delay), failure.Message)
+				for _, line := range diagnostics {
+					job.logf(step, "Diagnostics: %s", line)
+				}
+				return nil
+			})
+			c.reportMoveFailure(ctx, job, failure, false)
+			continue
+		}
+		return progress, &failure, nil
+	}
+}
+
+// moveWaitRetry waits until the step's scheduled retry is due. It returns
+// false when the move left state or the control panel shuts down.
+func (c *Control) moveWaitRetry(ctx context.Context, id, step, state string) bool {
+	for {
+		job, ok := c.moveJob(id)
+		if !ok || job.State != state {
+			return false
+		}
+		f := job.Failure
+		if f == nil || f.NextRetry == nil || f.Step != step {
+			return true
+		}
+		wait := time.Until(*f.NextRetry)
+		if wait <= 0 {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(min(wait, time.Second)):
+		}
+	}
+}
+
+// failMove fails a step for good; progress is the step's last live
+// progress, if any.
+func (c *Control) failMove(ctx context.Context, id, key string, failure MoveFailure, progress *agent.Progress) {
 	job, _ := c.updateMove(id, func(job *MoveJob) error {
 		job.setStep(key, "failed")
-		job.logf(key, "Failed: %s", cause)
+		job.setProgress(key, progress)
+		job.logf(key, "Failed (%s, attempt %d/%d): %s", failure.Class, failure.Attempt, failure.MaxAttempts, failure.Message)
+		if failure.Remediation != "" {
+			job.logf(key, "What to do: %s", failure.Remediation)
+		}
+		for _, line := range failure.Diagnostics {
+			job.logf(key, "Diagnostics: %s", line)
+		}
 		job.State = moveStateFailed
-		job.Error = cause.Error()
+		job.Error = failure.Message
+		job.Failure = &failure
+		job.Stall = nil
 		return nil
 	})
-	moveAudit(ctx, job, "step."+key, true)
+	c.reportMoveFailure(ctx, job, failure, true)
 }
 
 // movePoll calls check until it reports done, fails or the timeout passes.
@@ -194,6 +327,9 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 		return errors.New("the destination already has a native application with this id that this move did not create")
 	}
 	if !exists {
+		if err := c.moveClearRetained(ctx, job); err != nil {
+			return err
+		}
 		// Record the attempt first: an interrupted creation is then adopted
 		// on retry, or removed by an abort.
 		var err error
@@ -211,7 +347,13 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 		if spec.Data.Postgres || spec.Data.Redis {
 			c.moveLog(job.ID, moveStepPrepare, "Requesting PostgreSQL=%t and Redis=%t on the destination.", spec.Data.Postgres, spec.Data.Redis)
 		}
-		createErr := c.moveCall(ctx, 6*time.Minute, job.TargetServer, http.MethodPost, "/v1/native/apps", spec, nil)
+		if spec.Data.ClickHouse {
+			c.moveLog(job.ID, moveStepPrepare, "Requesting a ClickHouse database on the destination (release series %s when ClickHouse is installed there now).", cmp.Or(spec.Data.ClickHouseVersion, "latest LTS"))
+		}
+		var created struct {
+			IngressNote string `json:"ingress_note"`
+		}
+		createErr := c.moveCall(ctx, 6*time.Minute, job.TargetServer, http.MethodPost, "/v1/native/apps", spec, &created)
 		if c.agentCall(r, job.TargetServer, http.MethodGet, path, nil, &status) != nil || status.Application.ID != job.AppID {
 			if createErr != nil {
 				return fmt.Errorf("the destination could not create the application: %s", moveAgentError(createErr))
@@ -219,17 +361,21 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 			return errors.New("the destination did not report the created application")
 		}
 		c.moveLog(job.ID, moveStepPrepare, "Created the application on %s.", job.TargetServer)
+		if created.IngressNote != "" {
+			c.moveLog(job.ID, moveStepPrepare, "%s", created.IngressNote)
+		}
 	} else {
 		c.moveLog(job.ID, moveStepPrepare, "The application already exists on %s from an earlier attempt.", job.TargetServer)
 	}
 	native := status.Application
-	if job.NativeSpec.Data.Postgres || job.NativeSpec.Data.Redis {
+	if data := job.NativeSpec.Data; data.Postgres || data.Redis || data.ClickHouse {
 		var view agent.NativeHostDataView
 		if err := c.movePoll(ctx, 15*time.Minute, func() (bool, error) {
 			if err := c.agentCall(r, job.TargetServer, http.MethodGet, path+"/data", nil, &view); err != nil {
 				return false, nil
 			}
-			return (!job.NativeSpec.Data.Postgres || view.Postgres != nil && view.Postgres.Ready) && (!job.NativeSpec.Data.Redis || view.Redis != nil && view.Redis.Ready), nil
+			return (!data.Postgres || view.Postgres != nil && view.Postgres.Ready) && (!data.Redis || view.Redis != nil && view.Redis.Ready) &&
+				(!data.ClickHouse || view.ClickHouse != nil && view.ClickHouse.Ready), nil
 		}); err != nil {
 			return fmt.Errorf("the destination's data services are not ready: %w", err)
 		}
@@ -238,6 +384,11 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 		}
 		if view.Redis != nil {
 			c.moveLog(job.ID, moveStepPrepare, "Redis is ready on the destination.")
+		}
+		if job.ClickHouse != nil {
+			if err := c.movePrepareClickHouse(ctx, job); err != nil {
+				return err
+			}
 		}
 		_, err := c.updateMove(job.ID, func(job *MoveJob) error {
 			for i := range job.Databases {
@@ -249,6 +400,11 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 		})
 		if err != nil {
 			return err
+		}
+		for _, d := range job.Databases {
+			if d.Copyable && view.Postgres != nil {
+				c.moveCarryBeforeDeploy(ctx, job, d, view.Postgres.Resource)
+			}
 		}
 	}
 	_, err := c.updateMove(job.ID, func(job *MoveJob) error {
@@ -275,6 +431,9 @@ func (c *Control) movePrepareContainer(ctx context.Context, job MoveJob) error {
 			return err
 		}
 		if err := spec.Validate(); err != nil {
+			return err
+		}
+		if err := c.moveClearRetained(ctx, job); err != nil {
 			return err
 		}
 		var err error
@@ -362,7 +521,13 @@ func (c *Control) movePrepareContainer(ctx context.Context, job MoveJob) error {
 			return fmt.Errorf("database %s on the destination is not ready: %w", bound, err)
 		}
 		c.moveLog(job.ID, moveStepPrepare, "Database %s is ready on the destination.", bound)
+		c.moveCarryBeforeDeploy(ctx, job, d, bound)
 		if _, err := c.updateMove(job.ID, func(job *MoveJob) error { job.Databases[i].TargetID = bound; return nil }); err != nil {
+			return err
+		}
+	}
+	if job.ClickHouse != nil {
+		if err := c.movePrepareClickHouse(ctx, job); err != nil {
 			return err
 		}
 	}
@@ -381,22 +546,67 @@ func (c *Control) movePrepareContainer(ctx context.Context, job MoveJob) error {
 // ---- environment ---------------------------------------------------------------
 
 func (c *Control) moveCopyEnvironment(ctx context.Context, id string) error {
+	return c.moveCopyEnvironmentTo(ctx, id, moveStepEnvironment)
+}
+
+// moveEnsureEnvironment repeats the environment copy when a native
+// destination lacks variables the move copied earlier. Container
+// destinations keep their settings in the agent and cannot be read back.
+func (c *Control) moveEnsureEnvironment(ctx context.Context, id, step string) error {
 	job, _ := c.moveJob(id)
-	r := moveRequestFor(ctx)
+	if job.TargetRuntime != moveRuntimeNative || len(job.Plan.CopiedKeys) == 0 {
+		return nil
+	}
+	var values agent.MoveEnvironment
+	path := "/v1/move/apps/" + url.PathEscape(job.AppID) + "/environment"
+	if err := c.moveCall(ctx, time.Minute, job.TargetServer, http.MethodGet, path, nil, &values); err != nil {
+		return moveOn(job.TargetServer, fmt.Errorf("the destination environment could not be read: %w", err))
+	}
+	var missing []string
+	for _, key := range job.Plan.CopiedKeys {
+		if _, ok := values.Values[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	c.moveLog(id, step, "The destination lacks %d copied variable(s) (%s); copying the environment again before deploying.", len(missing), moveKeyList(missing))
+	return c.moveCopyEnvironmentTo(ctx, id, step)
+}
+
+// moveCopyEnvironmentTo copies the source's environment to the destination
+// and logs into step. A copy after the first one (the final sync) shows
+// which keys changed on the source since, and removes keys the source no
+// longer has.
+func (c *Control) moveCopyEnvironmentTo(ctx context.Context, id, step string) error {
+	job, _ := c.moveJob(id)
 	path := "/v1/move/apps/" + url.PathEscape(job.AppID) + "/environment"
 	var source agent.MoveEnvironment
-	if err := c.agentCall(r, job.SourceServer, http.MethodGet, path, nil, &source); err != nil {
-		return fmt.Errorf("the source environment could not be read: %s", moveAgentError(err))
+	if err := c.moveCall(ctx, time.Minute, job.SourceServer, http.MethodGet, path, nil, &source); err != nil {
+		return moveOn(job.SourceServer, fmt.Errorf("the source environment could not be read: %w", err))
 	}
 	var target *agent.MoveEnvironment
 	if job.TargetRuntime == moveRuntimeNative {
 		var values agent.MoveEnvironment
-		if err := c.agentCall(r, job.TargetServer, http.MethodGet, path, nil, &values); err != nil {
-			return fmt.Errorf("the destination environment could not be read: %s", moveAgentError(err))
+		if err := c.moveCall(ctx, time.Minute, job.TargetServer, http.MethodGet, path, nil, &values); err != nil {
+			return moveOn(job.TargetServer, fmt.Errorf("the destination environment could not be read: %w", err))
 		}
 		target = &values
 	}
 	changes, kinds, report := moveEnvironmentChanges(job, source, target)
+	digests := map[string]string{}
+	for _, key := range report.copied {
+		digests[key] = c.moveEnvDigest(job, key, source.Values[key])
+	}
+	var added, changed, removed []string
+	again := job.EnvDigests != nil
+	if again {
+		added, changed, removed = moveEnvironmentDiff(job.EnvDigests, digests)
+		for _, key := range removed {
+			changes[key] = nil
+		}
+	}
 	// Values exist only in this function's memory; logs name keys only.
 	clear(source.Values)
 	if target != nil {
@@ -409,21 +619,33 @@ func (c *Control) moveCopyEnvironment(ctx context.Context, id string) error {
 			patch.Branch, patch.Domain = job.Target.Branch, job.Target.Domain
 			settingsPath = "/v1/apps/" + url.PathEscape(job.AppID) + "/settings"
 		}
-		err := c.agentCall(r, job.TargetServer, http.MethodPatch, settingsPath, patch, nil)
+		err := c.moveCall(ctx, time.Minute, job.TargetServer, http.MethodPatch, settingsPath, patch, nil)
 		for key := range changes {
 			changes[key] = nil
 		}
 		if err != nil {
-			return fmt.Errorf("the destination rejected the environment: %s", moveAgentError(err))
+			return moveOn(job.TargetServer, fmt.Errorf("the destination rejected the environment: %w", err))
 		}
 	}
 	_, err := c.updateMove(id, func(job *MoveJob) error {
-		job.logf(moveStepEnvironment, "Copied %d variables: %s.", len(report.copied), moveKeyList(report.copied))
+		job.EnvDigests = digests
+		if again {
+			if len(added)+len(changed)+len(removed) == 0 {
+				job.logf(step, "Environment exported again: unchanged since the move copied it (%d variables).", len(report.copied))
+			} else {
+				job.logf(step, "Environment exported again: %d changed (%s), %d added (%s), %d removed (%s) on the source since the move copied it.", len(changed), moveKeyList(changed), len(added), moveKeyList(added), len(removed), moveKeyList(removed))
+			}
+			return nil
+		}
+		job.logf(step, "Copied %d variables%s: %s.", len(report.copied), moveSourceSummary(report.sources), moveKeyList(report.copied))
+		if len(report.rebuilt) > 0 {
+			job.logf(step, "The destination's own build provides %s (deploy defaults and image).", moveKeyList(report.rebuilt))
+		}
 		if len(report.mapped) > 0 {
-			job.logf(moveStepEnvironment, "Pointed %s at the destination's own data services.", moveKeyList(report.mapped))
+			job.logf(step, "Pointed %s at the destination's own data services.", moveKeyList(report.mapped))
 		}
 		if len(report.owned) > 0 {
-			job.logf(moveStepEnvironment, "Kept the destination's values for %s.", moveKeyList(report.owned))
+			job.logf(step, "Kept the destination's values for %s.", moveKeyList(report.owned))
 		}
 		return nil
 	})
@@ -439,7 +661,39 @@ func moveKeyList(keys []string) string {
 
 type moveEnvironmentReport struct {
 	copied, mapped, owned []string
+	// rebuilt are deploy-default and image variables a container
+	// destination's own build sets again; sources counts the copied
+	// variables by origin (settings, deploy defaults, image).
+	rebuilt []string
+	sources map[string]int
 }
+
+// moveSourceOrder is the order and wording of the copied-variable summary.
+var moveSourceOrder = []struct{ source, label string }{
+	{agent.EnvironmentSourcePanel, "from settings"},
+	{agent.EnvironmentSourceDefaults, "from deploy defaults"},
+	{agent.EnvironmentSourceImage, "from image"},
+}
+
+// moveSourceSummary is " (14 from settings, 6 from deploy defaults, 2 from
+// image)", or "" when every variable is a setting.
+func moveSourceSummary(counts map[string]int) string {
+	if counts[agent.EnvironmentSourceDefaults] == 0 && counts[agent.EnvironmentSourceImage] == 0 {
+		return ""
+	}
+	parts := []string{}
+	for _, entry := range moveSourceOrder {
+		if n := counts[entry.source]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, entry.label))
+		}
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// moveApplicationLidzaKeys are LIDZA_ variables that belong to the
+// application rather than the agent: its sealed-credentials key and its
+// framework mode.
+var moveApplicationLidzaKeys = map[string]bool{"LIDZA_MASTER_KEY": true, "LIDZA_MODE": true}
 
 var moveNativeReservedKeys = []string{"PATH", "HOME", "USER", "SHELL", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "BASH_ENV", "ENV", "BUNDLE_GEMFILE", "PWD", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "NODE_VERSION"}
 
@@ -450,10 +704,14 @@ func moveDestinationOwned(key string, job MoveJob) bool {
 	switch {
 	case key == "PORT" || key == "LIDZA_ADDR" || key == "STORAGE_DIR":
 		return true
-	case strings.HasPrefix(key, "LIDZA_") && key != "LIDZA_MASTER_KEY":
+	case key == "LIDZA_MODE" && job.TargetRuntime == moveRuntimeNative:
+		return true // a native host sets the framework mode itself and refuses it as a setting
+	case strings.HasPrefix(key, "LIDZA_") && !moveApplicationLidzaKeys[key]:
 		return true
 	case strings.HasPrefix(key, "DEPLOY_GATEWAY_"):
 		return true
+	case job.ClickHouse != nil && slices.Contains(agent.ClickHouseEnvironmentKeys, key):
+		return true // the destination's own ClickHouse database
 	}
 	if job.TargetRuntime == moveRuntimeNative {
 		if slices.Contains(moveNativeReservedKeys, key) || strings.HasPrefix(key, "ASDF_") || strings.HasPrefix(key, "NVM_") {
@@ -476,7 +734,7 @@ func moveDestinationOwned(key string, job MoveJob) bool {
 // environment (native destinations), used for mapping.
 func moveEnvironmentChanges(job MoveJob, source agent.MoveEnvironment, target *agent.MoveEnvironment) (map[string]*string, map[string]string, moveEnvironmentReport) {
 	changes, kinds := map[string]*string{}, map[string]string{}
-	var report moveEnvironmentReport
+	report := moveEnvironmentReport{sources: map[string]int{}}
 	databaseKeys := map[string]bool{}
 	for _, d := range job.Databases {
 		if d.Copyable {
@@ -511,6 +769,10 @@ func moveEnvironmentChanges(job MoveJob, source agent.MoveEnvironment, target *a
 			mapTo(key, "REDIS_URL")
 		case key == "CACHE_URL" && job.CacheLocal:
 			report.owned = append(report.owned, key)
+		case job.TargetRuntime == moveRuntimeContainer && source.Sources[key] != "" && source.Sources[key] != agent.EnvironmentSourcePanel:
+			// A container destination builds the same manifest and image;
+			// storing these as settings would pin them past later changes.
+			report.rebuilt = append(report.rebuilt, key)
 		default:
 			copy := value
 			changes[key] = &copy
@@ -518,8 +780,10 @@ func moveEnvironmentChanges(job MoveJob, source agent.MoveEnvironment, target *a
 				kinds[key] = kind
 			}
 			report.copied = append(report.copied, key)
+			report.sources[cmp.Or(source.Sources[key], agent.EnvironmentSourcePanel)]++
 		}
 	}
+	slices.Sort(report.rebuilt)
 	slices.Sort(report.copied)
 	slices.Sort(report.mapped)
 	slices.Sort(report.owned)
@@ -528,68 +792,37 @@ func moveEnvironmentChanges(job MoveJob, source agent.MoveEnvironment, target *a
 
 // ---- data -----------------------------------------------------------------------
 
+// moveCopyData copies the databases (data step and final sync) through
+// their engines (move_engine.go).
 func (c *Control) moveCopyData(ctx context.Context, id, step string) error {
 	job, _ := c.moveJob(id)
-	r := moveRequestFor(ctx)
-	for i, d := range job.Databases {
-		if !d.Copyable {
-			if d.Mode == "external" {
-				c.moveLog(id, step, "Database %s is external; the destination uses the same connection.", d.SourceID)
-			}
-			continue
-		}
-		var count struct {
-			Tables int `json:"tables"`
-		}
-		if err := c.agentCall(r, job.SourceServer, http.MethodGet, "/v1/move/databases/"+url.PathEscape(d.SourceID)+"/tables", nil, &count); err != nil {
-			return fmt.Errorf("database %s could not be measured: %s", d.SourceID, moveAgentError(err))
-		}
-		if count.Tables == 0 {
-			if _, err := c.updateMove(id, func(job *MoveJob) error {
-				job.Databases[i].Skipped = "no tables"
-				job.logf(step, "Database %s has no tables; nothing to copy.", d.SourceID)
-				return nil
-			}); err != nil {
-				return err
-			}
-			continue
-		}
-		if d.TargetID == "" {
-			return fmt.Errorf("the destination database for %s is unknown; prepare the destination again", d.SourceID)
-		}
-		c.moveLog(id, step, "Taking a fresh backup of %s (%d tables) on %s.", d.SourceID, count.Tables, job.SourceServer)
-		record, err := c.moveFreshBackup(ctx, job.SourceServer, d.SourceID)
-		if err != nil {
-			return fmt.Errorf("the backup of %s failed: %w", d.SourceID, err)
-		}
-		c.moveLog(id, step, "Backup %s is ready (%s, SHA-256 %s…); streaming it to %s.", record.ID, moveSize(record.Size), record.SHA256[:12], job.TargetServer)
-		if err := c.moveTransferDump(ctx, job, d, record); err != nil {
-			return fmt.Errorf("copying %s failed: %w", d.SourceID, err)
-		}
-		if _, err := c.updateMove(id, func(job *MoveJob) error {
-			job.Databases[i].Copied, job.Databases[i].Bytes, job.Databases[i].Skipped = record.SHA256, record.Size, ""
-			job.logf(step, "Restored %s into %s on %s; the SHA-256 matched on both ends.", d.SourceID, d.TargetID, job.TargetServer)
-			return nil
-		}); err != nil {
-			return err
+	for _, d := range job.Databases {
+		if !d.Copyable && d.Mode == "external" {
+			c.moveLog(id, step, "Database %s is external; the destination uses the same connection.", d.SourceID)
 		}
 	}
-	if job.Redis {
-		c.moveLog(id, step, "Redis contents are not copied; the destination starts with an empty cache and queues.")
+	phase := movePhaseBulk
+	if step == moveStepFinalSync {
+		phase = movePhaseFinal
 	}
-	return nil
+	return c.runMoveEngines(ctx, id, step, phase, moveEnginePostgres, moveEngineClickHouse, moveEngineRedis)
 }
 
 func moveSize(n int64) string {
-	if n < 1<<20 {
+	switch {
+	case n < 1<<20:
 		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
+	case n < 1<<30:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
 	}
-	return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	return fmt.Sprintf("%.2f GiB", float64(n)/(1<<30))
 }
 
 // moveFreshBackup takes a backup through the source's normal backup
-// pipeline and returns its record once it is finished.
-func (c *Control) moveFreshBackup(ctx context.Context, serverID, database string) (agent.BackupRecord, error) {
+// pipeline and returns its record once it is finished. observe receives the
+// source's live progress of the backup while it runs (nil from agents that
+// do not report it).
+func (c *Control) moveFreshBackup(ctx context.Context, serverID, database string, observe func(*agent.Progress)) (agent.BackupRecord, error) {
 	r := moveRequestFor(ctx)
 	find := func() (agent.DatabaseView, error) {
 		var views []agent.DatabaseView
@@ -626,6 +859,9 @@ func (c *Control) moveFreshBackup(ctx context.Context, serverID, database string
 			return false, nil
 		}
 		if v.Operation != "" {
+			if observe != nil {
+				observe(v.Progress)
+			}
 			return false, nil
 		}
 		for _, b := range v.Backups {
@@ -663,8 +899,29 @@ func moveDeploymentFinished(status string) (finished, success bool) {
 // moveDeploy releases the source's commit on the destination and checks it
 // there. fresh starts a new deployment even when an earlier one succeeded.
 func (c *Control) moveDeploy(ctx context.Context, id, step string, fresh bool) error {
+	deployStarted := time.Now().UTC()
+	if step == moveStepDeploy {
+		// The destination may have been prepared again since the environment
+		// was copied (a removed destination, a retried attempt): when copied
+		// variables are missing there, the copy is repeated before anything
+		// runs, and logs only what changed.
+		if err := c.moveEnsureEnvironment(ctx, id, step); err != nil {
+			return err
+		}
+	}
 	job, _ := c.moveJob(id)
 	r := moveRequestFor(ctx)
+	if step == moveStepDeploy && job.Deployment == "" {
+		// The source may have been deployed while the move copied.
+		var source agent.MoveSource
+		if c.agentCall(r, job.SourceServer, http.MethodGet, "/v1/move/apps/"+url.PathEscape(job.AppID), nil, &source) == nil && source.Commit != "" && source.Commit != job.Commit {
+			job, _ = c.updateMove(id, func(job *MoveJob) error {
+				job.logf(step, "The source now runs commit %s (the move started with %s); the destination deploys it.", moveShortCommit(source.Commit), moveShortCommit(job.Commit))
+				job.Commit = source.Commit
+				return nil
+			})
+		}
+	}
 	deployment := agent.Deployment{}
 	reuse := false
 	if job.Deployment != "" && !fresh {
@@ -681,6 +938,7 @@ func (c *Control) moveDeploy(ctx context.Context, id, step string, fresh bool) e
 			return err
 		}
 	}
+	c.moveStage(id, fmt.Sprintf("deploying %s on %s (deployment %s)", moveShortCommit(job.Commit), job.TargetServer, deployment.ID), 0, nil)
 	if err := c.movePoll(ctx, 90*time.Minute, func() (bool, error) {
 		var d agent.Deployment
 		if err := c.agentCall(r, job.TargetServer, http.MethodGet, "/v1/deployments/"+url.PathEscape(deployment.ID), nil, &d); err != nil {
@@ -699,10 +957,17 @@ func (c *Control) moveDeploy(ctx context.Context, id, step string, fresh bool) e
 	}); err != nil {
 		return err
 	}
-	c.moveLog(id, step, "Deployment %s is %s on %s (commit %s).", deployment.ID, deployment.Status, job.TargetServer, moveShortCommit(deployment.Commit))
+	_, _ = c.updateMove(id, func(next *MoveJob) error {
+		next.DeployedCommit = cmp.Or(deployment.Commit, job.Commit)
+		// A source deploy during this deployment is not covered by it.
+		next.Stale = next.Commit != job.Commit || moveReleasedSince(next.SourceChanges, deployStarted)
+		next.logf(step, "Deployment %s is %s on %s (commit %s).", deployment.ID, deployment.Status, job.TargetServer, moveShortCommit(deployment.Commit))
+		return nil
+	})
 	if job.Commit != "" && deployment.Commit != "" && deployment.Commit != job.Commit {
 		c.moveLog(id, step, "Note: the destination runs commit %s; the source runs %s.", moveShortCommit(deployment.Commit), moveShortCommit(job.Commit))
 	}
+	c.moveStage(id, "checking the application's health on "+job.TargetServer, 0, nil)
 	var health agent.MoveHealth
 	if err := c.movePoll(ctx, 3*time.Minute, func() (bool, error) {
 		if err := c.agentCall(r, job.TargetServer, http.MethodPost, "/v1/move/apps/"+url.PathEscape(job.AppID)+"/health", nil, &health); err != nil {
@@ -725,6 +990,16 @@ func (c *Control) moveDeploy(ctx context.Context, id, step string, fresh bool) e
 		}
 	}
 	return nil
+}
+
+// moveReleasedSince reports a source deploy recorded after since.
+func moveReleasedSince(changes []MoveSourceChange, since time.Time) bool {
+	for _, change := range changes {
+		if change.Kind == moveChangeRelease && change.Time.After(since) {
+			return true
+		}
+	}
+	return false
 }
 
 func moveShortCommit(commit string) string {
@@ -811,49 +1086,78 @@ func (c *Control) enterMoveCutover(ctx context.Context, id string) {
 
 const moveMaintenanceMessage = "This application is moving to a new server and will be back in a few minutes."
 
+// runFinalSync freezes the source and copies its last state: it
+// reconciles settings, environment and release (move_reconcile.go), copies
+// every engine again and redeploys the destination. The application is
+// locked from here on (move_lock.go). Transient failures are retried with
+// the source kept in maintenance; a final failure lets the source serve
+// again and keeps the lock until the final sync is resumed or the move is
+// aborted.
 func (c *Control) runFinalSync(ctx context.Context, id string) {
 	job, err := c.updateMove(id, func(job *MoveJob) error {
-		job.setStep(moveStepFinalSync, "running")
-		job.logf(moveStepFinalSync, "Putting the source in maintenance to stop writes.")
+		if s := job.step(moveStepFinalSync); s == nil || s.Status != "running" {
+			job.setStep(moveStepFinalSync, "running")
+			job.logf(moveStepFinalSync, "Final sync: the application is locked; putting the source in maintenance to stop writes.")
+		}
 		job.SourceFrozen = true
 		return nil
 	})
 	if err != nil {
 		return
 	}
-	err = c.moveFreeze(ctx, job, true)
-	if err == nil {
-		c.moveLog(id, moveStepFinalSync, "The source is in maintenance; copying the databases again.")
-		err = c.moveCopyData(ctx, id, moveStepFinalSync)
+	moveAudit(ctx, job, "final_sync.start", false)
+	progress, failure, stop := c.moveAttempt(ctx, id, moveStepFinalSync, moveStateSyncing, func(ctx context.Context) error {
+		if err := c.moveFreeze(ctx, job, true); err != nil {
+			return moveOn(job.SourceServer, fmt.Errorf("the source could not enter maintenance: %w", err))
+		}
+		c.moveLog(id, moveStepFinalSync, "The source is in maintenance; reconciling the destination and copying the databases and files again.")
+		if err := c.moveReconcile(ctx, id, moveStepFinalSync); err != nil {
+			return err
+		}
+		if err := c.moveCopyData(ctx, id, moveStepFinalSync); err != nil {
+			return err
+		}
+		if err := c.moveCopyFiles(ctx, id, moveStepFinalSync); err != nil {
+			return err
+		}
+		return c.moveDeploy(ctx, id, moveStepFinalSync, true)
+	})
+	if stop != nil {
+		return
 	}
-	if err == nil {
-		err = c.moveDeploy(ctx, id, moveStepFinalSync, true)
-	}
-	if err != nil {
+	if failure != nil {
 		thaw := c.moveFreeze(ctx, job, false)
 		job, _ = c.updateMove(id, func(job *MoveJob) error {
 			job.setStep(moveStepFinalSync, "failed")
-			job.logf(moveStepFinalSync, "Failed: %s", err)
+			job.setProgress(moveStepFinalSync, progress)
+			job.logf(moveStepFinalSync, "Failed (%s, attempt %d/%d): %s", failure.Class, failure.Attempt, failure.MaxAttempts, failure.Message)
+			if failure.Remediation != "" {
+				job.logf(moveStepFinalSync, "What to do: %s", failure.Remediation)
+			}
 			if thaw == nil {
 				job.SourceFrozen = false
-				job.logf(moveStepFinalSync, "The source left maintenance and serves again.")
+				job.logf(moveStepFinalSync, "The source left maintenance and serves again; the application stays locked until the final sync is resumed or the move is aborted.")
 			} else {
 				job.logf(moveStepFinalSync, "The source could not leave maintenance (%s); abort or retry the final sync.", thaw)
 			}
 			job.State = moveStateCutover
-			job.Error = "final sync failed: " + err.Error()
+			job.Error = "final sync failed: " + failure.Message
+			job.Failure = failure
 			return nil
 		})
-		moveAudit(ctx, job, "final_sync", true)
+		c.reportMoveFailure(ctx, job, *failure, true)
 		return
 	}
 	job, _ = c.updateMove(id, func(job *MoveJob) error {
 		job.setStep(moveStepFinalSync, "done")
+		job.setProgress(moveStepFinalSync, progress)
 		job.FinalSynced = true
+		job.Error = ""
 		job.logf(moveStepFinalSync, "The destination has the source's final data. The source stays in maintenance; switch DNS now.")
 		job.State = moveStateCutover
 		return nil
 	})
+	c.clearMoveIncident(ctx, job)
 	moveAudit(ctx, job, "final_sync", false)
 	c.checkMoveDNS(ctx, id, false)
 }
@@ -889,31 +1193,85 @@ func (c *Control) moveFreeze(ctx context.Context, job MoveJob, freeze bool) erro
 // ---- finish ---------------------------------------------------------------------
 
 func (c *Control) runMoveFinish(ctx context.Context, id string) {
-	job, err := c.updateMove(id, func(job *MoveJob) error { job.setStep(moveStepFinish, "running"); return nil })
-	if err != nil {
+	if _, err := c.updateMove(id, func(job *MoveJob) error {
+		if s := job.step(moveStepFinish); s == nil || s.Status != "running" {
+			job.setStep(moveStepFinish, "running")
+		}
+		return nil
+	}); err != nil {
 		return
 	}
+	_, failure, stop := c.moveAttempt(ctx, id, moveStepFinish, moveStateFinishing, func(ctx context.Context) error {
+		return c.moveFinishOnce(ctx, id)
+	})
+	if stop != nil {
+		return
+	}
+	if failure != nil {
+		c.failMove(ctx, id, moveStepFinish, *failure, nil)
+		return
+	}
+	job, _ := c.updateMove(id, func(job *MoveJob) error {
+		job.logf(moveStepFinish, "Retired the application on %s. Its databases and last backups stay there as retained resources.", job.SourceServer)
+		if left := moveLeftBehind(*job); len(left) > 0 {
+			job.logf(moveStepFinish, "Summary: tables left behind as chosen (schema only, no rows on %s): %s.", job.TargetServer, strings.Join(left, ", "))
+		}
+		job.setStep(moveStepFinish, "done")
+		if s := job.step(moveStepFinalSync); s != nil && s.Status == "pending" {
+			s.Status = "skipped"
+		}
+		job.State = moveStateFinished
+		job.SourceFrozen = false
+		job.Error, job.Failure = "", nil
+		return nil
+	})
+	c.clearMoveIncident(ctx, job)
+	moveAudit(ctx, job, "finish", false)
+}
+
+// moveFinishOnce switches the application to the destination and retires
+// the source; each part is idempotent. A move finished without a final sync
+// reconciles the destination first, so a source deploy or configuration
+// change made meanwhile is not lost.
+func (c *Control) moveFinishOnce(ctx context.Context, id string) error {
+	job, _ := c.moveJob(id)
 	r := moveRequestFor(ctx)
 	if !job.Switched {
+		if !job.FinalSynced {
+			if err := c.moveReconcile(ctx, id, moveStepFinish); err != nil {
+				return err
+			}
+			if job, _ = c.moveJob(id); job.Stale {
+				if err := c.moveDeploy(ctx, id, moveStepFinish, true); err != nil {
+					return err
+				}
+			}
+			job, _ = c.moveJob(id)
+		}
 		if job.TargetRuntime == moveRuntimeNative {
 			var status agent.NativeStatus
 			if err := c.agentCall(r, job.TargetServer, http.MethodGet, "/v1/native/apps/"+url.PathEscape(job.AppID), nil, &status); err != nil || status.Application.ID != job.AppID {
-				c.failMove(ctx, id, moveStepFinish, errors.New("the destination application is unavailable"))
-				return
+				if err == nil {
+					err = errors.New("the destination application is unavailable")
+				}
+				return moveOn(job.TargetServer, fmt.Errorf("the destination application is unavailable: %w", err))
 			}
 			job.Target.Native = &status.Application
 		}
 		if err := c.switchMovedApplication(job); err != nil {
-			c.failMove(ctx, id, moveStepFinish, err)
-			return
+			return moveOperatorError("record_changed", err.Error(), "Review the application in the panel; abort the move if its record was changed on purpose.")
 		}
 		job, _ = c.moveJob(id)
 		moveAudit(ctx, job, "switch", false)
 	}
+	c.moveCleanupEngines(ctx, id, moveStepFinish)
 	var retireErr error
+	// The source's data is the application's own: its retained resource
+	// records the move as switched, so it is never treated as a copy.
+	retire := agent.AppRemoveRequest{Origin: moveRetainedOrigin(job, true)}
 	if job.SourceRuntime == moveRuntimeNative {
 		path := "/v1/native/apps/" + url.PathEscape(job.AppID)
-		retireErr = c.moveCall(ctx, 6*time.Minute, job.SourceServer, http.MethodDelete, path, nil, nil)
+		retireErr = c.moveCall(ctx, 6*time.Minute, job.SourceServer, http.MethodDelete, path, retire, nil)
 		if retireErr != nil {
 			var status agent.NativeStatus
 			if c.agentCall(r, job.SourceServer, http.MethodGet, path, nil, &status) != nil {
@@ -921,23 +1279,17 @@ func (c *Control) runMoveFinish(ctx context.Context, id string) {
 			}
 		}
 	} else {
-		retireErr = c.moveCall(ctx, 6*time.Minute, job.SourceServer, http.MethodDelete, "/v1/apps/"+url.PathEscape(job.AppID), nil, nil)
+		retireErr = c.moveCall(ctx, 6*time.Minute, job.SourceServer, http.MethodDelete, "/v1/apps/"+url.PathEscape(job.AppID), retire, nil)
 	}
 	if retireErr != nil {
-		c.failMove(ctx, id, moveStepFinish, fmt.Errorf("the application now runs on %s, but retiring it on %s failed: %s; continue to retry", job.TargetServer, job.SourceServer, moveAgentError(retireErr)))
-		return
+		return moveOn(job.SourceServer, fmt.Errorf("the application now runs on %s, but retiring it on %s failed: %w", job.TargetServer, job.SourceServer, retireErr))
 	}
-	job, _ = c.updateMove(id, func(job *MoveJob) error {
-		job.logf(moveStepFinish, "Retired the application on %s. Its databases and last backups stay there as retained resources.", job.SourceServer)
-		job.setStep(moveStepFinish, "done")
-		if s := job.step(moveStepFinalSync); s != nil && s.Status == "pending" {
-			s.Status = "skipped"
-		}
-		job.State = moveStateFinished
-		job.SourceFrozen = false
-		return nil
-	})
-	moveAudit(ctx, job, "finish", false)
+	return nil
+}
+
+// moveCleanupEngines removes every engine's temporary artifacts.
+func (c *Control) moveCleanupEngines(ctx context.Context, id, step string) {
+	moveCleanupOnce(ctx, c.moveEngines(moveRun{c: c, id: id, step: step, phase: movePhaseBulk}))
 }
 
 // switchMovedApplication makes the destination the live record: same id,
@@ -1007,27 +1359,24 @@ func (c *Control) runMoveAbort(ctx context.Context, id string) {
 			return nil
 		})
 	}
+	c.moveCleanupEngines(ctx, id, moveStepPlan)
+	gone := false
 	if job.TargetCreated {
 		var err error
-		if job.TargetRuntime == moveRuntimeNative {
-			path := "/v1/native/apps/" + url.PathEscape(job.AppID)
-			err = c.moveCall(ctx, 6*time.Minute, job.TargetServer, http.MethodDelete, path+"?purge=1", nil, nil)
-			if err != nil {
-				var status agent.NativeStatus
-				if c.agentCall(r, job.TargetServer, http.MethodGet, path, nil, &status) != nil {
-					err = nil
-				}
-			}
-		} else {
-			err = c.moveCall(ctx, 6*time.Minute, job.TargetServer, http.MethodDelete, "/v1/apps/"+url.PathEscape(job.AppID), nil, nil)
-		}
-		if err != nil {
+		if gone, err = c.moveRemoveTarget(ctx, r, job); err != nil {
 			fail(fmt.Errorf("the destination application could not be removed: %s", moveAgentError(err)))
 			return
 		}
+	} else {
+		c.moveLog(id, moveStepPlan, "This move created nothing on %s; nothing to remove there.", job.TargetServer)
 	}
 	job, _ = c.updateMove(id, func(job *MoveJob) error {
-		if job.TargetCreated {
+		switch {
+		case job.TargetCreated && gone:
+			job.logf(moveStepPlan, "%s on %s was already gone; nothing left to remove there.", job.AppID, job.TargetServer)
+		case job.TargetCreated && !job.Switched:
+			job.logf(moveStepPlan, "Removed the application from %s with the data copied there: the move never switched, so the copy is not retained.", job.TargetServer)
+		case job.TargetCreated:
 			job.logf(moveStepPlan, "Removed the application from %s. Databases copied there stay as retained resources with their backups.", job.TargetServer)
 		}
 		job.TargetCreated = false
@@ -1038,10 +1387,59 @@ func (c *Control) runMoveAbort(ctx context.Context, id string) {
 		}
 		job.logf(moveStepPlan, "Move aborted; the application keeps running on %s.", job.SourceServer)
 		job.State = moveStateAborted
-		job.Error = ""
+		job.Error, job.Failure, job.Stall = "", nil, nil
 		return nil
 	})
+	c.clearMoveIncident(ctx, job)
 	moveAudit(ctx, job, "abort", false)
+}
+
+// moveRemoveTarget removes the application the move created on the
+// destination. It reports gone when the destination answered that the
+// application does not exist; any other failure (the agent restarting or
+// unreachable, a busy application) is an error, so the abort is retried
+// instead of leaving the destination's folder, units, account and
+// databases behind. Before the switch the data there is a copy of the
+// source's and is deleted with the application; after it the destination's
+// data is retained like any removed application's.
+func (c *Control) moveRemoveTarget(ctx context.Context, r *http.Request, job MoveJob) (bool, error) {
+	remove := agent.AppRemoveRequest{Origin: moveRetainedOrigin(job, job.Switched), DeleteData: !job.Switched}
+	if job.TargetRuntime != moveRuntimeNative {
+		return false, c.moveCall(ctx, 6*time.Minute, job.TargetServer, http.MethodDelete, "/v1/apps/"+url.PathEscape(job.AppID), remove, nil)
+	}
+	path := "/v1/native/apps/" + url.PathEscape(job.AppID)
+	err := c.moveCall(ctx, 6*time.Minute, job.TargetServer, http.MethodDelete, path+"?purge=1", remove, nil)
+	if err == nil {
+		return false, nil
+	}
+	var status agent.NativeStatus
+	lookup := c.agentCall(r, job.TargetServer, http.MethodGet, path, nil, &status)
+	if moveNativeAbsent(lookup) {
+		return true, nil
+	}
+	return false, err
+}
+
+// moveNativeAbsent reports an agent's answer that a native application is
+// not registered there; an unreachable agent is not an answer.
+// moveDestinationGone reports that the destination agent definitely no
+// longer has the application this move created. An unreachable agent is not
+// "gone": the step then fails and retries as usual.
+func (c *Control) moveDestinationGone(ctx context.Context, job MoveJob) bool {
+	r := moveRequestFor(ctx)
+	if job.TargetRuntime == moveRuntimeNative {
+		var status agent.NativeStatus
+		return moveNativeAbsent(c.agentCall(r, job.TargetServer, http.MethodGet, "/v1/native/apps/"+url.PathEscape(job.AppID), nil, &status))
+	}
+	var settings agent.Settings
+	err := c.agentCall(r, job.TargetServer, http.MethodGet, "/v1/apps/"+url.PathEscape(job.AppID)+"/settings", nil, &settings)
+	var answer *agentHTTPError
+	return errors.As(err, &answer) && answer.status == http.StatusNotFound
+}
+
+func moveNativeAbsent(err error) bool {
+	var answer *agentHTTPError
+	return errors.As(err, &answer) && (answer.status == http.StatusNotFound || strings.Contains(answer.message, "not registered"))
 }
 
 // ---- tick -----------------------------------------------------------------------
@@ -1053,7 +1451,7 @@ func (c *Control) moveTick(ctx context.Context) {
 		base = audit.System(context.WithoutCancel(ctx), "move")
 	}
 	c.mu.Lock()
-	resume, cutover := []string{}, []string{}
+	resume, cutover, early := []string{}, []string{}, []string{}
 	for id, job := range c.data.Moves {
 		switch job.State {
 		case moveStateRunning, moveStateSyncing, moveStateFinishing, moveStateAborting:
@@ -1063,8 +1461,14 @@ func (c *Control) moveTick(ctx context.Context) {
 		case moveStateCutover, moveStateReady:
 			cutover = append(cutover, id)
 		}
+		if job.State == moveStateRunning || job.State == moveStateFailed {
+			early = append(early, id)
+		}
 	}
 	c.mu.Unlock()
+	for _, id := range early {
+		c.checkMoveEarlyDNS(ctx, id)
+	}
 	for _, id := range resume {
 		c.startMoveRunner(base, id)
 	}

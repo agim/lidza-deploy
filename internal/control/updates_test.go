@@ -207,3 +207,131 @@ func TestAutomaticModeQueuesWithoutAnOpenBrowser(t *testing.T) {
 		t.Fatal("automatic durable tick did not queue CLI upgrade", posts, v)
 	}
 }
+
+func TestUpdateTickWaitsForMovesInACopy(t *testing.T) {
+	token := strings.Repeat("a", 32)
+	cfg := Config{PublicURL: "https://deploy.example", User: "operator@example.com", Password: strings.Repeat("p", 20), DataDir: t.TempDir(), Key: []byte(strings.Repeat("k", 32)),
+		Servers: []Server{{ID: "local", Name: "GUI", URL: "http://127.0.0.1:9090", Token: token}, {ID: "alpha", Name: "Alpha", URL: "https://alpha.example", Token: token}, {ID: "beta", Name: "Beta", URL: "https://beta.example", Token: token}}}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.releaseCheck = func(*http.Request) (string, error) { return "v0.2.15", nil }
+	posts := []string{}
+	c.client = &http.Client{Transport: updateTransport(func(r *http.Request) (*http.Response, error) {
+		body := `{"current":"v0.2.14","state":"idle","supported":true}`
+		if r.Method == "POST" {
+			posts = append(posts, r.URL.Host)
+			body = `{"status":"queued"}`
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	setMove := func(id string, change func(*MoveJob)) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.data.Moves == nil {
+			c.data.Moves = map[string]MoveJob{}
+		}
+		job := c.data.Moves[id]
+		change(&job)
+		c.data.Moves[id] = job
+	}
+	steps := func(running string) []MoveStep {
+		out := []MoveStep{}
+		for _, s := range moveStepTitles {
+			status := "done"
+			if s.key == running {
+				status = "running"
+			}
+			out = append(out, MoveStep{Key: s.key, Title: s.title, Status: status})
+		}
+		return out
+	}
+	// The shop moves from alpha to beta and is copying its data.
+	setMove("m1", func(job *MoveJob) {
+		*job = MoveJob{ID: "m1", AppID: "shop", SourceServer: "alpha", TargetServer: "beta", State: moveStateRunning, Steps: steps(moveStepData)}
+	})
+	tick := func() {
+		t.Helper()
+		if err := c.updateTick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/control/updates/install", strings.NewReader(`{}`))
+	r.SetPathValue("action", "install")
+	c.updates(w, r)
+	if w.Code != 202 {
+		t.Fatal(w.Code, w.Body)
+	}
+	target := func(id string) UpdateTarget {
+		for _, t := range c.updateSettingsSnapshot().Targets {
+			if t.ServerID == id {
+				return t
+			}
+		}
+		return UpdateTarget{}
+	}
+	tick()
+	if got := target("alpha"); got.State != "waiting" || got.Message != "Waiting for the move of shop to Beta to reach a safe point" || len(posts) != 0 {
+		t.Fatalf("the move's source agent was not held: %+v %v", got, posts)
+	}
+	// Waiting at the cutover is a safe point: the agents update.
+	setMove("m1", func(job *MoveJob) { job.State = moveStateCutover; job.Steps = steps("") })
+	tick()
+	tick()
+	if len(posts) != 1 || posts[0] != "alpha.example" {
+		t.Fatalf("alpha not dispatched once the move waited: %v", posts)
+	}
+	// A move's final sync between two other servers still holds the panel
+	// host, which relays every move's streams, but not an uninvolved agent.
+	setMove("m2", func(job *MoveJob) {
+		*job = MoveJob{ID: "m2", AppID: "blog", SourceServer: "alpha", TargetServer: "gamma", State: moveStateSyncing, Steps: steps(moveStepFinalSync)}
+	})
+	v := c.updateSettingsSnapshot()
+	for i := range v.Targets {
+		if v.Targets[i].ServerID == "alpha" {
+			v.Targets[i].State = "succeeded"
+		}
+	}
+	if err := c.saveUpdateSettings(v); err != nil {
+		t.Fatal(err)
+	}
+	tick()
+	if len(posts) != 2 || posts[1] != "beta.example" {
+		t.Fatalf("beta is not part of the final sync: %v", posts)
+	}
+	v = c.updateSettingsSnapshot()
+	for i := range v.Targets {
+		if v.Targets[i].ServerID == "beta" {
+			v.Targets[i].State = "succeeded"
+		}
+	}
+	if err := c.saveUpdateSettings(v); err != nil {
+		t.Fatal(err)
+	}
+	tick()
+	if got := target("local"); got.State != "waiting" || got.Message != "Waiting for the move of blog to gamma to reach a safe point" || len(posts) != 2 {
+		t.Fatalf("the panel host was not held during a final sync: %+v %v", got, posts)
+	}
+	// The hold survives a restart of the panel and ends with the move.
+	c2, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2.client, c2.releaseCheck = c.client, c.releaseCheck
+	if err := c2.updateTick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 2 {
+		t.Fatalf("restarted panel dispatched itself during a move: %v", posts)
+	}
+	setMove("m2", func(job *MoveJob) { job.State = moveStateFinished; job.Steps = steps("") })
+	if err := c.save(); err != nil {
+		t.Fatal(err)
+	}
+	tick()
+	if got := target("local"); got.State != "updating" || len(posts) != 3 || posts[2] != "127.0.0.1:9090" {
+		t.Fatalf("the panel host was not dispatched once the move finished: %+v %v", got, posts)
+	}
+}

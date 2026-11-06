@@ -26,7 +26,7 @@ const assert = require('node:assert/strict');
         if (path.endsWith('/control/deployments')) return route.fulfill({ json: { deployments: [], unavailable_servers: [] } });
         return route.fulfill({ json: {} });
       });
-      await page.goto(`${process.env.TEST_WEB_URL || 'http://127.0.0.1:8880'}/console.html#servers`);
+      await page.goto(`${process.env.TEST_WEB_URL || 'http://127.0.0.1:8880'}/console/servers`);
       await page.getByText('16.3%', { exact: true }).waitFor();
       const resources = page.getByRole('region', { name: 'Server resources' });
       await resources.getByText('2.0 GiB used', { exact: true }).waitFor();

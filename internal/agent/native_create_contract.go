@@ -49,8 +49,14 @@ type NativeDataRequest struct {
 	Postgres            bool   `json:"postgres,omitempty"`
 	Redis               bool   `json:"redis,omitempty"`
 	ExternalDatabaseURL string `json:"external_database_url,omitempty"`
-	BackupHours         int    `json:"backup_hours,omitempty"`
-	Offsite             bool   `json:"offsite,omitempty"`
+	// ClickHouse provisions a database on the host's ClickHouse server,
+	// installing it on first use. ClickHouseVersion requests a release
+	// series (such as 26.8) for that installation, for example the series
+	// of the server an application moves from.
+	ClickHouse        bool   `json:"clickhouse,omitempty"`
+	ClickHouseVersion string `json:"clickhouse_version,omitempty"`
+	BackupHours       int    `json:"backup_hours,omitempty"`
+	Offsite           bool   `json:"offsite,omitempty"`
 }
 
 // NativeDataGrant is what provisioning hands back: environment values to add
@@ -89,6 +95,13 @@ var provisionNativeData = func(ctx context.Context, m *Manager, id string, accou
 // a final backup. Provided by native_hostdata.go.
 var releaseNativeData = func(ctx context.Context, m *Manager, id string) error {
 	return errNativeCreateUnavailable
+}
+
+// retainNativeData keeps the application's provisioned data services as a
+// retained resource when the application is removed. Provided by
+// native_hostdata.go.
+var retainNativeData = func(ctx context.Context, m *Manager, id string, origin *RetainedOrigin) (string, error) {
+	return "", errNativeCreateUnavailable
 }
 
 // ensureDocker installs and starts the container runtime on demand, for

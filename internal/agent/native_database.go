@@ -25,22 +25,51 @@ import (
 // resource adoption, independently of service/deployment ownership. The common
 // backup scheduler may run after adoption; no Rails process is booted or probed.
 type NativeDatabasePolicy struct {
-	Enabled        bool     `json:"enabled"`
-	AppID          string   `json:"app_id"`
-	EnvironmentKey string   `json:"environment_key"`
-	Roles          []string `json:"roles"`
-	Host           string   `json:"host"`
-	Port           string   `json:"port"`
-	// MaintenancePort is the direct PostgreSQL port behind a loopback
-	// connection pooler (for example PgBouncer on Port). The application keeps
-	// its pooled URL; dumps and identity checks use the same host on this port.
-	MaintenancePort string       `json:"maintenance_port,omitempty"`
-	ConfigSHA256    string       `json:"config_sha256"`
-	PostgresMajor   int          `json:"postgres_major"`
-	DumpSHA256      string       `json:"dump_sha256"`
-	SQLitePath      string       `json:"sqlite_path,omitempty"` // Existing file relative to the application's shared directory.
-	ArchiveDatabase string       `json:"archive_database,omitempty"`
-	Backup          BackupPolicy `json:"backup"`
+	Enabled         bool     `json:"enabled"`
+	AppID           string   `json:"app_id"`
+	EnvironmentKey  string   `json:"environment_key"`
+	Roles           []string `json:"roles"`
+	Host            string   `json:"host"`
+	Port            string   `json:"port"`
+	MaintenancePort string   `json:"maintenance_port,omitempty"`
+	ConfigSHA256    string   `json:"config_sha256"`
+	PostgresMajor   int      `json:"postgres_major"`
+	DumpSHA256      string   `json:"dump_sha256"`
+	SQLitePath      string   `json:"sqlite_path,omitempty"` // Existing file relative to the application's shared directory.
+	ArchiveDatabase string   `json:"archive_database,omitempty"`
+	// ClickHouseDatabase names a ClickHouse database the agent provisioned
+	// on the host server (native_hostdata_clickhouse.go).
+	ClickHouseDatabase string       `json:"clickhouse_database,omitempty"`
+	Backup             BackupPolicy `json:"backup"`
+	// BeforeDeploy is the reviewed configuration's pre-deployment backup
+	// choice for this database (before_deploy.go). It is the initial
+	// default only: the panel's per-database setting, kept in agent state,
+	// takes over once an operator saves one. It is a release preference,
+	// not part of the resource's identity: a changed value applies without
+	// re-adoption. A primary, analytics or standalone database cannot
+	// choose never.
+	BeforeDeploy *BeforeDeployPolicy `json:"before_deploy,omitempty"`
+	// SkipReleaseBackup is the earlier spelling of before_deploy never. It
+	// is still read.
+	SkipReleaseBackup bool `json:"skip_release_backup,omitempty"`
+}
+
+// configuredBeforeDeploy returns the policy the configuration sets, if any:
+// before_deploy, or the legacy skip flag as never.
+func (p NativeDatabasePolicy) configuredBeforeDeploy() (BeforeDeployPolicy, bool) {
+	if p.BeforeDeploy != nil {
+		return *p.BeforeDeploy, true
+	}
+	if p.SkipReleaseBackup {
+		return BeforeDeployPolicy{Mode: BeforeDeployNever}, true
+	}
+	return BeforeDeployPolicy{}, false
+}
+
+// alwaysProtected reports whether the database must be backed up before
+// every release: a primary, analytics or standalone native database.
+func (p NativeDatabasePolicy) alwaysProtected() bool {
+	return p.ArchiveDatabase != "" || slices.Contains(p.Roles, "primary") || slices.Contains(p.Roles, "analytics")
 }
 
 type NativeDatabaseBinding struct {
@@ -52,7 +81,7 @@ type NativeDatabaseBinding struct {
 // application reaches through its own environment key (any name other than
 // DATABASE_URL), declared in a policy of its own.
 func validNativeDatabaseRole(role string) bool {
-	return slices.Contains([]string{"primary", "queue", "cache", "cable", "secondary"}, role)
+	return slices.Contains([]string{"primary", "queue", "cache", "cable", "secondary", "analytics"}, role)
 }
 
 // validNativeMaintenancePort reports whether p names a direct server port that
@@ -63,7 +92,34 @@ func validNativeMaintenancePort(p NativeDatabasePolicy) bool {
 	return err == nil && port >= 1 && port <= 65535 && strconv.Itoa(port) == p.MaintenancePort && p.MaintenancePort != p.Port && ip != nil && ip.IsLoopback()
 }
 
+// validateNativeClickHousePolicy checks the exact binding of a ClickHouse
+// database the agent provisioned: loopback HTTP, its own variable and the
+// analytics role. It has no dump tool: ClickHouse backs itself up.
+func validateNativeClickHousePolicy(id string, p NativeDatabasePolicy) error {
+	port, err := strconv.Atoi(p.Port)
+	if !idPattern.MatchString(id) || !p.Enabled || !idPattern.MatchString(p.AppID) || !nativeHexDigest(p.ConfigSHA256, 64) || p.DumpSHA256 != "" ||
+		!clickhouseNamePattern.MatchString(p.ClickHouseDatabase) || p.Host != "127.0.0.1" || err != nil || port < 1024 || port > 65535 || strconv.Itoa(port) != p.Port ||
+		p.EnvironmentKey != "CLICKHOUSE_URL" || !slices.Equal(p.Roles, []string{"analytics"}) || p.SQLitePath != "" || p.ArchiveDatabase != "" || p.MaintenancePort != "" || p.PostgresMajor != 0 {
+		return errors.New("native ClickHouse database requires its exact provisioned policy")
+	}
+	if p.Backup.Keep != 1 {
+		return errors.New("native database keeps exactly one finalized local backup")
+	}
+	return p.Backup.Validate()
+}
+
 func validateNativeDatabasePolicy(id string, p NativeDatabasePolicy) error {
+	if beforeDeploy, set := p.configuredBeforeDeploy(); set {
+		if err := beforeDeploy.Validate(); err != nil {
+			return err
+		}
+		if beforeDeploy.Mode == BeforeDeployNever && p.alwaysProtected() {
+			return errors.New("a primary, analytics or standalone native database cannot skip the pre-release backup")
+		}
+	}
+	if p.ClickHouseDatabase != "" {
+		return validateNativeClickHousePolicy(id, p)
+	}
 	if !idPattern.MatchString(id) || !p.Enabled || !nativeHexDigest(p.ConfigSHA256, 64) || !nativeHexDigest(p.DumpSHA256, 64) {
 		return errors.New("native database requires a reviewed exact resource policy")
 	}
@@ -107,7 +163,7 @@ func validateNativeDatabasePolicy(id string, p NativeDatabasePolicy) error {
 }
 
 func sameNativeDatabasePolicy(a, b NativeDatabasePolicy) bool {
-	return a.Enabled == b.Enabled && a.AppID == b.AppID && a.EnvironmentKey == b.EnvironmentKey && slices.Equal(a.Roles, b.Roles) && a.Host == b.Host && a.Port == b.Port && a.MaintenancePort == b.MaintenancePort && a.ConfigSHA256 == b.ConfigSHA256 && a.PostgresMajor == b.PostgresMajor && a.DumpSHA256 == b.DumpSHA256 && a.SQLitePath == b.SQLitePath && a.ArchiveDatabase == b.ArchiveDatabase && a.Backup == b.Backup
+	return a.Enabled == b.Enabled && a.AppID == b.AppID && a.EnvironmentKey == b.EnvironmentKey && slices.Equal(a.Roles, b.Roles) && a.Host == b.Host && a.Port == b.Port && a.MaintenancePort == b.MaintenancePort && a.ConfigSHA256 == b.ConfigSHA256 && a.PostgresMajor == b.PostgresMajor && a.DumpSHA256 == b.DumpSHA256 && a.SQLitePath == b.SQLitePath && a.ArchiveDatabase == b.ArchiveDatabase && a.ClickHouseDatabase == b.ClickHouseDatabase && a.Backup == b.Backup
 }
 
 var nativePostgresDatabasePath = regexp.MustCompile(`^/[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$`)
@@ -142,6 +198,9 @@ func validateNativeDatabaseURL(raw string, p NativeDatabasePolicy) error {
 func (m *Manager) nativeDatabaseSource(p NativeDatabasePolicy) (string, error) {
 	if raw, managed, err := m.nativeHostDataSource(p); managed {
 		return raw, err // provisioned by this agent; see native_hostdata.go
+	}
+	if p.ClickHouseDatabase != "" {
+		return "", errors.New("ClickHouse databases are provisioned by the agent for the applications it creates; they cannot be adopted")
 	}
 	if p.ArchiveDatabase != "" {
 		return nativeArchiveMetadataURL(p.ArchiveDatabase), nil
@@ -200,7 +259,7 @@ func probeNativeDatabase(ctx context.Context, raw string, major int) error {
 }
 
 func (m *Manager) adoptNativeDatabase(ctx context.Context, id string) error {
-	if m.cfg.Native == nil || m.cfg.NativeOnly || m.cfg.IngressOnly {
+	if m.cfg.Native == nil || m.cfg.IngressOnly {
 		return errors.New("this role cannot adopt native databases")
 	}
 	p, ok := m.cfg.Native.Databases[id]

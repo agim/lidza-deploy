@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/agim/lidza-deploy/internal/release"
 )
 
 // Hardened system units for applications with their own account. Each
@@ -34,6 +36,9 @@ type nativeUnitSpec struct {
 	Command    string // run with /bin/sh -c from <root>/current
 	MemoryMiB  int    // 0 = default
 	CPUPercent int    // 0 = no quota
+	// Ruby keeps gems installed outside Bundler in the application's own
+	// GEM_HOME (Rails applications).
+	Ruby bool
 }
 
 // nativeUnitName is the system unit of one application process.
@@ -102,6 +107,14 @@ func renderNativeUnit(spec nativeUnitSpec) (string, error) {
 	// The home directory is read-only to the process; caches go to its
 	// private /tmp.
 	line("Environment=XDG_CACHE_HOME=/tmp/.cache npm_config_cache=/tmp/.npm")
+	if spec.Ruby {
+		gems := nativeManagedGemEnvironment(spec.Root)
+		line("Environment=GEM_HOME=%s GEM_PATH=%s", gems["GEM_HOME"], gems["GEM_PATH"])
+	}
+	// The release's own toolchain settings (for example BUNDLER_VERSION),
+	// read through current so they follow rollbacks; the application's
+	// environment, read after it, can override them.
+	line("EnvironmentFile=-%s", filepath.Join(current, release.RuntimeEnvFile))
 	line("EnvironmentFile=%s", filepath.Join(shared, ".env"))
 	line("ExecStart=/bin/sh -c %s", systemdQuote("exec "+spec.Command))
 	line("Restart=on-failure")
@@ -224,11 +237,15 @@ func (m *Manager) nativeSystemServiceMetadata(ctx context.Context, units []strin
 	return m.nativeRootExec(ctx, args...)
 }
 
-func (m *Manager) nativeSystemServiceJournal(ctx context.Context, unit string) (string, error) {
-	if !nativeUnitPattern.MatchString(unit) {
-		return "", errors.New("invalid unit")
+func (m *Manager) nativeSystemServiceJournal(ctx context.Context, units ...string) (string, error) {
+	args := []string{"journalctl"}
+	for _, unit := range units {
+		if !nativeUnitPattern.MatchString(unit) {
+			return "", errors.New("invalid unit")
+		}
+		args = append(args, "--unit="+unit)
 	}
-	return m.nativeRootExec(ctx, "journalctl", "--unit="+unit, "--no-pager", "--lines=200", "--output=cat")
+	return m.nativeRootExec(ctx, append(args, nativeJournalFormat(units)...)...)
 }
 
 // nativeSystemServiceAction starts, stops or restarts a system unit. Start
@@ -260,11 +277,14 @@ func (m *Manager) nativeServiceMetadataFor(ctx context.Context, id string, units
 	return m.nativeServiceMetadata(ctx, units)
 }
 
-func (m *Manager) nativeServiceJournalFor(ctx context.Context, id, unit string) (string, error) {
-	if m.nativeCreatedSystemUnits(id) {
-		return m.nativeSystemServiceJournal(ctx, unit)
+func (m *Manager) nativeServiceJournalFor(ctx context.Context, id string, units ...string) (string, error) {
+	if len(units) == 0 {
+		return "", errors.New("select a native service")
 	}
-	return m.nativeServiceJournal(ctx, unit)
+	if m.nativeCreatedSystemUnits(id) {
+		return m.nativeSystemServiceJournal(ctx, units...)
+	}
+	return m.nativeServiceJournal(ctx, units...)
 }
 
 func (m *Manager) nativeServiceActionFor(ctx context.Context, id, unit, action string) error {

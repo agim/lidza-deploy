@@ -16,6 +16,10 @@ type NativeSettingsOverride struct {
 	Environment          map[string]*string `json:"environment,omitempty"`
 	InheritedEnvironment map[string]string  `json:"inherited_environment,omitempty"`
 	Kinds                map[string]string  `json:"kinds,omitempty"`
+	// Toolchains replaces the release policy's toolchains choice ("managed"
+	// or "account") for release-managed applications. The next deploy
+	// builds with it; the serving release is untouched.
+	Toolchains string `json:"toolchains,omitempty"`
 }
 
 func nativeManagedEnvironment(key string) bool {
@@ -72,7 +76,7 @@ func (m *Manager) patchNativeSettings(id string, p SettingsPatch) error {
 	if p.Domain != "" && p.Domain != a.Domain || p.AdditionalDomains != nil && !slices.Equal(*p.AdditionalDomains, a.AdditionalDomains) || p.CustomerHosts != nil && *p.CustomerHosts {
 		return errors.New("hostname and routing changes require a reviewed host change")
 	}
-	if p.Build != nil && p.Build.SourceDirectory != "" || p.RuntimeProfile != nil && *p.RuntimeProfile != "" || p.BackupBeforeDeploy != nil && !*p.BackupBeforeDeploy {
+	if p.Build != nil && p.Build.SourceDirectory != "" || p.RuntimeProfile != nil && *p.RuntimeProfile != "" || p.BackupBeforeDeploy != nil && !*p.BackupBeforeDeploy || p.Toolchains != nil {
 		return errors.New("this native publisher preserves the existing runtime and backup setup")
 	}
 	if p.FromDefaults {

@@ -137,7 +137,7 @@ func (c *Control) githubAppRoute(w http.ResponseWriter, r *http.Request) {
 			agent.Fail(w, 503, errors.New("could not save GitHub App; registration must be retried"))
 			return
 		}
-		http.Redirect(w, r, "/console.html?github=registered", http.StatusSeeOther)
+		http.Redirect(w, r, consolePath("integrations")+"?github=registered", http.StatusSeeOther)
 	case r.Method == "POST" && strings.HasSuffix(path, "/install"):
 		if a == nil {
 			agent.Fail(w, 409, errors.New("connect GitHub first"))
@@ -157,7 +157,7 @@ func (c *Control) githubAppRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		id, _ := strconv.ParseInt(r.URL.Query().Get("installation_id"), 10, 64)
 		if id <= 0 {
-			http.Redirect(w, r, "/console.html?github=pending", http.StatusSeeOther)
+			http.Redirect(w, r, consolePath("integrations")+"?github=pending", http.StatusSeeOther)
 			return
 		}
 		in, err := c.cfg.GitHub.Installation(ctx, a.App, id)
@@ -182,7 +182,7 @@ func (c *Control) githubAppRoute(w http.ResponseWriter, r *http.Request) {
 			agent.Fail(w, 503, errors.New("could not save installation"))
 			return
 		}
-		http.Redirect(w, r, "/console.html?github=connected", http.StatusSeeOther)
+		http.Redirect(w, r, consolePath("integrations")+"?github=connected", http.StatusSeeOther)
 	case r.Method == "DELETE" && strings.HasSuffix(path, "/app"):
 		c.mu.Lock()
 		defer c.mu.Unlock()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/retention"
 	"github.com/agim/lidza/packs/db"
 	"github.com/agim/lidza/packs/mail"
 	"github.com/agim/lidza/packs/storage"
@@ -98,9 +99,17 @@ func (c *Control) configureStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	c.data.BackupStorageLegacyPrefix = legacy
 	c.data.BackupStorage = &cfg
+	oldRetention := c.data.BackupRetention
+	if old == nil && oldRetention == nil {
+		// A new bucket starts with the default retention, cleaned up
+		// automatically; an existing bucket's history waits for review.
+		defaults := retention.DefaultSettings()
+		c.data.BackupRetention = &defaults
+	}
 	if err := c.save(); err != nil {
 		c.data.BackupStorage = old
 		c.data.BackupStorageLegacyPrefix = oldLegacy
+		c.data.BackupRetention = oldRetention
 		agent.Fail(w, 500, errors.New("could not save encrypted storage configuration"))
 		return
 	}

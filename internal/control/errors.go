@@ -237,9 +237,16 @@ func (c *Control) analyticsErrors(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if a.Native != nil {
+		// The optional analytics source reads a container application's
+		// framework error store through its agent-managed database binding.
+		// Native applications report through the console collector instead.
+		agent.Fail(w, 409, errors.New("optional app analytics is read from container applications' databases; this native application reports through the agent's console collector (Errors and Security activity)"))
+		return
+	}
 	var out agent.AppErrors
 	if err := c.agentCall(r, a.ServerID, "GET", "/v1/apps/"+a.ID+"/analytics-errors", nil, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, out)

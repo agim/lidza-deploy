@@ -43,6 +43,9 @@ func (m *Manager) bindDatabaseLocked(appID, key, id string) error {
 	if m.data.NativeDatabases[id].Policy.SQLitePath != "" {
 		return errors.New("an existing native SQLite file is bound to its reviewed application")
 	}
+	if m.data.NativeDatabases[id].Policy.ClickHouseDatabase != "" {
+		return errors.New("a ClickHouse database belongs to the application it was provisioned for")
+	}
 	if m.data.NativeDatabases[id].Policy.ArchiveDatabase != "" {
 		return errors.New("standalone native backup credentials cannot be attached to an application")
 	}
@@ -78,15 +81,35 @@ func (m *Manager) bindDatabaseLocked(appID, key, id string) error {
 
 // Backups gate both deploys and runtime reloads. A failed copy never activates
 // a candidate. Include the previous primary database when switching connections.
+// Each database's own before-deploy policy decides what the gate needs
+// (before_deploy.go): a fresh backup, a recent verified one, or none for a
+// secondary database set to scheduled backups only.
 func (m *Manager) backupBeforeRelease(ctx context.Context, ids []string) error {
 	for _, id := range ids {
-		minutes := m.cfg.PredeploymentBackupMinutes
-		if minutes <= 0 {
-			minutes = 10
+		m.mu.Lock()
+		decision := m.beforeDeployDecisionLocked(id, m.data.Databases[id].Backup.Offsite, time.Now().UTC())
+		m.mu.Unlock()
+		logBeforeDeployDecision(ctx, id, decision)
+		if decision.Skip || decision.Reuse.ID != "" {
+			continue
 		}
-		backupCtx, cancel := context.WithTimeout(ctx, time.Duration(minutes)*time.Minute)
+		if err := m.freshBackupBeforeRelease(ctx, []string{id}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// freshBackupBeforeRelease takes a new backup of each database whatever its
+// before-deploy policy: the gate's fresh backups and the final backup before
+// a database is removed. Each database's deadline follows its size and
+// backup history (backup_limit.go).
+func (m *Manager) freshBackupBeforeRelease(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		limit := m.backupLimitFor(ctx, id)
+		backupCtx, cancel := context.WithTimeout(ctx, limit.Limit)
 		// Scope cancellation to this database, including slot wait and required S3 upload.
-		err := m.backupBeforeReleaseDatabase(backupCtx, id, minutes)
+		err := m.backupBeforeReleaseDatabase(backupCtx, id, limit)
 		cancel()
 		if err != nil {
 			return err
@@ -95,8 +118,15 @@ func (m *Manager) backupBeforeRelease(ctx context.Context, ids []string) error {
 	return nil
 }
 
-func (m *Manager) backupBeforeReleaseDatabase(ctx context.Context, id string, minutes int) error {
-	commandDiagnostic(ctx, "backup", fmt.Sprintf("Creating the required pre-deployment backup for %s (limit: %d minutes, including required S3 upload). The image build starts after this completes.", id, minutes))
+func (m *Manager) backupBeforeReleaseDatabase(ctx context.Context, id string, limit backupLimit) error {
+	m.mu.Lock()
+	upload := ""
+	if m.data.Databases[id].Backup.Offsite {
+		upload = ", including the required S3 upload"
+	}
+	m.mu.Unlock()
+	commandDiagnostic(ctx, "backup", fmt.Sprintf("Pre-deployment backup limit for %s: %s (%s).", id, minutesText(limit.Limit), limit.Why))
+	commandDiagnostic(ctx, "backup", fmt.Sprintf("Creating the required pre-deployment backup for %s (limit: %s%s). %s", id, minutesText(limit.Limit), upload, backupThen(ctx)))
 	m.mu.Lock()
 	d, ok := m.data.Databases[id]
 	if !ok || !d.Ready || d.Operation != "" {
@@ -119,6 +149,8 @@ func (m *Manager) backupBeforeReleaseDatabase(ctx context.Context, id string, mi
 	m.mu.Unlock()
 	var record BackupRecord
 	var err error
+	ctx, endProgress := m.trackDatabase(ctx, id, "Waiting for an available database operation slot")
+	defer endProgress()
 	stopWaiting := backupProgress(ctx, "Waiting for an available database operation slot", nil)
 	select {
 	case m.databaseSlots <- struct{}{}:

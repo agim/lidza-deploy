@@ -12,7 +12,9 @@ import (
 func nativeStaticPublisherFixture(t *testing.T) (*Manager, NativeApplication, string) {
 	t.Helper()
 	m, app := nativeAstroFixture(t)
-	a, err := m.nativeRegistration(m.nativeDiscoveredApplication("marketing", nil, m.nativeObservedRoutes(context.Background())))
+	discovered := m.nativeDiscoveredApplication("marketing", nil)
+	discovered.Domain = "marketing.example.com"
+	a, err := m.nativeRegistration(discovered)
 	if err != nil {
 		t.Fatal(err)
 	}

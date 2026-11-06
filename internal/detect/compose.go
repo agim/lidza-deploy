@@ -143,17 +143,20 @@ func imageName(image string) string {
 var (
 	postgresImages    = map[string]bool{"postgres": true, "postgis": true, "pgvector": true, "timescaledb": true}
 	redisImages       = map[string]bool{"redis": true, "valkey": true, "keydb": true, "redis-stack-server": true}
+	clickhouseImages  = map[string]bool{"clickhouse-server": true, "clickhouse": true}
 	developmentImages = map[string]bool{"mailpit": true, "mailhog": true, "mailcatcher": true, "maildev": true, "adminer": true, "pgadmin4": true, "redis-commander": true, "redisinsight": true}
 )
 
 func isRedisImage(image string) bool { return redisImages[imageName(image)] }
+
+func isClickHouseImage(image string) bool { return clickhouseImages[imageName(image)] }
 
 func serviceRole(s ComposeService) string {
 	name := imageName(s.Image)
 	switch {
 	case s.Build:
 		return "source"
-	case postgresImages[name] || redisImages[name]:
+	case postgresImages[name] || redisImages[name] || clickhouseImages[name]:
 		return "data"
 	case developmentImages[name]:
 		return "development"

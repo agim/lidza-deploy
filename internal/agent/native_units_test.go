@@ -8,7 +8,7 @@ import (
 
 func TestNativeUnitRendersHardenedSystemUnit(t *testing.T) {
 	got, err := renderNativeUnit(nativeUnitSpec{App: "shop", Process: "web", User: "app-shop", Root: "/srv/lidza/apps/shop",
-		Command: `bin/rails server -b 127.0.0.1 -p "$PORT"`, CPUPercent: 150})
+		Command: `bin/rails server -b 127.0.0.1 -p "$PORT"`, CPUPercent: 150, Ruby: true})
 	if err != nil {
 		t.Fatal(err)
 	}

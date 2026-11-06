@@ -45,14 +45,31 @@ func (m *Manager) prepareClickHouse(ctx context.Context, a App, effective map[st
 			}
 		}
 	}
-	_, err, _ := m.clickhouseFlights.Do(a.ID, func() (any, error) {
+	if err := m.provisionManagedClickHouse(ctx, a.ID); err != nil {
+		return a, err
+	}
+	m.mu.Lock()
+	c = m.data.ClickHouses[a.ID]
+	a.Env = maps.Clone(m.data.Apps[a.ID].Env)
+	m.mu.Unlock()
+	maps.Copy(effective, c.env())
+	a.Networks = slices.Compact(slices.Sorted(slices.Values(append(a.Networks, c.Network))))
+	commandDiagnostic(ctx, "clickhouse", "ClickHouse is ready; private connection and network attached. The app applies its schema before readiness.")
+	return a, nil
+}
+
+// provisionManagedClickHouse reserves the service's credential, creates or
+// restarts its container and records the connection in the application's
+// environment. Concurrent calls for one application share one attempt.
+func (m *Manager) provisionManagedClickHouse(ctx context.Context, id string) error {
+	_, err, _ := m.clickhouseFlights.Do(id, func() (any, error) {
 		m.mu.Lock()
-		original, ok := m.data.Apps[a.ID]
+		original, ok := m.data.Apps[id]
 		if !ok || original.Retiring {
 			m.mu.Unlock()
 			return nil, errors.New("application unavailable")
 		}
-		c := m.data.ClickHouses[a.ID]
+		c := m.data.ClickHouses[id]
 		if c.Network == "" {
 			password := make([]byte, 32)
 			if _, err := rand.Read(password); err != nil {
@@ -60,9 +77,9 @@ func (m *Manager) prepareClickHouse(ctx context.Context, a App, effective map[st
 				return nil, err
 			}
 			c = ClickHouseResource{Network: "lidza-clickhouse-" + original.resourceID(), Password: hex.EncodeToString(password)}
-			m.data.ClickHouses[a.ID] = c
+			m.data.ClickHouses[id] = c
 			if err := m.save(); err != nil {
-				delete(m.data.ClickHouses, a.ID)
+				delete(m.data.ClickHouses, id)
 				m.mu.Unlock()
 				return nil, errors.New("could not save ClickHouse credentials")
 			}
@@ -83,7 +100,7 @@ func (m *Manager) prepareClickHouse(ctx context.Context, a App, effective map[st
 		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		original = m.data.Apps[a.ID]
+		original = m.data.Apps[id]
 		if original.ID == "" || original.Retiring {
 			return nil, errors.New("application unavailable")
 		}
@@ -96,26 +113,16 @@ func (m *Manager) prepareClickHouse(ctx context.Context, a App, effective map[st
 		if err := updated.Validate(); err != nil {
 			return nil, err
 		}
-		old := m.data.ClickHouses[a.ID]
+		old := m.data.ClickHouses[id]
 		c.Ready = true
-		m.data.ClickHouses[a.ID] = c
-		m.data.Apps[a.ID] = updated
+		m.data.ClickHouses[id] = c
+		m.data.Apps[id] = updated
 		if err := m.save(); err != nil {
-			m.data.ClickHouses[a.ID] = old
-			m.data.Apps[a.ID] = original
+			m.data.ClickHouses[id] = old
+			m.data.Apps[id] = original
 			return nil, errors.New("could not save ClickHouse attachment; retry deployment")
 		}
 		return nil, nil
 	})
-	if err != nil {
-		return a, err
-	}
-	m.mu.Lock()
-	c = m.data.ClickHouses[a.ID]
-	a.Env = maps.Clone(m.data.Apps[a.ID].Env)
-	m.mu.Unlock()
-	maps.Copy(effective, c.env())
-	a.Networks = slices.Compact(slices.Sorted(slices.Values(append(a.Networks, c.Network))))
-	commandDiagnostic(ctx, "clickhouse", "ClickHouse is ready; private connection and network attached. The app applies its schema before readiness.")
-	return a, nil
+	return err
 }

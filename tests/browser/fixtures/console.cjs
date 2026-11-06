@@ -46,6 +46,9 @@ async function mockConsole(page) {
     if (path.match(/^control\/apps\/[^/]+\/(errors|security)$/)) return send({ status: 'ready', last_received: now, errors: [{ id: 'event-one', fingerprint: 'fixture-error', source: 'server', message: 'Fixture request rejected', method: 'GET', route: '/api/staging/.env', requestId: 'request-fixture', createdAt: now, container: 'lidza-portal', release: 'build-one', stack: 'Error: fixture diagnostic\n  at handler.go:42' }] });
     if (path === 'v1/auth/two-factor') return send({ enabled: false, backupCodesLeft: 8 });
     if (path === 'v1/auth/two-factor/setup') return send({ secret: 'FIXTUREONLY', otpauthUrl: 'otpauth://totp/Fixture?secret=FIXTUREONLY', qrCodeDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlJ9l8AAAAASUVORK5CYII=' });
+    // No move recorded: the control answers 204 (not 404, which browsers log as a console error).
+    if (method === 'GET' && /^control\/apps\/[^/]+\/move$/.test(path)) return route.fulfill({ status: 204 });
+    if (method === 'GET' && /^control\/apps\/[^/]+\/processes$/.test(path)) return send({ processes: [] });
     if (method !== 'GET') return send({ status: 'accepted', codes: ['fixture-recovery-code'] });
     state.unknown.push(path); return send({});
   });

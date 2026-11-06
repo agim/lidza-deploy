@@ -64,10 +64,11 @@ func nativeReleaseReservedEnvironment(key string) bool {
 		"BASH_ENV", "ENV", "BUNDLE_GEMFILE", "PWD", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"}, key)
 }
 
-// nativeReleaseEnvironment composes the complete environment for build,
-// release and schedule commands from the policy's literal environment files.
-// Values are never logged.
-func nativeReleaseEnvironment(account nativeReleaseAccount, policy NativeReleasePolicy) ([]string, error) {
+// nativeReleaseFileEnvironment reads the policy's literal environment
+// files, later files overriding earlier ones, without the reserved keys.
+// Values are never logged; nativeReleaseMask hides them when application
+// output reaches the deploy log.
+func nativeReleaseFileEnvironment(policy NativeReleasePolicy) (map[string]string, error) {
 	values := map[string]string{}
 	for _, path := range policy.EnvFiles {
 		info, err := os.Lstat(path)
@@ -91,6 +92,16 @@ func nativeReleaseEnvironment(account nativeReleaseAccount, policy NativeRelease
 			return nil, errors.New("native release environment contains line breaks or null bytes")
 		}
 	}
+	return values, nil
+}
+
+// nativeReleaseEnvironment composes the complete environment for build,
+// release and schedule commands from the policy's literal environment files.
+func nativeReleaseEnvironment(account nativeReleaseAccount, policy NativeReleasePolicy) ([]string, error) {
+	values, err := nativeReleaseFileEnvironment(policy)
+	if err != nil {
+		return nil, err
+	}
 	values["PATH"] = nativeReleaseSearchPath(account.Home)
 	if policy.ManagedToolchains() {
 		// The agent links the release's verified toolchains under
@@ -100,12 +111,24 @@ func nativeReleaseEnvironment(account nativeReleaseAccount, policy NativeRelease
 		for key, value := range nativeManagedCacheEnvironment(policy.Root) {
 			values[key] = value
 		}
+		if policy.Runtime == "rails" || policy.Runtime == "auto" {
+			for key, value := range nativeManagedGemEnvironment(policy.Root) {
+				values[key] = value
+			}
+		}
 	}
 	values["HOME"] = account.Home
 	values["USER"] = account.Name
 	values["LOGNAME"] = account.Name
 	if _, ok := values["LANG"]; !ok {
 		values["LANG"] = "C.UTF-8"
+	}
+	// Package managers' update and funding notices are noise in build logs
+	// and read like warnings; an application can still turn them back on.
+	for key, value := range map[string]string{"npm_config_update_notifier": "false", "npm_config_fund": "false", "NO_UPDATE_NOTIFIER": "1"} {
+		if _, ok := values[key]; !ok {
+			values[key] = value
+		}
 	}
 	if _, set := values["npm_config_cache"]; !set || !policy.ManagedToolchains() {
 		values["npm_config_cache"] = "/tmp/npm"

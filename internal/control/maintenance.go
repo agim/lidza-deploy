@@ -9,6 +9,11 @@ func (c *Control) serverMaintenance(w http.ResponseWriter, r *http.Request) {
 	var input any
 	path := "/v1/maintenance"
 	switch r.Method {
+	case http.MethodGet:
+		// The dry run of the next cleanup: what it would remove now.
+		if r.URL.Query().Get("preview") == "1" {
+			path += "?preview=1"
+		}
 	case http.MethodPatch:
 		var policy agent.MaintenancePolicy
 		if err := agent.Decode(w, r, &policy); err != nil {
@@ -31,7 +36,7 @@ func (c *Control) serverMaintenance(w http.ResponseWriter, r *http.Request) {
 	}
 	var out agent.MaintenanceState
 	if err := c.agentCall(r, r.PathValue("server"), r.Method, path, input, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	status := http.StatusOK

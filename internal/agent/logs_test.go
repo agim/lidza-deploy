@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,5 +42,13 @@ func TestApplicationLogResponseRedactsConfiguredSecrets(t *testing.T) {
 	}
 	if w.Code != 200 || strings.Contains(response.Logs, "runtime-secret") || strings.Contains(response.Logs, "database-password") || !strings.Contains(response.Logs, "started successfully") || strings.Count(response.Logs, "[redacted]") != 3 {
 		t.Fatal("logs exposed configured secrets or lost diagnostics", w.Code)
+	}
+}
+
+func TestLimitedBufferStringWritesReachTheDiagnosticStream(t *testing.T) {
+	var seen string
+	b := &limitedBuffer{diagnostic: func(s string) { seen = s }}
+	if _, err := io.WriteString(b, "line one\n"); err != nil || seen != "line one\n" {
+		t.Fatalf("io.WriteString bypassed the stream: %q %v", seen, err)
 	}
 }

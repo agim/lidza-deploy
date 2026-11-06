@@ -55,6 +55,11 @@ func TestSetupOwnershipAndSecretIsolation(t *testing.T) {
 	if w := setupRequest(s, "GET", "/", "", "", ""); w.Code != 303 || w.Header().Get("Location") != "/setup.html" {
 		t.Fatal("no wizard", w.Code)
 	}
+	for _, path := range []string{"/console", "/console/applications", "/console/applications/app/settings/environment"} {
+		if w := setupRequest(s, "GET", path, "", "", ""); w.Code != 303 || w.Header().Get("Location") != "/setup.html" {
+			t.Fatal("console view before setup", path, w.Code)
+		}
+	}
 	if w := setupRequest(s, "GET", "/readyz", "", "", ""); w.Code != 503 {
 		t.Fatal("unconfigured ready")
 	}

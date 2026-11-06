@@ -109,28 +109,19 @@ func main() {
 		log.Fatal(err)
 	}
 	defer m.Close()
-	if !cfg.NativeOnly && !cfg.IngressOnly {
+	if !cfg.IngressOnly {
 		m.StartMaintenance()
 	}
 	api := &http.Server{Addr: cfg.Listen, Handler: agent.Handler(m), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second}
-	var proxy *http.Server
-	if !cfg.NativeOnly {
-		proxy = &http.Server{Addr: cfg.ProxyListen, Handler: agent.Proxy(m), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
-	}
+	proxy := &http.Server{Addr: cfg.ProxyListen, Handler: agent.Proxy(m), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	gateway := m.GatewayServer()
 	errs := make(chan error, 3)
 	go func() { errs <- api.ListenAndServe() }()
-	if proxy != nil {
-		go func() { errs <- proxy.ListenAndServe() }()
-	}
+	go func() { errs <- proxy.ListenAndServe() }()
 	if gateway != nil {
 		go func() { errs <- gateway.ListenAndServeTLS("", "") }()
 	}
-	if cfg.NativeOnly {
-		log.Printf("native observer API %s; application ingress disabled", cfg.Listen)
-	} else {
-		log.Printf("agent API %s; application ingress %s", cfg.Listen, cfg.ProxyListen)
-	}
+	log.Printf("agent API %s; application ingress %s", cfg.Listen, cfg.ProxyListen)
 	select {
 	case <-ctx.Done():
 	case err := <-errs:
@@ -142,9 +133,7 @@ func main() {
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = api.Shutdown(shutdown)
-	if proxy != nil {
-		_ = proxy.Shutdown(shutdown)
-	}
+	_ = proxy.Shutdown(shutdown)
 	if gateway != nil {
 		_ = gateway.Shutdown(shutdown)
 	}

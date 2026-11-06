@@ -66,9 +66,22 @@ func (d *Docker) buildStack(ctx context.Context, a App, id, source, commit strin
 		return nil, err
 	}
 	images := map[string]string{}
+	var releaseSlot func()
+	defer func() {
+		if releaseSlot != nil {
+			releaseSlot()
+		}
+	}()
 	for _, s := range manifest.selectedServices(a.StackSelection) {
 		image := s.Image
 		if s.Build != nil {
+			if releaseSlot == nil {
+				// One build at a time on this host, held until the
+				// stack's images are built; containers start outside it.
+				if releaseSlot, err = holdBuildSlot(ctx); err != nil {
+					return nil, err
+				}
+			}
 			image = "lidza/" + a.ID + "-" + s.Name + ":" + id
 			args := []string{"build", "--progress=plain", "--platform", host, "--tag", image, "--file", s.Build.Dockerfile}
 			if s.Build.Target != "" {
@@ -84,6 +97,10 @@ func (d *Docker) buildStack(ctx context.Context, a App, id, source, commit strin
 			}
 		}
 		images[s.Name] = image
+	}
+	if releaseSlot != nil {
+		releaseSlot()
+		releaseSlot = nil
 	}
 	return d.runStack(ctx, a, id, commit, *manifest, images)
 }
@@ -159,7 +176,7 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 			break
 		}
 	}
-	profile, ok := profileByID(a.RuntimeProfile)
+	_, ok := profileByID(a.RuntimeProfile) // resource profiles no longer cap containers
 	if !ok {
 		return nil, errors.New("choose a stack profile")
 	}
@@ -287,8 +304,7 @@ func (d *Docker) runStack(ctx context.Context, a App, id, commit string, manifes
 		if err = os.WriteFile(envfile, []byte(content.String()), 0600); err != nil {
 			return nil, err
 		}
-		budget := manifest.serviceBudget(profile, s)
-		args := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--label", "io.lidza.app=" + a.ID, "--label", "io.lidza.stack=" + a.resourceID(), "--label", "io.lidza.service=" + s.Name, "--restart", "unless-stopped", "--stop-timeout", "50", "--memory", fmt.Sprintf("%dm", budget.MemoryMiB), "--memory-swap", fmt.Sprintf("%dm", budget.MemoryMiB), "--cpus", budget.CPUs, "--pids-limit", "512", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", envfile, "--tmpfs", "/tmp:rw,nosuid,size=128m", "--tmpfs", "/run:rw,nosuid,size=32m"}
+		args := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--label", "io.lidza.app=" + a.ID, "--label", "io.lidza.stack=" + a.resourceID(), "--label", "io.lidza.service=" + s.Name, "--restart", "unless-stopped", "--stop-timeout", "50", "--pids-limit", "512", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", envfile, "--tmpfs", "/tmp:rw,nosuid,size=128m", "--tmpfs", "/run:rw,nosuid,size=32m"}
 		if binding != nil {
 			args = append(args, "--mount", d.serviceTLS.mount(*binding))
 		}

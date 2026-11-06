@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { parseRoute } from './lib/router';
+import { useEffect } from 'react';
+import { HOME, routeTitle, useRoute } from './lib/router';
 import type { Route } from './lib/types';
 import { AppShell } from './components/AppShell';
 import { ErrorBanner, Loading } from './components/ui';
@@ -16,8 +16,12 @@ import { ActivityPage, DefaultsPage, HelpPage, TeamPage, TwoFactorPage, UpdatesP
 import { CachePage, SimpleServerOperationPage } from './pages/ResourceDetailPages';
 
 export default function App() {
-  const [route, setRoute] = useState<Route>(() => parseRoute());
-  useEffect(() => { const update = () => { setRoute(parseRoute()); window.scrollTo({ top: 0 }); }; window.addEventListener('hashchange', update); if (!location.hash) history.replaceState(null, '', '#applications'); return () => window.removeEventListener('hashchange', update); }, []);
+  // main.tsx starts the router before the first render, so the route is
+  // already normalized from any legacy hash or bare entry URL here.
+  const route = useRoute();
+  const { page, detail, id } = route;
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [page, detail, id]);
+  useEffect(() => { document.title = routeTitle(route); }, [route]);
   return <AppShell route={route}><RouteView route={route} /></AppShell>;
 }
 
@@ -48,5 +52,5 @@ function RouteView({ route }: { route: Route }) {
     if (route.detail === 'ssh' || route.detail === 'upgrade') return <SimpleServerOperationPage kind={route.detail} serverID={route.id} />;
     if (route.detail === 'two-factor') return <TwoFactorPage />;
   }
-  return <ErrorBanner>That workspace page is not available. <a href="#applications">Return to applications</a>.</ErrorBanner>;
+  return <ErrorBanner>That workspace page is not available. <a href={HOME}>Return to applications</a>.</ErrorBanner>;
 }

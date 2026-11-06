@@ -5,12 +5,14 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,8 +21,10 @@ import (
 )
 
 // Data services for applications the agent creates: one PostgreSQL role and
-// database on the host's cluster and one private Redis server per
-// application (see native_hostdata_postgres.go and native_hostdata_redis.go).
+// database on the host's cluster, one private Redis server and one database
+// on the host's ClickHouse server per application (see
+// native_hostdata_postgres.go, native_hostdata_redis.go and
+// native_hostdata_clickhouse.go).
 //
 // The database is registered as a protected native database resource, so the
 // existing backup machinery (scheduled and pre-release dumps through the
@@ -39,6 +43,18 @@ type NativeHostDataConfig struct {
 	PostgresPort int `json:"postgres_port,omitempty"`
 	// RedisMaxMemoryMiB is each application's Redis maxmemory (default 128).
 	RedisMaxMemoryMiB int `json:"redis_max_memory_mib,omitempty"`
+	// ClickHouseVersion is the release series (such as 26.8) installed when
+	// an application needs ClickHouse and none is requested; empty selects
+	// the newest LTS series. An application moving here requests its
+	// source's series.
+	ClickHouseVersion string `json:"clickhouse_version,omitempty"`
+	// ClickHouseHTTPPort and ClickHouseTCPPort are the loopback ports of the
+	// host ClickHouse server (default 8123 and 9000).
+	ClickHouseHTTPPort int `json:"clickhouse_http_port,omitempty"`
+	ClickHouseTCPPort  int `json:"clickhouse_tcp_port,omitempty"`
+	// ClickHouseMemoryRatio caps the server's memory as a share of the
+	// host's RAM (default 0.25).
+	ClickHouseMemoryRatio float64 `json:"clickhouse_memory_ratio,omitempty"`
 }
 
 func (c NativeHostDataConfig) validate() error {
@@ -51,6 +67,20 @@ func (c NativeHostDataConfig) validate() error {
 	if c.RedisMaxMemoryMiB != 0 && (c.RedisMaxMemoryMiB < 16 || c.RedisMaxMemoryMiB > 65536) {
 		return errors.New("native.host_data.redis_max_memory_mib must be between 16 and 65536")
 	}
+	if c.ClickHouseVersion != "" && !clickhouseSeriesPattern.MatchString(c.ClickHouseVersion) {
+		return errors.New("native.host_data.clickhouse_version must be a release series such as 26.8")
+	}
+	for _, port := range []int{c.ClickHouseHTTPPort, c.ClickHouseTCPPort} {
+		if port != 0 && (port < 1024 || port > 65535) {
+			return errors.New("native.host_data ClickHouse ports must be between 1024 and 65535")
+		}
+	}
+	if http, tcp := c.clickhousePorts(); http == tcp {
+		return errors.New("native.host_data ClickHouse HTTP and TCP ports must differ")
+	}
+	if c.ClickHouseMemoryRatio != 0 && (c.ClickHouseMemoryRatio < 0.05 || c.ClickHouseMemoryRatio > 0.9) {
+		return errors.New("native.host_data.clickhouse_memory_ratio must be between 0.05 and 0.9")
+	}
 	return nil
 }
 
@@ -59,9 +89,10 @@ func (c NativeHostDataConfig) validate() error {
 // with the agent key in addition to the sealed state file, so a record that
 // is copied, logged or returned by mistake never carries a usable secret.
 type NativeHostDataRecord struct {
-	Postgres *NativeHostPostgres `json:"postgres,omitempty"`
-	Redis    *NativeHostRedis    `json:"redis,omitempty"`
-	Updated  time.Time           `json:"updated"`
+	Postgres   *NativeHostPostgres   `json:"postgres,omitempty"`
+	Redis      *NativeHostRedis      `json:"redis,omitempty"`
+	ClickHouse *NativeHostClickHouse `json:"clickhouse,omitempty"`
+	Updated    time.Time             `json:"updated"`
 }
 
 type NativeHostPostgres struct {
@@ -86,6 +117,7 @@ type NativeHostRedis struct {
 func init() {
 	provisionNativeData = provisionNativeHostData
 	releaseNativeData = releaseNativeHostData
+	retainNativeData = retainNativeHostData
 }
 
 // nativeHostDataMu serializes host data changes: package installation,
@@ -95,14 +127,17 @@ var nativeHostDataMu sync.Mutex
 // nativeHostData performs host operations. Tests replace nativeHostDataHost
 // to run against a fixture directory with recorded commands.
 type nativeHostData struct {
-	cfg     NativeHostDataConfig
-	coexist bool
-	chown   bool
-	root    string // fixture prefix for host files; empty on a real host
-	run     func(ctx context.Context, stdin, name string, args ...string) (string, error)
+	cfg   NativeHostDataConfig
+	chown bool
+	root  string // fixture prefix for host files; empty on a real host
+	run   func(ctx context.Context, stdin, name string, args ...string) (string, error)
 	// digest and redisInfo default to nativePGDumpDigest and nativeRedisInfo.
 	digest    func(path string) (string, error)
 	redisInfo func(ctx context.Context, socket, password string) (nativeRedisMemory, error)
+	// clickhouseURL overrides the host ClickHouse server's address and
+	// download fetches the repository signing key (tests replace both).
+	clickhouseURL string
+	download      func(ctx context.Context, url string) ([]byte, error)
 }
 
 func (h nativeHostData) dumpDigest(path string) (string, error) {
@@ -120,7 +155,7 @@ func (h nativeHostData) redisMemory(ctx context.Context, socket, password string
 }
 
 var nativeHostDataHost = func(m *Manager) nativeHostData {
-	return nativeHostData{cfg: m.nativeHostDataConfig(), coexist: m.cfg.HostMode == "coexist", chown: true, run: nativeHostRun}
+	return nativeHostData{cfg: m.nativeHostDataConfig(), chown: true, run: nativeHostRun}
 }
 
 func (h nativeHostData) path(name string) string {
@@ -211,7 +246,7 @@ func provisionNativeHostData(ctx context.Context, m *Manager, id string, account
 	if !idPattern.MatchString(id) {
 		return grant, errors.New("invalid application id")
 	}
-	if m.cfg.IngressOnly || m.cfg.NativeOnly {
+	if m.cfg.IngressOnly {
 		return grant, errors.New("this agent role cannot provision data services")
 	}
 	if req.ExternalDatabaseURL != "" {
@@ -223,7 +258,7 @@ func provisionNativeHostData(ctx context.Context, m *Manager, id string, account
 		}
 		grant.Env["DATABASE_URL"] = req.ExternalDatabaseURL
 	}
-	if !req.Postgres && !req.Redis {
+	if !req.Postgres && !req.Redis && !req.ClickHouse {
 		return grant, nil
 	}
 	if err := validateNativeAppAccount(account); err != nil {
@@ -256,6 +291,18 @@ func provisionNativeHostData(ctx context.Context, m *Manager, id string, account
 		grant.Env["REDIS_SOCKET"] = socket
 		grant.Env["REDIS_PASSWORD"] = password
 	}
+	if req.ClickHouse {
+		backup, err := nativeHostDataBackupPolicy(req)
+		if err != nil {
+			return grant, err
+		}
+		env, resource, err := m.provisionNativeClickHouse(ctx, h, id, backup, req.ClickHouseVersion)
+		if err != nil {
+			return grant, err
+		}
+		maps.Copy(grant.Env, env)
+		grant.Databases = append(grant.Databases, resource)
+	}
 	return grant, nil
 }
 
@@ -274,12 +321,16 @@ func (m *Manager) updateHostDataRecord(id string, change func(*NativeHostDataRec
 		copy := *previous.Redis
 		next.Redis = &copy
 	}
+	if previous.ClickHouse != nil {
+		copy := *previous.ClickHouse
+		next.ClickHouse = &copy
+	}
 	change(&next)
 	next.Updated = time.Now().UTC()
 	if m.data.NativeHostData == nil {
 		m.data.NativeHostData = map[string]NativeHostDataRecord{}
 	}
-	if next.Postgres == nil && next.Redis == nil {
+	if next.Postgres == nil && next.Redis == nil && next.ClickHouse == nil {
 		delete(m.data.NativeHostData, id)
 	} else {
 		m.data.NativeHostData[id] = next
@@ -380,10 +431,25 @@ func (m *Manager) provisionNativePostgres(ctx context.Context, h nativeHostData,
 // registerHostDatabase binds the database as a protected native resource.
 // An existing resource keeps its backups and the schedule set since.
 func (m *Manager) registerHostDatabase(id, resource, raw string, policy NativeDatabasePolicy) error {
+	return m.registerHostResource(id, resource, raw, policy, func(r *NativeHostDataRecord) bool {
+		if r.Postgres == nil || r.Postgres.Resource != resource {
+			return false
+		}
+		pg := *r.Postgres
+		pg.Ready = true
+		r.Postgres = &pg
+		return true
+	})
+}
+
+// registerHostResource binds a provisioned database (PostgreSQL or
+// ClickHouse) as a protected resource. claim checks that the record still
+// owns the resource and marks it ready.
+func (m *Manager) registerHostResource(id, resource, raw string, policy NativeDatabasePolicy, claim func(*NativeHostDataRecord) bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	record, ok := m.data.NativeHostData[id]
-	if !ok || record.Postgres == nil || record.Postgres.Resource != resource {
+	if !ok || !claim(&record) {
 		return errors.New("database provisioning record changed")
 	}
 	if _, app := m.data.Apps[resource]; app {
@@ -412,9 +478,6 @@ func (m *Manager) registerHostDatabase(id, resource, raw string, policy NativeDa
 	if m.data.Databases == nil {
 		m.data.Databases = map[string]Database{}
 	}
-	pg := *record.Postgres
-	pg.Ready = true
-	record.Postgres = &pg
 	record.Updated = time.Now().UTC()
 	m.data.NativeDatabases[resource] = NativeDatabaseBinding{Policy: policy, Adopted: adopted}
 	m.data.Databases[resource] = d
@@ -486,6 +549,14 @@ func (m *Manager) provisionNativeRedis(ctx context.Context, h nativeHostData, id
 // retained entry with its backups (no credential); the application root,
 // including Redis data, is purged by the caller.
 func releaseNativeHostData(ctx context.Context, m *Manager, id string) error {
+	return releaseNativeHostDataRecord(ctx, m, id, true)
+}
+
+// releaseNativeHostDataRecord drops the application's data services. With
+// finalBackup it first takes (or reuses) a fresh backup of each database;
+// without it the caller has already verified a covering backup (retained
+// resource removal).
+func releaseNativeHostDataRecord(ctx context.Context, m *Manager, id string, finalBackup bool) error {
 	if !idPattern.MatchString(id) {
 		return errors.New("invalid application id")
 	}
@@ -504,8 +575,8 @@ func releaseNativeHostData(ctx context.Context, m *Manager, id string) error {
 		// A database whose application was never released holds no
 		// application data (migrations run during releases), so undoing a
 		// failed creation does not need, or wait on, a final backup.
-		if exists && bound && binding.Policy.AppID == id && d.Ready && pg.Ready && !m.nativeCreatedNeverReleased(id) {
-			if err := m.backupBeforeRelease(ctx, []string{pg.Resource}); err != nil {
+		if finalBackup && exists && bound && binding.Policy.AppID == id && d.Ready && pg.Ready && !m.nativeCreatedNeverReleased(id) {
+			if err := m.freshBackupBeforeRelease(ctx, []string{pg.Resource}); err != nil {
 				return fmt.Errorf("final database backup failed; the database is retained: %w", err)
 			}
 		}
@@ -530,7 +601,19 @@ func releaseNativeHostData(ctx context.Context, m *Manager, id string) error {
 		if err := h.removeRedis(ctx, id); err != nil {
 			return err
 		}
+		if !finalBackup {
+			// A retained instance's data directory stayed in the
+			// application root; removing the resource deletes it.
+			if err := os.RemoveAll(h.path(nativeRedisDir(filepath.Join(m.nativeAppsRoot(), id)))); err != nil {
+				return fmt.Errorf("could not delete the Redis data of %s: %w", id, err)
+			}
+		}
 		if err := m.updateHostDataRecord(id, func(r *NativeHostDataRecord) { r.Redis = nil }); err != nil {
+			return err
+		}
+	}
+	if record.ClickHouse != nil {
+		if err := m.releaseNativeClickHouse(ctx, h, id, *record.ClickHouse, finalBackup); err != nil {
 			return err
 		}
 	}
@@ -575,6 +658,11 @@ func (m *Manager) unbindHostDatabase(id, resource string) error {
 // provisioned and still holds for the application in p. Caller holds m.mu.
 func (m *Manager) nativeHostDataBoundLocked(resource string, p NativeDatabasePolicy) bool {
 	record, ok := m.data.NativeHostData[p.AppID]
+	if ok && p.ClickHouseDatabase != "" {
+		ch := record.ClickHouse
+		return ch != nil && ch.Ready && ch.Resource == resource && ch.Name == p.ClickHouseDatabase && p.ConfigSHA256 == nativeHostClickHouseDigest(ch.HTTPPort, ch.Name) &&
+			p.Host == "127.0.0.1" && p.Port == strconv.Itoa(ch.HTTPPort) && validateNativeDatabasePolicy(resource, p) == nil
+	}
 	if !ok || record.Postgres == nil {
 		return false
 	}
@@ -589,6 +677,13 @@ func (m *Manager) nativeHostDataSource(p NativeDatabasePolicy) (raw string, mana
 	m.mu.Lock()
 	record, ok := m.data.NativeHostData[p.AppID]
 	m.mu.Unlock()
+	if ok && p.ClickHouseDatabase != "" {
+		ch := record.ClickHouse
+		if ch == nil || ch.Name != p.ClickHouseDatabase || p.ConfigSHA256 != nativeHostClickHouseDigest(ch.HTTPPort, ch.Name) {
+			return "", false, nil
+		}
+		return nativeClickHouseResourceURL(ch.Name, ch.HTTPPort), true, nil
+	}
 	if !ok || record.Postgres == nil || p.ConfigSHA256 != nativeHostDataPolicyDigest(record.Postgres.Cluster, record.Postgres.Port, record.Postgres.Name) {
 		return "", false, nil
 	}
@@ -608,7 +703,7 @@ var nativePGClientPackage = regexp.MustCompile(`^postgresql-client-\d+$`)
 func (m *Manager) refreshNativeHostDataTool(ctx context.Context, resource string) {
 	m.mu.Lock()
 	binding, ok := m.data.NativeDatabases[resource]
-	bound := ok && m.nativeHostDataBoundLocked(resource, binding.Policy)
+	bound := ok && m.nativeHostDataBoundLocked(resource, binding.Policy) && binding.Policy.ClickHouseDatabase == ""
 	m.mu.Unlock()
 	if !bound {
 		return
@@ -656,4 +751,80 @@ func (m *Manager) nativeCreatedNeverReleased(id string) bool {
 	}
 	entries, err := os.ReadDir(filepath.Join(policy.Root, "releases"))
 	return errors.Is(err, os.ErrNotExist) || err == nil && len(entries) == 0
+}
+
+// retainNativeHostData keeps the data services of a removed application as
+// a retained resource, as removing a container application keeps its
+// volumes: the PostgreSQL database and role, the ClickHouse database and the
+// Redis data stay, with their backups and the ability to take a final one.
+// The Redis instance
+// runs as the application's account, which the removal deletes, so it is
+// stopped and disabled; its configuration and data directory stay until
+// the retained resource is removed (removeRetainedNativeHostData).
+func retainNativeHostData(ctx context.Context, m *Manager, id string, origin *RetainedOrigin) (string, error) {
+	if !idPattern.MatchString(id) {
+		return "", errors.New("invalid application id")
+	}
+	nativeHostDataMu.Lock()
+	defer nativeHostDataMu.Unlock()
+	record, ok := m.hostDataRecord(id)
+	if !ok {
+		return "", nil
+	}
+	if record.Redis != nil {
+		h := nativeHostDataHost(m)
+		unit := nativeRedisUnit(id)
+		if out, err := h.run(ctx, "", "/usr/bin/systemctl", "disable", "--now", unit); err != nil && !strings.Contains(out, "not loaded") && !strings.Contains(out, "does not exist") {
+			return "", fmt.Errorf("stopping %s failed: %s", unit, nativeTrimOutput(out))
+		}
+		if err := m.updateHostDataRecord(id, func(r *NativeHostDataRecord) { r.Redis.Ready = false }); err != nil {
+			return "", err
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, retained := range m.data.RetainedResources {
+		if retained.NativeData && retained.AppID == id {
+			return retained.ID, nil
+		}
+	}
+	databases := []string{}
+	for _, resource := range record.databaseResources() {
+		if _, exists := m.data.Databases[resource]; exists {
+			databases = append(databases, resource)
+		}
+	}
+	if m.data.RetainedResources == nil {
+		m.data.RetainedResources = map[string]RetainedResource{}
+	}
+	now := time.Now().UTC()
+	key := newID()
+	m.data.RetainedResources[key] = RetainedResource{ID: key, AppID: id, Created: now, WritesStopped: now, Databases: databases, NativeData: true, Origin: origin}
+	if err := m.save(); err != nil {
+		delete(m.data.RetainedResources, key)
+		return "", err
+	}
+	return key, nil
+}
+
+// databaseResources lists the database resources of the record's
+// PostgreSQL and ClickHouse databases.
+func (r NativeHostDataRecord) databaseResources() []string {
+	out := []string{}
+	if r.Postgres != nil && r.Postgres.Resource != "" {
+		out = append(out, r.Postgres.Resource)
+	}
+	if r.ClickHouse != nil && r.ClickHouse.Resource != "" {
+		out = append(out, r.ClickHouse.Resource)
+	}
+	return out
+}
+
+// removeRetainedNativeHostData deletes retained native data services after
+// the retained resource removal verified a covering backup of each
+// database: the PostgreSQL database and role, the Redis instance with its
+// data directory, and the ClickHouse database, user and profile. Backup
+// records and off-site copies stay.
+var removeRetainedNativeHostData = func(ctx context.Context, m *Manager, id string) error {
+	return releaseNativeHostDataRecord(ctx, m, id, false)
 }

@@ -21,10 +21,23 @@ type Plan struct {
 	Profile Profile
 	Env     []string // application environment for build and release steps
 	Exec    Executor
+	// BuildSlot, when set, is held around the profile's build steps, so a
+	// host can run one build at a time. It returns the function that
+	// releases the slot.
+	BuildSlot func(ctx context.Context) (func(), error)
 
 	Services Services // nil leaves processes alone
-	Units    []string // restart order: web servers first, then workers
-	Settle   time.Duration
+	// Units lists the application's units in restart order: web servers
+	// first, then workers. They are also the units the deploy log explains
+	// when a health check fails.
+	Units  []string
+	Settle time.Duration
+	// Inspector explains the restarted units in the deploy log after a
+	// failed health check; nil uses Services when it is one.
+	Inspector Inspector
+	// Mask hides application secrets in that explanation (unit logs, health
+	// responses) before it reaches Log; nil leaves it unchanged.
+	Mask func(string) string
 
 	Crontab Crontab // nil leaves the crontab alone
 	// AdoptSchedules names crontab blocks installed by an earlier deploy tool
@@ -58,6 +71,9 @@ type Result struct {
 	Migrated        bool
 	RolledBack      bool // the new release failed and the previous one was republished
 	Pruned          []string
+	// Ruby describes the release's Ruby and Bundler (Rails releases with a
+	// Gemfile.lock that records its Bundler).
+	Ruby *RubyToolchain
 }
 
 func (p *Plan) logf(format string, args ...any) {
@@ -109,19 +125,44 @@ func (p *Plan) stepEnv(dir string, step Step) []string {
 }
 
 func (p *Plan) run(ctx context.Context, dir string, step Step, stdout io.Writer) (bool, error) {
+	return p.runStep(ctx, dir, step, stdout, false)
+}
+
+func (p *Plan) runStep(ctx context.Context, dir string, step Step, stdout io.Writer, build bool) (bool, error) {
 	if step.When != nil && !step.When(dir) {
 		return false, nil
+	}
+	if step.Do != nil {
+		step.Do(ctx, p.Exec, dir, p.stepEnv(dir, step), p.logf)
+		return true, nil
 	}
 	p.logf("%s", step.Name)
 	if stdout == nil {
 		stdout = p.Log
 	}
 	err := p.Exec.Run(ctx, Command{Name: step.Name, Dir: dir, Args: step.Args, Env: p.stepEnv(dir, step),
-		Network: step.Network, Database: step.Database, Stdout: stdout, Stderr: p.Log})
+		Network: step.Network, Database: step.Database, Build: build, Stdout: stdout, Stderr: p.Log})
 	if err != nil {
 		return true, fmt.Errorf("release: %s failed: %w", step.Name, err)
 	}
 	return true, nil
+}
+
+// build runs the profile's build steps, holding the build slot.
+func (p *Plan) build(ctx context.Context, dir string) error {
+	if p.BuildSlot != nil {
+		release, err := p.BuildSlot(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
+	for _, step := range p.Profile.Build {
+		if _, err := p.runStep(ctx, dir, step, nil, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // renderSchedule returns the crontab entries the release defines.
@@ -149,6 +190,10 @@ func (p *Plan) renderSchedule(ctx context.Context, dir string) (string, bool, er
 }
 
 // Deploy builds ref into a new release and publishes it.
+// rollbackTimeout bounds republishing the previous release after a failed
+// release; it runs even when the release was cancelled.
+var rollbackTimeout = 5 * time.Minute
+
 func Deploy(ctx context.Context, p Plan) (result Result, err error) {
 	if err = p.validate(); err != nil {
 		return result, err
@@ -193,10 +238,18 @@ func Deploy(ctx context.Context, p Plan) (result Result, err error) {
 	if err = l.LinkShared(result.Release, p.Profile.Shared); err != nil {
 		return result, err
 	}
-	for _, step := range p.Profile.Build {
-		if _, err = p.run(ctx, dir, step, nil); err != nil {
-			return result, err
+	if p.Profile.Toolchain != nil {
+		check := p.Profile.Toolchain(ctx, p.Exec, dir, p.stepEnv(dir, Step{}), p.logf)
+		result.Ruby = check.Ruby
+		if len(check.Env) > 0 {
+			if err = l.writeRuntimeEnv(result.Release, check.Env); err != nil {
+				return result, err
+			}
+			p.Env = withEnv(p.Env, check.Env...)
 		}
+	}
+	if err = p.build(ctx, dir); err != nil {
+		return result, err
 	}
 	if p.Profile.Output != "" {
 		if info, statErr := os.Stat(filepath.Join(dir, p.Profile.Output)); statErr != nil || !info.IsDir() {
@@ -243,7 +296,12 @@ func Deploy(ctx context.Context, p Plan) (result Result, err error) {
 			return result, err
 		}
 		p.logf("new release failed (%v); republishing %s", err, result.Previous)
-		if restoreErr := p.restore(ctx, result.Previous, result.Release); restoreErr != nil {
+		// The rollback must finish even when the deploy itself was cancelled
+		// (for example the agent is stopping): a cancelled rollback would leave
+		// the application on a release that failed its health check.
+		rollback, stop := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+		defer stop()
+		if restoreErr := p.restore(rollback, result.Previous, result.Release); restoreErr != nil {
 			return result, fmt.Errorf("%w; restoring %s also failed: %v", err, result.Previous, restoreErr)
 		}
 		result.RolledBack = true
@@ -258,20 +316,26 @@ func Deploy(ctx context.Context, p Plan) (result Result, err error) {
 	return result, err
 }
 
-// verify restarts running processes and checks health.
+// verify restarts running processes and checks health. When a unit does
+// not come back or the health check fails, the deploy log explains why
+// before the error is returned (explain).
 func (p *Plan) verify(ctx context.Context, result *Result) error {
+	since := p.now()
 	if p.Services != nil && len(p.Units) > 0 {
 		p.logf("restarting %s", strings.Join(p.Units, ", "))
 		restarted, err := RestartRunning(ctx, p.Services, p.Units, p.Settle)
 		result.Restarted, result.Skipped = restarted.Restarted, restarted.Skipped
 		if err != nil {
+			p.explain(ctx, since, p.attempted(result), err)
 			return err
 		}
 	}
 	if p.Health != nil {
 		p.logf("checking health")
 		if err := p.Health(ctx); err != nil {
-			return fmt.Errorf("release: health check failed: %w", err)
+			err = fmt.Errorf("release: health check failed: %w", err)
+			p.explain(ctx, since, p.attempted(result), err)
+			return err
 		}
 	}
 	return nil
@@ -313,6 +377,8 @@ func Rollback(ctx context.Context, p Plan, target string) (result Result, err er
 	if result.Commit, err = l.Revision(target); err != nil {
 		return result, err
 	}
+	// The schedule renders with the toolchain the target release was built with.
+	p.Env = withEnv(p.Env, l.RuntimeEnv(target)...)
 	schedule, manageSchedule, err := p.renderSchedule(ctx, l.Release(target))
 	if err != nil {
 		return result, err

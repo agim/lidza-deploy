@@ -1,6 +1,7 @@
 package release
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,6 +19,10 @@ type Step struct {
 	Database bool
 	// When decides from the release tree whether the step applies; nil means always.
 	When func(dir string) bool
+	// Do, when set, replaces Args: the step does its own work through the
+	// executor, reports to the log itself and never fails the deploy
+	// (housekeeping such as removing unused gems after an install).
+	Do func(ctx context.Context, x Executor, dir string, env []string, logf func(string, ...any))
 }
 
 // Profile describes how one kind of application is built and released.
@@ -26,6 +31,11 @@ type Profile struct {
 	Shared Shared
 	// Prepare writes per-release configuration before any step runs.
 	Prepare func(l Layout, id string, env []string) error
+	// Toolchain inspects the release's toolchain once the release is
+	// prepared, before the build. Its environment entries apply to build,
+	// release and schedule steps and are recorded for the release's
+	// processes (RuntimeEnvFile). It never fails a deploy.
+	Toolchain func(ctx context.Context, x Executor, dir string, env []string, logf func(string, ...any)) ToolchainCheck
 	// Build turns source into a runnable tree. It must not change shared state.
 	Build []Step
 	// Release runs against shared state (databases) just before publication.
@@ -82,6 +92,10 @@ func javascriptInstall() []Step {
 	}
 }
 
+// viteBuildCacheDir is where Vite Ruby records its last build during a
+// release build, relative to the release.
+const viteBuildCacheDir = "node_modules/.cache/vite_ruby"
+
 // RailsOptions adjusts the Rails profile.
 type RailsOptions struct {
 	Environment string   // RAILS_ENV; default production
@@ -95,6 +109,9 @@ type RailsOptions struct {
 	// ScheduleVariables are extra Whenever --set variables. The profile sets
 	// environment and path itself; neither keys nor values may contain '&' or '='.
 	ScheduleVariables map[string]string
+	// Clean removes gems the lockfile no longer needs from the application's
+	// own bundle path after each install (bundle clean); default true.
+	Clean *bool
 }
 
 // Rails builds a Ruby on Rails application: locked gems into shared/bundle,
@@ -133,14 +150,29 @@ func Rails(opts RailsOptions) Profile {
 	railsEnv := []string{"RAILS_ENV=" + environment, "RACK_ENV=" + environment}
 	build := []Step{{Name: "bundle install", Args: []string{"bundle", "install", "--jobs", "4", "--quiet"},
 		Env: railsEnv, Network: true}}
+	if opts.Clean == nil || *opts.Clean {
+		// Gem versions an upgrade left behind in shared/bundle make every
+		// later Bundler boot warn about ambiguous specs and waste disk.
+		build = append(build, Step{Name: "bundle clean", Env: railsEnv, Do: bundleClean,
+			When: func(dir string) bool { return bundleDeploymentPath(dir) != "" }})
+	}
 	build = append(build, javascriptInstall()...)
 	// Dependencies were installed with their lockfile above: the bundling
 	// gems must not run their own package-manager install, which would prune
 	// development dependencies such as esbuild under NODE_ENV=production.
 	// Precompilation boots the application, and initializers commonly reach
 	// the database, so the step runs with database access.
+	//
+	// Vite Ruby skips a build when its record of the last build (default
+	// tmp/cache/vite, which releases share) matches the watched files and a
+	// client manifest exists. Its SSR build checks the client manifest that
+	// the same task has just written, so with a shared record a new release
+	// would skip its SSR bundle whenever the frontend is unchanged. The
+	// record therefore lives in the release's own node_modules, which every
+	// release installs afresh.
 	build = append(build, Step{Name: "assets:precompile", Args: []string{"bundle", "exec", "rails", "assets:precompile"},
-		Env: append(railsEnv, "NODE_ENV=production", "SKIP_YARN_INSTALL=1", "SKIP_BUN_INSTALL=1"), Database: true, When: precompile})
+		Env: append(railsEnv, "NODE_ENV=production", "SKIP_YARN_INSTALL=1", "SKIP_BUN_INSTALL=1",
+			"VITE_RUBY_SKIP_ASSETS_PRECOMPILE_INSTALL=true", "VITE_RUBY_BUILD_CACHE_DIR="+viteBuildCacheDir), Database: true, When: precompile})
 	return Profile{
 		Name:   "rails",
 		Shared: shared,
@@ -166,6 +198,8 @@ func Rails(opts RailsOptions) Profile {
 			return l.chown(path)
 		},
 		Build: build,
+		// Use the host's default Bundler when the lockfile pins an older one.
+		Toolchain: checkRubyToolchain,
 		// db:prepare migrates existing databases and creates and loads the
 		// schema of databases that do not exist yet, so a first deploy and
 		// every later one use the same step. Rollbacks never reverse it.

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -120,10 +121,25 @@ func (c *Control) retryBackupUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.agentCall(r, server, "POST", "/v1/databases/"+id+"/backups/"+backup+"/upload", nil, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 202, map[string]string{"status": "queued"})
+}
+
+// restoreBackupInPlace restores a ClickHouse backup into the database it was
+// taken from; the agent refuses every other engine.
+func (c *Control) restoreBackupInPlace(w http.ResponseWriter, r *http.Request) {
+	server, id, backup := r.PathValue("server"), r.PathValue("id"), r.PathValue("backup")
+	if !regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`).MatchString(id) || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`).MatchString(backup) {
+		http.NotFound(w, r)
+		return
+	}
+	if err := c.agentCall(r, server, "POST", "/v1/databases/"+id+"/backups/"+backup+"/restore", nil, nil); err != nil {
+		failAgent(w, err)
+		return
+	}
+	agent.JSON(w, 202, map[string]string{"status": "restoring"})
 }
 
 // Use the framework's existing addressing option for Spaces bucket URLs.

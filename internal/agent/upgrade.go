@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/agim/lidza-deploy/internal/buildinfo"
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	"github.com/agim/lidza-deploy/internal/updates"
@@ -136,6 +137,23 @@ func (m *Manager) upgradeRoutes(mux *http.ServeMux) {
 				Fail(w, 409, errors.New("wait for deployments and restores before upgrading"))
 				return
 			}
+		}
+		// Native and created applications are not in Apps: any queued or
+		// running deployment, release, release transition or native operation
+		// (backups, settings saves) blocks the upgrade, which restarts the agent.
+		for _, d := range m.data.Deployments {
+			if d.Status == "queued" || d.Status == "building" {
+				Fail(w, 409, fmt.Errorf("wait for the %s deployment before upgrading", d.AppID))
+				return
+			}
+		}
+		if m.moveTransfers.Load() > 0 {
+			Fail(w, 409, errors.New("wait for the running move transfer (database, ClickHouse or files) before upgrading"))
+			return
+		}
+		if len(m.data.NativeTransitions) > 0 || len(m.nativeOperations) > 0 {
+			Fail(w, 409, errors.New("wait for the running native release or backup before upgrading"))
+			return
 		}
 		for _, d := range m.data.Databases {
 			if d.Operation != "" {

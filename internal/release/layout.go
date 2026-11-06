@@ -279,6 +279,23 @@ func (l Layout) Activate(id, expected string) error {
 // any protected id, or a release still being built by a running deploy.
 // Abandoned incomplete releases older than every kept release are removed.
 func (l Layout) Prune(keep int, protect ...string) ([]string, error) {
+	candidates, err := l.PruneCandidates(keep, protect...)
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, id := range candidates {
+		if err := os.RemoveAll(l.Release(id)); err != nil {
+			return removed, err
+		}
+		removed = append(removed, id)
+	}
+	return removed, nil
+}
+
+// PruneCandidates lists the releases Prune would delete, oldest first,
+// without deleting anything.
+func (l Layout) PruneCandidates(keep int, protect ...string) ([]string, error) {
 	if keep < 2 {
 		return nil, errors.New("release: keep at least two releases for rollback")
 	}
@@ -314,9 +331,6 @@ func (l Layout) Prune(keep int, protect ...string) ([]string, error) {
 		}
 		if !entry.complete && !entry.modified.Before(oldestKept) {
 			continue // may belong to a deploy in progress
-		}
-		if err := os.RemoveAll(l.Release(entry.id)); err != nil {
-			return removed, err
 		}
 		removed = append(removed, entry.id)
 	}

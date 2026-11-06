@@ -12,9 +12,10 @@ import (
 // NativeHostDataView is the panel's Data & Storage summary for one created
 // application. It never contains a password or connection URL.
 type NativeHostDataView struct {
-	AppID    string                  `json:"app_id"`
-	Postgres *NativeHostPostgresView `json:"postgres,omitempty"`
-	Redis    *NativeHostRedisView    `json:"redis,omitempty"`
+	AppID      string                    `json:"app_id"`
+	Postgres   *NativeHostPostgresView   `json:"postgres,omitempty"`
+	Redis      *NativeHostRedisView      `json:"redis,omitempty"`
+	ClickHouse *NativeHostClickHouseView `json:"clickhouse,omitempty"`
 }
 
 type NativeHostPostgresView struct {
@@ -123,6 +124,9 @@ func (m *Manager) nativeHostDataView(ctx context.Context, id string) (NativeHost
 		}
 		cancel()
 		view.Redis = v
+	}
+	if ch := record.ClickHouse; ch != nil {
+		view.ClickHouse = m.nativeHostClickHouseView(ctx, id, *ch)
 	}
 	return view, nil
 }

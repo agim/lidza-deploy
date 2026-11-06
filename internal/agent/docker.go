@@ -40,6 +40,9 @@ func (b *limitedBuffer) ReadFrom(r io.Reader) (int64, error) {
 	return io.Copy(struct{ io.Writer }{b}, r)
 }
 
+// Hide the promoted WriteString too, so io.WriteString reaches the log.
+func (b *limitedBuffer) WriteString(s string) (int, error) { return b.Write([]byte(s)) }
+
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
 	// Keep the last output, where compilers and Docker report the cause.
@@ -161,7 +164,15 @@ func (d *Docker) Deploy(ctx context.Context, a App, id, token string) (release *
 		buildArgs = append(buildArgs, "--secret", "id=lidza_public_env,src="+publicEnv)
 	}
 	buildArgs = append(buildArgs, ".")
-	if _, err = command(ctx, source, nil, "docker", buildArgs...); err != nil {
+	// One build at a time on this host; the container starts outside the slot.
+	releaseSlot, err := holdBuildSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	buildArgs, buildEnv := dockerBuildInvocation(ctx, buildArgs)
+	_, err = command(ctx, source, buildEnv, "docker", buildArgs...)
+	releaseSlot()
+	if err != nil {
 		return nil, fmt.Errorf("image build: %w", err)
 	}
 	release, err = d.runImage(ctx, a, id, image, commit)
@@ -268,7 +279,7 @@ func (d *Docker) runImage(ctx context.Context, a App, id, image, commit string) 
 	if err = os.WriteFile(envfile, []byte(content.String()), 0600); err != nil {
 		return nil, err
 	}
-	runArgs := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--label", "io.lidza.app=" + a.ID, "--restart", "unless-stopped", "--read-only", "--user", a.runtimeUser(), "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--memory", "512m", "--cpus", "1", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile}
+	runArgs := []string{"create", "--name", name, "--label", "io.lidza.managed=true", "--label", "io.lidza.app=" + a.ID, "--restart", "unless-stopped", "--read-only", "--user", a.runtimeUser(), "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--publish", "127.0.0.1::3000", "--env-file", envfile}
 	runArgs = append(runArgs, runtimeArgs(a)...)
 	runArgs = append(runArgs, storageMountArgs(a)...)
 	if a.Env["AUTH_OWNER_CLAIM"] == "true" {
@@ -326,7 +337,20 @@ func (d *Docker) captureCandidateFailure(ctx context.Context, r *Release) {
 	commandDiagnostic(diagnostics, "startup", "Capturing failed candidate state and runtime logs before cleanup.")
 	// State includes exit/OOM/restart information, without Config.Env or mounts.
 	_, _ = command(diagnostics, "", nil, "docker", "inspect", "--format", "{{json .State}}", r.Container)
-	_, _ = command(diagnostics, "", nil, "docker", "logs", "--tail", "200", "--timestamps", r.Container)
+	logs := []string{"logs", "--tail", "40", "--timestamps"}
+	if !r.Created.IsZero() {
+		logs = append(logs, "--since", r.Created.UTC().Format(time.RFC3339))
+	}
+	_, _ = command(diagnostics, "", nil, "docker", append(logs, r.Container)...)
+}
+
+// responseExcerpt is the start of a failed readiness response for the log.
+func responseExcerpt(body string) string {
+	body = strings.TrimSpace(body)
+	if len(body) > 300 {
+		return body[:300] + "…"
+	}
+	return body
 }
 
 func (d *Docker) waitReady(ctx context.Context, r *Release) error {
@@ -353,12 +377,12 @@ func (d *Docker) waitReady(ctx context.Context, r *Release) error {
 			lastBody = body
 		}
 		if time.Now().After(nextReport) {
-			commandDiagnostic(ctx, "readiness", fmt.Sprintf("%v\n%s", lastErr, lastBody))
+			commandDiagnostic(ctx, "readiness", fmt.Sprintf("%v\n%s", lastErr, responseExcerpt(lastBody)))
 			nextReport = time.Now().Add(15 * time.Second)
 		}
 		select {
 		case <-health.Done():
-			commandDiagnostic(ctx, "readiness", fmt.Sprintf("Candidate did not become ready. Last probe: %v\n%s", lastErr, lastBody))
+			commandDiagnostic(ctx, "readiness", fmt.Sprintf("Candidate did not become ready. Last probe: %v\n%s", lastErr, responseExcerpt(lastBody)))
 			return fmt.Errorf("candidate failed %s; previous release retained", r.healthPath())
 		case <-ticker.C:
 		}

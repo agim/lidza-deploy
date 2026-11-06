@@ -6,10 +6,12 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,24 +168,32 @@ func (c *Control) mergeNativeInventory(server Server, discovery []agent.NativeAp
 	unitPattern := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,149}\.service$`)
 	found := map[string]agent.NativeApplication{}
 	for _, a := range discovery {
-		if !namePattern.MatchString(a.Name) || len(a.Services) == 0 && (a.Runtime != "astro" || a.DocumentRoot != "public") || len(a.Services) > 32 {
-			return errors.New("Agent returned incomplete native inventory; previous inventory retained.")
+		if !namePattern.MatchString(a.Name) {
+			return errors.New("Agent discovery lists an application without a valid name; previous inventory retained.")
+		}
+		if len(a.Services) > 32 || len(a.Services) == 0 && !nativeStaticInventory(a) {
+			return fmt.Errorf("%s: agent discovery lists %d services; previous inventory retained.", a.Name, len(a.Services))
 		}
 		if _, exists := found[a.Name]; exists {
-			return errors.New("Agent returned duplicate native applications; previous inventory retained.")
+			return fmt.Errorf("%s: agent discovery lists the application twice; previous inventory retained.", a.Name)
 		}
 		for _, unit := range a.Services {
 			if !unitPattern.MatchString(unit) {
-				return errors.New("Agent returned invalid native services; previous inventory retained.")
+				return fmt.Errorf("%s: agent discovery lists an invalid service name; previous inventory retained.", a.Name)
 			}
 		}
 		a.Services = slices.Clone(a.Services)
 		slices.Sort(a.Services)
 		if len(slices.Compact(slices.Clone(a.Services))) != len(a.Services) {
-			return errors.New("Agent returned duplicate native services; previous inventory retained.")
+			return fmt.Errorf("%s: agent discovery lists a service twice; previous inventory retained.", a.Name)
 		}
 		found[a.Name] = a
 	}
+	// Each registration is compared with the discovery entry of the same
+	// name. The agent derives that entry from the policy that runs the
+	// application when it has one (system units), otherwise from the user
+	// units bound to its directory, so the two sides describe the same
+	// service manager; service order is the agent's, not a difference.
 	registered := map[string]agent.NativeApplication{}
 	ids := map[string]bool{}
 	for _, a := range remote {
@@ -191,20 +201,21 @@ func (c *Control) mergeNativeInventory(server Server, discovery []agent.NativeAp
 			continue
 		}
 		n := *a.Native
+		if nativeIdentityError(n) != nil {
+			return errors.New("Agent returned an invalid native binding; previous inventory retained.")
+		}
+		if n.ID != a.ID || n.Domain != a.Domain || n.Repository != a.Repository || n.Branch != a.Branch {
+			return fmt.Errorf("%s: agent application and native binding disagree; previous inventory retained.", n.ID)
+		}
+		if _, duplicate := registered[n.Name]; duplicate || ids[n.ID] {
+			return fmt.Errorf("%s: agent returned the native binding twice; previous inventory retained.", n.ID)
+		}
 		d, exists := found[n.Name]
-		runtime := n.Runtime
-		if runtime == "" {
-			runtime = "rails"
+		if !exists {
+			return fmt.Errorf("%s: registered on the agent but absent from its discovery; previous inventory retained.", n.ID)
 		}
-		probe := agent.App{ID: n.ID, Repository: n.Repository, Branch: n.Branch, Domain: n.Domain, AdditionalDomains: n.AdditionalDomains, Runtime: runtime}
-		if runtime == "rails" {
-			probe.Rails = &agent.RailsConfig{HealthPath: n.HealthPath}
-		}
-		if !exists || n.ID != a.ID || n.Domain != a.Domain || n.Repository != a.Repository || n.Branch != a.Branch || probe.Validate() != nil || !slices.Equal(n.Services, d.Services) || ids[n.ID] {
-			return errors.New("Agent native bindings do not match discovery; previous inventory retained.")
-		}
-		if _, duplicate := registered[n.Name]; duplicate {
-			return errors.New("Agent returned duplicate native bindings; previous inventory retained.")
+		if !sameServiceSet(n.Services, d.Services) {
+			return fmt.Errorf("%s: registered services %s vs discovered %s; previous inventory retained.", n.ID, serviceSet(sortedServices(n.Services)), serviceSet(d.Services))
 		}
 		ids[n.ID] = true
 		registered[n.Name] = n
@@ -238,15 +249,18 @@ func (c *Control) mergeNativeInventory(server Server, discovery []agent.NativeAp
 	for _, existing := range apps {
 		if existing.Native != nil && existing.ServerID == server.ID {
 			if _, exists := registered[existing.Native.Name]; !exists {
-				return errors.New("An existing Rails app is missing from agent inventory; previous inventory retained.")
+				return fmt.Errorf("%s: recorded in the panel but not registered on the agent; previous inventory retained.", existing.ID)
 			}
 		}
 	}
 	changed := false
 	for name, n := range registered {
 		if current, exists := apps[n.ID]; exists {
-			if current.ServerID != server.ID || current.Native == nil || !sameNativeApplication(*current.Native, n) {
-				return errors.New("Native inventory conflicts with an existing application; existing ownership retained.")
+			if current.ServerID != server.ID || current.Native == nil {
+				return fmt.Errorf("%s: owned by another server or a container application; existing ownership retained.", n.ID)
+			}
+			if difference := nativeBindingDifference(*current.Native, n); difference != "" {
+				return fmt.Errorf("%s: panel record and agent binding differ (%s); existing ownership retained.", n.ID, difference)
 			}
 		} else {
 			for _, current := range apps {
@@ -309,4 +323,72 @@ func (c *Control) mergeNativeInventory(server Server, discovery []agent.NativeAp
 		return errors.New("Could not save synchronized inventory; existing inventory retained.")
 	}
 	return nil
+}
+
+// nativeStaticInventory reports whether an application legitimately runs no
+// service: a static Astro site served from its public directory, or a static
+// site the agent created and serves from its build output.
+func nativeStaticInventory(a agent.NativeApplication) bool {
+	return a.Runtime == "astro" && a.DocumentRoot == "public" || a.Runtime == "static" && a.DocumentRoot != ""
+}
+
+// nativeIdentityError checks the identity an agent reports for a native
+// application: id, repository, branch and hostnames, plus the readiness path
+// of a Rails application. The runtime itself is the agent's decision; created
+// applications run runtimes the container validator does not know.
+func nativeIdentityError(n agent.NativeApplication) error {
+	probe := agent.App{ID: n.ID, Repository: n.Repository, Branch: n.Branch, Domain: n.Domain, AdditionalDomains: n.AdditionalDomains}
+	if n.Runtime == "" || n.Runtime == "rails" {
+		probe.Runtime, probe.Rails = "rails", &agent.RailsConfig{HealthPath: n.HealthPath}
+	}
+	return probe.Validate()
+}
+
+// sortedServices is a copy of units in a stable order.
+func sortedServices(units []string) []string { return slices.Sorted(slices.Values(units)) }
+
+// sameServiceSet compares services regardless of order: the agent lists a
+// created application's units in process order and a discovered one's
+// alphabetically.
+func sameServiceSet(a, b []string) bool {
+	return slices.Equal(sortedServices(a), sortedServices(b))
+}
+
+// serviceSet renders services for a status message.
+func serviceSet(units []string) string {
+	return "[" + strings.Join(units, ",") + "]"
+}
+
+// nativeBindingDifference names the first field in which the panel's record
+// of a native binding and the agent's differ, for the sync status; it is
+// empty exactly when sameNativeApplication accepts the pair.
+func nativeBindingDifference(record, remote agent.NativeApplication) string {
+	if sameNativeApplication(record, remote) {
+		return ""
+	}
+	switch {
+	case record.ID != remote.ID:
+		return fmt.Sprintf("id %q vs %q", record.ID, remote.ID)
+	case record.Name != remote.Name:
+		return fmt.Sprintf("name %q vs %q", record.Name, remote.Name)
+	case record.Domain != remote.Domain:
+		return fmt.Sprintf("domain %q vs %q", record.Domain, remote.Domain)
+	case !slices.Equal(record.AdditionalDomains, remote.AdditionalDomains):
+		return "additional domains differ"
+	case record.Repository != remote.Repository:
+		return fmt.Sprintf("repository %q vs %q", record.Repository, remote.Repository)
+	case record.Branch != remote.Branch:
+		return fmt.Sprintf("branch %q vs %q", record.Branch, remote.Branch)
+	case record.Port != remote.Port:
+		return fmt.Sprintf("port %q vs %q", record.Port, remote.Port)
+	case record.HealthPath != remote.HealthPath:
+		return fmt.Sprintf("health path %q vs %q", record.HealthPath, remote.HealthPath)
+	case record.Runtime != remote.Runtime:
+		return fmt.Sprintf("runtime %q vs %q", record.Runtime, remote.Runtime)
+	case record.DocumentRoot != remote.DocumentRoot:
+		return fmt.Sprintf("document root %q vs %q", record.DocumentRoot, remote.DocumentRoot)
+	case !slices.Equal(record.Services, remote.Services):
+		return "services " + serviceSet(record.Services) + " vs " + serviceSet(remote.Services)
+	}
+	return "binding fields differ"
 }

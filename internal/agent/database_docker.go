@@ -70,18 +70,8 @@ func (m *Manager) provisionDatabase(ctx context.Context, d Database) error {
 			return err
 		}
 		if found == "" {
-			memory := "1g"
-			if d.MemoryMiB > 0 {
-				memory = fmt.Sprintf("%dm", d.MemoryMiB)
-			}
-			args := []string{"run", "-d", "--name", d.Network, "--label", "io.lidza.database=" + d.AppID, "--network", d.Network, "--restart", "unless-stopped", "--memory", memory, "--pids-limit", "256", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=volume,src=" + d.Network + "-data,dst=/var/lib/postgresql/data", "--env", "POSTGRES_PASSWORD"}
-			if d.ResourceProfile != "" {
-				args = append(args, "--memory-swap", memory, "--cpus", d.CPUs)
-			}
+			args := []string{"run", "-d", "--name", d.Network, "--label", "io.lidza.database=" + d.AppID, "--network", d.Network, "--restart", "unless-stopped", "--pids-limit", "256", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=volume,src=" + d.Network + "-data,dst=/var/lib/postgresql/data", "--env", "POSTGRES_PASSWORD"}
 			args = append(args, databaseImage)
-			if d.ResourceProfile != "" {
-				args = append(args, "postgres", "-c", "shared_buffers=64MB", "-c", "work_mem=2MB", "-c", "maintenance_work_mem=32MB", "-c", "max_connections=40")
-			}
 			err = dockerStream(ctx, nil, io.Discard, []string{"POSTGRES_PASSWORD=" + d.AdminPassword}, args...)
 			if err != nil {
 				return errors.New("could not start PostgreSQL container")
@@ -93,6 +83,13 @@ func (m *Manager) provisionDatabase(ctx context.Context, d Database) error {
 			}
 			if _, err = command(ctx, "", nil, "docker", "start", d.Network); err != nil {
 				return err
+			}
+			// Containers created with the old fixed caps run uncapped from now on.
+			run := func(ctx context.Context, args ...string) (string, error) {
+				return command(ctx, "", nil, "docker", args...)
+			}
+			if lifted, err := liftContainerCaps(ctx, run, d.Network); err == nil && lifted {
+				commandDiagnostic(ctx, "database", "Removed the CPU and memory caps of the database container; it uses the server's resources like a native service.")
 			}
 		}
 		ready := false
@@ -124,7 +121,7 @@ func (m *Manager) provisionDatabase(ctx context.Context, d Database) error {
 		defer cancel()
 		_, _ = command(cleanup, "", nil, "docker", "rm", "-f", container)
 	}()
-	args := []string{"run", "--rm", "--name", container, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "256m"}
+	args := []string{"run", "--rm", "--name", container, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges"}
 	if d.Network != "" {
 		args = append(args, "--network", d.Network)
 	}

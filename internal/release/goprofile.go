@@ -207,6 +207,12 @@ func Go(opts GoOptions) Profile {
 				return !lidza(dir) && !exists(dir, filepath.Join("cmd", binary)) && mainPackage(dir)
 			}},
 		Step{Name: "check " + target, Args: []string{"test", "-x", target}},
+		// Detection names the web binary after the module path's last
+		// element; the build names it after the application. Link the
+		// module name to the built binary so either command starts it.
+		Step{Name: "link module binary", Env: env, When: func(dir string) bool { return exists(dir, "go.mod") },
+			Args: shell(`name=$(go list -m); name=${name##*/}; case "$name" in *[!A-Za-z0-9._-]*|""|.*) exit 0;; esac; ` +
+				`if [ "$name" != "` + binary + `" ] && [ ! -e "bin/$name" ]; then ln -s "` + binary + `" "bin/$name"; fi`)},
 	)
 	return Profile{Name: "go", Shared: shared, Build: build}
 }

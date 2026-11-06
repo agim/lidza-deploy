@@ -40,7 +40,9 @@ backup schedules do not include it. Back up the app's Docker volume separately,
 or configure the framework's S3-compatible provider for off-server storage.
 App removal retains the volume separately and releases the application ID.
 Recreating that ID gets a new volume and never adopts the retained files.
-**Databases & backups → Retained application data** lists retained volume names;
-names for recreated apps include an agent-generated resource suffix. Restoring a
-host also requires the agent's state and encryption keys, together with the
-volume's files.
+**Retained resources** (on the server page, on **Databases & backups** and in the
+app's **Data & storage** tab) lists retained volumes with their sizes; names for
+recreated apps include an agent-generated resource suffix. **Remove** deletes a
+retained resource's containers and volumes after you type its ID (see
+[Databases and backups](databases-backups.md)). Restoring a host also requires the
+agent's state and encryption keys, together with the volume's files.

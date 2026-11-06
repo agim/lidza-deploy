@@ -7,6 +7,7 @@ import (
 	"github.com/agim/lidza-deploy/internal/agent"
 	"github.com/agim/lidza/packs/mail"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -48,7 +49,7 @@ func (c *Control) observe(ctx context.Context, key, message string, failed bool,
 	next.Updated = time.Now().UTC()
 	if needsNotification && ((next.Active && !old.Notified) || (!next.Active && old.Notified)) {
 		subject := "Līdza Deploy alert: " + message
-		text := message + "\n\nOpen " + c.cfg.PublicURL + "/console.html for details."
+		text := message + "\n\nOpen " + strings.TrimRight(c.cfg.PublicURL, "/") + alertPath(key) + " for details."
 		if !next.Active {
 			subject = "Līdza Deploy recovery: " + message
 			text = "Recovered: " + text
@@ -154,7 +155,11 @@ func (c *Control) operationsTick(ctx context.Context, _ json.RawMessage) error {
 			if h.State != "healthy" && h.State != "unhealthy" {
 				continue
 			}
-			record(c.observe(ctx, "health:"+result.Server.ID+":"+h.AppID, "Application "+h.AppID+" failed its readiness check", h.State == "unhealthy", 3))
+			message := "Application " + h.AppID + " failed its readiness check"
+			if a, ok := c.app(h.AppID); ok && a.Native != nil {
+				message = "Application " + h.AppID + " has a failed service"
+			}
+			record(c.observe(ctx, "health:"+result.Server.ID+":"+h.AppID, message, h.State == "unhealthy", 3))
 		}
 	}
 	for _, result := range c.readFleet(request, "/v1/deployments?logs=0") {

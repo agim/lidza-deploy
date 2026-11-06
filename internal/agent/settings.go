@@ -24,6 +24,9 @@ type SettingsPatch struct {
 	Domain             string             `json:"domain"`
 	EnvChanges         map[string]*string `json:"env_changes"`
 	EnvKindChanges     map[string]string  `json:"env_kind_changes,omitempty"`
+	// Toolchains switches a release-managed native application between the
+	// agent's managed toolchains and the account's version manager.
+	Toolchains *string `json:"toolchains,omitempty"`
 }
 type EnvironmentEntry struct {
 	Key     string `json:"key"`
@@ -34,10 +37,13 @@ type EnvironmentEntry struct {
 	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
-	Native                       *NativeApplication      `json:"native,omitempty"`
-	ReadonlyEnvKeys              []string                `json:"readonly_env_keys,omitempty"`
-	SettingsApplyOnDeploy        bool                    `json:"settings_apply_on_deploy,omitempty"`
-	ReleaseRuntime               string                  `json:"release_runtime,omitempty"`
+	Native                *NativeApplication `json:"native,omitempty"`
+	ReadonlyEnvKeys       []string           `json:"readonly_env_keys,omitempty"`
+	SettingsApplyOnDeploy bool               `json:"settings_apply_on_deploy,omitempty"`
+	ReleaseRuntime        string             `json:"release_runtime,omitempty"`
+	// Toolchains is "managed" or "account" for release-managed native
+	// applications (NativeReleasePolicy.Toolchains); "" elsewhere.
+	Toolchains                   string                  `json:"toolchains,omitempty"`
 	Capabilities                 *ManagementCapabilities `json:"capabilities,omitempty"`
 	BuildConfigurationSupported  bool                    `json:"build_configuration_supported"`
 	Astro                        *AstroConfig            `json:"astro,omitempty"`
@@ -75,17 +81,20 @@ type Settings struct {
 }
 
 type ManagementCapabilities struct {
-	Routing     *bool  `json:"routing,omitempty"`
-	Resources   *bool  `json:"resources,omitempty"`
-	RuntimeMode *bool  `json:"runtime_mode,omitempty"`
-	Configure   bool   `json:"configure"`
-	Environment bool   `json:"environment"`
-	Deploy      bool   `json:"deploy"`
-	Reload      bool   `json:"reload"`
-	Rollback    bool   `json:"rollback"`
-	Processes   bool   `json:"processes"`
-	Logs        bool   `json:"logs"`
-	Reason      string `json:"reason,omitempty"`
+	Routing     *bool `json:"routing,omitempty"`
+	Resources   *bool `json:"resources,omitempty"`
+	RuntimeMode *bool `json:"runtime_mode,omitempty"`
+	Configure   bool  `json:"configure"`
+	Environment bool  `json:"environment"`
+	Deploy      bool  `json:"deploy"`
+	Reload      bool  `json:"reload"`
+	Rollback    bool  `json:"rollback"`
+	Processes   bool  `json:"processes"`
+	Logs        bool  `json:"logs"`
+	// Remove reports that the panel can remove a native application: the
+	// agent created it and removes its units, account and route.
+	Remove bool   `json:"remove,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func (m *Manager) Settings(id string) (Settings, error) {

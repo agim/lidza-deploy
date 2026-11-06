@@ -18,6 +18,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     location.href = `/login.html?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
     throw new APIError('Please sign in.', 401);
   }
+  // 204 No Content: the resource is absent by design (for example, no move
+  // recorded for an application). Answering 2xx keeps the browser from logging
+  // a console error, as it does for every 4xx response.
+  if (response.status === 204) return undefined as T;
   let data: unknown = {};
   try { data = await response.json(); } catch { /* empty response */ }
   if (!response.ok) {

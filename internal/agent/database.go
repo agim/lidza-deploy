@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agim/lidza-deploy/internal/retention"
 	"github.com/agim/lidza/packs/jobs"
 	"github.com/agim/lidza/packs/storage"
 )
@@ -24,6 +25,9 @@ type BackupPolicy struct {
 	Timezone string `json:"timezone,omitempty"`
 	Keep     int    `json:"keep"`
 	Offsite  bool   `json:"offsite"`
+	// Retention overrides the workspace's off-site retention for this
+	// database; nil follows the workspace default.
+	Retention *retention.Policy `json:"retention,omitempty"`
 }
 type DatabaseRequest struct {
 	ID     string       `json:"id,omitempty"`
@@ -43,6 +47,10 @@ type BackupRecord struct {
 	ObjectKey         string    `json:"object_key,omitempty"`
 	OffsiteRequested  bool      `json:"offsite_requested,omitempty"`
 	UploadError       string    `json:"upload_error,omitempty"`
+	// Seconds is how long a successful backup took, from the start of the
+	// dump through its required off-site upload. It sizes later
+	// pre-deployment backup deadlines.
+	Seconds float64 `json:"seconds,omitempty"`
 }
 type Database struct {
 	ResourceProfile string         `json:"resource_profile,omitempty"`
@@ -62,6 +70,17 @@ type Database struct {
 	Backup          BackupPolicy   `json:"backup"`
 	NextBackup      time.Time      `json:"next_backup"`
 	Backups         []BackupRecord `json:"backups"`
+	// BeforeDeploy is the pre-deployment backup choice the panel saved for
+	// this database (before_deploy.go); zero until an operator sets one, when
+	// the reviewed configuration's value, or always, applies.
+	BeforeDeploy BeforeDeployPolicy `json:"before_deploy,omitzero"`
+	// ExcludedTables are the tables whose data backups skip, as the panel
+	// saved them (backup_excluded_tables.go); nil until saved, when the
+	// legacy backup_exclude_table_data configuration applies.
+	ExcludedTables *[]string `json:"backup_excluded_tables,omitempty"`
+	// Removed is when the database's data was removed from this host
+	// (retained_remove.go); the record keeps its backup history.
+	Removed time.Time `json:"removed,omitzero"`
 }
 type DatabaseView struct {
 	Attachments []DatabaseAttachment `json:"attachments"`
@@ -76,6 +95,25 @@ type DatabaseView struct {
 	NextBackup  time.Time            `json:"next_backup"`
 	Backups     []BackupRecord       `json:"backups"`
 	Retained    bool                 `json:"retained"`
+	// BeforeDeploy is the database's effective pre-deployment backup policy;
+	// Primary marks a database that cannot choose never (a native primary,
+	// analytics or standalone database, or a container application's
+	// DATABASE_URL).
+	BeforeDeploy BeforeDeployPolicy `json:"before_deploy"`
+	Primary      bool               `json:"primary"`
+	// ExcludedTables are the tables whose data this database's backups
+	// skip (schema retained); ExcludedTablesSupported is false where
+	// backups always contain every table (native, SQLite, ClickHouse).
+	ExcludedTables          []string `json:"excluded_tables,omitempty"`
+	ExcludedTablesSupported bool     `json:"excluded_tables_supported,omitempty"`
+	// SizeBytes is measured for ClickHouse databases (system.parts).
+	SizeBytes int64 `json:"size_bytes,omitempty"`
+	// Progress is the running operation's live progress; agents without it
+	// omit the field.
+	Progress *Progress `json:"progress,omitempty"`
+	// Removed is when the database's data was removed; only its backups
+	// remain.
+	Removed time.Time `json:"removed,omitzero"`
 }
 
 func (p BackupPolicy) Validate() error {
@@ -99,6 +137,9 @@ func (p BackupPolicy) Validate() error {
 	}
 	if p.Keep < 1 || p.Keep > 100 {
 		return errors.New("retain between 1 and 100 backups")
+	}
+	if p.Retention != nil {
+		return p.Retention.Validate()
 	}
 	return nil
 }
@@ -170,8 +211,18 @@ func (m *Manager) databaseViews() []DatabaseView {
 		engine := ""
 		if m.data.NativeDatabases[id].Policy.SQLitePath != "" {
 			engine = "sqlite"
+		} else if m.data.NativeDatabases[id].Policy.ClickHouseDatabase != "" {
+			engine = "clickhouse"
 		}
-		out = append(out, DatabaseView{Attachments: attachments, Engine: engine, AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: policy, NextBackup: next, Backups: slices.Clone(d.Backups), Retained: !live})
+		view := DatabaseView{Attachments: attachments, Engine: engine, AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: policy, NextBackup: next, Backups: slices.Clone(d.Backups), Retained: !live,
+			BeforeDeploy: m.beforeDeployPolicyLocked(id), Primary: m.databasePrimaryLocked(id), Removed: d.Removed, ExcludedTables: m.backupExcludedTablesLocked(id)}
+		if _, err := m.excludedTablesSupportedLocked(id); err == nil {
+			view.ExcludedTablesSupported = true
+		}
+		if d.Operation != "" {
+			view.Progress = m.progress.snapshot(databaseProgressKey(id))
+		}
+		out = append(out, view)
 	}
 	return out
 }
@@ -325,6 +376,9 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 	if action == "provision" && d.Ready {
 		return errors.New("database already ready")
 	}
+	if !d.Removed.IsZero() {
+		return errors.New("this database's data was removed; restore one of its backups into a new database instead")
+	}
 	if _, native := m.data.NativeDatabases[id]; native && action != "backup" {
 		return errors.New("native databases are adopted in place; provisioning is unavailable")
 	}
@@ -351,6 +405,8 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 		defer m.wg.Done()
 		ctx, cancel := context.WithTimeout(m.ctx, 2*time.Hour)
 		defer cancel()
+		ctx, endProgress := m.trackDatabase(ctx, id, "Waiting for an available database operation slot")
+		defer endProgress()
 		var err error
 		var record BackupRecord
 		select {
@@ -361,6 +417,7 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 		}
 		if err == nil {
 			if action == "provision" {
+				progressFrom(ctx).Stage("Provisioning the database", 0, nil)
 				err = m.provisionDatabase(ctx, d)
 			} else {
 				record, err = m.dumpDatabase(ctx, d, target)
@@ -412,6 +469,9 @@ func (m *Manager) startDatabaseLocked(id, action string) error {
 		if record.ID != "" {
 			m.pruneBackupsLocked(id)
 		}
+		if err == nil && record.Offsite {
+			m.offsiteRetentionAfterUploadLocked(id)
+		}
 
 		for appID := range reloadApps {
 			a := m.data.Apps[appID]
@@ -447,6 +507,11 @@ func (m *Manager) setBackupPolicy(id string, p BackupPolicy) error {
 	}
 	old := d
 	p.Keep = 1
+	if p.Retention == nil {
+		// Schedule changes keep the retention override; clear it through
+		// the retention endpoint.
+		p.Retention = d.Backup.Retention
+	}
 	d.Backup = p
 	d.NextBackup = p.NextBackupAfter(time.Now())
 	m.data.Databases[id] = d

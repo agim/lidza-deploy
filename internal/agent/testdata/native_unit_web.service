@@ -10,9 +10,11 @@ Type=simple
 User=app-shop
 Group=app-shop
 WorkingDirectory=/srv/lidza/apps/shop/current
-Environment=PATH=/srv/lidza/apps/shop/current/.lidza-toolchain/bin:/srv/lidza/apps/shop/current/.lidza-toolchain/go/bin:/srv/lidza/apps/shop/current/.lidza-toolchain/node/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/srv/lidza/apps/shop/current/.lidza-toolchain/bin:/srv/lidza/apps/shop/current/.lidza-toolchain/go/bin:/srv/lidza/apps/shop/current/.lidza-toolchain/node/bin:/srv/lidza/apps/shop/current/.lidza-toolchain/ruby/bin:/srv/lidza/apps/shop/current/.lidza-toolchain/rust/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/srv/lidza/apps/shop
 Environment=XDG_CACHE_HOME=/tmp/.cache npm_config_cache=/tmp/.npm
+Environment=GEM_HOME=/srv/lidza/apps/shop/shared/gems GEM_PATH=/srv/lidza/apps/shop/shared/gems:
+EnvironmentFile=-/srv/lidza/apps/shop/current/.lidza-toolchain/env
 EnvironmentFile=/srv/lidza/apps/shop/shared/.env
 ExecStart=/bin/sh -c "exec bin/rails server -b 127.0.0.1 -p \"$$PORT\""
 Restart=on-failure

@@ -17,9 +17,6 @@ const controlBootMarker = "lidza-control-boot-v1"
 // that helper advertises the migration marker, queue its fixed systemd change.
 // No command, path, or browser input is passed to the privileged helper.
 func (m *Manager) migrateConsoleService() {
-	if m.cfg.HostMode == "coexist" {
-		return
-	}
 	if os.Geteuid() == 0 || runtime.GOOS != "linux" || m.cfg.DataDir != "/var/lib/lidza-agent" {
 		return
 	}
@@ -81,9 +78,6 @@ func queueConsoleServiceMigration(dataDir, helperPath string) (bool, error) {
 // The helper marker prevents an old privileged helper from seeing a request it
 // does not understand, and the unit/drop-in marker makes the migration one-shot.
 func (m *Manager) migrateControlBootService() {
-	if m.cfg.HostMode == "coexist" {
-		return
-	}
 	if runtime.GOOS != "linux" || m.cfg.DataDir != "/var/lib/lidza-agent" {
 		return
 	}

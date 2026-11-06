@@ -57,7 +57,7 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response := call(c.generateMasterKey, "POST", "portal", ""); response.Code != 502 || !strings.Contains(response.Body.String(), "already has a master key") || strings.Contains(response.Body.String(), existingMaster) {
+	if response := call(c.generateMasterKey, "POST", "portal", ""); response.Code != 409 || !strings.Contains(response.Body.String(), "already has a master key") || strings.Contains(response.Body.String(), existingMaster) {
 		t.Fatal("generator proxy did not reject replacement safely", response.Code)
 	}
 	preservedMaster, err := manager.RevealCredential("portal", "LIDZA_MASTER_KEY")

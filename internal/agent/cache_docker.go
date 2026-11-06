@@ -51,11 +51,11 @@ func provisionLocalCache(ctx context.Context, c CacheResource) error {
 		// Configuration arrives on stdin, not argv, an environment variable, or a
 		// public bind-mounted file. The cache runs as the same unprivileged UID as apps.
 		cfg := fmt.Sprintf("bind 0.0.0.0\nprotected-mode yes\nport 6379\nrequirepass %s\ndir /data\nappendonly yes\nappendfsync everysec\nsave \"\"\nmaxmemory 128mb\nmaxmemory-policy allkeys-lru\n", c.LocalPassword)
-		seed := []string{"run", "--rm", "-i", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--memory", "128m", "--pids-limit", "32", "--mount", "type=volume,src=" + c.Network + "-data,dst=/data", cacheImage, "sh", "-c", "umask 077; cat > /data/lidza.conf && chown -R 65532:65532 /data && chmod 700 /data"}
+		seed := []string{"run", "--rm", "-i", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--pids-limit", "32", "--mount", "type=volume,src=" + c.Network + "-data,dst=/data", cacheImage, "sh", "-c", "umask 077; cat > /data/lidza.conf && chown -R 65532:65532 /data && chmod 700 /data"}
 		if err = dockerStream(ctx, strings.NewReader(cfg), io.Discard, nil, seed...); err != nil {
 			return errors.New("could not initialize cache configuration")
 		}
-		_, err = command(ctx, "", nil, "docker", "run", "-d", "--name", c.Network, "--label", "io.lidza.cache="+c.Network, "--network", c.Network, "--restart", "unless-stopped", "--user", "65532:65532", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "256m", "--cpus", "0.5", "--pids-limit", "64", "--log-opt", "max-size=5m", "--log-opt", "max-file=2", "--mount", "type=volume,src="+c.Network+"-data,dst=/data", cacheImage, "valkey-server", "/data/lidza.conf")
+		_, err = command(ctx, "", nil, "docker", "run", "-d", "--name", c.Network, "--label", "io.lidza.cache="+c.Network, "--network", c.Network, "--restart", "unless-stopped", "--user", "65532:65532", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--log-opt", "max-size=5m", "--log-opt", "max-file=2", "--mount", "type=volume,src="+c.Network+"-data,dst=/data", cacheImage, "valkey-server", "/data/lidza.conf")
 		if err != nil {
 			return errors.New("could not start private Valkey container")
 		}

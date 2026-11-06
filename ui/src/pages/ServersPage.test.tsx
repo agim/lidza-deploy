@@ -72,3 +72,44 @@ describe('ServersPage resources', () => {
     expect(screen.getByText('16.3%')).toBeInTheDocument();
   });
 });
+
+describe('ServerResources warnings', () => {
+  it('lists host toolchain warnings on the server card', () => {
+    const warning = 'Ruby 3.4.4: Bundler 2.7.1, 2.6.9 installed beside RubyGems 4.0.23\'s default Bundler 4.0.23; older Bundler versions print constant redefinition warnings on this RubyGems (remove them with the server\'s Remove unused Bundler versions action)';
+    render(<ServerResources health={{ ...health, warnings: [warning] }} loading={false} />);
+    expect(screen.getByRole('status', { name: 'Server warnings' })).toHaveTextContent(warning);
+    expect(screen.queryByRole('group', { name: 'Server notes' })).toBeNull();
+  });
+
+  it('shows no warning block when the host has none', () => {
+    render(<ServerResources health={health} loading={false} />);
+    expect(screen.queryByRole('status', { name: 'Server warnings' })).toBeNull();
+  });
+
+  it('keeps informational notes muted and collapsed, outside the warning block', () => {
+    const note = "Rails releases on Ruby 3.4.4 use the host's Bundler 4.0.23; 6 applications pin older versions in their Gemfile.lock";
+    const { container } = render(<ServerResources health={{ ...health, notes: [note] }} loading={false} />);
+    expect(screen.queryByRole('status', { name: 'Server warnings' })).toBeNull();
+    const notes = container.querySelector('details.host-notes') as HTMLDetailsElement;
+    expect(notes).not.toBeNull();
+    expect(notes.open).toBe(false);
+    expect(notes).toHaveTextContent('1 note');
+    expect(notes.querySelector('p.muted-copy')).toHaveTextContent(note);
+  });
+});
+
+describe('ServerResources database sizes', () => {
+  it('labels retained databases with their last backup instead of an error', () => {
+    render(<ServerResources health={{
+      ...health,
+      database_bytes: { portal: 20 * 1024 ** 2, moved: 4096 },
+      retained_databases: { gone: { backup_bytes: 1.2 * 1024 ** 3, backup_created: '2026-11-02T00:00:00Z' }, moved: {}, empty: {} },
+    }} loading={false} />);
+    expect(screen.getByText('20.0 MiB')).toBeInTheDocument();
+    expect(screen.getByText('retained · last backup 1.2 GiB')).toBeInTheDocument();
+    expect(screen.getByText('retained · 4.0 KiB')).toBeInTheDocument();
+    expect(screen.getByText('retained · no backups')).toBeInTheDocument();
+    expect(screen.getByText('4 measured')).toBeInTheDocument();
+    expect(screen.queryByText(/database size unavailable/)).toBeNull();
+  });
+});

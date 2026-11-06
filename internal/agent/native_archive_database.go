@@ -52,33 +52,46 @@ func nativeArchivePeerCredential() (*syscall.Credential, error) {
 	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}, nil
 }
 
-func probeNativeArchiveDatabase(ctx context.Context, p NativeDatabasePolicy) error {
+// runNativeArchiveQuery runs one read-only statement on an archive database
+// over the local socket as the postgres account, with the reviewed major's
+// psql, and returns its trimmed output. nativeArchiveQuery is what callers
+// use; tests replace it.
+func runNativeArchiveQuery(ctx context.Context, p NativeDatabasePolicy, sql string) (string, error) {
 	if !nativePostgresDatabasePath.MatchString("/"+p.ArchiveDatabase) || p.PostgresMajor < 16 || p.PostgresMajor > 18 {
-		return errors.New("standalone native backup peer probe requires its reviewed database and toolchain")
+		return "", errors.New("standalone native backup peer probe requires its reviewed database and toolchain")
 	}
 	credential, err := nativeArchivePeerCredential()
 	if err != nil {
-		return err
+		return "", err
 	}
 	path := filepath.Join("/usr/lib/postgresql", strconv.Itoa(p.PostgresMajor), "bin/psql")
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 {
-		return errors.New("standalone native backup probe tool is unavailable")
+		return "", errors.New("standalone native backup probe tool is unavailable")
 	}
 	if owner, ok := info.Sys().(*syscall.Stat_t); !ok || owner.Uid != 0 {
-		return errors.New("standalone native backup probe tool is untrusted")
+		return "", errors.New("standalone native backup probe tool is untrusted")
 	}
-	command := exec.CommandContext(ctx, path, "-XAtw", "-h", nativeArchiveSocket, "-p", "5432", "-U", "postgres",
-		"-d", p.ArchiveDatabase, "-c", "SELECT current_database(), current_setting('server_version_num'), current_setting('transaction_read_only')")
+	command := exec.CommandContext(ctx, path, "-XAtw", "-h", nativeArchiveSocket, "-p", "5432", "-U", "postgres", "-d", p.ArchiveDatabase, "-c", sql)
 	command.Env = []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent", "LANG=C.UTF-8", "PGPASSFILE=/nonexistent", "PGCONNECT_TIMEOUT=5",
 		"PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=1000"}
 	command.SysProcAttr = &syscall.SysProcAttr{Credential: credential}
 	var stdout nativeBoundedBuffer
 	command.Stdout, command.Stderr = &stdout, &limitedBuffer{}
 	if err = command.Run(); err != nil || stdout.exceeded {
-		return errors.New("standalone native backup read-only peer probe failed")
+		return "", errors.New("standalone native backup read-only peer probe failed")
 	}
-	fields := strings.Split(strings.TrimSpace(stdout.String()), "|")
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+var nativeArchiveQuery = runNativeArchiveQuery
+
+func probeNativeArchiveDatabase(ctx context.Context, p NativeDatabasePolicy) error {
+	out, err := nativeArchiveQuery(ctx, p, "SELECT current_database(), current_setting('server_version_num'), current_setting('transaction_read_only')")
+	if err != nil {
+		return err
+	}
+	fields := strings.Split(out, "|")
 	if len(fields) != 3 || fields[0] != p.ArchiveDatabase || fields[2] != "on" {
 		return errors.New("standalone native backup peer database or read-only state changed")
 	}

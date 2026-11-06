@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -20,7 +21,7 @@ func nativeInventoryFixture(t *testing.T) (*Control, Server, agent.NativeApplica
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := agent.NativeApplication{ID: "rails-shop", Name: "shop", Domain: "shop.example.com", Repository: "org/shop", Branch: "master", HealthPath: "/up", Port: "9190", Services: []string{"shop-server.service", "shop-worker.service"}}
+	n := agent.NativeApplication{ID: "rails-store", Name: "store", Domain: "store.example.com", Repository: "org/store", Branch: "master", HealthPath: "/up", Port: "9190", Services: []string{"store-server.service", "store-worker.service"}}
 	return c, server, n
 }
 
@@ -172,6 +173,74 @@ func TestNativeInventoryOfflineAgentPreservesInventoryAndReportsFailure(t *testi
 	after, _ := json.Marshal(c.data)
 	if string(before) != string(after) || c.nativeSync[server.ID].State != "error" {
 		t.Fatal("offline agent removed inventory or was marked synced")
+	}
+}
+
+func createdRemote(apps ...agent.NativeApplication) []agent.App {
+	remote := []agent.App{}
+	for _, n := range apps {
+		remote = append(remote, agent.App{ID: n.ID, Native: &n, Runtime: n.Runtime, Repository: n.Repository, Branch: n.Branch, Domain: n.Domain})
+	}
+	return remote
+}
+
+func TestNativeInventoryAcceptsPolicyUnitsAndCreatedApplications(t *testing.T) {
+	c, server, n := nativeInventoryFixture(t)
+	// An application that moved to its own account: the agent registers and
+	// discovers the policy's system units; its stale user units never appear.
+	moved := n
+	moved.Services = []string{"store-web.service", "store-jobs.service"}
+	// Applications the agent created under its apps root, with units in
+	// process order, runtimes the container validator does not know, and a
+	// static site without services.
+	shop := agent.NativeApplication{ID: "shop", Name: "shop", Runtime: "go", Domain: "shop.example.com", Repository: "acme/shop", Branch: "main", HealthPath: "/readyz", Port: "4100", Services: []string{"lidza-app-shop-web.service", "lidza-app-shop-jobs.service"}}
+	api := agent.NativeApplication{ID: "api", Name: "api", Runtime: "node", Domain: "api.example.com", Repository: "acme/api", Branch: "main", HealthPath: "/", Port: "4102", Services: []string{"lidza-app-api-web.service"}}
+	site := agent.NativeApplication{ID: "site", Name: "site", Runtime: "static", DocumentRoot: "dist", Domain: "site.example.com", Repository: "acme/site", Branch: "main", HealthPath: "/", Services: []string{}}
+	// The panel recorded shop when it created it; the others are adopted.
+	c.data.Apps[shop.ID] = Application{ID: shop.ID, ServerID: server.ID, Native: &shop, Runtime: "go", Repository: shop.Repository, Branch: shop.Branch, Domain: shop.Domain, AutoDeploy: true, Generation: "created"}
+	discovery := []agent.NativeApplication{moved, shop, api, site}
+	remote := slices.Concat(inventoryRemote(moved), createdRemote(shop, api, site))
+	if err := c.mergeNativeInventory(server, discovery, remote); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.data.Apps) != 4 || !slices.Equal(c.data.Apps[n.ID].Native.Services, moved.Services) || c.data.Apps["api"].Runtime != "node" || c.data.Apps["site"].Runtime != "static" || len(c.data.ObservedApps) != 0 {
+		t.Fatalf("moved and created applications were not adopted: %+v", c.data.Apps)
+	}
+	if kept := c.data.Apps[shop.ID]; kept.Generation != "created" || !kept.AutoDeploy {
+		t.Fatal("the panel's own record of a created application was replaced", kept)
+	}
+	// Discovery may list services alphabetically while the registration keeps
+	// process order; the sets are what must agree.
+	sorted := slices.Clone(discovery)
+	sorted[1].Services = []string{"lidza-app-shop-jobs.service", "lidza-app-shop-web.service"}
+	if err := c.mergeNativeInventory(server, sorted, remote); err != nil || len(c.data.Apps) != 4 {
+		t.Fatal("re-sync with reordered services changed the result", err)
+	}
+}
+
+func TestNativeInventoryMismatchNamesApplicationAndServices(t *testing.T) {
+	c, server, n := nativeInventoryFixture(t)
+	c.data.Apps[n.ID] = Application{ID: n.ID, ServerID: server.ID, Native: &n, Domain: n.Domain, Repository: n.Repository, Branch: n.Branch}
+	before, _ := json.Marshal(c.data)
+	partial := n
+	partial.Services = []string{"store-server.service"}
+	err := c.mergeNativeInventory(server, []agent.NativeApplication{partial}, inventoryRemote(n))
+	if want := "rails-store: registered services [store-server.service,store-worker.service] vs discovered [store-server.service]; previous inventory retained."; err == nil || err.Error() != want {
+		t.Fatalf("service mismatch message = %v", err)
+	}
+	if err := c.mergeNativeInventory(server, nil, inventoryRemote(n)); err == nil || !strings.HasPrefix(err.Error(), "rails-store: registered on the agent but absent from its discovery") {
+		t.Fatalf("missing discovery message = %v", err)
+	}
+	rebound := n
+	rebound.Services = []string{"store-web.service"}
+	if err := c.mergeNativeInventory(server, []agent.NativeApplication{rebound}, inventoryRemote(rebound)); err == nil || !strings.HasPrefix(err.Error(), "rails-store: panel record and agent binding differ (services [store-server.service,store-worker.service] vs [store-web.service])") {
+		t.Fatalf("record conflict message = %v", err)
+	}
+	if err := c.mergeNativeInventory(server, []agent.NativeApplication{n}, nil); err == nil || !strings.HasPrefix(err.Error(), "rails-store: recorded in the panel but not registered on the agent") {
+		t.Fatalf("unregistered record message = %v", err)
+	}
+	if after, _ := json.Marshal(c.data); string(before) != string(after) {
+		t.Fatal("a named mismatch changed the inventory")
 	}
 }
 

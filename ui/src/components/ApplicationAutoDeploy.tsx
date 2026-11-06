@@ -3,9 +3,10 @@ import {del,post} from '../lib/api';
 import {MenuItem} from './ui';
 import {useToast} from './ToastProvider';
 
-export function ApplicationAutoDeploy({appID,enabled,disabled,requireAppPairing,onChange}:{appID:string;enabled?:boolean;disabled?:boolean;requireAppPairing?:boolean;onChange:()=>Promise<void>}) {
+// locked refuses both directions, for an application a move holds.
+export function ApplicationAutoDeploy({appID,enabled,disabled,locked,requireAppPairing,onChange}:{appID:string;enabled?:boolean;disabled?:boolean;locked?:boolean;requireAppPairing?:boolean;onChange:()=>Promise<void>}) {
   const notify=useToast();
-  return <MenuItem disabled={disabled&&!enabled} icon={<GitBranch size={16}/>} onSelect={async()=>{
+  return <MenuItem disabled={locked||disabled&&!enabled} icon={<GitBranch size={16}/>} onSelect={async()=>{
     try {
       if(new URLSearchParams(location.search).get('demo')!=='1') {
         const path=`control/apps/${encodeURIComponent(appID)}`;

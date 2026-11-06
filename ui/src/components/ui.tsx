@@ -9,6 +9,7 @@ import { Label as PrimitiveLabel } from './primitives/label';
 import { Input } from './primitives/input';
 import { Tabs as PrimitiveTabs, TabsList, TabsTrigger, TabsContent } from './primitives/tabs';
 import { useActionFeedback } from './useActionFeedback';
+import { goBack, withSticky } from '../lib/router';
 
 export function cx(...values: Array<string | false | null | undefined>) { return values.filter(Boolean).join(' '); }
 
@@ -64,8 +65,21 @@ export function SearchField(props: InputHTMLAttributes<HTMLInputElement>) {
   return <label className="search-field"><Search size={17} aria-hidden="true" /><span className="sr-only">Search</span><Input type="search" className={`border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:ring-0 ${className || ''}`} {...rest} /></label>;
 }
 
+/**
+ * BackLink returns to the previous panel view exactly like the browser Back
+ * button. Without in-panel history (a fresh tab or deep link) it opens `to`,
+ * the parent view. It stays a real link for new-tab use.
+ */
+export function BackLink({ to, children = '← Back' }: { to: string; children?: ReactNode }) {
+  return <a className="back-link" href={withSticky(to)} onClick={event => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    goBack(to);
+  }}>{children}</a>;
+}
+
 export function PageHeader({ eyebrow, title, description, actions, back }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode; back?: string }) {
-  return <header className="page-header"><div className="page-title-row">{back && <a className="back-link" href={back}>← Back</a>}<div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h1>{title}<span aria-hidden="true">.</span></h1>{description && <p className="page-description">{description}</p>}</div></div>{actions && <div className="page-actions">{actions}</div>}</header>;
+  return <header className="page-header"><div className="page-title-row">{back && <BackLink to={back} />}<div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h1>{title}<span aria-hidden="true">.</span></h1>{description && <p className="page-description">{description}</p>}</div></div>{actions && <div className="page-actions">{actions}</div>}</header>;
 }
 
 export function SectionHeader({ title, description, actions }: { title: string; description?: string; actions?: ReactNode }) {
@@ -157,7 +171,7 @@ export function PromptDialog({ open, title, description, label, value, submitLab
       setBusy(false);
     }
   };
-  return <AlertDialog.Root open={open} onOpenChange={onOpenChange}><AlertDialog.Portal><AlertDialog.Overlay className="dialog-overlay" /><AlertDialog.Content className="dialog"><ActionForm className="dialog-form" onSubmit={submit}><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description>{description}</AlertDialog.Description><label className="field" htmlFor={inputID}><span className="field-label">{label}</span><input {...inputProps} id={inputID} value={value} onChange={event => onValueChange(event.target.value)} autoFocus required disabled={busy} /></label>{error && <div className="dialog-error" role="alert"><AlertTriangle size={17} /><span>{error}</span></div>}<div className="dialog-actions"><AlertDialog.Cancel asChild><Button type="button" disabled={busy}>Cancel</Button></AlertDialog.Cancel><Button type="submit" variant="primary" disabled={busy || !value.trim()}>{busy && <LoaderCircle className="spin" size={16} />}{submitLabel}</Button></div></ActionForm></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
+  return <AlertDialog.Root open={open} onOpenChange={onOpenChange}><AlertDialog.Portal><AlertDialog.Overlay className="dialog-overlay" /><AlertDialog.Content className="dialog"><ActionForm className="dialog-form" onSubmit={submit}><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description>{description}</AlertDialog.Description><label className="field" htmlFor={inputID}><span className="field-label">{label}</span><input autoComplete="off" {...inputProps} id={inputID} value={value} onChange={event => onValueChange(event.target.value)} autoFocus required disabled={busy} /></label>{error && <div className="dialog-error" role="alert"><AlertTriangle size={17} /><span>{error}</span></div>}<div className="dialog-actions"><AlertDialog.Cancel asChild><Button type="button" disabled={busy}>Cancel</Button></AlertDialog.Cancel><Button type="submit" variant="primary" disabled={busy || !value.trim()}>{busy && <LoaderCircle className="spin" size={16} />}{submitLabel}</Button></div></ActionForm></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
 }
 
 export function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {

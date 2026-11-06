@@ -16,6 +16,7 @@ import (
 	"github.com/agim/lidza-deploy/internal/buildinfo"
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	gh "github.com/agim/lidza-deploy/internal/providers/github"
+	"github.com/agim/lidza-deploy/internal/retention"
 	"github.com/agim/lidza/packs/analytics"
 	"github.com/agim/lidza/packs/audit"
 	"github.com/agim/lidza/packs/auth"
@@ -89,6 +90,13 @@ type saved struct {
 	Moves                     map[string]MoveJob             `json:"moves,omitempty"`
 	Apps                      map[string]Application         `json:"apps"`
 	Servers                   []Server                       `json:"servers"`
+
+	// BackupRetention is the workspace's off-site retention; nil until an
+	// operator saves it, and until then nothing is cleaned up on its own.
+	// BackupOrphans records when each database folder without an owning
+	// server was first noticed (backup_retention.go).
+	BackupRetention *retention.Settings  `json:"backup_retention,omitempty"`
+	BackupOrphans   map[string]time.Time `json:"backup_orphans,omitempty"`
 }
 type Control struct {
 	// credentialsFixture replaces deploymentCredentials in unit tests that run
@@ -114,6 +122,18 @@ type Control struct {
 	moveResolver     moveResolver
 	moveProbe        func(ctx context.Context, address, host string) error
 	movePollInterval time.Duration
+	// moveLive is the running step's live progress by move, guarded by mu
+	// (move_progress.go); moveHeartbeat replaces the heartbeat interval in
+	// tests.
+	moveLive      map[string]*moveLiveStep
+	moveHeartbeat time.Duration
+	// moveRetryDelays, moveStallWarn and moveStallCancel replace the retry
+	// backoff and stall limits in tests (move_retry.go, move_progress.go).
+	moveRetryDelays []time.Duration
+	moveStallWarn   time.Duration
+	moveStallCancel time.Duration
+	// moveProbes caches disk probes of servers for estimates.
+	moveProbes map[string]moveProbeResult
 }
 
 func New(cfg Config) (*Control, error) {
@@ -256,6 +276,10 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if err := q.Schedule("move.tick", jobs.Every(time.Minute), nil); err != nil {
 		return err
 	}
+	q.Handle("backups.retention", func(ctx context.Context, _ json.RawMessage) error { return c.retentionTick(ctx) }, jobs.Concurrency(1))
+	if err := q.Schedule("backups.retention", jobs.Every(6*time.Hour), nil); err != nil {
+		return err
+	}
 	q.Handle("updates.tick", func(ctx context.Context, _ json.RawMessage) error { return c.updateTick(ctx) }, jobs.Concurrency(1))
 	return q.Schedule("updates.tick", jobs.Every(time.Minute), nil)
 }
@@ -294,6 +318,28 @@ type agentHTTPError struct {
 func (e *agentHTTPError) Error() string {
 	return fmt.Sprintf("agent returned %d: %s", e.status, e.message)
 }
+
+// failAgent answers a request whose agent call failed. A request the agent
+// refused (invalid, conflicting, too large, rate limited) keeps the agent's
+// status and message, so the panel shows why, for example "an update is
+// already running". Everything else is a bad gateway: an agent 401/403 is
+// the control plane's own credential problem, never the browser's session,
+// and an agent 404 means the agent lacks the route or resource.
+func failAgent(w http.ResponseWriter, err error) {
+	var refused *agentHTTPError
+	if errors.As(err, &refused) && agentRefusal[refused.status] {
+		message := refused.message
+		if message == "" {
+			message = http.StatusText(refused.status)
+		}
+		agent.Fail(w, refused.status, errors.New(message))
+		return
+	}
+	agent.Fail(w, http.StatusBadGateway, err)
+}
+
+var agentRefusal = map[int]bool{http.StatusBadRequest: true, http.StatusConflict: true, http.StatusRequestEntityTooLarge: true,
+	http.StatusUnprocessableEntity: true, http.StatusLocked: true, http.StatusTooManyRequests: true}
 
 func (c *Control) agentRequest(r *http.Request, target Server, method, path string, body, out any) error {
 	var b []byte
@@ -364,9 +410,21 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	private := http.NewServeMux()
-	handle := func(pattern string, fn http.HandlerFunc) {
-		private.HandleFunc(pattern, c.protectedRoute(pattern, c.nativeContainerGuard(pattern, fn)))
-	}
+	c.routes(func(pattern string, fn http.HandlerFunc) {
+		private.HandleFunc(pattern, c.protectedRoute(pattern, c.moveLock(pattern, c.nativeContainerGuard(pattern, fn))))
+	})
+	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
+	mux.HandleFunc("POST /hooks/github-app", c.githubAppWebhook)
+	mux.HandleFunc("POST /api/agent/checkout-token", c.checkoutToken)
+	mux.HandleFunc("POST /api/agent/errors", c.ingestErrors)
+	mux.Handle("/api/control/", c.Protect(private))
+	mux.Handle("/", frontend)
+	return mux
+}
+
+// routes registers every panel API route through handle; Handler wraps each
+// in authorization, the move lock and the native-runtime guard.
+func (c *Control) routes(handle func(string, http.HandlerFunc)) {
 	for _, pattern := range []string{"GET /api/control/github/app/status", "POST /api/control/github/app/register", "GET /api/control/github/app/manifest-callback", "POST /api/control/github/app/install", "GET /api/control/github/app/install-callback", "DELETE /api/control/github/app"} {
 		handle(pattern, c.githubAppRoute)
 	}
@@ -395,6 +453,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 		handle(pattern, c.serverMaintenance)
 	}
 	c.hostAdminRoutes(handle)
+	handle("POST /api/control/servers/{server}/host/ingress/error-pages", c.adoptErrorPages)
 	handle("GET /api/control/servers/{server}/containers", c.serverContainers)
 	handle("POST /api/control/servers/{server}/containers/restart", c.serverContainers)
 	handle("PUT /api/control/apps/{id}/previews", c.previewConfig)
@@ -427,6 +486,8 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("GET /api/control/apps/{id}/cache", c.cacheSettings)
 	handle("POST /api/control/apps/{id}/cache", c.cacheSettings)
 	handle("GET /api/control/databases", c.databases)
+	handle("GET /api/control/servers/{server}/retained-resources", c.serverRetained)
+	handle("DELETE /api/control/servers/{server}/retained-resources/{id}", c.removeRetained)
 	handle("POST /api/control/apps/{id}/database", c.configureDatabase)
 	handle("POST /api/control/apps/{id}/database/{action}", c.databaseAction)
 	handle("PATCH /api/control/apps/{id}/backups", c.backupPolicy)
@@ -435,7 +496,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("PUT /api/control/storage", c.configureStorage)
 	handle("GET /api/control/storage/backups", c.remoteBackups)
 	handle("GET /api/control/storage/backups/download", c.remoteBackupDownload)
+	c.backupRetentionRoutes(handle)
 	handle("POST /api/control/servers/{server}/databases/{id}/backups/{backup}/upload", c.retryBackupUpload)
+	handle("POST /api/control/servers/{server}/databases/{id}/backups/{backup}/restore", c.restoreBackupInPlace)
 	handle("PUT /api/control/mail", c.configureMail)
 	handle("POST /api/control/mail/test", c.testMail)
 	handle("GET /api/control/apps/{id}/settings", c.settings)
@@ -450,6 +513,9 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("POST /api/control/apps/{id}/reload", c.reloadApp)
 	handle("POST /api/control/servers/{server}/databases/{id}/{action}", c.databaseResourceAction)
 	handle("PATCH /api/control/servers/{server}/databases/{id}/backups", c.databaseResourcePolicy)
+	handle("PATCH /api/control/servers/{server}/databases/{id}/backups/before-deploy", c.databaseBeforeDeploy)
+	handle("GET /api/control/servers/{server}/databases/{id}/tables", c.databaseTables)
+	handle("PATCH /api/control/servers/{server}/databases/{id}/backups/excluded-tables", c.databaseExcludedTables)
 	handle("POST /api/control/apps/{id}/deploy", c.deploy)
 	handle("POST /api/control/apps/{id}/rollback", c.rollback)
 	handle("POST /api/control/apps/{id}/webhook", c.hook)
@@ -468,14 +534,6 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	handle("GET /api/control/repos/detect", c.detectRepository)
 	handle("POST /api/control/native-apps", c.createNative)
 	handle("POST /api/control/github/config", c.configureGitHub)
-
-	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
-	mux.HandleFunc("POST /hooks/github-app", c.githubAppWebhook)
-	mux.HandleFunc("POST /api/agent/checkout-token", c.checkoutToken)
-	mux.HandleFunc("POST /api/agent/errors", c.ingestErrors)
-	mux.Handle("/api/control/", c.Protect(private))
-	mux.Handle("/", frontend)
-	return mux
 }
 func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 	token, err := c.token(r.Context())
@@ -501,13 +559,21 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 		DomainStatus   *agent.DomainStatus  `json:"domain_status,omitempty"`
 		Current        *agent.Release       `json:"current,omitempty"`
 		AgentError     string               `json:"agent_error,omitempty"`
+		// Move is the move that holds the application; its settings are
+		// locked until the move finishes or is aborted (move_lock.go).
+		Move *moveSummary `json:"move,omitempty"`
 	}
+	moves := c.activeMoveSummaries()
 	c.mu.Lock()
 	out := make([]view, 0, len(c.data.Apps))
 	for _, a := range c.data.Apps {
 		a.Secret = ""
 		a.Previews.Env = nil
-		out = append(out, view{Application: a})
+		v := view{Application: a}
+		if move, held := moves[a.ID]; held {
+			v.Move = &move
+		}
+		out = append(out, v)
 	}
 	for id, observation := range c.data.ObservedApps {
 		copy := observation
@@ -636,7 +702,7 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := c.agentCall(r, a.ServerID, "PUT", "/v1/apps/"+a.ID, spec, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	c.data.Apps[a.ID] = a
@@ -697,13 +763,13 @@ func (c *Control) deploy(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.Native == nil {
 		if err := c.syncStorageIfConfigured(r, a.ServerID); err != nil {
-			agent.Fail(w, 502, err)
+			failAgent(w, err)
 			return
 		}
 	}
 	var d agent.Deployment
 	if err := c.agentCall(r, a.ServerID, "POST", path, credentialRequest, &d); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 202, d)
@@ -719,7 +785,7 @@ func (c *Control) rollback(w http.ResponseWriter, r *http.Request) {
 		path = "/v1/native/apps/" + a.ID + "/rollback"
 	}
 	if err := c.agentCall(r, a.ServerID, "POST", path, nil, nil); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, map[string]string{"status": "rolled_back"})
@@ -733,21 +799,11 @@ func (c *Control) logs(w http.ResponseWriter, r *http.Request) {
 	var out any
 	path := "/v1/apps/" + a.ID + "/logs"
 	if a.Native != nil {
-		if len(a.Native.Services) == 0 {
-			agent.JSON(w, 200, map[string]string{"log": "This static site has no application process. Its files continue to be served by the existing web server."})
-			return
-		}
-		unit := a.Native.Services[0]
-		for _, name := range a.Native.Services {
-			if strings.HasSuffix(name, "-server.service") {
-				unit = name
-				break
-			}
-		}
-		path = "/v1/native/apps/" + a.ID + "/logs?unit=" + url.QueryEscape(unit)
+		c.nativeRuntimeLogs(w, r, a)
+		return
 	}
 	if err := c.agentCall(r, a.ServerID, "GET", path, nil, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, out)
@@ -819,7 +875,7 @@ func (c *Control) repos(w http.ResponseWriter, r *http.Request) {
 	}
 	repos, err := c.cfg.GitHub.Repositories(r.Context(), token, page)
 	if err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, repos)
@@ -860,7 +916,7 @@ func (c *Control) ownerClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	var out agent.OwnerClaim
 	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+a.ID+"/owner-claim", map[string]string{}, &out); err != nil {
-		agent.Fail(w, 502, err)
+		failAgent(w, err)
 		return
 	}
 	agent.JSON(w, 200, out)

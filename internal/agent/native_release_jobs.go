@@ -80,6 +80,10 @@ func (m *Manager) nativeReleasePolicy(id string) (NativeApplication, NativeRelea
 		branch = override.Branch
 		policy.Branch = override.Branch
 	}
+	if override.Toolchains != "" {
+		// Toolchains chosen in the panel replace the policy's choice.
+		policy.Toolchains = override.Toolchains
+	}
 	root := filepath.Join(m.cfg.Native.Root, a.Name)
 	if created {
 		root = filepath.Join(m.nativeAppsRoot(), id)
@@ -162,9 +166,15 @@ func (m *Manager) enqueueNativeRelease(id string, req nativeReleaseRequest, roll
 
 func (m *Manager) workNativeRelease(j job) {
 	defer func() { m.mu.Lock(); delete(m.nativeOperations, j.app.ID); m.mu.Unlock() }()
-	ctx, cancel := context.WithTimeout(m.ctx, 60*time.Minute)
+	// The release's own work keeps its hour; the pre-release backups get
+	// the deadlines their databases need on top (backup_limit.go).
+	limits, allowance := map[string]backupLimit{}, time.Duration(0)
+	if !j.nativeRelease.Rollback {
+		limits, allowance = m.nativeReleaseBackupLimits(m.ctx, j.app.ID)
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, 60*time.Minute+allowance)
 	defer cancel()
-	ctx = m.deploymentDiagnostics(ctx, j)
+	ctx = withBackupLimits(m.deploymentDiagnostics(ctx, j), limits)
 	m.mu.Lock()
 	err := m.update(j.deployment, "building", nil, nil)
 	m.mu.Unlock()
@@ -216,6 +226,12 @@ func (m *Manager) recordNativeReleaseLocked(id string, l release.Layout, result 
 		history.Previous = NativeReleaseRef{ID: result.Previous, Commit: commit, Path: l.Release(result.Previous)}
 	}
 	m.data.NativeReleases[id] = history
+	if result.Ruby != nil {
+		if m.data.NativeRuby == nil {
+			m.data.NativeRuby = map[string]release.RubyToolchain{}
+		}
+		m.data.NativeRuby[id] = *result.Ruby
+	}
 }
 
 // nativeReleaseProfile selects the engine profile for the policy's runtime.
@@ -229,7 +245,8 @@ func (m *Manager) nativeReleaseProfile(policy NativeReleasePolicy, l release.Lay
 		if err != nil {
 			return release.Profile{}, err
 		}
-		return release.Rails(release.RailsOptions{Shared: shared, ScheduleVariables: map[string]string{"job_template": template}}), nil
+		return release.Rails(release.RailsOptions{Shared: shared, Clean: policy.BundleClean,
+			ScheduleVariables: map[string]string{"job_template": template}}), nil
 	}
 	switch policy.Runtime {
 	case "rails":
@@ -314,29 +331,35 @@ func (m *Manager) nativeReleasePlan(ctx context.Context, id string, policy Nativ
 		Ref:      policy.Branch,
 		Profile:  profile,
 		Env:      env,
-		Exec:     nativeReleaseExecutor{m: m, account: account, root: policy.Root, id: deployment, memory: policy.BuildMemoryMiB},
+		Exec:     nativeReleaseExecutor{m: m, account: account, root: policy.Root, id: deployment, app: id, memory: policy.BuildMemoryMiB},
 		Prepare:  nativeReleasePinToolchains(account.Home),
 		Services: m.nativeReleaseServices(account, policy),
 		Units:    policy.Units,
 		Settle:   45 * time.Second,
 		Crontab:  nativeReleaseCrontab{m: m, user: account.Name, identifier: policy.ScheduleIdentifier()},
-		Backup:   m.nativeReleaseBackup(id, policy),
+		Backup:   nativeReleaseBackupThen(m.nativeReleaseBackup(id, policy), profile),
 		Health:   m.nativeReleaseHealth(policy.Domain, policy.HealthPath),
+		Mask:     nativeReleaseMask(policy),
 		Keep:     policy.Keep,
 		Log:      nativeReleaseLog(ctx),
 	}
+	// One build at a time on this host; release and restart work runs outside the slot.
+	log := plan.Log
+	plan.BuildSlot = func(ctx context.Context) (func(), error) { return m.acquireBuildSlot(ctx, id, log) }
 	if policy.ManagedToolchains() {
-		plan.Prepare = m.nativeReleaseManagedToolchains(account, policy, plan.Log)
+		plan.Prepare = m.nativeReleaseManagedToolchains(id, account, policy, plan.Log)
 	}
 	if policy.SystemUnits() {
 		m.nativeReleaseSystemPlan(&plan, id, policy)
+		m.nativeReleaseIngressNote(ctx, id, plan.Log)
 	}
 	return plan, nil
 }
 
 // nativeReleaseSystemPlan adapts a plan to system units: the agent controls
 // them as root, starts enabled units on the first release, and checks the
-// web process on its loopback port when the policy names one.
+// web process on its loopback port when the policy names one. The engine
+// restarts nothing itself, but keeps the units it may need to explain.
 func (m *Manager) nativeReleaseSystemPlan(plan *release.Plan, id string, policy NativeReleasePolicy) {
 	services := m.nativeSystemServices(policy)
 	health := plan.Health
@@ -347,7 +370,12 @@ func (m *Manager) nativeReleaseSystemPlan(plan *release.Plan, id string, policy 
 		health = nil
 	}
 	units, preserve, log := slices.Clone(policy.Units), slices.Clone(policy.Preserve), plan.Log
-	plan.Services, plan.Units = nil, nil
+	plan.Services, plan.Units, plan.Inspector = nil, nil, services
+	for _, unit := range units {
+		if !slices.Contains(preserve, unit) {
+			plan.Units = append(plan.Units, unit)
+		}
+	}
 	plan.Health = func(ctx context.Context) error {
 		if _, err := nativeSystemRestart(ctx, services, units, preserve, 45*time.Second, log); err != nil {
 			return err
