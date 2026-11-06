@@ -459,7 +459,7 @@ func (m *Manager) prepareStack(ctx context.Context, a App, manifest *StackManife
 	if err != nil {
 		return a, err
 	}
-	a, err = m.prepareGateway(a, manifest)
+	a, err = m.prepareGateway(ctx, a, manifest)
 	if err != nil {
 		return a, err
 	}

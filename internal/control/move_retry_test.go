@@ -438,14 +438,30 @@ type moveTablesFake struct {
 	exports  []agent.MoveTableDataRequest
 	restored []string
 	rows     map[string]int64 // destination rows by table
+	source   map[string]int64 // source rows by table
+	// Incremental copies (move_table_delta.go): keys the bulk dump
+	// reports, the delta requests the source saw, the tables the
+	// destination appended to, and the source's answer to a delta.
+	keys      map[string]agent.MoveTableKey
+	deltas    []agent.MoveTableDeltaRequest
+	appended  []string
+	fallback  string
+	deltaRows int64
+	maximum   string
+	// Derived keys (move_table_key.go): the key the source detects on
+	// request, the destination's loaded maximum, and the source's count up
+	// to a watermark.
+	detected  *agent.MoveTableKey
+	loadedMax string
+	upTo      int64
 }
 
 // excludedSource gives the source database two tables whose data its
 // backups leave out, and both agents the table-data routes.
 func (fx *moveFixture) excludedSource() *moveTablesFake {
 	fx.containerSource()
-	fake := &moveTablesFake{rows: map[string]int64{}}
-	source := map[string]int64{"public.events": 39_900, "public.audit_log": 686}
+	fake := &moveTablesFake{rows: map[string]int64{}, source: map[string]int64{"public.events": 39_900, "public.audit_log": 686}}
+	source := fake.source
 	fx.a.source.Databases[0].ExcludedTables = []agent.MoveExcludedTable{{Name: "public.events", Rows: 39_900, Bytes: 27 << 20}, {Name: "public.audit_log", Rows: 686, Bytes: 1 << 20}}
 	fx.a.excluded = []string{"public.events", "public.audit_log"}
 	fx.b.host.TableData = true
@@ -460,7 +476,50 @@ func (fx *moveFixture) excludedSource() *moveTablesFake {
 		for _, table := range in.Tables {
 			rows[table] = source[table]
 		}
-		agent.JSON(w, 200, agent.MoveTableDataExport{ID: strings.Repeat("e", 64), Size: int64(len(data)), SHA256: digest, Tables: in.Tables, Rows: rows})
+		agent.JSON(w, 200, agent.MoveTableDataExport{ID: strings.Repeat("e", 64), Size: int64(len(data)), SHA256: digest, Tables: in.Tables, Rows: rows, Keys: fake.keys})
+	})
+	fx.a.mux.HandleFunc("POST /v1/move/databases/{id}/table-key", func(w http.ResponseWriter, r *http.Request) {
+		var in agent.MoveTableKeyRequest
+		json.NewDecoder(r.Body).Decode(&in)
+		if in.Key == nil {
+			agent.JSON(w, 200, agent.MoveTableKeyView{Table: in.Table, Key: fake.detected})
+			return
+		}
+		agent.JSON(w, 200, agent.MoveTableKeyView{Table: in.Table, Total: source[in.Table], Max: fake.maximum, UpTo: fake.upTo})
+	})
+	fx.b.mux.HandleFunc("POST /v1/move/databases/{id}/table-key", func(w http.ResponseWriter, r *http.Request) {
+		var in agent.MoveTableKeyRequest
+		json.NewDecoder(r.Body).Decode(&in)
+		agent.JSON(w, 200, agent.MoveTableKeyView{Table: in.Table, Total: fake.rows[in.Table], Max: fake.loadedMax})
+	})
+	delta := []byte("PGCOPY binary rows added since the watermark")
+	deltaSum := sha256.Sum256(delta)
+	deltaDigest := hex.EncodeToString(deltaSum[:])
+	fx.a.mux.HandleFunc("POST /v1/move/databases/{id}/table-delta", func(w http.ResponseWriter, r *http.Request) {
+		var in agent.MoveTableDeltaRequest
+		json.NewDecoder(r.Body).Decode(&in)
+		fake.deltas = append(fake.deltas, in)
+		if fake.fallback != "" {
+			agent.JSON(w, 200, agent.MoveTableDeltaExport{Table: in.Table, Fallback: fake.fallback})
+			return
+		}
+		agent.JSON(w, 200, agent.MoveTableDeltaExport{ID: strings.Repeat("d", 64), Size: int64(len(delta)), SHA256: deltaDigest, Table: in.Table, Rows: fake.deltaRows, Total: source[in.Table], Max: fake.maximum})
+	})
+	fx.a.mux.HandleFunc("GET /v1/move/databases/{id}/table-delta/{export}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(agent.MoveSHA256Header, deltaDigest)
+		w.Header().Set("Content-Length", strconv.Itoa(len(delta)))
+		w.Write(delta)
+	})
+	fx.b.mux.HandleFunc("POST /v1/move/databases/{id}/table-delta/restore", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !bytes.Equal(body, delta) {
+			agent.JSON(w, 422, map[string]string{"error": "checksum mismatch"})
+			return
+		}
+		table := r.URL.Query().Get("table")
+		fake.appended = append(fake.appended, table+" after "+r.URL.Query().Get("after"))
+		fake.rows[table] = source[table]
+		agent.JSON(w, 200, agent.MoveTableDeltaResult{Table: table, Total: source[table], Max: fake.maximum})
 	})
 	fx.a.mux.HandleFunc("GET /v1/move/databases/{id}/table-data/{export}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(agent.MoveSHA256Header, digest)
@@ -666,7 +725,10 @@ func TestMoveResumeSkipsTheVerifiedRestoreAndTableLoad(t *testing.T) {
 		}
 	}
 	// A restart during the load itself: the restored dump is kept and only
-	// the excluded tables are loaded again.
+	// the excluded tables are loaded again. An interrupted load leaves no
+	// rows behind (it runs in one transaction), so the destination's counts
+	// fall outside the dump's range and the shortcut does not apply.
+	fx.b.with(func() { tables.rows = map[string]int64{} })
 	moveSimulateRestartDuringData(t, restarted, view.ID, key, func(p *MoveCheckpoint) {
 		p.Meta, _ = json.Marshal(movePostgresCheckpoint{Restored: point.Restored})
 	})

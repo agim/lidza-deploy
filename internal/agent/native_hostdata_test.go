@@ -92,6 +92,7 @@ SELECT 'CREATE DATABASE "app_shop_web" OWNER "app_shop_web" TEMPLATE template0 E
 ALTER DATABASE "app_shop_web" OWNER TO "app_shop_web";
 REVOKE CONNECT, TEMPORARY ON DATABASE "app_shop_web" FROM PUBLIC;
 GRANT CONNECT, TEMPORARY ON DATABASE "app_shop_web" TO "app_shop_web";
+GRANT SET ON PARAMETER session_replication_role TO "app_shop_web";
 \connect "app_shop_web"
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO "app_shop_web";

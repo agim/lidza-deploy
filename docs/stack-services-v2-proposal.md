@@ -147,11 +147,11 @@ cannot fit, its selection must require a larger validated profile or an external
 provider; do not disguise unloaded-model memory as working local inference.
 Existing shared/preexisting PostgreSQL is never silently shrunk or retuned.
 
-## SMIP transport boundary
+## Strict-TLS protocol transport boundary
 
 Current Caddy -> HTTP agent -> HTTP app routing cannot provide direct TLS1.3 to
-SMIP, and forwarded proto is not authenticated TLS-version evidence. Do not set
-request.TLS, trust arbitrary headers or disable SMIP's transport checks.
+strict-TLS protocols, and forwarded proto is not authenticated TLS-version evidence. Do not set
+request.TLS, trust arbitrary headers or disable a protocol's transport checks.
 
 Two secure designs require separate implementation and acceptance:
 
@@ -167,7 +167,7 @@ Two secure designs require separate implementation and acceptance:
    establish this contract.
 
 The reusable transport-verification API belongs upstream, not in an app-local
-bypass. Until a released supported design is available, direct-TLS-required SMIP
+bypass. Until a released supported design is available, direct-TLS-required protocols
 behind the current HTTP proxy remains an explicit blocker. Existing REST/WS/TLS
 routing must not be weakened for it.
 

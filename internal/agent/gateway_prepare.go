@@ -20,25 +20,10 @@ func PrepareGateway(output string) error {
 	if err := os.Mkdir(output, 0700); err != nil {
 		return errors.New("gateway output directory must not already exist")
 	}
-	pki, err := newGatewayPKI("lidza-gateway.internal")
+	cfg, err := writeGatewayCredentials(output, "127.0.0.1:8444")
 	if err != nil {
 		return err
 	}
-	files := map[string]string{"ca.pem": pki.CA, "ca-key.pem": pki.CAKey, "agent.pem": pki.ServerCert, "agent-key.pem": pki.ServerKey, "edge.pem": pki.ClientCert, "edge-key.pem": pki.ClientKey}
-	for name, value := range files {
-		b, err := decodeGatewayPEM(value)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(output, name), b, 0600); err != nil {
-			return err
-		}
-	}
-	cert, err := gatewayCertificate(pki.ClientCert, pki.ClientKey)
-	if err != nil {
-		return err
-	}
-	cfg := GatewayConfig{Listen: "127.0.0.1:8444", Certificate: filepath.Join(output, "agent.pem"), PrivateKey: filepath.Join(output, "agent-key.pem"), ClientCA: filepath.Join(output, "ca.pem"), PeerPins: []string{gateway.Pin(cert.Leaf)}}
 	b, err := json.MarshalIndent(map[string]any{"gateway": cfg}, "", "  ")
 	if err != nil {
 		return err
@@ -69,4 +54,33 @@ reverse_proxy https://127.0.0.1:8444 {
 		return err
 	}
 	return os.WriteFile(filepath.Join(output, "README.txt"), []byte("Merge gateway-config.json into the existing agent configuration; do not replace unrelated settings. Install the reviewed Caddy snippet only in the HTTPS site's proxy block. Grant the Caddy service read access to only ca.pem, edge.pem and edge-key.pem (for example root:caddy directory0750 and those files0640); keep all other keys root-only0600. Validate both configurations before coordinating service reloads. No production configuration has been changed. Back up all credentials securely. Rotation uses a new directory and overlapping CA/pin trust; do not regenerate an active identity in place.\n"), 0600)
+}
+
+// gatewayServerName is the name the host gateway's certificate is issued for;
+// the web server verifies it when it connects.
+const gatewayServerName = "lidza-gateway.internal"
+
+// writeGatewayCredentials generates a new host gateway PKI into an existing
+// private directory (every file 0600) and returns the gateway configuration
+// that serves it on listen.
+func writeGatewayCredentials(output, listen string) (GatewayConfig, error) {
+	pki, err := newGatewayPKI(gatewayServerName)
+	if err != nil {
+		return GatewayConfig{}, err
+	}
+	files := map[string]string{"ca.pem": pki.CA, "ca-key.pem": pki.CAKey, "agent.pem": pki.ServerCert, "agent-key.pem": pki.ServerKey, "edge.pem": pki.ClientCert, "edge-key.pem": pki.ClientKey}
+	for name, value := range files {
+		b, err := decodeGatewayPEM(value)
+		if err != nil {
+			return GatewayConfig{}, err
+		}
+		if err := os.WriteFile(filepath.Join(output, name), b, 0600); err != nil {
+			return GatewayConfig{}, err
+		}
+	}
+	cert, err := gatewayCertificate(pki.ClientCert, pki.ClientKey)
+	if err != nil {
+		return GatewayConfig{}, err
+	}
+	return GatewayConfig{Listen: listen, Certificate: filepath.Join(output, "agent.pem"), PrivateKey: filepath.Join(output, "agent-key.pem"), ClientCA: filepath.Join(output, "ca.pem"), PeerPins: []string{gateway.Pin(cert.Leaf)}}, nil
 }

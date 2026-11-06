@@ -227,7 +227,7 @@ func TestMoveHostAdvertisesClickHouseFormats(t *testing.T) {
 	fakeZstd(t)
 	m, _ := containerClickHouseSource(t)
 	w := httpGet(moveMux(m), "/v1/move/host")
-	if !strings.Contains(w, `"clickhouse_formats":["directory","backup","native"]`) || !strings.Contains(w, `"zstd":true`) {
+	if !strings.Contains(w, `"clickhouse_formats":["directory","backup","native","incremental"]`) || !strings.Contains(w, `"zstd":true`) {
 		t.Fatalf("host %s", w)
 	}
 }

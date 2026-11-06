@@ -17,6 +17,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +71,21 @@ func ensureDockerEngine(ctx context.Context, m *Manager) error {
 	}
 	commandDiagnostic(ctx, "deployment", "Docker is not running on this server; preparing the container runtime.")
 	if hostToolAvailable("dockerd") {
-		if out, err := hostCommand(ctx, "systemctl", "enable", "--now", "docker.service"); err != nil {
+		// A host where Docker was switched off by masking its units
+		// (persistently or with --runtime) cannot start it until they are
+		// unmasked; systemctl then fails with "Unit docker.service is
+		// masked". The application asked for containers, so unmask them.
+		if masked := dockerMaskedUnits(ctx); len(masked) > 0 {
+			commandDiagnostic(ctx, "deployment", "Docker's units were masked on this server ("+strings.Join(masked, ", ")+"); unmasking them to start the container runtime.")
+			for _, flags := range [][]string{{"unmask"}, {"unmask", "--runtime"}} {
+				args := append(slices.Clone(flags), masked...)
+				if out, err := hostCommand(ctx, "systemctl", args...); err != nil {
+					return fmt.Errorf("Docker's units are masked and could not be unmasked: %s", strings.TrimSpace(out))
+				}
+			}
+			_, _ = hostCommand(ctx, "systemctl", "daemon-reload")
+		}
+		if out, err := hostCommand(ctx, "systemctl", "enable", "--now", "containerd.service", "docker.socket", "docker.service"); err != nil {
 			return fmt.Errorf("Docker is installed but could not be started: %s", strings.TrimSpace(out))
 		}
 		return waitDocker(ctx)
@@ -148,15 +163,18 @@ func observeDocker(ctx context.Context) *HostDockerStatus {
 	return status
 }
 
-// installBuildx adds Docker's BuildKit plugin from Docker's repository.
+// installBuildx adds Docker's BuildKit plugin: docker-buildx-plugin when
+// Docker comes from Docker's repository, docker-buildx when it is the
+// distribution's docker.io package (the two do not mix).
 func installBuildx(ctx context.Context) (string, error) {
-	apt := []string{"install", "-y", "-q", "-o", "DPkg::Lock::Timeout=300", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", "docker-buildx-plugin"}
 	if out, err := hostCommand(ctx, "apt-get", "update", "-q", "-o", "DPkg::Lock::Timeout=300"); err != nil {
 		return out, fmt.Errorf("apt-get update: %s", lastLines(out))
 	}
+	pkg := buildxPackage(ctx)
+	apt := []string{"install", "-y", "-q", "-o", "DPkg::Lock::Timeout=300", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", pkg}
 	out, err := hostCommand(ctx, "apt-get", apt...)
 	if err != nil {
-		return out, fmt.Errorf("installing docker-buildx-plugin: %s", lastLines(out))
+		return out, fmt.Errorf("installing %s: %s", pkg, lastLines(out))
 	}
 	buildModeMu.Lock()
 	buildModeChecked = time.Time{} // builds pick BuildKit up at once
@@ -530,4 +548,29 @@ func lastLines(out string) string {
 		lines = lines[len(lines)-6:]
 	}
 	return strings.Join(lines, " | ")
+}
+
+// dockerMaskedUnits lists Docker's units that systemd reports as masked
+// ("masked" or "masked-runtime").
+func dockerMaskedUnits(ctx context.Context) []string {
+	units := []string{"containerd.service", "docker.socket", "docker.service"}
+	masked := []string{}
+	for _, unit := range units {
+		out, _ := hostCommand(ctx, "systemctl", "is-enabled", unit)
+		if strings.HasPrefix(strings.TrimSpace(out), "masked") {
+			masked = append(masked, unit)
+		}
+	}
+	return masked
+}
+
+// buildxPackage names the buildx package matching the installed Docker:
+// docker-buildx for the distribution's docker.io, docker-buildx-plugin
+// otherwise (Docker's repository).
+func buildxPackage(ctx context.Context) string {
+	out, _ := hostCommand(ctx, "dpkg-query", "-W", "-f=${Status}", "docker.io")
+	if strings.Contains(out, "install ok installed") {
+		return "docker-buildx"
+	}
+	return "docker-buildx-plugin"
 }

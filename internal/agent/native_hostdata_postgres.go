@@ -143,6 +143,10 @@ func renderNativePGProvisionSQL(name, verifier string) (string, error) {
 	fmt.Fprintf(&b, "ALTER DATABASE %s OWNER TO %s;\n", ident, ident)
 	fmt.Fprintf(&b, "REVOKE CONNECT, TEMPORARY ON DATABASE %s FROM PUBLIC;\n", ident)
 	fmt.Fprintf(&b, "GRANT CONNECT, TEMPORARY ON DATABASE %s TO %s;\n", ident, ident)
+	// Verified data copies (moves, restores of tables backups leave out)
+	// load without firing foreign-key and user triggers; PostgreSQL 15+
+	// lets the role set that for its own sessions.
+	fmt.Fprintf(&b, "GRANT SET ON PARAMETER session_replication_role TO %s;\n", ident)
 	fmt.Fprintf(&b, "\\connect %s\n", ident)
 	b.WriteString("REVOKE ALL ON SCHEMA public FROM PUBLIC;\n")
 	fmt.Fprintf(&b, "GRANT USAGE, CREATE ON SCHEMA public TO %s;\n", ident)
@@ -542,4 +546,22 @@ func nativeTrimOutput(out string) string {
 		out = out[len(out)-400:]
 	}
 	return out
+}
+
+// ensureLogicalWAL makes wal_level=logical the cluster's configured value,
+// so databases provisioned from now on can be moved with logical
+// replication without a restart. A running cluster is never restarted here:
+// the setting applies at its next restart, and a move that needs it earlier
+// restarts the cluster once in its Prepare step and says so in its plan.
+// Failures are not provisioning failures.
+func (h nativeHostData) ensureLogicalWAL(ctx context.Context, cluster pgCluster) {
+	level, err := h.psql(ctx, cluster.Port, "SHOW wal_level;\n")
+	if err != nil || strings.TrimSpace(level) == "logical" {
+		return
+	}
+	pending, err := h.psql(ctx, cluster.Port, "SELECT setting FROM pg_catalog.pg_file_settings WHERE name = 'wal_level' ORDER BY seqno DESC LIMIT 1;\n")
+	if err == nil && strings.TrimSpace(pending) == "logical" {
+		return
+	}
+	_, _ = h.psql(ctx, cluster.Port, "ALTER SYSTEM SET wal_level = 'logical';\n")
 }

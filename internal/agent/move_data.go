@@ -91,7 +91,12 @@ var moveTableCount = func(ctx context.Context, m *Manager, id string) (int, erro
 // (pg_restore_staging.go); a container database is restored in place,
 // with replace replacing the objects in the dump. Either way the restore
 // is one tuned transaction, so a failure leaves the database unchanged.
-var moveRestoreDump = func(ctx context.Context, m *Manager, target moveDatabaseTarget, dump *os.File, replace bool) error {
+// With keep, a replace leaves those tables and their data alone
+// (move_restore_keep.go).
+var moveRestoreDump = func(ctx context.Context, m *Manager, target moveDatabaseTarget, dump *os.File, replace bool, keep []string) error {
+	if replace && len(keep) > 0 {
+		return m.moveRestoreKeeping(ctx, target, dump, keep)
+	}
 	options := []string{"--no-owner", "--no-acl", "--exit-on-error", "--single-transaction"}
 	if target.Host != nil {
 		if len(target.Host.Name)+len(pgPreviousSuffix) <= 63 {
@@ -215,6 +220,11 @@ func (m *Manager) moveBackupDownload(w http.ResponseWriter, r *http.Request) {
 func (m *Manager) moveRestoreRoute(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	replace := r.URL.Query().Get("replace") == "1"
+	keep, err := moveKeepTables(r.URL.Query().Get("keep"))
+	if err != nil || len(keep) > 0 && !replace {
+		Fail(w, 400, errors.New("keep names exact schema.table names and needs replace"))
+		return
+	}
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(time.Now().Add(3 * time.Hour))
 	_ = controller.SetWriteDeadline(time.Now().Add(3*time.Hour + time.Minute))
@@ -256,7 +266,7 @@ func (m *Manager) moveRestoreRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := moveRestoreDump(ctx, m, target, staged.File, replace); err != nil {
+	if err := moveRestoreDump(ctx, m, target, staged.File, replace, keep); err != nil {
 		fail(409, err)
 		return
 	}

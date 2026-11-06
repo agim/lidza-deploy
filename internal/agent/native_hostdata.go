@@ -412,6 +412,7 @@ func (m *Manager) provisionNativePostgres(ctx context.Context, h nativeHostData,
 	if err = h.ensureHBA(ctx, cluster.Port, m.hostDataHBAEntries(cluster.Port, "")); err != nil {
 		return "", "", err
 	}
+	h.ensureLogicalWAL(ctx, cluster)
 	digest, err := h.dumpDigest(h.path(nativePGDumpPath(cluster.Major)))
 	if err != nil {
 		return "", "", err
@@ -509,7 +510,7 @@ func (m *Manager) hostDataHBAEntries(port int, except string) []nativeHBAEntry {
 			entries = append(entries, nativeHBAEntry{Role: record.Postgres.Name, Database: record.Postgres.Name})
 		}
 	}
-	return entries
+	return append(entries, m.moveReplicationHBAEntriesLocked(port)...)
 }
 
 func (m *Manager) provisionNativeRedis(ctx context.Context, h nativeHostData, id string, account NativeAppAccount) (string, string, error) {

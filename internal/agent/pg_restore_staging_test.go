@@ -106,7 +106,7 @@ func TestHostPostgresRestoreGoesThroughStagingAndSwaps(t *testing.T) {
 	m, fx, pg := newPGStagingFixture(t)
 	tracker := NewProgressTracker("restore")
 	ctx := withProgress(context.Background(), tracker)
-	if err := moveRestoreDump(ctx, m, moveDatabaseTarget{ID: pg.Resource, Host: &pg}, pgDumpFile(t), true); err != nil {
+	if err := moveRestoreDump(ctx, m, moveDatabaseTarget{ID: pg.Resource, Host: &pg}, pgDumpFile(t), true, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(fx.scripts) != 2 || !strings.Contains(fx.scripts[0], `CREATE DATABASE "app_shop_lidza_staging" OWNER "app_shop"`) || !strings.Contains(fx.scripts[0], `GRANT CONNECT, TEMPORARY ON DATABASE "app_shop_lidza_staging" TO "app_shop"`) {
@@ -133,7 +133,7 @@ func TestHostPostgresRestoreGoesThroughStagingAndSwaps(t *testing.T) {
 func TestHostPostgresRestoreFailureLeavesTheDatabase(t *testing.T) {
 	m, fx, pg := newPGStagingFixture(t)
 	fx.failRun = true
-	err := moveRestoreDump(context.Background(), m, moveDatabaseTarget{ID: pg.Resource, Host: &pg}, pgDumpFile(t), true)
+	err := moveRestoreDump(context.Background(), m, moveDatabaseTarget{ID: pg.Resource, Host: &pg}, pgDumpFile(t), true, nil)
 	if err == nil || !strings.Contains(err.Error(), "left unchanged") || !strings.Contains(err.Error(), "pg_hba.conf rejects connection") {
 		t.Fatalf("failed restore must name the cause: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestHostPostgresRestoreFailureLeavesTheDatabase(t *testing.T) {
 	}
 	// A swap that fails lets the application connect again.
 	fx.failRun, fx.failSwap, fx.scripts = false, true, nil
-	if err := moveRestoreDump(context.Background(), m, moveDatabaseTarget{ID: pg.Resource, Host: &pg}, pgDumpFile(t), true); err == nil {
+	if err := moveRestoreDump(context.Background(), m, moveDatabaseTarget{ID: pg.Resource, Host: &pg}, pgDumpFile(t), true, nil); err == nil {
 		t.Fatal("a failed swap succeeded")
 	}
 	if last := fx.scripts[len(fx.scripts)-1]; !strings.Contains(last, "ALLOW_CONNECTIONS true") {

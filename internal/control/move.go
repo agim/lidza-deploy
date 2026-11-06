@@ -108,19 +108,29 @@ type MoveJob struct {
 	Addresses     []string                   `json:"addresses"`
 	DNS           []MoveDNSStatus            `json:"dns"`
 	DNSChecked    *time.Time                 `json:"dns_checked,omitempty"`
+	// PTR is the reverse DNS of the destination's addresses, checked at the
+	// cutover of a mail-sending application (move_mail.go); it warns only.
+	PTR []MovePTRStatus `json:"ptr,omitempty"`
 	// DNSAhead records that a hostname resolved to the destination before
 	// the application was deployed there.
-	DNSAhead      bool      `json:"dns_ahead,omitempty"`
-	TLSReady      bool      `json:"tls_ready"`
-	TLSDetail     string    `json:"tls_detail,omitempty"`
-	TargetCreated bool      `json:"target_created"`
-	Deployment    string    `json:"deployment,omitempty"`
-	DeployAttempt int       `json:"deploy_attempt,omitempty"`
-	SourceFrozen  bool      `json:"source_frozen,omitempty"`
-	FinalSynced   bool      `json:"final_synced,omitempty"`
-	Switched      bool      `json:"switched"`
-	Created       time.Time `json:"created"`
-	Updated       time.Time `json:"updated"`
+	DNSAhead      bool   `json:"dns_ahead,omitempty"`
+	TLSReady      bool   `json:"tls_ready"`
+	TLSDetail     string `json:"tls_detail,omitempty"`
+	TargetCreated bool   `json:"target_created"`
+	Deployment    string `json:"deployment,omitempty"`
+	DeployAttempt int    `json:"deploy_attempt,omitempty"`
+	SourceFrozen  bool   `json:"source_frozen,omitempty"`
+	// TargetFrozen is set while the final sync holds the destination in
+	// maintenance (or stopped), so it writes nothing while its data is
+	// replaced.
+	TargetFrozen bool `json:"target_frozen,omitempty"`
+	FinalSynced  bool `json:"final_synced,omitempty"`
+	Switched     bool `json:"switched"`
+	// AutoCutover starts the final sync and the finish itself once DNS
+	// points to the destination and HTTPS works there (move_auto.go).
+	AutoCutover bool      `json:"auto_cutover"`
+	Created     time.Time `json:"created"`
+	Updated     time.Time `json:"updated"`
 
 	// The fields below were added with retries, checkpoints and the
 	// final-sync lock; jobs recorded before them load with their zero values
@@ -194,6 +204,20 @@ type MoveDatabase struct {
 	// each with the operator's choice to copy its data or leave it behind
 	// (move_tables.go).
 	Excluded []MoveExcludedTable `json:"excluded_tables,omitempty"`
+	// Replication is how the database is copied: continuous (logical
+	// replication) or dump (move_replication.go); ReplicationReason says why
+	// the dump path was chosen or fallen back to; ReplicationRestart marks a
+	// source that Prepare restarts once for wal_level=logical;
+	// ReplicationExcluded are tables without a replica identity, copied with
+	// a data dump instead; Link is the replication path once set up.
+	Replication         string               `json:"replication,omitempty"`
+	ReplicationReason   string               `json:"replication_reason,omitempty"`
+	ReplicationRestart  bool                 `json:"replication_restart,omitempty"`
+	ReplicationExcluded []string             `json:"replication_excluded,omitempty"`
+	Link                *MoveReplicationLink `json:"replication_link,omitempty"`
+	// ReplicationVia is the planned network path in words ("through the
+	// control panel").
+	ReplicationVia string `json:"replication_via,omitempty"`
 }
 
 // MoveFileCopy is one set of persistent files being copied.
@@ -237,13 +261,19 @@ type MoveDNSStatus struct {
 	Addresses []string `json:"addresses"`
 	Ready     bool     `json:"ready"`
 	Error     string   `json:"error,omitempty"`
+	// Source names the nameserver that answered: the zone's own
+	// nameserver (authoritative, so caches do not delay the cutover) or a
+	// fallback resolver.
+	Source string `json:"source,omitempty"`
 }
 
-// MoveDNSRecord is one record the operator sets at their DNS provider.
+// MoveDNSRecord is one record the operator sets at their DNS provider (A,
+// AAAA, TXT) or, for a PTR, at the server provider; Note says which and why.
 type MoveDNSRecord struct {
 	Hostname string `json:"hostname"`
 	Type     string `json:"type"`
 	Value    string `json:"value"`
+	Note     string `json:"note,omitempty"`
 }
 
 // MovePlan is reviewed before a move starts.
@@ -276,12 +306,43 @@ type MovePlan struct {
 	// Estimate is each engine's size and estimated bulk-copy and
 	// final-sync duration (move_estimate.go).
 	Estimate *MoveEstimate `json:"estimate,omitempty"`
-	// MaxAttempts is the attempt limit of each step.
-	MaxAttempts int       `json:"max_attempts"`
+	// PublicPorts are the host ports the destination publishes again
+	// (move_ports.go); Mail the checks and records of a mail-sending
+	// application (move_mail.go).
+	PublicPorts []agent.StackPort `json:"public_ports,omitempty"`
+	Mail        *MovePlanMail     `json:"mail,omitempty"`
+	// HostMail is the destination's host mail server that Prepare binds to
+	// loopback to free a published port (move_ports.go).
+	HostMail *MovePlanHostMail `json:"host_mail,omitempty"`
+	// MaxAttempts is the attempt limit of each step; Replication the
+	// requested database copy mode (auto or dump).
+	MaxAttempts int    `json:"max_attempts"`
+	Replication string `json:"replication,omitempty"`
+	// ReplicationNetwork is the requested replication path: auto (a shared
+	// private network the destination reaches, else through the control
+	// panel), panel, or public (the TLS relay on the source's public
+	// address, only on request).
+	ReplicationNetwork string `json:"replication_network,omitempty"`
+	// AutoCutover: the final sync and the finish start by themselves once
+	// DNS points to the destination (default when every database
+	// replicates continuously, move_auto.go).
+	AutoCutover bool      `json:"auto_cutover"`
 	Warnings    []string  `json:"warnings"`
 	Notes       []string  `json:"notes"`
 	Blockers    []string  `json:"blockers"`
 	Checked     time.Time `json:"checked"`
+}
+
+// moveServerLabel names a server in the plan's sentences: its name, else
+// its id. The installer names the panel's own host "This server", which
+// reads as the wrong server in a sentence about a move between two
+// servers; such a name becomes "the source server (This server)".
+func moveServerLabel(s Server, role string) string {
+	name := cmp.Or(strings.TrimSpace(s.Name), s.ID)
+	if strings.EqualFold(name, "this server") || strings.EqualFold(name, "local") {
+		return "the " + role + " server (" + name + ")"
+	}
+	return name
 }
 
 type MoveDetection struct {
@@ -307,6 +368,16 @@ type MovePlanDatabase struct {
 	// out, with their estimated rows and sizes; each is copied unless the
 	// operator leaves it behind (move_tables.go).
 	ExcludedTables []MoveExcludedTable `json:"excluded_tables,omitempty"`
+	// Replication is the copy mode the move will use: continuous or dump
+	// (move_replication.go), with the reason for a dump and whether Prepare
+	// restarts the source database once.
+	Replication        string `json:"replication,omitempty"`
+	ReplicationReason  string `json:"replication_reason,omitempty"`
+	ReplicationRestart bool   `json:"replication_restart,omitempty"`
+	// ReplicationPath is the first network path the move tries (panel,
+	// private or public), ReplicationVia the same in words.
+	ReplicationPath string `json:"replication_path,omitempty"`
+	ReplicationVia  string `json:"replication_via,omitempty"`
 }
 
 // MovePlanFileSet is one set of persistent files in a plan.
@@ -341,12 +412,27 @@ type moveStartInput struct {
 	// ExcludedTables chooses, by database and table, "copy" (the default)
 	// or "leave" for tables whose data the source's backups leave out.
 	ExcludedTables map[string]map[string]string `json:"excluded_tables,omitempty"`
+	// Replication is "auto" (continuous replication when the databases
+	// allow it, the default) or "dump" (always dump and restore).
+	Replication string `json:"replication,omitempty"`
+	// ReplicationNetwork is "auto" (the default), "panel" or "public"; see
+	// MovePlan.ReplicationNetwork.
+	ReplicationNetwork string `json:"replication_network,omitempty"`
+	// AutoCutover runs the final sync and the finish automatically once DNS
+	// points to the destination; absent, the plan's default applies.
+	AutoCutover *bool `json:"auto_cutover,omitempty"`
 }
 
-// moveResolver resolves hostnames; tests replace it.
+// moveResolver resolves hostnames, reverse DNS and the TXT and MX records
+// of mail-sending applications (move_mail.go); tests replace it.
 type moveResolver interface {
 	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+	LookupAddr(ctx context.Context, address string) ([]string, error)
+	LookupTXT(ctx context.Context, name string) ([]string, error)
+	LookupMX(ctx context.Context, name string) ([]*net.MX, error)
 }
+
+var defaultMoveResolver moveResolver = newAuthoritativeResolver()
 
 func terminalMoveState(state string) bool {
 	return state == moveStateFinished || state == moveStateAborted
@@ -383,8 +469,21 @@ func cloneMoveJob(job MoveJob) MoveJob {
 		job.Steps[i].Log = slices.Clone(job.Steps[i].Log)
 	}
 	job.Databases = slices.Clone(job.Databases)
+	for i := range job.Databases {
+		if link := job.Databases[i].Link; link != nil {
+			copy := *link
+			copy.Peers, copy.Exclude = slices.Clone(link.Peers), slices.Clone(link.Exclude)
+			job.Databases[i].Link = &copy
+		}
+	}
 	job.Files = slices.Clone(job.Files)
 	job.DNS = slices.Clone(job.DNS)
+	job.PTR = slices.Clone(job.PTR)
+	if job.Plan.Mail != nil {
+		mail := *job.Plan.Mail
+		mail.PTR, mail.Records = slices.Clone(mail.PTR), slices.Clone(mail.Records)
+		job.Plan.Mail = &mail
+	}
 	job.Hostnames = slices.Clone(job.Hostnames)
 	job.Addresses = slices.Clone(job.Addresses)
 	return job
@@ -565,7 +664,7 @@ func moveRecords(job MoveJob) []MoveDNSRecord {
 			out = append(out, MoveDNSRecord{Hostname: host, Type: kind, Value: address})
 		}
 	}
-	return out
+	return append(out, moveMailRecords(job)...)
 }
 
 func moveActions(job MoveJob) []string {
@@ -575,10 +674,8 @@ func moveActions(job MoveJob) []string {
 		actions = append(actions, "continue")
 	case moveStateRunning, moveStateSyncing, moveStateFinishing, moveStateAborting:
 		actions = append(actions, "continue")
-	case moveStateCutover:
-		actions = append(actions, "recheck-dns", "finish")
-	case moveStateReady:
-		actions = append(actions, "recheck-dns", "finish")
+	case moveStateCutover, moveStateReady:
+		actions = append(actions, "recheck-dns", "finish", "auto-cutover")
 	}
 	if (job.State == moveStateCutover || job.State == moveStateReady) && moveCanFinalSync(job) {
 		actions = append(actions, "final-sync")
@@ -646,7 +743,7 @@ func (c *Control) movePlanRoute(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("addresses"); raw != "" {
 		addresses = strings.Split(raw, ",")
 	}
-	plan, status, err := c.computeMovePlan(r, r.PathValue("id"), moveStartInput{TargetServer: q.Get("target_server"), RuntimeOverride: q.Get("runtime_override"), Addresses: addresses})
+	plan, status, err := c.computeMovePlan(r, r.PathValue("id"), moveStartInput{TargetServer: q.Get("target_server"), RuntimeOverride: q.Get("runtime_override"), Addresses: addresses, ReplicationNetwork: q.Get("replication_network")})
 	if err != nil {
 		agent.Fail(w, status, err)
 		return
@@ -732,6 +829,8 @@ func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
 		Tables   map[string]string `json:"tables,omitempty"`
 		// FinalBackup asks remove-retained to back the databases up first.
 		FinalBackup bool `json:"final_backup,omitempty"`
+		// Enabled switches the automatic cutover on or off.
+		Enabled *bool `json:"enabled,omitempty"`
 	}
 	if r.ContentLength != 0 {
 		if err := agent.Decode(w, r, &in); err != nil {
@@ -793,6 +892,12 @@ func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
 			}
 			return moveSetExcludedChoices(job, in.Database, in.Tables)
 		})
+	case "auto-cutover":
+		if in.Enabled == nil {
+			err = errors.New("say whether the automatic cutover is enabled")
+			break
+		}
+		job, err = c.moveSetAutoCutover(ctx, id, *in.Enabled)
 	case "recheck-dns":
 		if job.State != moveStateCutover && job.State != moveStateReady {
 			err = errors.New("DNS is checked during the cutover")
@@ -901,22 +1006,33 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 		return plan, 400, fmt.Errorf("max_attempts must be between 1 and %d", moveMaxAttempts)
 	}
 	plan.MaxAttempts = cmp.Or(in.MaxAttempts, moveDefaultAttempts)
+	if in.Replication != "" && in.Replication != moveReplicationAuto && in.Replication != moveReplicationDump {
+		return plan, 400, errors.New("replication must be auto or dump")
+	}
+	plan.Replication = cmp.Or(in.Replication, moveReplicationAuto)
+	if !slices.Contains([]string{"", moveReplicationNetworkAuto, moveReplicationPathPanel, moveReplicationPathPublic}, in.ReplicationNetwork) {
+		return plan, 400, errors.New("replication_network must be auto, panel or public")
+	}
+	plan.ReplicationNetwork = cmp.Or(in.ReplicationNetwork, moveReplicationNetworkAuto)
 	plan.SourceServer = src.ServerID
 	plan.Repository, plan.Branch = src.Repository, src.Branch
 	var target *Server
-	sourceName := src.ServerID
+	var sourceServer Server
+	sourceName := moveServerLabel(Server{ID: src.ServerID}, "source")
 	for _, s := range c.servers() {
 		if s.ID == in.TargetServer {
 			copy := s
 			target = &copy
 		}
-		if s.ID == src.ServerID && s.Name != "" {
-			sourceName = s.Name
+		if s.ID == src.ServerID {
+			sourceServer = s
+			sourceName = moveServerLabel(s, "source")
 		}
 	}
 	if target == nil {
 		return plan, 400, errors.New("choose a connected destination server")
 	}
+	targetName := moveServerLabel(*target, "destination")
 	if target.ID == src.ServerID {
 		return plan, 400, errors.New("the application already runs on that server")
 	}
@@ -959,6 +1075,9 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	if err := c.agentCall(req, target.ID, http.MethodGet, "/v1/move/host", nil, &host); err != nil {
 		plan.Blockers = append(plan.Blockers, "The destination server cannot receive moved applications ("+moveAgentError(err)+"); upgrade its agent.")
 	}
+	// The source's addresses: the replication path and the mail records.
+	var sourceHost agent.MoveHost
+	_ = c.agentCall(req, src.ServerID, http.MethodGet, "/v1/move/host", nil, &sourceHost)
 	plan.Addresses = moveTargetAddresses(host, *target, in.Addresses)
 	if len(in.Addresses) > 0 && len(plan.Addresses) != len(in.Addresses) {
 		return plan, 400, errors.New("destination addresses must be public IPv4 or IPv6 addresses")
@@ -1019,6 +1138,7 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	if plan.TargetRuntime == moveRuntimeNative && !host.Native {
 		plan.Blockers = append(plan.Blockers, "Native management is not configured on the destination agent.")
 	}
+	planMoveGateway(&plan, appID, source, host, targetName)
 
 	// Databases.
 	copyable := 0
@@ -1051,6 +1171,7 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 			if d.Tables < 0 {
 				entry.Note = "table count unknown; the database is copied"
 			}
+			planMoveReplication(&plan, &entry, d, sourceHost, host, plan.Replication, plan.ReplicationNetwork, sourceName, targetName)
 		case d.Mode == "external":
 			entry.Action = "external"
 		default:
@@ -1082,7 +1203,7 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 		// The destination builds the application: compare what its build
 		// needs (measured on the source when known) with its memory.
 		estimate := moveBuildEstimate(source, detection).Refine(source.BuildPeakMiB, sourceName)
-		assessment := buildmem.Assess(estimate, buildmem.HostFromBytes(targetHealth.MemoryTotal, targetHealth.MemoryAvailable, targetHealth.SwapTotal, targetHealth.SwapFree), cmp.Or(target.Name, target.ID))
+		assessment := buildmem.Assess(estimate, buildmem.HostFromBytes(targetHealth.MemoryTotal, targetHealth.MemoryAvailable, targetHealth.SwapTotal, targetHealth.SwapFree), targetName)
 		plan.BuildMemory = &assessment
 		switch assessment.Level {
 		case buildmem.LevelBlocker:
@@ -1100,9 +1221,15 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	if source.Redis {
 		plan.Notes = append(plan.Notes, "Redis is provisioned on the destination; its contents (cache and queues) are not copied.")
 	}
-	if copyable > 0 || source.ClickHouse != nil {
-		plan.Notes = append(plan.Notes, "Writes made on the source after the data copy are not on the destination. Use the final sync during the cutover to copy them with the source in maintenance.")
+	planMovePorts(&plan, source, host)
+	if len(moveMailPortsOf(plan.PublicPorts)) > 0 && plan.TargetRuntime == moveRuntimeContainer {
+		// The source's addresses are what the SPF records name today.
+		c.planMoveMail(r.Context(), &plan, moveTargetAddresses(sourceHost, sourceServer, nil))
 	}
+	if copyable > 0 || source.ClickHouse != nil {
+		plan.Notes = append(plan.Notes, moveFinalSyncNote(plan))
+	}
+	planMoveAutoCutover(&plan, in.AutoCutover)
 	keys := MoveJob{TargetRuntime: plan.TargetRuntime, Redis: source.Redis, CacheLocal: source.Container != nil && source.Redis, ClickHouse: moveClickHouseFrom(source)}
 	for _, d := range source.Databases {
 		if d.Copyable {
@@ -1191,11 +1318,16 @@ func (c *Control) createMove(r *http.Request, plan MovePlan) (MoveJob, error) {
 		Runtime: plan.Runtime, State: moveStateRunning, Plan: plan, Commit: plan.Commit, Hostnames: slices.Clone(plan.Hostnames), Addresses: slices.Clone(plan.Addresses),
 		Redis: source.Redis, CacheLocal: source.Container != nil && source.Redis, DNS: []MoveDNSStatus{}, Databases: []MoveDatabase{}, Created: now, Updated: now}
 	job.MaxAttempts = plan.MaxAttempts
+	job.AutoCutover = plan.AutoCutover
 	for _, d := range source.Databases {
 		entry := MoveDatabase{SourceID: d.ID, EnvKeys: slices.Clone(d.EnvironmentKeys), Mode: d.Mode, Copyable: d.Copyable, Backup: d.Backup, BeforeDeploy: d.BeforeDeploy}
 		for _, p := range plan.Databases {
 			if p.ID == d.ID && p.Engine != moveEngineClickHouse && d.Copyable {
 				entry.Excluded = slices.Clone(p.ExcludedTables)
+				entry.Replication, entry.ReplicationReason, entry.ReplicationRestart, entry.ReplicationVia = p.Replication, p.ReplicationReason, p.ReplicationRestart, p.ReplicationVia
+				if d.Replication != nil {
+					entry.ReplicationExcluded = slices.Clone(d.Replication.NoIdentity)
+				}
 			}
 		}
 		job.Databases = append(job.Databases, entry)
@@ -1240,6 +1372,9 @@ func (c *Control) createMove(r *http.Request, plan MovePlan) (MoveJob, error) {
 	for _, d := range job.Databases {
 		if copied, left := moveExcludedNames(d, moveTableCopy), moveExcludedNames(d, moveTableLeave); len(copied)+len(left) > 0 {
 			job.logf(moveStepPlan, "Tables of %s whose data the backups leave out: copied separately %s; left behind (schema only) %s.", d.SourceID, moveKeyList(copied), moveKeyList(left))
+		}
+		if d.Copyable && d.Replication != "" {
+			job.logf(moveStepPlan, "Database %s: %s.", d.SourceID, moveReplicationSummary(d.Replication, d.ReplicationReason, d.ReplicationVia))
 		}
 	}
 	c.mu.Lock()
@@ -1350,4 +1485,22 @@ func moveBuildEstimate(source agent.MoveSource, detection *RepositoryDetection) 
 		stack = buildmem.Stack{Mode: detect.ModeContainer}
 	}
 	return buildmem.EstimateStack(stack)
+}
+
+// planMoveGateway checks that the destination can serve a protected release
+// (gateway_transport): through its host gateway, or one its agent sets up
+// at the first deployment.
+func planMoveGateway(plan *MovePlan, appID string, source agent.MoveSource, host agent.MoveHost, targetName string) {
+	if !source.Protected || plan.TargetRuntime != moveRuntimeContainer {
+		return
+	}
+	switch host.Gateway {
+	case "configured":
+	case "auto":
+		plan.Notes = append(plan.Notes, "The destination sets up the protected gateway for "+appID+" at the first deploy.")
+	case "unavailable":
+		plan.Blockers = append(plan.Blockers, appID+" uses a protected gateway (gateway_transport), and "+targetName+" has neither a host gateway nor a Caddy admin API its agent can publish routes to; run Caddy with its admin API on 127.0.0.1:2019 there, or configure a host gateway in its agent configuration.")
+	default:
+		plan.Blockers = append(plan.Blockers, appID+" uses a protected gateway (gateway_transport), which the agent on "+targetName+" cannot set up; upgrade its agent.")
+	}
 }

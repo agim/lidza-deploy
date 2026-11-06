@@ -21,7 +21,7 @@ import (
 // reboot).
 type HostJob struct {
 	ID       string     `json:"id"`
-	Kind     string     `json:"kind"`    // security-updates, all-updates, disruptive-updates, configure, reboot, docker-live-restore, docker-restart, docker-buildx, bundler-cleanup, firewall
+	Kind     string     `json:"kind"`    // security-updates, all-updates, disruptive-updates, configure, reboot, docker-live-restore, docker-restart, docker-buildx, bundler-cleanup, firewall, host-mail-loopback, gateway-setup
 	Trigger  string     `json:"trigger"` // manual, schedule or move
 	Status   string     `json:"status"`  // running, succeeded, failed
 	Started  time.Time  `json:"started"`

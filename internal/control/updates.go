@@ -1,6 +1,7 @@
 package control
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/agim/lidza-deploy/internal/agent"
@@ -22,6 +24,11 @@ type UpdateTarget struct {
 	State    string    `json:"state"`
 	Message  string    `json:"message,omitempty"`
 	Started  time.Time `json:"started,omitempty"`
+	// Updated is when State or Message last changed; the activity drawer
+	// orders and expires finished targets by it.
+	Updated time.Time `json:"updated,omitempty"`
+	// Local marks the control panel's own host, which the plan updates last.
+	Local bool `json:"local,omitempty"`
 }
 type UpdateSettings struct {
 	Automatic  bool           `json:"automatic"`
@@ -56,6 +63,8 @@ func (c *Control) saveUpdateSettings(v UpdateSettings) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	old := c.data.Updates
+	v.Targets = slices.Clone(v.Targets)
+	annotateUpdateQueue(v.Targets, old.Targets, time.Now().UTC())
 	c.data.Updates = v
 	if err := c.save(); err != nil {
 		c.data.Updates = old
@@ -63,6 +72,63 @@ func (c *Control) saveUpdateSettings(v UpdateSettings) error {
 	}
 	return nil
 }
+
+// Queue messages say why a target that is not being updated yet waits: the
+// rollout updates one server at a time, in order, with the control panel's
+// host last. The tick sets every other message (a move hold, a busy agent);
+// these are only written where a target has no message of its own.
+const (
+	updateQueueNext   = "Starts with the next update check (within a minute)"
+	updateQueueWaits  = "Waits for %s to finish updating"
+	updateQueueFailed = "Waits for %s, whose update failed; retry the update after fixing it"
+	updateQueueLast   = "; the control panel's host updates last"
+)
+
+func updateQueueMessage(message string) bool {
+	return message == "" || message == updateQueueNext || strings.HasPrefix(message, "Waits for ")
+}
+
+// annotateUpdateQueue gives each waiting target behind the rollout's
+// current one the reason it waits, and stamps Updated on every target whose
+// state or message changed since old.
+func annotateUpdateQueue(targets, old []UpdateTarget, now time.Time) {
+	head := -1
+	for i, t := range targets {
+		if t.State != "succeeded" {
+			head = i
+			break
+		}
+	}
+	for i := range targets {
+		t := &targets[i]
+		if t.State == "waiting" && updateQueueMessage(t.Message) && head >= 0 {
+			switch {
+			case i == head:
+				t.Message = updateQueueNext
+			case targets[head].State == "failed":
+				t.Message = fmt.Sprintf(updateQueueFailed, cmp.Or(targets[head].Name, targets[head].ServerID))
+			default:
+				t.Message = fmt.Sprintf(updateQueueWaits, cmp.Or(targets[head].Name, targets[head].ServerID))
+				if i == len(targets)-1 && i > 0 && t.Local {
+					t.Message += updateQueueLast
+				}
+			}
+		}
+		changed := true
+		for _, o := range old {
+			if o.ServerID == t.ServerID {
+				changed = o.State != t.State || o.Message != t.Message
+				if !changed {
+					t.Updated = cmp.Or(t.Updated, o.Updated)
+				}
+			}
+		}
+		if changed || t.Updated.IsZero() {
+			t.Updated = now
+		}
+	}
+}
+
 func updateInProgress(v UpdateSettings) bool {
 	for _, t := range v.Targets {
 		if t.State == "failed" {
@@ -199,7 +265,7 @@ func (c *Control) prepareUpdatePlan(v UpdateSettings) error {
 	v.Version = v.Latest
 	v.Targets = []UpdateTarget{}
 	for _, s := range hosts {
-		v.Targets = append(v.Targets, UpdateTarget{ServerID: s.ID, Name: s.Name, State: "waiting"})
+		v.Targets = append(v.Targets, UpdateTarget{ServerID: s.ID, Name: s.Name, State: "waiting", Local: localUpdateServer(s)})
 	}
 	return c.saveUpdateSettings(v)
 }

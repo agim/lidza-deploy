@@ -1,6 +1,7 @@
 package control
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,9 +26,14 @@ import (
 // length and SHA-256 checked on the way, like PostgreSQL dumps; the
 // destination verifies the digest again, restores the archive under its own
 // database name and checks the row counts, which the control panel checks a
-// second time against the source's export. The final sync repeats the copy
-// with the source in maintenance. The application's CLICKHOUSE_* variables
-// always come from the destination's own service.
+// second time against the source's export. The final sync copies
+// incrementally when both agents support it: the bulk copy's directory
+// BACKUP stays on both servers as a base, the frozen source exports a
+// BACKUP against that base (only the parts added or merged since, with the
+// current metadata) and the destination restores it against its copy of
+// the base; anything that stops the incremental copy falls back to the full
+// copy, logged. The application's CLICKHOUSE_* variables always come from
+// the destination's own service.
 
 var errMoveClickHouseSum = errors.New("the ClickHouse archive does not match its recorded SHA-256; nothing was restored")
 
@@ -75,8 +81,41 @@ func planMoveClickHouse(plan *MovePlan, source agent.MoveSource, host agent.Move
 	}
 	if ch.Copyable {
 		plan.Notes = append(plan.Notes, fmt.Sprintf("ClickHouse %s is copied as a ClickHouse BACKUP when the destination runs release %s or newer, otherwise table by table; the destination restores into place only after the copy verified, and row counts are verified on both ends.", ch.Database, cmpOrUnknown(moveClickHouseSeries(ch.Version))))
+		switch {
+		case !host.ClickHouse:
+		case slices.Contains(host.ClickHouseFormats, moveClickHouseIncrementalFormat):
+			plan.Notes = append(plan.Notes, fmt.Sprintf("The final sync of ClickHouse %s is incremental: the bulk copy's BACKUP stays on both servers as a base and only the parts added since are copied with the application locked.", ch.Database))
+		default:
+			plan.Notes = append(plan.Notes, fmt.Sprintf("The destination agent copies the whole ClickHouse database %s again at the final sync; upgrade it for an incremental final sync of the parts added since the bulk copy.", ch.Database))
+		}
 	}
 	return 3 * uint64(max(ch.SizeBytes, 0))
+}
+
+// moveClickHouseIncrementalFormat is the agent capability for kept base
+// backups and incremental copies (agent MoveHost.ClickHouseFormats).
+const moveClickHouseIncrementalFormat = "incremental"
+
+// moveClickHouseIncremental reports whether a copy in format can keep a
+// base and sync incrementally: directory backups between agents that both
+// advertise the capability.
+func moveClickHouseIncremental(format string, source, target agent.MoveHost) bool {
+	return format == "directory" && slices.Contains(source.ClickHouseFormats, moveClickHouseIncrementalFormat) && slices.Contains(target.ClickHouseFormats, moveClickHouseIncrementalFormat)
+}
+
+// moveClickHouseBase is the base backup the bulk copy left on both servers,
+// with the time it was taken, from the bulk checkpoint of a verified restore
+// that kept it; empty when the final sync has to copy in full.
+func moveClickHouseBase(job MoveJob) (name string, created time.Time) {
+	if job.ClickHouse == nil {
+		return "", time.Time{}
+	}
+	point, ok := job.Checkpoints[moveCheckpointKey(movePhaseBulk, moveEngineClickHouse, job.ClickHouse.SourceDatabase)]
+	var saved moveClickHouseCheckpoint
+	if !ok || len(point.Meta) == 0 || json.Unmarshal(point.Meta, &saved) != nil || saved.Base == "" || saved.Restored == "" || saved.Restored != saved.SHA256 {
+		return "", time.Time{}
+	}
+	return saved.Base, saved.Created
 }
 
 func cmpOrUnknown(value string) string {
@@ -113,13 +152,20 @@ func (c *Control) movePrepareClickHouse(ctx context.Context, job MoveJob) error 
 type moveClickHouseCheckpoint struct {
 	agent.MoveClickHouseExport
 	Restored string `json:"restored,omitempty"`
+	// Base is the directory backup both servers kept after the restore of
+	// a bulk copy, for an incremental final sync; its time is the export's
+	// Created.
+	Base string `json:"base,omitempty"`
 }
 
 // moveCopyClickHouse copies the database once; the final sync calls it again
 // with the source frozen. An export a previous attempt of the phase made is
 // streamed again (resuming its upload) while the source still has it; one
 // the destination already restored and verified is not restored again
-// while the destination's row counts still match it.
+// while the destination's row counts still match it. When both agents
+// support it, the bulk copy keeps its backup as a base on both servers and
+// the final sync copies only what was added since; a failed incremental
+// copy falls back to the full copy with the reason logged.
 func (c *Control) moveCopyClickHouse(ctx context.Context, run moveRun, cp moveCheckpointRef) error {
 	id, step := run.id, run.step
 	job := run.job()
@@ -128,7 +174,20 @@ func (c *Control) moveCopyClickHouse(ctx context.Context, run moveRun, cp moveCh
 		return moveOperatorError("destination_unknown", "the destination ClickHouse database is unknown", "Retry the move from Prepare destination, or abort it.")
 	}
 	app := url.PathEscape(job.AppID)
-	format, compression := c.moveClickHouseChoice(ctx, job)
+	format, compression, incremental := c.moveClickHouseChoice(ctx, job)
+	// keep asks the bulk copy to leave a base on both servers; base names
+	// the base a final sync copies against.
+	keep, base := false, ""
+	if incremental {
+		switch run.phase {
+		case movePhaseBulk:
+			keep = true
+		case movePhaseFinal:
+			if base, _ = moveClickHouseBase(job); base == "" {
+				c.moveLog(id, step, "The bulk copy of ClickHouse %s left no base backup; copying the whole database.", ch.SourceDatabase)
+			}
+		}
+	}
 	var export agent.MoveClickHouseExport
 	reused := false
 	var saved moveClickHouseCheckpoint
@@ -141,7 +200,7 @@ func (c *Control) moveCopyClickHouse(ctx context.Context, run moveRun, cp moveCh
 				return err
 			}
 			if holds {
-				c.moveCleanupClickHouse(ctx, job)
+				c.moveCleanupClickHouse(ctx, job, false)
 				run.objects(run.c.moveLiveEngine(id), int64(len(export.Tables)), int64(len(export.Tables)))
 				return nil
 			}
@@ -150,16 +209,36 @@ func (c *Control) moveCopyClickHouse(ctx context.Context, run moveRun, cp moveCh
 	}
 	for {
 		if !reused {
-			c.moveLog(id, step, "Exporting ClickHouse %s on %s (%s%s).", ch.SourceDatabase, job.SourceServer, moveClickHouseFormatLabel(format), moveCompressionLabel(compression))
+			if base != "" {
+				c.moveLog(id, step, "Exporting the parts of ClickHouse %s added since the bulk copy on %s (incremental BACKUP against base %s%s).", ch.SourceDatabase, job.SourceServer, base, moveCompressionLabel(compression))
+			} else {
+				c.moveLog(id, step, "Exporting ClickHouse %s on %s (%s%s).", ch.SourceDatabase, job.SourceServer, moveClickHouseFormatLabel(format), moveCompressionLabel(compression))
+			}
 			c.moveStage(id, fmt.Sprintf("exporting ClickHouse %s on %s", ch.SourceDatabase, job.SourceServer), 0, nil)
 			stop := c.moveWatchFiles(ctx, job, job.SourceServer, "clickhouse", "ClickHouse "+ch.SourceDatabase)
 			query := url.Values{"format": {format}, "move": {job.ID}}
 			if compression != "" {
 				query.Set("compress", compression)
 			}
+			if keep {
+				query.Set("keep", "1")
+			}
+			if base != "" {
+				query.Set("base", base)
+			}
+			// A fresh record: fields the new export leaves out (a base, a
+			// fallback) must not survive from an earlier attempt.
+			export = agent.MoveClickHouseExport{}
 			err := c.moveCall(ctx, 6*time.Hour, job.SourceServer, http.MethodPost, "/v1/move/apps/"+app+"/clickhouse/exports?"+query.Encode(), nil, &export)
 			stop()
 			if err != nil {
+				if base != "" && ctx.Err() == nil {
+					// The base is gone or the incremental BACKUP failed: the
+					// whole database is copied, as without the optimisation.
+					c.moveLog(id, step, "The source could not make an incremental ClickHouse backup against %s (%s); copying the whole database instead.", base, moveAgentError(err))
+					base = ""
+					continue
+				}
 				return moveOn(job.SourceServer, fmt.Errorf("the ClickHouse export of %s failed: %w", ch.SourceDatabase, err))
 			}
 			if export.Size <= 0 || export.Size > moveMaxDumpBytes || !moveDigestPattern.MatchString(export.SHA256) || !moveDigestPattern.MatchString(export.ID) {
@@ -169,7 +248,7 @@ func (c *Control) moveCopyClickHouse(ctx context.Context, run moveRun, cp moveCh
 				c.moveLog(id, step, "The source could not create a ClickHouse BACKUP (%s); it exported the tables one by one instead.", export.Fallback)
 			}
 			if len(export.Tables) == 0 {
-				c.moveCleanupClickHouse(ctx, job)
+				c.moveCleanupClickHouse(ctx, job, false)
 				_, err := c.updateMove(id, func(job *MoveJob) error {
 					job.ClickHouse.Skipped = "no tables"
 					job.logf(step, "ClickHouse %s has no tables; nothing to copy.", ch.SourceDatabase)
@@ -184,12 +263,25 @@ func (c *Control) moveCopyClickHouse(ctx context.Context, run moveRun, cp moveCh
 			if export.Files > 0 {
 				files = fmt.Sprintf(", %d files", export.Files)
 			}
-			c.moveLog(id, step, "ClickHouse export %s… is ready (%s%s, %d tables%s, %s, %s); streaming it to %s.", export.SHA256[:12], moveClickHouseFormatLabel(export.Format), moveCompressionLabel(export.Compression), len(export.Tables), files, moveSize(export.Size), moveSeconds(export.Seconds), job.TargetServer)
+			kind := moveClickHouseFormatLabel(export.Format)
+			if export.BaseBackup != "" {
+				kind = "incremental ClickHouse BACKUP"
+			}
+			c.moveLog(id, step, "ClickHouse export %s… is ready (%s%s, %d tables%s, %s, %s); streaming it to %s.", export.SHA256[:12], kind, moveCompressionLabel(export.Compression), len(export.Tables), files, moveSize(export.Size), moveSeconds(export.Seconds), job.TargetServer)
+		}
+		// The restore follows the export: a kept base is kept on the
+		// destination too, an incremental archive is restored against it.
+		upload := url.Values{"replace": {"1"}}
+		if export.Backup != "" {
+			upload.Set("keep", "1")
+		}
+		if export.BaseBackup != "" {
+			upload.Set("base", export.BaseBackup)
 		}
 		var result agent.ClickHouseRestoreResult
 		err := c.moveRelay(ctx, job, moveRelayStream{
 			download: "/v1/move/apps/" + app + "/clickhouse/exports/" + url.PathEscape(export.ID),
-			upload:   "/v1/move/apps/" + app + "/clickhouse/restore?replace=1",
+			upload:   "/v1/move/apps/" + app + "/clickhouse/restore?" + upload.Encode(),
 			size:     export.Size, digest: export.SHA256, mismatch: errMoveClickHouseSum, what: "ClickHouse archive", resume: moveUploadID(job, cp.key, export.SHA256),
 			phase: fmt.Sprintf("streaming ClickHouse %s to %s", ch.SourceDatabase, job.TargetServer),
 			after: fmt.Sprintf("restoring ClickHouse %s into %s on %s", ch.SourceDatabase, ch.TargetDatabase, job.TargetServer),
@@ -203,20 +295,39 @@ func (c *Control) moveCopyClickHouse(ctx context.Context, run moveRun, cp moveCh
 			err = moveVerifyClickHouse(export, result)
 		}
 		if err != nil {
+			if export.BaseBackup != "" && ctx.Err() == nil && !errors.Is(err, errMoveClickHouseSum) {
+				// The incremental copy is the optimisation, not the move:
+				// when the destination cannot restore it (its base is gone,
+				// RESTORE failed, the counts differ) the whole database is
+				// copied and restored as before.
+				c.moveLog(id, step, "Restoring the incremental ClickHouse backup against %s on %s failed (%v); copying the whole database instead.", export.BaseBackup, job.TargetServer, err)
+				base, reused = "", false
+				continue
+			}
 			// The BACKUP format is chosen only when the destination runs the
 			// same or a newer release series, so a failed restore is a real
 			// error to fix and retry, not a reason for the per-table copy,
 			// which is several times larger on the source's disk.
 			return fmt.Errorf("copying ClickHouse %s failed: %w", ch.SourceDatabase, err)
 		}
-		c.moveCleanupClickHouse(ctx, job)
+		c.moveCleanupClickHouse(ctx, job, false)
 		run.objects(run.c.moveLiveEngine(id), int64(result.Tables), int64(len(export.Tables)))
 		_, err = c.updateMove(id, func(job *MoveJob) error {
 			job.ClickHouse.Copied, job.ClickHouse.Bytes, job.ClickHouse.Format, job.ClickHouse.Skipped = export.SHA256, export.Size, export.Format, ""
 			job.ClickHouse.Tables, job.ClickHouse.Rows, job.ClickHouse.SourceVersion = result.Tables, result.Rows, export.Version
-			job.logf(step, "Restored ClickHouse %s into %s on %s; the SHA-256 matched on both ends and the row counts of %d tables (%d rows) match the source.", ch.SourceDatabase, result.Database, job.TargetServer, result.Tables, result.Rows)
+			if export.BaseBackup != "" {
+				job.logf(step, "Restored the parts of ClickHouse %s added since the bulk copy (%s) into %s on %s; the SHA-256 matched on both ends and the row counts of %d tables (%d rows) match the source.", ch.SourceDatabase, moveSize(export.Size), result.Database, job.TargetServer, result.Tables, result.Rows)
+			} else {
+				job.logf(step, "Restored ClickHouse %s into %s on %s; the SHA-256 matched on both ends and the row counts of %d tables (%d rows) match the source.", ch.SourceDatabase, result.Database, job.TargetServer, result.Tables, result.Rows)
+			}
+			switch {
+			case result.Backup != "":
+				job.logf(step, "Both servers keep the backup %s as the base of an incremental final sync.", result.Backup)
+			case keep:
+				job.logf(step, "The destination did not keep the backup as a base; the final sync copies the whole database.")
+			}
 			// The verified restore is checkpointed in the same write.
-			return job.setCheckpointMeta(cp.key, moveClickHouseCheckpoint{MoveClickHouseExport: export, Restored: export.SHA256})
+			return job.setCheckpointMeta(cp.key, moveClickHouseCheckpoint{MoveClickHouseExport: export, Restored: export.SHA256, Base: result.Backup})
 		})
 		return err
 	}
@@ -291,17 +402,70 @@ func moveCompressionLabel(compression string) string {
 // restore), Zstandard when both agents have the tool; per-table Native
 // otherwise. An agent whose capabilities cannot be read gets the formats
 // every agent supports.
-func (c *Control) moveClickHouseChoice(ctx context.Context, job MoveJob) (format, compression string) {
-	var source, target agent.MoveHost
-	sourceErr := c.moveCall(ctx, 15*time.Second, job.SourceServer, http.MethodGet, "/v1/move/host", nil, &source)
-	targetErr := c.moveCall(ctx, 15*time.Second, job.TargetServer, http.MethodGet, "/v1/move/host", nil, &target)
-	if sourceErr != nil {
+func (c *Control) moveClickHouseChoice(ctx context.Context, job MoveJob) (format, compression string, incremental bool) {
+	source, target := c.moveClickHouseHosts(ctx, job)
+	format, compression = moveClickHouseFormats(job.ClickHouse.SourceVersion, job.ClickHouse.TargetVersion, source, target)
+	return format, compression, moveClickHouseIncremental(format, source, target)
+}
+
+// moveClickHouseHosts reads both agents' capabilities; an agent that cannot
+// be read counts as one without any.
+func (c *Control) moveClickHouseHosts(ctx context.Context, job MoveJob) (source, target agent.MoveHost) {
+	if err := c.moveCall(ctx, 15*time.Second, cmp.Or(job.SourceServer, job.Plan.SourceServer), http.MethodGet, "/v1/move/host", nil, &source); err != nil {
 		source = agent.MoveHost{}
 	}
-	if targetErr != nil {
+	if err := c.moveCall(ctx, 15*time.Second, cmp.Or(job.TargetServer, job.Plan.TargetServer), http.MethodGet, "/v1/move/host", nil, &target); err != nil {
 		target = agent.MoveHost{}
 	}
-	return moveClickHouseFormats(job.ClickHouse.SourceVersion, job.ClickHouse.TargetVersion, source, target)
+	return source, target
+}
+
+// moveClickHouseFinalEstimate measures what an incremental final sync of
+// the ClickHouse database would copy: the parts added since the base backup
+// of a running move, or over window for a plan, from the source's
+// system.parts. basis is empty when the final sync copies in full (an agent
+// without the capability, or a source that cannot be measured).
+func (c *Control) moveClickHouseFinalEstimate(ctx context.Context, job MoveJob, window time.Duration) (bytes int64, basis string) {
+	ch := job.ClickHouse
+	if ch == nil {
+		return 0, ""
+	}
+	source, target := c.moveClickHouseHosts(ctx, job)
+	format, _ := moveClickHouseFormats(ch.SourceVersion, cmp.Or(ch.TargetVersion, ch.SourceVersion), source, target)
+	if !moveClickHouseIncremental(format, source, target) {
+		return 0, ""
+	}
+	since, what := time.Now().Add(-window), "parts added over the last "+moveSeconds(window.Seconds())
+	if base, created := moveClickHouseBase(job); base != "" && !created.IsZero() {
+		since, what = created, "parts added since the bulk copy's base backup"
+	}
+	var measured agent.MoveClickHouseTarget
+	query := url.Values{"since": {since.UTC().Format(time.RFC3339)}}
+	if err := c.moveCall(ctx, 30*time.Second, cmp.Or(job.SourceServer, job.Plan.SourceServer), http.MethodGet, "/v1/move/apps/"+url.PathEscape(cmp.Or(job.AppID, job.Plan.AppID))+"/clickhouse?"+query.Encode(), nil, &measured); err != nil || measured.Delta == nil {
+		return 0, ""
+	}
+	return measured.Delta.Bytes, fmt.Sprintf("incremental, %s (%s in %d parts)", what, moveSize(measured.Delta.Bytes), measured.Delta.Parts)
+}
+
+// moveClickHouseSavings is the time the plan expects the incremental final
+// sync of ClickHouse to save, scaled to the measured bulk copy, once the
+// bulk copy left a base on both servers.
+func moveClickHouseSavings(job MoveJob) float64 {
+	if job.Plan.Estimate == nil {
+		return 0
+	}
+	if base, _ := moveClickHouseBase(job); base == "" {
+		return 0
+	}
+	for _, entry := range job.Plan.Estimate.Engines {
+		if entry.Kind != moveEngineClickHouse || entry.FinalBasis == "" || entry.BulkSeconds <= 0 {
+			continue
+		}
+		if cp, ok := job.Checkpoints[moveCheckpointKey(movePhaseBulk, moveEngineClickHouse, entry.Object)]; ok && cp.Done != nil && cp.Seconds > 0 {
+			return cp.Seconds * (1 - entry.FinalSeconds/entry.BulkSeconds)
+		}
+	}
+	return 0
 }
 
 func moveClickHouseFormats(sourceVersion, targetVersion string, source, target agent.MoveHost) (format, compression string) {
@@ -316,11 +480,20 @@ func moveClickHouseFormats(sourceVersion, targetVersion string, source, target a
 	return format, compression
 }
 
-// moveCleanupClickHouse removes the source's exports; failures are ignored
-// (an older agent, or an export already removed).
-func (c *Control) moveCleanupClickHouse(ctx context.Context, job MoveJob) {
+// moveCleanupClickHouse removes the source's exports and, with bases, the
+// base backups both servers keep for the incremental final sync; failures
+// are ignored (an older agent, or an export already removed).
+func (c *Control) moveCleanupClickHouse(ctx context.Context, job MoveJob, bases bool) {
 	if job.ClickHouse == nil {
 		return
 	}
-	_ = c.moveCall(ctx, time.Minute, job.SourceServer, http.MethodDelete, "/v1/move/apps/"+url.PathEscape(job.AppID)+"/clickhouse/exports", nil, nil)
+	path := "/v1/move/apps/" + url.PathEscape(job.AppID) + "/clickhouse/exports"
+	if !bases {
+		_ = c.moveCall(ctx, time.Minute, job.SourceServer, http.MethodDelete, path, nil, nil)
+		return
+	}
+	_ = c.moveCall(ctx, 3*time.Minute, job.SourceServer, http.MethodDelete, path+"?base=1", nil, nil)
+	if job.TargetServer != "" {
+		_ = c.moveCall(ctx, 3*time.Minute, job.TargetServer, http.MethodDelete, path+"?base=1", nil, nil)
+	}
 }

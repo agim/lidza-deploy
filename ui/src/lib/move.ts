@@ -30,6 +30,8 @@ export type MoveFailure = {
 /** A table whose data the source's backups leave out, with the operator's choice. */
 export type MoveExcludedTable = { name: string; rows: number; bytes: number; choice: '' | 'copy' | 'leave'; copied_rows?: number };
 
+export type MovePTRStatus = { address: string; names: string[]; want: string; ok: boolean; error?: string };
+
 export type MoveJob = {
   id: string;
   app_id: string;
@@ -42,12 +44,15 @@ export type MoveJob = {
   steps: MoveStep[];
   hostnames: string[];
   addresses: string[];
-  dns: Array<{ hostname: string; addresses: string[]; ready: boolean; error?: string }>;
+  dns: Array<{ hostname: string; addresses: string[]; ready: boolean; error?: string; source?: string }>;
   dns_checked?: string;
   dns_ahead?: boolean;
   tls_ready: boolean;
   tls_detail?: string;
-  records: Array<{ hostname: string; type: string; value: string }>;
+  /** A, AAAA and TXT records for the DNS provider; a PTR is set at the server provider, as its note says. */
+  records: Array<{ hostname: string; type: string; value: string; note?: string }>;
+  /** Reverse DNS of the destination's addresses, checked at the cutover of a mail-sending application; it warns only. */
+  ptr?: MovePTRStatus[];
   actions: string[];
   source_frozen?: boolean;
   final_synced?: boolean;
@@ -62,8 +67,11 @@ export type MoveJob = {
   stall?: { since: string; phase: string; done_bytes: number; total_bytes?: number; cancel_at: string };
   lock_estimate?: { seconds: number; basis: string; confirm: boolean };
   destination_stale?: boolean;
+  /** The final sync and the finish start by themselves once DNS points to the destination. */
+  auto_cutover?: boolean;
   source_changes?: Array<{ time: string; kind: string; detail: string }>;
-  databases?: Array<{ source_id: string; target_id?: string; copyable: boolean; excluded_tables?: MoveExcludedTable[] }>;
+  /** replication: continuous or dump, with the reason for a dump and the replication path once set up. */
+  databases?: Array<{ source_id: string; target_id?: string; copyable: boolean; excluded_tables?: MoveExcludedTable[]; replication?: string; replication_reason?: string; replication_link?: { path: string; host: string; port?: number; tls: boolean; subscribed?: boolean } }>;
 };
 
 /** What the application list reports of an application's active move. */

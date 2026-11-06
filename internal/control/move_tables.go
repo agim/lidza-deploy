@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,13 @@ type MoveExcludedTable struct {
 	Bytes  int64  `json:"bytes"`
 	Choice string `json:"choice"`
 	Copied *int64 `json:"copied_rows,omitempty"`
+	// Exported brackets the rows of the last dump of this table: the
+	// source's counts before and after the dump. A retry whose destination
+	// already holds rows within the bracket does not load them again.
+	Exported *moveRowBracket `json:"exported,omitempty"`
+	// Key is the incremental key the source found at planning, with the
+	// table's insert rate: the estimate of the final sync uses it.
+	Key *agent.MoveTableKey `json:"key,omitempty"`
 }
 
 // moveExcludedChoices builds a database's table list from the source's
@@ -56,7 +64,7 @@ func moveExcludedChoices(tables []agent.MoveExcludedTable, choices map[string]st
 		if choices[table.Name] == moveTableLeave {
 			choice = moveTableLeave
 		}
-		out = append(out, MoveExcludedTable{Name: table.Name, Rows: table.Rows, Bytes: table.Bytes, Choice: choice})
+		out = append(out, MoveExcludedTable{Name: table.Name, Rows: table.Rows, Bytes: table.Bytes, Choice: choice, Key: table.Key})
 	}
 	return out
 }
@@ -139,14 +147,25 @@ func (c *Control) moveCopyExcludedTables(ctx context.Context, run moveRun, i int
 	if len(tables) == 0 {
 		return nil
 	}
-	chosen := slices.Sorted(slices.Values(tables))
 	var saved movePostgresCheckpoint
 	cp.Meta(&saved)
+	if run.phase == movePhaseFinal {
+		// Tables with a watermark only receive the rows added since the
+		// bulk copy; the rest of this step copies the others in full.
+		var err error
+		if tables, err = c.moveSplitIncremental(ctx, run, i, tables, cp, &saved, dump); err != nil || len(tables) == 0 {
+			return err
+		}
+	}
+	chosen := slices.Sorted(slices.Values(tables))
 	if loaded := saved.Tables; loaded != nil && loaded.Dump == dump && loaded.SHA256 != "" && slices.Equal(loaded.Tables, chosen) {
 		run.log("The data of %s was loaded into %s on %s before this attempt (dump %s…, %s verified); not loading it again.", moveKeyList(tables), d.TargetID, job.TargetServer, loaded.SHA256[:12], moveTableRowsList(loaded.Rows))
 		return nil
 	}
 	source := "/v1/move/databases/" + url.PathEscape(d.SourceID)
+	if skipped, err := c.moveTablesAlreadyLoaded(ctx, run, job, i, d, tables, cp, saved, dump, chosen); err != nil || skipped {
+		return err
+	}
 	run.log("Dumping the data of %s, which the backups of %s leave out.", moveKeyList(tables), d.SourceID)
 	run.stage(fmt.Sprintf("dumping the excluded tables of %s on %s", d.SourceID, job.SourceServer), 0, nil)
 	stop := c.moveWatchDatabase(ctx, job.SourceServer, d.SourceID, d.SourceID+" (excluded tables)", run.id)
@@ -160,6 +179,17 @@ func (c *Control) moveCopyExcludedTables(ctx context.Context, run moveRun, i int
 		return fmt.Errorf("the excluded tables' dump of %s has no usable size or digest", d.SourceID)
 	}
 	run.log("The excluded tables' dump is ready (%s, %s); streaming it to %s.", moveSize(export.Size), moveTableRowsList(export.Rows), job.TargetServer)
+	brackets := moveRowBrackets(export, dump)
+	_, _ = c.updateMove(run.id, func(job *MoveJob) error {
+		for j := range job.Databases[i].Excluded {
+			table := &job.Databases[i].Excluded[j]
+			if b, ok := brackets[table.Name]; ok {
+				bracket := b
+				table.Exported = &bracket
+			}
+		}
+		return nil
+	})
 	var restored agent.MoveTableRows
 	err = c.moveRelay(ctx, job, moveRelayStream{
 		download: source + "/table-data/" + url.PathEscape(export.ID),
@@ -171,14 +201,8 @@ func (c *Control) moveCopyExcludedTables(ctx context.Context, run moveRun, i int
 	if err != nil {
 		return fmt.Errorf("copying the excluded tables of %s failed: %w", d.SourceID, err)
 	}
-	mismatched := []string{}
-	for _, table := range tables {
-		if restored.Rows[table] != export.Rows[table] {
-			mismatched = append(mismatched, fmt.Sprintf("%s (%d on the source, %d on the destination)", table, export.Rows[table], restored.Rows[table]))
-		}
-	}
-	if len(mismatched) > 0 {
-		return fmt.Errorf("row counts of the excluded tables of %s differ after the copy: %s", d.SourceID, strings.Join(mismatched, ", "))
+	if err := moveCheckRowBrackets(d.SourceID, tables, brackets, restored.Rows); err != nil {
+		return err
 	}
 	_, err = c.updateMove(run.id, func(job *MoveJob) error {
 		for j := range job.Databases[i].Excluded {
@@ -194,6 +218,106 @@ func (c *Control) moveCopyExcludedTables(ctx context.Context, run moveRun, i int
 		return job.setCheckpointMeta(cp.key, saved)
 	})
 	return err
+}
+
+// moveRowBracket is the span of rows a live table had around a dump: the
+// count before it started and the count after it finished. The dump's
+// snapshot lies between them, so the destination must too.
+type moveRowBracket struct {
+	Low    int64  `json:"low"`
+	High   int64  `json:"high"` // -1: unknown (the source did not count after the dump)
+	Export string `json:"export,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
+	Dump   string `json:"dump,omitempty"` // the base dump this load belonged to
+	// Key is the table's incremental key with the watermark of this load:
+	// the final sync copies only the rows after it (move_table_delta.go).
+	Key *agent.MoveTableKey `json:"key,omitempty"`
+}
+
+func (b moveRowBracket) holds(n int64) bool {
+	return n >= b.Low && (b.High < 0 || n <= b.High)
+}
+
+func (b moveRowBracket) String() string {
+	if b.High < 0 || b.High == b.Low {
+		return strconv.FormatInt(b.Low, 10)
+	}
+	return fmt.Sprintf("%d to %d", b.Low, b.High)
+}
+
+func moveRowBrackets(export agent.MoveTableDataExport, dump string) map[string]moveRowBracket {
+	out := map[string]moveRowBracket{}
+	for table, before := range export.Rows {
+		b := moveRowBracket{Low: before, High: -1, Export: export.ID, SHA256: export.SHA256, Dump: dump}
+		if after, ok := export.RowsAfter[table]; ok {
+			b.Low, b.High = min(before, after), max(before, after)
+		}
+		if key, ok := export.Keys[table]; ok {
+			k := key
+			b.Key = &k
+		}
+		out[table] = b
+	}
+	return out
+}
+
+// moveCheckRowBrackets fails when a destination count falls outside its
+// table's bracket.
+func moveCheckRowBrackets(source string, tables []string, brackets map[string]moveRowBracket, got map[string]int64) error {
+	mismatched := []string{}
+	for _, table := range tables {
+		b, ok := brackets[table]
+		if !ok || !b.holds(got[table]) {
+			mismatched = append(mismatched, fmt.Sprintf("%s (%s on the source around the dump, %d on the destination)", table, b, got[table]))
+		}
+	}
+	if len(mismatched) > 0 {
+		return fmt.Errorf("row counts of the excluded tables of %s differ after the copy: %s", source, strings.Join(mismatched, ", "))
+	}
+	return nil
+}
+
+// moveTablesAlreadyLoaded skips the dump and load when a previous attempt
+// already loaded the chosen tables and the destination's counts still fall
+// within that dump's brackets (a retry after a failed verification or an
+// interrupted step). It returns true when the step is complete.
+func (c *Control) moveTablesAlreadyLoaded(ctx context.Context, run moveRun, job MoveJob, i int, d MoveDatabase, tables []string, cp moveCheckpointRef, saved movePostgresCheckpoint, dump string, chosen []string) (bool, error) {
+	if run.step == moveStepFinalSync {
+		return false, nil // the final sync always copies the frozen source again
+	}
+	brackets := map[string]moveRowBracket{}
+	for _, table := range job.Databases[i].Excluded {
+		// Only a load that belonged to this base dump counts; a fresh dump
+		// means the whole database is copied again.
+		if table.Choice == moveTableCopy && table.Exported != nil && table.Exported.Dump == dump {
+			brackets[table.Name] = *table.Exported
+		}
+	}
+	for _, table := range tables {
+		if _, ok := brackets[table]; !ok {
+			return false, nil
+		}
+	}
+	var counts agent.MoveTableRows
+	if err := c.moveCall(ctx, 10*time.Minute, job.TargetServer, http.MethodPost, "/v1/move/databases/"+url.PathEscape(d.TargetID)+"/row-counts", agent.MoveTableDataRequest{Tables: tables}, &counts); err != nil {
+		return false, nil // an older destination, or a database not yet there: load as usual
+	}
+	if moveCheckRowBrackets(d.SourceID, tables, brackets, counts.Rows) != nil {
+		return false, nil
+	}
+	_, err := c.updateMove(run.id, func(job *MoveJob) error {
+		for j := range job.Databases[i].Excluded {
+			table := &job.Databases[i].Excluded[j]
+			if n, ok := counts.Rows[table.Name]; ok && table.Choice == moveTableCopy {
+				count := n
+				table.Copied = &count
+			}
+		}
+		job.logf(run.step, "%s already holds the data of %s from the earlier attempt (row counts within the dump's range); not loading it again.", job.TargetServer, moveTableRowsList(counts.Rows))
+		saved.Tables = &moveTablesCheckpoint{Dump: dump, Export: brackets[tables[0]].Export, SHA256: brackets[tables[0]].SHA256, Tables: chosen, Rows: counts.Rows}
+		return job.setCheckpointMeta(cp.key, saved)
+	})
+	return err == nil, err
 }
 
 // moveVerifyExcludedTables compares the destination's row counts with the

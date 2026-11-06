@@ -25,12 +25,17 @@ import (
 // application. The control panel drives the copy:
 //
 //   - GET    /v1/move/apps/{id}/clickhouse          the destination's database and version
+//     (?counts=1 its row counts, ?since=<RFC 3339> the parts added since then)
 //   - POST   /v1/move/apps/{id}/clickhouse/prepare  provision a container destination's service
 //   - POST   /v1/move/apps/{id}/clickhouse/exports  export an archive on the source
-//     (?format=directory|backup|native, &compress=zstd)
+//     (?format=directory|backup|native, &compress=zstd, &keep=1 keeps the
+//     directory backup as a base, &base=<name> exports an incremental
+//     backup against it; move_clickhouse_incremental.go)
 //   - GET    /v1/move/apps/{id}/clickhouse/exports/{export} download it with its SHA-256
-//   - DELETE /v1/move/apps/{id}/clickhouse/exports  remove the source's exports
+//   - DELETE /v1/move/apps/{id}/clickhouse/exports  remove the exports (&base=1 the kept base too)
 //   - POST   /v1/move/apps/{id}/clickhouse/restore  verify and restore an uploaded archive
+//     (&keep=1 keeps the extracted backup as a base, &base=<name> restores
+//     an incremental archive against it)
 //
 // Archives are described in clickhouse_archive.go. The destination stores
 // the upload, verifies its length and SHA-256 before touching the database,
@@ -60,6 +65,9 @@ type MoveClickHouseTarget struct {
 	// panel can confirm that a restore it recorded as finished still holds
 	// before it decides not to restore again.
 	Counts map[string]uint64 `json:"counts,omitempty"`
+	// Delta is what the database gained since a point in time (?since=),
+	// the expected size of an incremental backup against a base taken then.
+	Delta *MoveClickHouseDelta `json:"delta,omitempty"`
 }
 
 // MoveClickHouseExport is one finished archive on the source.
@@ -83,6 +91,10 @@ type MoveClickHouseExport struct {
 	// CountCutoff is the manifest's row-count cutoff (ClickHouseManifest):
 	// counts compared with Tables must use it.
 	CountCutoff time.Time `json:"count_cutoff,omitzero"`
+	// Backup is the directory backup the source kept as a base; BaseBackup
+	// the base this incremental export was made against.
+	Backup     string `json:"backup,omitempty"`
+	BaseBackup string `json:"base_backup,omitempty"`
 }
 
 // ClickHouseEnvironmentKeys are the connection variables both runtimes give
@@ -268,6 +280,19 @@ func (m *Manager) moveClickHouseRoutes(mux *http.ServeMux) {
 				return
 			}
 		}
+		if raw := r.URL.Query().Get("since"); raw != "" {
+			since, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				Fail(w, 400, errors.New("since must be an RFC 3339 time"))
+				return
+			}
+			delta, err := m.moveClickHouseDelta(r.Context(), r.PathValue("id"), since)
+			if err != nil {
+				Fail(w, 409, err)
+				return
+			}
+			target.Delta = &delta
+		}
 		JSON(w, 200, target)
 	})
 	mux.HandleFunc("POST /v1/move/apps/{id}/clickhouse/prepare", func(w http.ResponseWriter, r *http.Request) {
@@ -305,6 +330,18 @@ func (m *Manager) moveClickHouseRoutes(mux *http.ServeMux) {
 			Fail(w, 500, errors.New("the exports could not be removed"))
 			return
 		}
+		if r.URL.Query().Get("base") == "1" {
+			if _, kept := m.moveClickHouseBase(id); kept {
+				service, err := m.clickhouseServiceFor(r.Context(), id)
+				if err == nil {
+					err = m.removeMoveClickHouseBase(r.Context(), service, id)
+				}
+				if err != nil {
+					Fail(w, 409, fmt.Errorf("the base backup could not be removed: %w", err))
+					return
+				}
+			}
+		}
 		JSON(w, 200, map[string]string{"status": "removed"})
 	})
 	mux.HandleFunc("POST /v1/move/apps/{id}/clickhouse/restore", m.moveTransfer(m.moveClickHouseRestoreRoute))
@@ -340,6 +377,18 @@ func (m *Manager) moveClickHouseCounts(ctx context.Context, id string, cutoff ti
 	return service.counts(ctx, service.database, objects, cutoff)
 }
 
+// moveClickHouseDelta measures the parts the application's database gained
+// since a point in time (move_clickhouse_incremental.go).
+func (m *Manager) moveClickHouseDelta(ctx context.Context, id string, since time.Time) (MoveClickHouseDelta, error) {
+	service, err := m.clickhouseServiceFor(ctx, id)
+	if err != nil {
+		return MoveClickHouseDelta{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return service.delta(ctx, since)
+}
+
 var moveClickHouseExportID = moveSHA256Pattern // exports are named by a random 64-hex id
 
 func (m *Manager) moveClickHouseExportRoute(w http.ResponseWriter, r *http.Request) {
@@ -360,6 +409,11 @@ func (m *Manager) moveClickHouseExportRoute(w http.ResponseWriter, r *http.Reque
 	if compression == compressionZstd && !zstdAvailable() {
 		compression = compressionNone
 	}
+	opts := clickhouseExportOptions{Keep: r.URL.Query().Get("keep") == "1" && format == clickhouseFormatDirectory, Base: r.URL.Query().Get("base")}
+	if opts.Base != "" && (format != clickhouseFormatDirectory || !clickhouseBackupDirName.MatchString(opts.Base)) {
+		Fail(w, 400, errors.New("base names a kept directory backup and needs format=directory"))
+		return
+	}
 	if m.upgradePending() {
 		Fail(w, 409, errors.New("agent upgrade in progress"))
 		return
@@ -372,6 +426,18 @@ func (m *Manager) moveClickHouseExportRoute(w http.ResponseWriter, r *http.Reque
 	lock := moveClickHouseLock(id)
 	lock.Lock()
 	defer lock.Unlock()
+	var base moveClickHouseBaseRecord
+	if opts.Base != "" {
+		// The control panel falls back to a full copy on this refusal.
+		if base, _, err = m.checkMoveClickHouseBase(r.Context(), service, id, opts.Base); err != nil {
+			Fail(w, 409, fmt.Errorf("no incremental export: %w", err))
+			return
+		}
+	} else if err := m.removeMoveClickHouseBase(r.Context(), service, id); err != nil {
+		// A full export replaces any base kept earlier.
+		Fail(w, 409, err)
+		return
+	}
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(6 * time.Hour))
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Hour)
 	defer cancel()
@@ -398,18 +464,29 @@ func (m *Manager) moveClickHouseExportRoute(w http.ResponseWriter, r *http.Reque
 		Fail(w, 409, err)
 		return
 	}
-	if err := clickhouseExportFits(dir, summary, format); err != nil {
+	if opts.Base != "" {
+		measure, stop := context.WithTimeout(ctx, 30*time.Second)
+		delta, err := service.delta(measure, base.Created)
+		stop()
+		if err == nil {
+			err = clickhouseIncrementalFits(dir, delta)
+		}
+		if err != nil {
+			Fail(w, http.StatusInsufficientStorage, err)
+			return
+		}
+	} else if err := clickhouseExportFits(dir, summary, format); err != nil {
 		Fail(w, http.StatusInsufficientStorage, err)
 		return
 	}
-	export, err := m.writeClickHouseExport(ctx, service, format, compression, dir)
-	if err != nil && format != clickhouseFormatNative && r.URL.Query().Get("strict") != "1" && ctx.Err() == nil && !errors.Is(err, errClickHouseDiskReserve) {
+	export, err := m.writeClickHouseExport(ctx, service, format, compression, dir, opts)
+	if err != nil && format != clickhouseFormatNative && opts.Base == "" && r.URL.Query().Get("strict") != "1" && ctx.Err() == nil && !errors.Is(err, errClickHouseDiskReserve) {
 		// A source whose BACKUP is unavailable still moves table by table,
 		// but only when the much larger per-table export fits.
 		fallback := err.Error()
 		if fit := clickhouseExportFits(dir, summary, clickhouseFormatNative); fit != nil {
 			err = fmt.Errorf("%s; the per-table fallback was not tried: %w", fallback, fit)
-		} else if export, err = m.writeClickHouseExport(ctx, service, clickhouseFormatNative, compression, dir); err == nil {
+		} else if export, err = m.writeClickHouseExport(ctx, service, clickhouseFormatNative, compression, dir, clickhouseExportOptions{}); err == nil {
 			export.Fallback = boundedErrorText(fallback, 400)
 		}
 	}
@@ -421,6 +498,12 @@ func (m *Manager) moveClickHouseExportRoute(w http.ResponseWriter, r *http.Reque
 	if err := os.WriteFile(filepath.Join(dir, export.ID+".json"), raw, 0o600); err != nil {
 		Fail(w, 500, errors.New("the export record could not be stored"))
 		return
+	}
+	if export.Backup != "" {
+		if err := m.writeMoveClickHouseBase(id, moveClickHouseBaseRecord{Name: export.Backup, Database: export.Database, Created: export.Created}); err != nil {
+			Fail(w, 500, err)
+			return
+		}
 	}
 	JSON(w, 200, export)
 }
@@ -451,7 +534,7 @@ func moveHumanBytes(n uint64) string {
 
 // writeClickHouseExport writes one archive into dir as <id>.tar, compressed
 // with compression; the size and digest are those of the stored file.
-func (m *Manager) writeClickHouseExport(ctx context.Context, service clickhouseService, format, compression, dir string) (MoveClickHouseExport, error) {
+func (m *Manager) writeClickHouseExport(ctx context.Context, service clickhouseService, format, compression, dir string, opts clickhouseExportOptions) (MoveClickHouseExport, error) {
 	started := time.Now()
 	file, err := os.CreateTemp(dir, ".export-*")
 	if err != nil {
@@ -468,7 +551,7 @@ func (m *Manager) writeClickHouseExport(ctx context.Context, service clickhouseS
 	if err != nil {
 		return MoveClickHouseExport{}, err
 	}
-	manifest, err := exportClickHouseArchive(ctx, service, format, dir, output)
+	manifest, err := exportClickHouseArchiveWith(ctx, service, format, dir, output, opts)
 	if closeErr := output.Close(); err == nil {
 		err = closeErr
 	}
@@ -479,7 +562,7 @@ func (m *Manager) writeClickHouseExport(ctx context.Context, service clickhouseS
 		return MoveClickHouseExport{}, errors.New("the export could not be stored")
 	}
 	export := MoveClickHouseExport{ID: nativeRandomSecret(), Format: manifest.Format, Database: manifest.Database, Version: manifest.Version, Size: counter.n.Load(), SHA256: hex.EncodeToString(hash.Sum(nil)), Created: manifest.Created,
-		Compression: compression, Files: manifest.Files, Seconds: time.Since(started).Seconds(), CountCutoff: manifest.CountCutoff}
+		Compression: compression, Files: manifest.Files, Seconds: time.Since(started).Seconds(), CountCutoff: manifest.CountCutoff, Backup: manifest.Backup, BaseBackup: manifest.BaseBackup}
 	for _, table := range manifest.Tables {
 		table.Create, table.File = "", ""
 		export.Tables = append(export.Tables, table)
@@ -540,6 +623,11 @@ func (m *Manager) moveClickHouseRestoreRoute(w http.ResponseWriter, r *http.Requ
 		Fail(w, 409, err)
 		return
 	}
+	opts := clickhouseRestoreOptions{Keep: r.URL.Query().Get("keep") == "1", Base: r.URL.Query().Get("base")}
+	if opts.Base != "" && !clickhouseBackupDirName.MatchString(opts.Base) {
+		Fail(w, 400, errors.New("base names a kept directory backup"))
+		return
+	}
 	lock := moveClickHouseLock(id)
 	lock.Lock()
 	defer lock.Unlock()
@@ -551,10 +639,21 @@ func (m *Manager) moveClickHouseRestoreRoute(w http.ResponseWriter, r *http.Requ
 		Fail(w, 500, errors.New("cannot prepare the upload directory"))
 		return
 	}
+	// An incremental archive needs its base here, checked before the upload
+	// is received: the control panel falls back to a full copy on this
+	// refusal. The restored data is about the base's size plus the delta.
+	var baseBytes int64
+	if opts.Base != "" {
+		var err error
+		if _, baseBytes, err = m.checkMoveClickHouseBase(r.Context(), service, id, opts.Base); err != nil {
+			Fail(w, 409, fmt.Errorf("no incremental restore: %w", err))
+			return
+		}
+	}
 	// Restoring needs room for the extracted BACKUP and the restored data
 	// beside the received (possibly compressed) archive.
 	if size, _ := strconv.ParseInt(r.Header.Get(MoveSizeHeader), 10, 64); size > 0 || r.ContentLength > 0 {
-		if err := diskFits(dir, 3*uint64(max(size, r.ContentLength)), "restoring the ClickHouse archive"); err != nil {
+		if err := diskFits(dir, 3*uint64(max(size, r.ContentLength))+uint64(max(baseBytes, 0)), "restoring the ClickHouse archive"); err != nil {
 			Fail(w, http.StatusInsufficientStorage, err)
 			return
 		}
@@ -568,12 +667,25 @@ func (m *Manager) moveClickHouseRestoreRoute(w http.ResponseWriter, r *http.Requ
 	defer func() { staged.Done(restored) }()
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Hour)
 	defer cancel()
-	result, err := restoreClickHouseArchive(ctx, service, staged.File, r.URL.Query().Get("replace") == "1")
+	if opts.Keep && opts.Base == "" {
+		// A new base replaces any kept earlier.
+		if err := m.removeMoveClickHouseBase(ctx, service, id); err != nil {
+			Fail(w, 409, err)
+			return
+		}
+	}
+	result, err := restoreClickHouseArchiveWith(ctx, service, staged.File, r.URL.Query().Get("replace") == "1", opts)
 	if err != nil {
 		Fail(w, 409, fmt.Errorf("the ClickHouse restore failed: %w", err))
 		return
 	}
 	restored = true
+	if result.Backup != "" {
+		if err := m.writeMoveClickHouseBase(id, moveClickHouseBaseRecord{Name: result.Backup, Database: service.database, Created: time.Now().UTC()}); err != nil {
+			Fail(w, 500, err)
+			return
+		}
+	}
 	result.Bytes, result.SHA256 = staged.Size, staged.SHA256
 	w.Header().Set(MoveVerifiedHeader, staged.SHA256)
 	JSON(w, 200, result)

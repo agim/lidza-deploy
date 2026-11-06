@@ -6,7 +6,7 @@ import { ActionForm, Badge, Button, ConfirmAction, CopyButton, ErrorBanner, Fiel
 import { LiveProgress, type OperationProgress } from './LiveProgress';
 import { buildMemorySummary } from '../lib/buildMemory';
 import type { BuildMemoryAssessment } from '../lib/types';
-import { lastOutput, moveActive, moveDuration, moveHolds, movePhaseLabel, moveTone, stateLabels, terminal, working, type MoveExcludedTable, type MoveJob, type MoveRetainedData } from '../lib/move';
+import { lastOutput, moveActive, moveDuration, moveHolds, movePhaseLabel, moveTone, stateLabels, terminal, working, type MoveExcludedTable, type MoveJob, type MovePTRStatus, type MoveRetainedData } from '../lib/move';
 import { MoveFailureNote, MoveStatusLine, useAppMoveLock } from './MoveLock';
 
 export type { MoveJob } from '../lib/move';
@@ -39,7 +39,8 @@ type MovePlan = {
   copied_keys: string[];
   copied_sources?: Record<string, number>;
   destination_keys: string[];
-  databases: Array<{ id: string; engine: string; mode: string; tables: number; size_bytes?: number; action: string; note?: string; before_deploy?: string; excluded_tables?: MoveExcludedTable[] }>;
+  /** replication: how a PostgreSQL database is copied (continuous or dump), with the reason for a dump and whether Prepare restarts the source once. */
+  databases: Array<{ id: string; engine: string; mode: string; tables: number; size_bytes?: number; action: string; note?: string; before_deploy?: string; excluded_tables?: MoveExcludedTable[]; replication?: string; replication_reason?: string; replication_restart?: boolean }>;
   redis: boolean;
   volumes: string[];
   files?: PlanFileSet[];
@@ -47,14 +48,21 @@ type MovePlan = {
   capacity?: { disk_available: number; memory_available: number; needed: number };
   build_memory?: BuildMemoryAssessment;
   estimate?: MoveEstimate;
+  /** Host ports the destination publishes again; mail: the checks of an application that publishes a mail port. */
+  public_ports?: Array<{ port: number; protocol: string }>;
+  mail?: { ports: Array<{ port: number; protocol: string }>; source_addresses: string[]; ptr: MovePTRStatus[]; records: Array<{ hostname: string; type: string; value: string; note?: string }> };
   max_attempts?: number;
+  /** The requested database copy mode: auto or dump. */
+  replication?: string;
+  /** The final sync and the finish start by themselves once DNS points to the destination (default: every database replicates continuously). */
+  auto_cutover?: boolean;
   warnings: string[];
   notes: string[];
   blockers: string[];
 };
 
 type MoveEstimate = {
-  engines: Array<{ kind: string; object: string; label: string; bytes: number; objects: number; object_label: string; measured: boolean; bulk_seconds: number; final_seconds: number; basis: string }>;
+  engines: Array<{ kind: string; object: string; label: string; bytes: number; objects: number; object_label: string; measured: boolean; bulk_seconds: number; final_seconds: number; basis: string; final_basis?: string }>;
   bulk_seconds: number;
   final_seconds: number;
   basis: string;
@@ -76,10 +84,23 @@ export const environmentSources = (counts?: Record<string, number>) => {
   return parts.length && (counts?.['deploy defaults'] || counts?.image) ? ` (${parts.join(', ')})` : '';
 };
 const actionLabels: Record<string, string> = { copy: 'copied', skip_empty: 'skipped: no tables', external: 'external: connection kept', manual: 'moved manually' };
+/** How a PostgreSQL database is copied: "continuous replication", or "dump and restore" with the reason. */
+export function replicationLabel(db: { replication?: string; replication_reason?: string }) {
+  if (!db.replication) return '';
+  if (db.replication === 'continuous') return 'continuous replication';
+  return db.replication_reason ? `dump and restore (${db.replication_reason})` : 'dump and restore';
+}
 const fileActionLabels: Record<string, string> = { copy: 'copied', skip_empty: 'skipped: no files', manual: 'not moved', blocked: 'cannot be moved' };
 const methodLabels: Record<string, string> = { s3: 'through workspace storage', direct: 'directly through the control panel' };
 
 function gib(bytes: number) { return `${(bytes / 2 ** 30).toFixed(1)} GiB`; }
+// "25/tcp, 587/tcp"
+const portList = (ports?: Array<{ port: number; protocol: string }>) => (ports || []).map(p => `${p.port}/${p.protocol || 'tcp'}`).join(', ');
+// Reverse DNS of one address: what it is and, when wrong, what it should be.
+export function ptrSummary(entry: MovePTRStatus) {
+  const current = entry.names.length ? entry.names.join(', ') : 'none';
+  return entry.ok ? `${entry.address}: reverse DNS is ${current}` : `${entry.address}: reverse DNS is ${current}; set it to ${entry.want} at the server provider`;
+}
 function mib(bytes?: number) { return bytes ? `${(bytes / 2 ** 20).toFixed(1)} MiB` : ''; }
 function size(bytes: number) {
   if (bytes >= 2 ** 30) return gib(bytes);
@@ -182,14 +203,20 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [attempts, setAttempts] = useState('6');
+  // How PostgreSQL databases are copied: continuous replication when the
+  // databases allow it (auto), or always a dump and restore.
+  const [replication, setReplication] = useState('auto');
   // Choices for tables whose data the backups leave out: copy unless left behind.
   const [left, setLeft] = useState<Record<string, Record<string, boolean>>>({});
+  // The automatic cutover: the plan's default until the operator chooses.
+  const [autoCutover, setAutoCutover] = useState<boolean>();
   const addressList = addresses.split(/[\s,]+/).filter(Boolean);
 
   const review = async () => {
-    setBusy(true); setError(''); setPlan(undefined); setAcknowledged(false);
+    setBusy(true); setError(''); setPlan(undefined); setAcknowledged(false); setAutoCutover(undefined);
     const query = new URLSearchParams({ target_server: target });
     if (runtime) query.set('runtime_override', runtime);
+    if (replication !== 'auto') query.set('replication', replication);
     if (addressList.length) query.set('addresses', addressList.join(','));
     try { setPlan(await get<MovePlan>(`control/apps/${encodeURIComponent(appID)}/move-plan?${query}`)); }
     catch (reason) { setError(message(reason)); }
@@ -200,6 +227,8 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
     try {
       const body: Record<string, unknown> = { target_server: target, acknowledge_warnings: acknowledged, max_attempts: Number(attempts) };
       if (runtime) body.runtime_override = runtime;
+      if (replication !== 'auto') body.replication = replication;
+      if (autoCutover !== undefined) body.auto_cutover = autoCutover;
       const choices: Record<string, Record<string, string>> = {};
       for (const db of plan?.databases || []) for (const table of db.excluded_tables || []) (choices[db.id] ||= {})[table.name] = left[db.id]?.[table.name] ? 'leave' : 'copy';
       if (Object.keys(choices).length) body.excluded_tables = choices;
@@ -211,6 +240,7 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
 
   if (!targets.length) return <p>Connect another server to move this application.</p>;
   const blocked = !plan || plan.blockers.length > 0 || (plan.warnings.length > 0 && !acknowledged);
+  const automatic = autoCutover ?? plan?.auto_cutover ?? false;
   return <div className="move-planner">
     {previous && <p className="muted-copy">The last move to {name(previous.target_server)} was {stateLabels[previous.state]?.toLowerCase() || previous.state}.</p>}
     <p>The application keeps running here while the destination is prepared. You switch DNS yourself; the move finishes once DNS points to the destination.</p>
@@ -218,7 +248,10 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
       <Field label="Destination server"><select aria-label="Destination server" value={target} onChange={event => { setTarget(event.target.value); setPlan(undefined); }}>{targets.map(server => <option key={server.id} value={server.id}>{server.name || server.id}</option>)}</select></Field>
       <Field label="Runtime on the destination"><select aria-label="Runtime on the destination" value={runtime} onChange={event => { setRuntime(event.target.value); setPlan(undefined); }}><option value="">Automatic</option><option value="native">Native</option><option value="container">Container</option></select></Field>
     </div>
-    <Field label="Automatic attempts per step" hint="Transient failures (network, a restarting agent, a stalled transfer) are retried after 30s, 1m, 2m, 5m and 10m."><select aria-label="Automatic attempts per step" value={attempts} onChange={event => setAttempts(event.target.value)}>{['1', '3', '6', '8', '10'].map(value => <option key={value} value={value}>{value === '1' ? 'No automatic retry' : `${value} attempts`}</option>)}</select></Field>
+    <div className="form-grid two">
+      <Field label="Automatic attempts per step" hint="Transient failures (network, a restarting agent, a stalled transfer) are retried after 30s, 1m, 2m, 5m and 10m."><select aria-label="Automatic attempts per step" value={attempts} onChange={event => setAttempts(event.target.value)}>{['1', '3', '6', '8', '10'].map(value => <option key={value} value={value}>{value === '1' ? 'No automatic retry' : `${value} attempts`}</option>)}</select></Field>
+      <Field label="Database copy" hint="Continuous replication keeps the destination following the source, so the locked final sync takes seconds; the plan shows the mode per database and falls back to a dump when a database cannot replicate."><select aria-label="Database copy" value={replication} onChange={event => { setReplication(event.target.value); setPlan(undefined); }}><option value="auto">Automatic (continuous replication when possible)</option><option value="dump">Dump and restore</option></select></Field>
+    </div>
     <Field label="DNS addresses (optional)" hint="Public IPv4 or IPv6 addresses DNS should point to. Leave empty to use the addresses the destination detects."><input aria-label="DNS addresses" autoComplete="off" value={addresses} onChange={event => { setAddresses(event.target.value); setPlan(undefined); }} placeholder="203.0.113.10, 2001:db8::10" /></Field>
     <div className="move-actions"><Button type="button" onClick={() => { void review(); }} disabled={busy || !target}>Review move</Button></div>
     {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -230,11 +263,13 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
         <dt>DNS will point to</dt><dd>{plan.addresses.length ? plan.addresses.join(', ') : 'unknown'}</dd>
         <dt>Environment</dt><dd>{plan.copied_keys.length} copied{environmentSources(plan.copied_sources)}{plan.copied_keys.length > 0 && <>: <code>{plan.copied_keys.join(', ')}</code></>}{plan.destination_keys.length > 0 && <>; set by the destination: <code>{plan.destination_keys.join(', ')}</code></>}</dd>
         <dt>Redis</dt><dd>{plan.redis ? 'provisioned on the destination; contents are not copied' : 'none'}</dd>
+        {(plan.public_ports?.length ?? 0) > 0 && <><dt>Published ports</dt><dd>{portList(plan.public_ports)}{plan.target_runtime === 'container' ? ' · opened by the destination agent' : ' · not published by the native runtime'}</dd></>}
+        {plan.mail && <><dt>Outgoing mail</dt><dd className="move-mail">port {portList(plan.mail.ports)}<ul className="move-ptr">{plan.mail.ptr.map(entry => <li key={entry.address} className={entry.ok ? 'move-dns-ready' : 'move-dns-waiting'}>{ptrSummary(entry)}</li>)}</ul>{plan.mail.records.length > 0 && <span className="muted-copy">The cutover lists {plan.mail.records.length === 1 ? 'the mail record' : `${plan.mail.records.length} mail records`} (SPF, reverse DNS) with the A/AAAA records.</span>}</dd></>}
         {plan.build_memory && <><dt>Build memory</dt><dd className={`move-build-memory move-build-memory-${plan.build_memory.level}`}>{buildMemorySummary(plan.build_memory)}</dd></>}
         {plan.capacity && <><dt>Destination capacity</dt><dd>{gib(plan.capacity.disk_available)} free disk (about {gib(plan.capacity.needed)} needed), {gib(plan.capacity.memory_available)} memory available</dd></>}
       </dl>
       <div className="move-caution" role="note"><strong>Don't change DNS until the move reaches Switch DNS.</strong> The destination serves the application only after it is deployed there; DNS pointing to it earlier takes the site down until the deploy finishes. The move shows the records to set when it is time.</div>
-      {plan.databases.length > 0 && <><strong>Databases</strong><ul className="move-databases">{plan.databases.map(db => db.engine === 'clickhouse' ? <li key={`clickhouse-${db.id}`}>ClickHouse <code>{db.id}</code>: {[db.size_bytes ? mib(db.size_bytes) : '', db.tables >= 0 ? `${db.tables} tables` : ''].filter(Boolean).join(', ') || db.mode} · {actionLabels[db.action] || db.action}{db.note && db.action !== 'skip_empty' ? ` · ${db.note}` : ''}</li> : <li key={db.id}><code>{db.id}</code> {db.engine} ({db.mode}{db.tables >= 0 ? `, ${db.tables} tables` : ''}{db.size_bytes ? `, ${mib(db.size_bytes)}` : ''}) · {actionLabels[db.action] || db.action}{db.note && db.action !== 'skip_empty' ? ` · ${db.note}` : ''}{db.before_deploy ? ` · before deploys: ${db.before_deploy}` : ''}</li>)}</ul></>}
+      {plan.databases.length > 0 && <><strong>Databases</strong><ul className="move-databases">{plan.databases.map(db => db.engine === 'clickhouse' ? <li key={`clickhouse-${db.id}`}>ClickHouse <code>{db.id}</code>: {[db.size_bytes ? mib(db.size_bytes) : '', db.tables >= 0 ? `${db.tables} tables` : ''].filter(Boolean).join(', ') || db.mode} · {actionLabels[db.action] || db.action}{db.note && db.action !== 'skip_empty' ? ` · ${db.note}` : ''}</li> : <li key={db.id}><code>{db.id}</code> {db.engine} ({db.mode}{db.tables >= 0 ? `, ${db.tables} tables` : ''}{db.size_bytes ? `, ${mib(db.size_bytes)}` : ''}) · {actionLabels[db.action] || db.action}{db.action === 'copy' && replicationLabel(db) ? <> · <strong>{replicationLabel(db)}</strong>{db.replication_restart ? ' · restarts the source once for wal_level=logical' : ''}</> : ''}{db.note && db.action !== 'skip_empty' ? ` · ${db.note}` : ''}{db.before_deploy ? ` · before deploys: ${db.before_deploy}` : ''}</li>)}</ul></>}
       {plan.databases.some(db => db.excluded_tables?.length) && <section className="move-excluded" aria-label="Tables the backups skip">
         <strong>Tables the backups skip</strong>
         <p className="muted-copy">The source's backups skip the rows of these tables. Choose before starting: the move copies their data separately (the default), or leaves a table behind (schema only, empty on the destination).</p>
@@ -245,6 +280,7 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
         })}</ul>)}
       </section>}
       {plan.estimate && <MoveEstimateTable estimate={plan.estimate} />}
+      <label className="check-row move-auto-cutover"><input type="checkbox" checked={automatic} onChange={event => setAutoCutover(event.target.checked)} /><span><strong>Final sync and finish automatically once DNS points to the destination</strong><small>{plan.estimate ? `The application is locked for about ${moveDuration(plan.estimate.final_seconds)} while the final sync runs (estimate based on ${plan.estimate.basis}), within a minute of DNS resolving to the destination. ` : ''}Off, the destination serves the bulk copy until you run the final sync and finish yourself; what it receives meanwhile is replaced.</small></span></label>
       {(plan.files?.length ?? 0) > 0 && <><strong>Files</strong><ul className="move-files">{plan.files!.map(set => <li key={set.id}><code>{set.path}</code> {set.source} ({fileSummary(set)}) · {fileAction(set)}{set.note ? ` · ${set.note}` : ''}{fileSkipped(set)}</li>)}</ul></>}
       {plan.notes.length > 0 && <ul className="move-notes">{plan.notes.map(note => <li key={note}>{note}</li>)}</ul>}
       {plan.blockers.length > 0 && <div className="move-blockers" role="alert"><strong>Resolve before moving</strong><ul>{plan.blockers.map(item => <li key={item}>{item}</li>)}</ul></div>}
@@ -310,11 +346,13 @@ function MoveProgress({ job, name, onUpdate, onPlanAnother }: { job: MoveJob; na
   const [acceptLock, setAcceptLock] = useState(false);
   const lockEstimate = job.lock_estimate;
   const excluded = (job.databases || []).filter(db => db.excluded_tables?.length);
+  const replicated = (job.databases || []).filter(db => db.copyable && db.replication);
   return <div className="move-progress">
     <div className="move-heading"><strong>Moving to {name(job.target_server)}</strong><Badge tone={moveTone(job.state)}>{stateLabels[job.state] || job.state}</Badge>{moveActive(job) && <span className={moveHolds(job) ? 'move-phase move-phase-locked' : 'move-phase move-phase-live'}>{movePhaseLabel(job)}</span>}<span className="muted-copy">{job.runtime} · {job.target_runtime}</span></div>
     {job.failure ? <MoveFailureNote failure={job.failure} /> : job.error && <ErrorBanner>{job.error}</ErrorBanner>}
     {job.stall && <div className="move-caution" role="status"><strong>No progress since {new Date(job.stall.since).toLocaleTimeString()}</strong> while {job.stall.phase}. The attempt is cancelled and retried if nothing moves by {new Date(job.stall.cancel_at).toLocaleTimeString()}.</div>}
     {job.destination_stale && !terminal(job.state) && <p className="move-stale" role="status">The source was deployed during the move; the destination redeploys the source's current commit at the final sync.</p>}
+    {replicated.length > 0 && !terminal(job.state) && <p className="muted-copy move-replication" role="status">{replicated.map(db => `${db.source_id}: ${replicationLabel(db)}${db.replication === 'continuous' && db.replication_link ? ` over the ${db.replication_link.path} path${db.replication_link.tls ? ' with TLS' : ''}` : ''}`).join('; ')}.</p>}
     {error && <ErrorBanner>{error}</ErrorBanner>}
     {job.state === 'finished' && <Notice>The application now runs on {name(job.target_server)}. It was retired on {name(job.source_server)}, where its databases and last backups remain as retained resources.</Notice>}
     {job.state === 'aborted' && <Notice>The move was aborted. The application keeps running on {name(job.source_server)}.</Notice>}
@@ -327,12 +365,13 @@ function MoveProgress({ job, name, onUpdate, onPlanAnother }: { job: MoveJob; na
     </li>)}</ol>
     {cutover && <section className="move-dns" aria-label="DNS records">
       <h4>DNS records</h4>
-      <p>Set these records at your DNS provider and remove every other A and AAAA record of these hostnames. {name(job.source_server)} keeps serving until DNS points to {name(job.target_server)}.</p>
+      <p>Set these records at your DNS provider and remove every other A and AAAA record of these hostnames. {name(job.source_server)} keeps serving until DNS points to {name(job.target_server)}.{job.records.some(record => record.type === 'PTR') && ' A PTR record is set at the server provider, where the server was created.'}</p>
       <table className="move-records"><thead><tr><th>Hostname</th><th>Type</th><th>Value</th><th><span className="sr-only">Copy</span></th></tr></thead>
-        <tbody>{job.records.map(record => <tr key={`${record.hostname}-${record.type}-${record.value}`}><td><code>{record.hostname}</code></td><td>{record.type}</td><td><code>{record.value}</code></td><td><CopyButton value={record.value} label={`Copy ${record.type} value for ${record.hostname}`} /></td></tr>)}</tbody></table>
-      <ul className="move-resolution">{job.dns.map(entry => <li key={entry.hostname} className={entry.ready ? 'move-dns-ready' : 'move-dns-waiting'}><code>{entry.hostname}</code> {entry.ready ? 'points to the destination' : entry.error ? entry.error : `resolves to ${entry.addresses.join(', ') || 'nothing'}`}</li>)}</ul>
-      {job.dns_checked && <p className="muted-copy">Checked {new Date(job.dns_checked).toLocaleTimeString()}. DNS is checked every minute.</p>}
+        <tbody>{job.records.map(record => <tr key={`${record.hostname}-${record.type}-${record.value}`}><td><code>{record.hostname}</code></td><td>{record.type}</td><td><code>{record.value}</code>{record.note && <small className="move-record-note">{record.note}</small>}</td><td><CopyButton value={record.value} label={`Copy ${record.type} value for ${record.hostname}`} /></td></tr>)}</tbody></table>
+      <ul className="move-resolution">{job.dns.map(entry => <li key={entry.hostname} className={entry.ready ? 'move-dns-ready' : 'move-dns-waiting'}><code>{entry.hostname}</code> {entry.ready ? 'points to the destination' : entry.error ? entry.error : `resolves to ${entry.addresses.join(', ') || 'nothing'}`}{entry.source && <small className="muted-copy"> (answered by {entry.source})</small>}</li>)}{(job.ptr || []).map(entry => <li key={`ptr-${entry.address}`} className={entry.ok ? 'move-dns-ready' : 'move-dns-waiting'}>{ptrSummary(entry)}{entry.ok ? '' : '; outgoing mail is rejected until then (the move does not wait for it)'}</li>)}</ul>
+      {job.dns_checked && <p className="muted-copy">Checked {new Date(job.dns_checked).toLocaleTimeString()}. DNS is checked every minute at the zone's own nameservers, so resolver caches do not delay the cutover.</p>}
       {job.tls_detail && <p className="muted-copy">{job.tls_detail}</p>}
+      {can('auto-cutover') && <label className="check-row move-auto-cutover"><input type="checkbox" role="switch" aria-checked={!!job.auto_cutover} checked={!!job.auto_cutover} disabled={!!busy} onChange={event => { void act('auto-cutover', { enabled: event.target.checked }); }} /><span><strong>Final sync and finish start automatically when DNS points here</strong><small>{job.auto_cutover ? `On: the application is locked${lockEstimate ? ` for about ${moveDuration(lockEstimate.seconds)}` : ''} as soon as DNS resolves to ${name(job.target_server)} and HTTPS works there; the move then finishes by itself.` : 'Off: run the final sync and finish the move yourself once DNS points here. Until then the destination serves the bulk copy, and what it receives is replaced by the final sync.'}</small></span></label>}
       {job.source_frozen && <p className="move-frozen">The source is in maintenance after the final sync. Switch DNS and finish soon.</p>}
     </section>}
     <div className="move-actions">
@@ -364,7 +403,7 @@ function MoveProgress({ job, name, onUpdate, onPlanAnother }: { job: MoveJob; na
 function MoveEstimateTable({ estimate }: { estimate: MoveEstimate }) {
   return <div className="move-estimate"><strong>Estimate</strong>
     <table className="move-estimate-table"><thead><tr><th>Data</th><th>Size</th><th>Bulk copy (app live)</th><th>Final sync (app locked)</th></tr></thead>
-      <tbody>{estimate.engines.map(engine => <tr key={`${engine.kind}-${engine.object}`}><td>{engine.label}</td><td>{engine.kind === 'redis' ? 'not copied' : `${engine.measured ? '' : '≈ '}${size(Math.max(engine.bytes, 0))}${engine.objects > 0 ? `, ${engine.objects.toLocaleString()} ${engine.object_label}` : ''}`}</td><td>{engine.kind === 'redis' ? '—' : `≈ ${moveDuration(engine.bulk_seconds)}`}</td><td>{engine.kind === 'redis' ? '—' : `≈ ${moveDuration(engine.final_seconds)}`}</td></tr>)}</tbody>
+      <tbody>{estimate.engines.map(engine => <tr key={`${engine.kind}-${engine.object}`}><td>{engine.label}</td><td>{engine.kind === 'redis' ? 'not copied' : `${engine.measured ? '' : '≈ '}${size(Math.max(engine.bytes, 0))}${engine.objects > 0 ? `, ${engine.objects.toLocaleString()} ${engine.object_label}` : ''}`}</td><td>{engine.kind === 'redis' ? '—' : `≈ ${moveDuration(engine.bulk_seconds)}`}</td><td>{engine.kind === 'redis' ? '—' : `≈ ${moveDuration(engine.final_seconds)}${engine.final_basis === 'replication lag' ? ' (replication lag)' : ''}`}</td></tr>)}</tbody>
       <tfoot><tr><th scope="row">Total with deploy</th><td></td><td>≈ {moveDuration(estimate.bulk_seconds)}</td><td>≈ {moveDuration(estimate.final_seconds)}</td></tr></tfoot></table>
     <p className="muted-copy">Estimate based on {estimate.basis}. {estimate.notes?.join(' ')}</p>
   </div>;

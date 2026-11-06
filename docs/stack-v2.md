@@ -119,7 +119,7 @@ the prior four-container measurements do not establish it.
 Settings advertises stack_manifest_versions:[1,2] and returns the committed
 runtime_selection snapshot as public read-only metadata. Container inventory,
 health, logs, stop/start, rollback, recovery, retention and backups use the same
-owned application lifecycle. SMIP TLS1.3 transport is outside this extension and
+owned application lifecycle. Strict-TLS protocol TLS1.3 transport is outside this extension and
 remains gated on upstream verified transport support; no proxy-header bypass.
 
 Protected TLS protocols may opt into `gateway_transport` on v0.2.103 or newer.

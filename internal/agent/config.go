@@ -34,6 +34,11 @@ type Config struct {
 	BackupExcludeTableData map[string][]string `json:"backup_exclude_table_data,omitempty"`
 	// Exact database resource limits. An omitted resource keeps the 5 GiB default.
 	BackupMaxBytes map[string]int64 `json:"backup_max_bytes,omitempty"`
+	// MoveKeyColumns are the timestamp columns, in order of preference, that
+	// mark a row's insertion for incremental copies of append-only tables
+	// during a move (move_table_delta.go). Empty means created_at,
+	// received_at, inserted_at, occurred_at, ts, timestamp.
+	MoveKeyColumns []string `json:"move_key_columns,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {

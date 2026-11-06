@@ -71,7 +71,16 @@ func nativeCaddyRouteID(id string) string { return nativeCaddyRoutePrefix + id }
 
 // renderNativeCaddyRoute is the route for one created application.
 func renderNativeCaddyRoute(id string, hosts []string, upstream string) ([]byte, error) {
-	if !idPattern.MatchString(id) || len(hosts) == 0 || upstream == "" {
+	if upstream == "" {
+		return nil, errors.New("caddy route needs an application, hostnames and an upstream")
+	}
+	return renderCaddyRoute(id, hosts, map[string]any{"handler": "reverse_proxy", "upstreams": []any{map[string]any{"dial": upstream}}})
+}
+
+// renderCaddyRoute is an application's route with the given reverse_proxy
+// handler: the agent's proxy, or the protected gateway (gateway_auto.go).
+func renderCaddyRoute(id string, hosts []string, proxy map[string]any) ([]byte, error) {
+	if !idPattern.MatchString(id) || len(hosts) == 0 || proxy == nil {
 		return nil, errors.New("caddy route needs an application, hostnames and an upstream")
 	}
 	route := map[string]any{
@@ -81,7 +90,7 @@ func renderNativeCaddyRoute(id string, hosts []string, upstream string) ([]byte,
 			"handler": "subroute",
 			"routes": []any{map[string]any{"handle": []any{
 				map[string]any{"handler": "encode", "encodings": map[string]any{"zstd": map[string]any{}, "gzip": map[string]any{}}, "prefer": []string{"zstd", "gzip"}},
-				map[string]any{"handler": "reverse_proxy", "upstreams": []any{map[string]any{"dial": upstream}}},
+				proxy,
 			}}},
 		}},
 		"terminal": true,
@@ -92,6 +101,16 @@ func renderNativeCaddyRoute(id string, hosts []string, upstream string) ([]byte,
 type nativeCaddy struct {
 	cfg    NativeCaddyConfig
 	client *http.Client
+	// proxy replaces the reverse_proxy handler to the agent's proxy, for
+	// protected applications behind the host gateway.
+	proxy map[string]any
+}
+
+func (c nativeCaddy) route(id string, hosts []string) ([]byte, error) {
+	if c.proxy != nil {
+		return renderCaddyRoute(id, hosts, c.proxy)
+	}
+	return renderNativeCaddyRoute(id, hosts, c.cfg.Upstream)
 }
 
 // nativeCaddy resolves the Caddy this host publishes to: the configuration
@@ -168,7 +187,7 @@ func (c nativeCaddy) get(ctx context.Context, path string, out any) (found bool,
 // is left alone (no reload). New routes go first so a broader wildcard route
 // elsewhere in the server cannot shadow them.
 func (c nativeCaddy) publishRoute(ctx context.Context, id string, hosts []string) error {
-	route, err := renderNativeCaddyRoute(id, hosts, c.cfg.Upstream)
+	route, err := c.route(id, hosts)
 	if err != nil {
 		return err
 	}

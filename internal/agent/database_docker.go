@@ -45,6 +45,12 @@ func dockerStream(ctx context.Context, input io.Reader, output io.Writer, extra 
 }
 func (m *Manager) provisionDatabase(ctx context.Context, d Database) error {
 	if d.Mode == "local" {
+		// A container database is often the first container on a server
+		// (an application moving here brings it before its first deploy):
+		// the runtime must be installed and started first.
+		if err := ensureDocker(ctx, m); err != nil {
+			return err
+		}
 		for _, kind := range []string{"network", "volume"} {
 			name := d.Network
 			if kind == "volume" {
@@ -71,7 +77,9 @@ func (m *Manager) provisionDatabase(ctx context.Context, d Database) error {
 		}
 		if found == "" {
 			args := []string{"run", "-d", "--name", d.Network, "--label", "io.lidza.database=" + d.AppID, "--network", d.Network, "--restart", "unless-stopped", "--pids-limit", "256", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=volume,src=" + d.Network + "-data,dst=/var/lib/postgresql/data", "--env", "POSTGRES_PASSWORD"}
-			args = append(args, databaseImage)
+			// wal_level=logical from the start: a move can then replicate
+			// the database without restarting it (move_replication.go).
+			args = append(args, databaseImage, "-c", "wal_level=logical")
 			err = dockerStream(ctx, nil, io.Discard, []string{"POSTGRES_PASSWORD=" + d.AdminPassword}, args...)
 			if err != nil {
 				return errors.New("could not start PostgreSQL container")

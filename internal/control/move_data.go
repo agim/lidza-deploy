@@ -220,13 +220,20 @@ func moveResponseError(res *http.Response) error {
 
 // moveTransferDump streams one backup from the source into the destination
 // database.
-func (c *Control) moveTransferDump(ctx context.Context, job MoveJob, d MoveDatabase, record agent.BackupRecord, upload string) error {
+func (c *Control) moveTransferDump(ctx context.Context, job MoveJob, d MoveDatabase, record agent.BackupRecord, upload string, keep []string) error {
+	if err := c.moveWaitTargetIdle(ctx, job, d.TargetID); err != nil {
+		return err
+	}
 	if record.Size <= 0 || record.Size > moveMaxDumpBytes || !moveDigestPattern.MatchString(record.SHA256) {
 		return errors.New("the backup record has no usable size or digest")
 	}
+	restore := "/v1/move/databases/" + url.PathEscape(d.TargetID) + "/restore?replace=1"
+	if len(keep) > 0 {
+		restore += "&keep=" + url.QueryEscape(strings.Join(keep, ","))
+	}
 	return c.moveRelay(ctx, job, moveRelayStream{
 		download: "/v1/move/databases/" + url.PathEscape(d.SourceID) + "/backups/" + url.PathEscape(record.ID),
-		upload:   "/v1/move/databases/" + url.PathEscape(d.TargetID) + "/restore?replace=1",
+		upload:   restore,
 		size:     record.Size, digest: record.SHA256, mismatch: errMoveChecksum, what: "dump", resume: upload,
 		phase: fmt.Sprintf("streaming the dump of %s to %s", d.SourceID, job.TargetServer),
 		after: fmt.Sprintf("restoring %s into %s on %s", d.SourceID, d.TargetID, job.TargetServer),
@@ -529,6 +536,9 @@ func (c *Control) checkMoveDNS(ctx context.Context, id string, explicit bool) {
 		return
 	}
 	statuses, all := c.resolveMoveHostnames(ctx, job)
+	// Mail-sending applications: the reverse DNS is checked and logged too,
+	// but never holds the cutover.
+	ptr := c.checkMovePTR(ctx, job)
 	tlsReady, tlsDetail := job.TLSReady, job.TLSDetail
 	if (all || explicit) && (!tlsReady || explicit) {
 		tlsReady, tlsDetail = true, "HTTPS works on the destination for every hostname."
@@ -547,6 +557,14 @@ func (c *Control) checkMoveDNS(ctx context.Context, id string, explicit bool) {
 		}
 		wasReady := job.State == moveStateReady
 		job.DNS, job.DNSChecked, job.TLSReady, job.TLSDetail = statuses, &now, tlsReady, tlsDetail
+		if ptr != nil && (explicit || movePTRChanged(job.PTR, ptr)) {
+			for _, line := range movePTRLogLines(ptr) {
+				job.logf(moveStepCutover, "%s", line)
+			}
+		}
+		if ptr != nil {
+			job.PTR = ptr
+		}
 		switch {
 		case all && tlsReady && !wasReady:
 			job.State = moveStateReady
@@ -564,21 +582,27 @@ func (c *Control) checkMoveDNS(ctx context.Context, id string, explicit bool) {
 	if err == nil && updated.State == moveStateReady && job.State != moveStateReady {
 		moveAudit(ctx, updated, "dns_ready", false)
 	}
+	if err == nil && updated.State == moveStateReady && updated.AutoCutover {
+		c.moveAutoCutover(ctx, id)
+	}
 }
 
 // resolveMoveHostnames resolves every hostname of a move; all reports that
 // each one resolves only to the destination's addresses.
 func (c *Control) resolveMoveHostnames(ctx context.Context, job MoveJob) (statuses []MoveDNSStatus, all bool) {
-	var resolver moveResolver = net.DefaultResolver
-	if c.moveResolver != nil {
-		resolver = c.moveResolver
-	}
+	resolver := c.resolver()
 	statuses = []MoveDNSStatus{}
 	all = len(job.Hostnames) > 0
 	for _, host := range job.Hostnames {
 		status := MoveDNSStatus{Hostname: host, Addresses: []string{}}
-		lookup, cancel := context.WithTimeout(ctx, 5*time.Second)
-		addresses, err := resolver.LookupIPAddr(lookup, host)
+		lookup, cancel := context.WithTimeout(ctx, 8*time.Second)
+		var addresses []net.IPAddr
+		var err error
+		if sourced, ok := resolver.(moveResolverSource); ok {
+			addresses, status.Source, err = sourced.LookupIPAddrFrom(lookup, host)
+		} else {
+			addresses, err = resolver.LookupIPAddr(lookup, host)
+		}
 		cancel()
 		if err != nil {
 			status.Error = "does not resolve"
@@ -646,5 +670,46 @@ func (c *Control) checkMoveEarlyDNS(ctx context.Context, id string) {
 		}
 		job.DNS, job.DNSChecked, job.DNSAhead = statuses, &now, host != ""
 		return nil
+	})
+}
+
+// moveWaitTargetIdle waits until the destination runs no deployment of the
+// application and no operation on database id. The final sync reconciles
+// the destination first, which may start a redeploy with its pre-deploy
+// backup; a restore started meanwhile is refused ("a database operation is
+// already running", "wait for the application's active deployment"), and
+// every retry would reconcile and collide again.
+func (c *Control) moveWaitTargetIdle(ctx context.Context, job MoveJob, id string) error {
+	logged := false
+	return c.movePoll(ctx, 20*time.Minute, func() (bool, error) {
+		busy := ""
+		var deployments []agent.Deployment
+		if err := c.moveCall(ctx, time.Minute, job.TargetServer, http.MethodGet, "/v1/deployments?logs=0", nil, &deployments); err == nil {
+			for _, d := range deployments {
+				if d.AppID == job.AppID && (d.Status == "queued" || d.Status == "building") {
+					busy = "deployment " + d.ID + " of " + job.AppID
+				}
+			}
+		}
+		var views []agent.DatabaseView
+		if err := c.moveCall(ctx, time.Minute, job.TargetServer, http.MethodGet, "/v1/databases", nil, &views); err == nil {
+			for _, v := range views {
+				if v.AppID == id && v.Operation != "" {
+					busy = "the " + v.Operation + " of database " + id
+				}
+			}
+		}
+		if busy == "" {
+			return true, nil
+		}
+		if !logged {
+			logged = true
+			step := moveStepData
+			if job.State == moveStateSyncing {
+				step = moveStepFinalSync
+			}
+			c.moveLog(job.ID, step, "Waiting for %s on %s to finish before restoring.", busy, job.TargetServer)
+		}
+		return false, nil
 	})
 }

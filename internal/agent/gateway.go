@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"net"
 	"net/http"
@@ -89,6 +90,15 @@ func (m *Manager) initGateway() error {
 		m.gatewayKeys = map[string]gatewayPKI{}
 	}
 	if c == nil {
+		// A gateway the agent set up itself (gateway_auto.go) starts here;
+		// a failure is logged and retried by the next protected deployment
+		// rather than stopping the agent and every unprotected application.
+		if auto := m.data.HostGateway; auto != nil && !m.cfg.IngressOnly {
+			if err := m.startAutoGateway(*auto, nil); err != nil {
+				log.Printf("host gateway: %v", err)
+			}
+			return nil
+		}
 		for _, app := range m.data.Apps {
 			if app.Current != nil && app.Current.Stack != nil && app.Current.Stack.Gateway != nil {
 				return errors.New("protected releases require their retained host gateway configuration")
@@ -96,38 +106,71 @@ func (m *Manager) initGateway() error {
 		}
 		return nil
 	}
+	serverTLS, verify, err := m.loadGatewayTLS(*c)
+	if err != nil {
+		return err
+	}
+	m.gatewayMu.Lock()
+	m.gatewayTLS, m.gatewayVerify, m.gatewayConfig = serverTLS, verify, c
+	m.gatewayMu.Unlock()
+	return nil
+}
+
+// loadGatewayTLS reads a host gateway's certificate, key and client CA and
+// builds its server TLS configuration and edge verification.
+func (m *Manager) loadGatewayTLS(c GatewayConfig) (*tls.Config, func(http.Handler) http.Handler, error) {
 	host, port, err := net.SplitHostPort(c.Listen)
 	n, e := strconv.Atoi(port)
 	ip := net.ParseIP(host)
 	if err != nil || e != nil || n < 1 || n > 65535 || ip == nil || !ip.IsLoopback() {
-		return errors.New("gateway listen must be an explicit loopback IP and TCP port")
+		return nil, nil, errors.New("gateway listen must be an explicit loopback IP and TCP port")
 	}
 	cert, err := readGatewayFile(c.Certificate, false)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	key, err := readGatewayFile(c.PrivateKey, true)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	ca, err := readGatewayFile(c.ClientCA, false)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	pair, err := tls.X509KeyPair(cert, key)
 	if err != nil {
-		return errors.New("gateway host certificate/key is invalid")
+		return nil, nil, errors.New("gateway host certificate/key is invalid")
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(ca) {
-		return errors.New("gateway client CA is invalid")
+		return nil, nil, errors.New("gateway client CA is invalid")
 	}
-	m.gatewayTLS, err = gateway.ServerTLS(pair, pool)
+	serverTLS, err := gateway.ServerTLS(pair, pool)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	m.gatewayVerify, err = gateway.Verify(gateway.Policy{Peers: slices.Clone(c.PeerPins), NativeEdges: slices.Clone(c.PeerPins), Authorize: m.authorizeGatewayAuthority, Claim: m.claimGatewayNonce})
-	return err
+	verify, err := gateway.Verify(gateway.Policy{Peers: slices.Clone(c.PeerPins), NativeEdges: slices.Clone(c.PeerPins), Authorize: m.authorizeGatewayAuthority, Claim: m.claimGatewayNonce})
+	if err != nil {
+		return nil, nil, err
+	}
+	return serverTLS, verify, nil
+}
+
+// gatewayReady reports that the host gateway listener's TLS is loaded.
+func (m *Manager) gatewayReady() bool {
+	m.gatewayMu.Lock()
+	defer m.gatewayMu.Unlock()
+	return m.gatewayTLS != nil && m.gatewayVerify != nil
+}
+
+// gatewayPeerPins are the edge pins of the effective host gateway.
+func (m *Manager) gatewayPeerPins() []string {
+	m.gatewayMu.Lock()
+	defer m.gatewayMu.Unlock()
+	if m.gatewayConfig == nil {
+		return nil
+	}
+	return slices.Clone(m.gatewayConfig.PeerPins)
 }
 func (m *Manager) authorizeGatewayAuthority(ctx context.Context, authority string) error {
 	if err := ctx.Err(); err != nil {
@@ -145,12 +188,29 @@ func (m *Manager) authorizeGatewayAuthority(ctx context.Context, authority strin
 	}
 	return errors.New("unapproved gateway authority")
 }
+
+// GatewayServer is the configured host gateway listener for the agent's main
+// to serve; nil when none is configured or when the agent serves its own
+// automatic gateway (gateway_auto.go).
 func (m *Manager) GatewayServer() *http.Server {
-	if m.gatewayTLS == nil || m.gatewayVerify == nil {
+	m.gatewayMu.Lock()
+	auto, c := m.gatewayAuto, m.gatewayConfig
+	m.gatewayMu.Unlock()
+	if auto || c == nil {
+		return nil
+	}
+	return m.gatewayHTTPServer(c.Listen)
+}
+
+func (m *Manager) gatewayHTTPServer(listen string) *http.Server {
+	m.gatewayMu.Lock()
+	serverTLS, verify := m.gatewayTLS, m.gatewayVerify
+	m.gatewayMu.Unlock()
+	if serverTLS == nil || verify == nil {
 		return nil
 	}
 	legacy := Proxy(m)
-	verified := m.gatewayVerify(legacy)
+	verified := verify(legacy)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
@@ -165,7 +225,7 @@ func (m *Manager) GatewayServer() *http.Server {
 		// Proxy rechecks the current release and rejects protected paths without it.
 		legacy.ServeHTTP(w, r)
 	})
-	return &http.Server{Addr: m.cfg.Gateway.Listen, Handler: handler, TLSConfig: m.gatewayTLS.Clone(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 32768}
+	return &http.Server{Addr: listen, Handler: handler, TLSConfig: serverTLS.Clone(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 32768}
 }
 func (m *Manager) gatewayClient(identity string) (*http.Client, error) {
 	m.gatewayMu.Lock()
@@ -187,7 +247,7 @@ func (m *Manager) gatewayClient(identity string) (*http.Client, error) {
 	m.gatewayClients[identity] = transport
 	return &http.Client{Transport: transport, Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
 }
-func (m *Manager) prepareGateway(a App, manifest *StackManifest) (App, error) {
+func (m *Manager) prepareGateway(ctx context.Context, a App, manifest *StackManifest) (App, error) {
 	if manifest.GatewayTransport == nil {
 		if a.Current != nil && a.Current.Stack != nil && a.Current.Stack.Gateway != nil {
 			return a, errors.New("a protected release cannot remove gateway_transport during an in-place update")
@@ -201,9 +261,23 @@ func (m *Manager) prepareGateway(a App, manifest *StackManifest) (App, error) {
 			}
 		}
 	}
-	if m.gatewayTLS == nil {
-		return a, errors.New("gateway_transport requires a configured protected host ingress; prepare and install the reviewed Caddy mTLS configuration first")
+	if err := m.ensureGateway(ctx, "deploy"); err != nil {
+		return a, err
 	}
+	peerPins := m.gatewayPeerPins()
+	a, err := m.prepareGatewayIdentity(a, peerPins)
+	if err != nil {
+		return a, err
+	}
+	// The host's web server sends the application's hostnames to the
+	// gateway listener; only an automatic gateway's routes are managed.
+	if err := m.publishGatewayRoute(ctx, a); err != nil {
+		return a, err
+	}
+	return a, nil
+}
+
+func (m *Manager) prepareGatewayIdentity(a App, peerPins []string) (App, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.data.GatewayPKI == nil {
@@ -239,7 +313,7 @@ func (m *Manager) prepareGateway(a App, manifest *StackManifest) (App, error) {
 	values := map[string]string{
 		"DEPLOY_GATEWAY_ADDR": "0.0.0.0:3001",
 		"DEPLOY_GATEWAY_CERT": pki.ServerCert, "DEPLOY_GATEWAY_KEY": pki.ServerKey, "DEPLOY_GATEWAY_CLIENT_CA": pki.CA,
-		"DEPLOY_GATEWAY_PEER_PINS": gateway.Pin(cert.Leaf), "DEPLOY_GATEWAY_DELEGATE_PINS": strings.Join(m.cfg.Gateway.PeerPins, ","), "DEPLOY_GATEWAY_AUTHORITIES": strings.Join(a.Hostnames(), ","),
+		"DEPLOY_GATEWAY_PEER_PINS": gateway.Pin(cert.Leaf), "DEPLOY_GATEWAY_DELEGATE_PINS": strings.Join(peerPins, ","), "DEPLOY_GATEWAY_AUTHORITIES": strings.Join(a.Hostnames(), ","),
 	}
 	old, ok := m.data.Apps[a.ID]
 	if !ok {

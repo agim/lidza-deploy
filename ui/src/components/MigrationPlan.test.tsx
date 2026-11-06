@@ -313,6 +313,48 @@ it('shows estimates and lets the operator leave behind tables the backups skip',
   expect(container.querySelectorAll('[style]')).toHaveLength(0);
 });
 
+it('shows the database copy mode per database and lets the operator force a dump', async () => {
+  const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+  const reviewed = { ...plan, warnings: ['Schema changes on the source while the move runs break its replication; the move then copies that database with a fresh dump instead.'], notes: ['Database shop replicates continuously to the destination over the shared private network 10.40.0.0/20 (no TLS needed); the source\'s host firewall admits the destination\'s address to the relay port for the move only.'],
+    databases: [{ ...plan.databases[0], replication: 'continuous', replication_restart: true }, { id: 'analytics', engine: 'postgresql', mode: 'local', tables: 4, action: 'copy', replication: 'dump', replication_reason: 'only 1 free replication slots on the source (3 needed; raise max_replication_slots)' }],
+    estimate: { basis: 'defaults', bulk_seconds: 700, final_seconds: 400, notes: ['Final sync of shop: seconds (replication lag); the destination follows the source continuously.'],
+      engines: [{ kind: 'postgresql', object: 'shop', label: 'PostgreSQL shop', bytes: 2 ** 30, objects: 12, object_label: 'tables', measured: true, bulk_seconds: 300, final_seconds: 30, basis: 'defaults', final_basis: 'replication lag' }] } };
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+    const method = init.method || 'GET';
+    requests.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    if (url === '/api/control/apps/shop/move' && method === 'GET') return respond(204, {});
+    if (url.startsWith('/api/control/apps/shop/move-plan?')) return respond(200, reviewed);
+    if (url === '/api/control/apps/shop/move' && method === 'POST') return respond(202, job('running'));
+    return respond(200, job('running'));
+  }));
+  const { container } = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} pollMs={1000} />);
+  open(container);
+  fireEvent.click(await screen.findByRole('button', { name: 'Review move' }));
+  const databases = (await screen.findByText('Databases')).nextElementSibling!;
+  expect(databases).toHaveTextContent('shop postgresql (local, 12 tables, 4.0 MiB) · copied · continuous replication · restarts the source once for wal_level=logical');
+  expect(databases).toHaveTextContent('analytics postgresql (local, 4 tables) · copied · dump and restore (only 1 free replication slots on the source (3 needed; raise max_replication_slots))');
+  expect(screen.getByRole('table')).toHaveTextContent('≈ 30s (replication lag)');
+  expect(screen.getByText(/replicates continuously to the destination over the shared private network/)).toBeInTheDocument();
+  expect(requests.find(r => r.url.includes('move-plan'))?.url).not.toContain('replication=');
+  // Forcing the dump path reviews again and starts with the option.
+  fireEvent.change(screen.getByRole('combobox', { name: 'Database copy' }), { target: { value: 'dump' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Review move' }));
+  await waitFor(() => expect(requests.filter(r => r.url.includes('move-plan')).at(-1)?.url).toContain('replication=dump'));
+  fireEvent.click(await screen.findByRole('checkbox', { name: /I have read these warnings/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Start move' }));
+  await waitFor(() => expect(requests.find(r => r.method === 'POST')?.body).toEqual({ target_server: 'beta', acknowledge_warnings: true, max_attempts: 6, replication: 'dump' }));
+});
+
+it('names the replication path of a move in progress', async () => {
+  const current = job('running', { locked: false, phase: 'live', actions: ['abort'],
+    databases: [{ source_id: 'shop', target_id: 'app_shop', copyable: true, replication: 'continuous', replication_link: { path: 'public', host: '198.51.100.7', port: 45001, tls: true, subscribed: true } }],
+    steps: steps({ plan: 'done', prepare: 'done', environment: 'done', data: 'running' }) });
+  vi.stubGlobal('fetch', vi.fn(() => respond(200, current)));
+  const { container } = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} pollMs={1000} />);
+  open(container);
+  expect(await screen.findByText('shop: continuous replication over the public path with TLS.')).toBeInTheDocument();
+});
+
 it('shows the choices a move started with, without asking again', async () => {
   const current = job('running', { locked: false, phase: 'live', actions: ['abort', 'excluded-tables'],
     databases: [{ source_id: 'shop', copyable: true, excluded_tables: [{ name: 'public.events', rows: 52_000, bytes: 80 * 2 ** 20, choice: 'copy', copied_rows: 52_113 }, { name: 'public.audit_log', rows: -1, bytes: 2 ** 20, choice: 'leave' }] }],
@@ -410,4 +452,95 @@ it('offers to remove the retained data that stopped Prepare, with confirmation a
   await waitFor(() => expect(posted).toEqual([{ url: '/api/control/moves/m1/remove-retained', body: { confirm: 'r-old', final_backup: true } }]));
   await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
   expect(screen.queryByRole('button', { name: /Remove retained data/ })).not.toBeInTheDocument();
+});
+
+it('shows the mail records and reverse DNS of a mail-sending application', async () => {
+  const mailPlan = { ...plan, warnings: [], target_runtime: 'container', public_ports: [{ port: 25, protocol: 'tcp' }, { port: 587, protocol: 'tcp' }],
+    mail: { ports: [{ port: 25, protocol: 'tcp' }, { port: 587, protocol: 'tcp' }], source_addresses: ['198.51.100.7'], ptr: [{ address: '203.0.113.9', names: ['droplet-01'], want: 'shop.example.com', ok: false }],
+      records: [{ hostname: '203.0.113.9', type: 'PTR', value: 'shop.example.com', note: 'Set at the server provider, not at the DNS provider.' }] } };
+  const current = job('cutover', { actions: ['recheck-dns', 'finish', 'abort'], dns: [{ hostname: 'shop.example.com', addresses: ['198.51.100.7'], ready: false }],
+    ptr: [{ address: '203.0.113.9', names: [], want: 'shop.example.com', ok: false, error: 'no reverse DNS' }],
+    records: [{ hostname: 'shop.example.com', type: 'A', value: '203.0.113.9' }, { hostname: '203.0.113.9', type: 'PTR', value: 'shop.example.com', note: 'Set at the server provider, not at the DNS provider.' }, { hostname: 'example.com', type: 'TXT', value: 'v=spf1 ip4:203.0.113.9 -all', note: 'Replaces the SPF record that names the source address.' }],
+    steps: steps({ plan: 'done', prepare: 'done', environment: 'done', data: 'done', deploy: 'done', cutover: 'waiting', final_sync: 'skipped' }) });
+  const fetch = vi.fn((url: string, init: RequestInit = {}) => {
+    const method = init.method || 'GET';
+    if (url === '/api/control/apps/shop/move' && method === 'GET') return respond(404, { error: 'no move recorded for this application' });
+    if (url.startsWith('/api/control/apps/shop/move-plan?')) return respond(200, mailPlan);
+    if (url === '/api/control/apps/shop/move' && method === 'POST') return respond(202, current);
+    if (url === '/api/control/moves/m1' && method === 'GET') return respond(200, current);
+    return respond(500, { error: `unexpected ${method} ${url}` });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const { container } = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} pollMs={15} />);
+  const details = container.querySelector('details')!;
+  details.open = true;
+  fireEvent(details, new Event('toggle'));
+  await screen.findByRole('combobox', { name: 'Destination server' });
+  fireEvent.click(screen.getByRole('button', { name: 'Review move' }));
+  await screen.findByText(/25\/tcp, 587\/tcp · opened by the destination agent/);
+  expect(screen.getByText('203.0.113.9: reverse DNS is droplet-01; set it to shop.example.com at the server provider')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Start move' }));
+  const region = await screen.findByRole('region', { name: 'DNS records' });
+  expect(within(region).getByRole('button', { name: 'Copy PTR value for 203.0.113.9' })).toBeInTheDocument();
+  expect(within(region).getByRole('button', { name: 'Copy TXT value for example.com' })).toBeInTheDocument();
+  expect(within(region).getByText('Set at the server provider, not at the DNS provider.')).toBeInTheDocument();
+  expect(within(region).getByText('Replaces the SPF record that names the source address.')).toBeInTheDocument();
+  expect(within(region).getByText(/203.0.113.9: reverse DNS is none; set it to shop.example.com at the server provider; outgoing mail is rejected until then/)).toBeInTheDocument();
+  expect(within(region).getByText(/A PTR record is set at the server provider/)).toBeInTheDocument();
+});
+
+it('offers the automatic cutover with the lock estimate and sends the operator\'s choice', async () => {
+  const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+  const reviewed = { ...plan, warnings: [], auto_cutover: true, public_ports: [{ port: 25, protocol: 'tcp' }],
+    notes: ['Connections to the published ports reach the destination as soon as DNS changes; with the automatic cutover the final sync follows within a minute.'],
+    databases: [{ ...plan.databases[0], replication: 'continuous' }],
+    estimate: { basis: 'defaults', bulk_seconds: 700, final_seconds: 95, engines: [] } };
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+    const method = init.method || 'GET';
+    requests.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    if (url === '/api/control/apps/shop/move' && method === 'GET') return respond(204, {});
+    if (url.startsWith('/api/control/apps/shop/move-plan?')) return respond(200, reviewed);
+    if (url === '/api/control/apps/shop/move' && method === 'POST') return respond(202, job('running'));
+    return respond(200, job('running'));
+  }));
+  const { container } = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} pollMs={1000} />);
+  open(container);
+  fireEvent.click(await screen.findByRole('button', { name: 'Review move' }));
+  const option = await screen.findByRole('checkbox', { name: /Final sync and finish automatically once DNS points to the destination/ });
+  expect(option).toBeChecked();
+  expect(option.closest('label')).toHaveTextContent('locked for about 2m while the final sync runs');
+  expect(screen.getByText(/reach the destination as soon as DNS changes/)).toBeInTheDocument();
+  // The plan's default is not repeated in the request; a change is.
+  fireEvent.click(screen.getByRole('button', { name: 'Start move' }));
+  await waitFor(() => expect(requests.find(r => r.method === 'POST')?.body).toEqual({ target_server: 'beta', acknowledge_warnings: false, max_attempts: 6 }));
+  cleanup();
+  requests.length = 0;
+  const again = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} pollMs={1000} />);
+  open(again.container);
+  fireEvent.click(await screen.findByRole('button', { name: 'Review move' }));
+  fireEvent.click(await screen.findByRole('checkbox', { name: /Final sync and finish automatically/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Start move' }));
+  await waitFor(() => expect(requests.find(r => r.method === 'POST')?.body).toEqual({ target_server: 'beta', acknowledge_warnings: false, max_attempts: 6, auto_cutover: false }));
+});
+
+it('switches the automatic cutover while the move waits for DNS', async () => {
+  const posted: Array<{ url: string; body?: unknown }> = [];
+  let current = job('cutover', { locked: false, phase: 'live', auto_cutover: true, actions: ['recheck-dns', 'finish', 'final-sync', 'auto-cutover', 'abort'], lock_estimate: { seconds: 40, basis: "this move's bulk copy", confirm: false },
+    steps: steps({ plan: 'done', prepare: 'done', environment: 'done', data: 'done', deploy: 'done', cutover: 'waiting', final_sync: 'skipped' }) });
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+    if (init.method === 'POST') { posted.push({ url, body: init.body ? JSON.parse(String(init.body)) : undefined }); current = { ...current, auto_cutover: false }; return respond(202, current); }
+    return respond(200, current);
+  }));
+  const { container } = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} pollMs={1000} />);
+  open(container);
+  const toggle = await screen.findByRole('switch', { name: /Final sync and finish start automatically when DNS points here/ });
+  expect(toggle).toBeChecked();
+  expect(toggle.closest('label')).toHaveTextContent('locked for about 40s as soon as DNS resolves to Beta');
+  // The manual buttons stay.
+  expect(screen.getByRole('button', { name: 'Final sync' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Finish move' })).toBeInTheDocument();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(posted).toEqual([{ url: '/api/control/moves/m1/auto-cutover', body: { enabled: false } }]));
+  expect(await screen.findByRole('switch', { name: /start automatically/ })).not.toBeChecked();
+  expect(screen.getByText(/Off: run the final sync and finish the move yourself/)).toBeInTheDocument();
 });

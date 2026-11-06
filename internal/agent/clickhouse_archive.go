@@ -68,6 +68,14 @@ type ClickHouseManifest struct {
 	// the source and on the destination. Expired rows disappear whenever a
 	// server merges parts, so raw counts of such tables never agree.
 	CountCutoff time.Time `json:"count_cutoff,omitzero"`
+	// Backup names the backup directory a directory archive carries when
+	// the source kept it as the base of an incremental backup; BaseBackup
+	// names the base an incremental archive was made against
+	// (move_clickhouse_incremental.go). Agents that predate incremental
+	// copies reject manifests with either, so they are only set for agents
+	// that advertise the capability.
+	Backup     string `json:"backup,omitempty"`
+	BaseBackup string `json:"base_backup,omitempty"`
 }
 
 // ClickHouseManifestTable is one table, view or dictionary.
@@ -101,6 +109,11 @@ type ClickHouseRestoreResult struct {
 	Counts   map[string]uint64 `json:"counts"`
 	Bytes    int64             `json:"bytes,omitempty"`
 	SHA256   string            `json:"sha256,omitempty"`
+	// Backup is the extracted backup directory this agent kept as the base
+	// of a later incremental restore; BaseBackup the base an incremental
+	// archive was restored against.
+	Backup     string `json:"backup,omitempty"`
+	BaseBackup string `json:"base_backup,omitempty"`
 }
 
 // clickhouseService is one managed ClickHouse server with the database an
@@ -123,6 +136,8 @@ type clickhouseBackupFiles interface {
 	readDir(ctx context.Context, name string) (io.ReadCloser, error)
 	writeDir(ctx context.Context, name string, stream io.Reader) error
 	removeDir(ctx context.Context, name string) error
+	// dirSize is a directory backup's size on disk; an error when missing.
+	dirSize(ctx context.Context, name string) (int64, error)
 }
 
 var clickhouseBackupFileName = regexp.MustCompile(`^lidza-[a-z0-9-]{1,64}\.zip$`)
@@ -406,9 +421,18 @@ func runClickHouseOperationPhase(ctx context.Context, c clickhouseClient, sql, p
 // exportClickHouseArchive writes an archive of the service's database to w.
 // spool holds per-table files of a native export while it is assembled.
 func exportClickHouseArchive(ctx context.Context, s clickhouseService, format, spool string, w io.Writer) (ClickHouseManifest, error) {
-	manifest := ClickHouseManifest{Archive: clickhouseArchiveFormat, Format: format, Database: s.database, Created: time.Now().UTC(), Tables: []ClickHouseManifestTable{}}
+	return exportClickHouseArchiveWith(ctx, s, format, spool, w, clickhouseExportOptions{})
+}
+
+// exportClickHouseArchiveWith is exportClickHouseArchive with the options
+// of a move's directory exports: a kept base or an incremental backup.
+func exportClickHouseArchiveWith(ctx context.Context, s clickhouseService, format, spool string, w io.Writer, opts clickhouseExportOptions) (manifest ClickHouseManifest, err error) {
+	manifest = ClickHouseManifest{Archive: clickhouseArchiveFormat, Format: format, Database: s.database, Created: time.Now().UTC(), Tables: []ClickHouseManifestTable{}}
 	if format != clickhouseFormatBackup && format != clickhouseFormatDirectory && format != clickhouseFormatNative {
 		return manifest, errors.New("unknown ClickHouse archive format")
+	}
+	if opts.Base != "" && (format != clickhouseFormatDirectory || !clickhouseBackupDirName.MatchString(opts.Base)) {
+		return manifest, errors.New("an incremental backup needs the directory format and a kept base")
 	}
 	version, err := s.client.version(ctx)
 	if err != nil {
@@ -462,15 +486,33 @@ func exportClickHouseArchive(ctx context.Context, s clickhouseService, format, s
 	}
 	if format == clickhouseFormatDirectory {
 		name := newClickHouseBackupDirName()
+		statement := "BACKUP DATABASE " + mustCHIdent(s.database) + " TO "
+		keep := opts.Keep && opts.Base == ""
+		if opts.Base != "" {
+			// A retried final sync replaces the previous attempt's backup.
+			name = clickhouseIncrementalBackupName(opts.Base)
+			_ = s.files.removeDir(ctx, name)
+			statement += s.files.dirRef(name) + " SETTINGS base_backup = " + s.files.dirRef(opts.Base)
+			manifest.BaseBackup = opts.Base
+		} else {
+			statement += s.files.dirRef(name)
+		}
 		defer func() {
+			// A kept base stays only after a complete export.
+			if keep && err == nil {
+				return
+			}
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 			defer cancel()
 			_ = s.files.removeDir(cleanup, name)
 		}()
 		started := time.Now()
-		status, err := runClickHouseOperationPhase(ctx, s.client, "BACKUP DATABASE "+mustCHIdent(s.database)+" TO "+s.files.dirRef(name), "Creating the ClickHouse backup")
+		status, err := runClickHouseOperationPhase(ctx, s.client, statement, "Creating the ClickHouse backup")
 		if err != nil {
 			return manifest, err
+		}
+		if keep {
+			manifest.Backup = name
 		}
 		manifest.Files = int64(min(status.NumFiles, 1<<40))
 		backupSeconds := time.Since(started)
@@ -494,7 +536,8 @@ func exportClickHouseArchive(ctx context.Context, s clickhouseService, format, s
 			return manifest, err
 		}
 		commandDiagnostic(ctx, "backup", fmt.Sprintf("ClickHouse BACKUP to a directory took %s; streaming its %s took %s.", backupSeconds.Round(time.Millisecond), clickhouseFiles(files), time.Since(started).Round(time.Millisecond)))
-		return manifest, tw.Close()
+		err = tw.Close()
+		return manifest, err
 	}
 	if format == clickhouseFormatBackup {
 		name := newClickHouseBackupFileName()
@@ -637,7 +680,14 @@ func readClickHouseManifest(tr *tar.Reader) (ClickHouseManifest, error) {
 // With replace the database is dropped first; otherwise it must not have
 // any table. The restored row counts are verified against the manifest.
 func restoreClickHouseArchive(ctx context.Context, s clickhouseService, archive io.Reader, replace bool) (ClickHouseRestoreResult, error) {
-	result := ClickHouseRestoreResult{Database: s.database, Counts: map[string]uint64{}}
+	return restoreClickHouseArchiveWith(ctx, s, archive, replace, clickhouseRestoreOptions{})
+}
+
+// restoreClickHouseArchiveWith is restoreClickHouseArchive with the options
+// of a move's directory restores: keeping the extracted backup as a base,
+// or restoring an incremental archive against a kept base.
+func restoreClickHouseArchiveWith(ctx context.Context, s clickhouseService, archive io.Reader, replace bool, opts clickhouseRestoreOptions) (ClickHouseRestoreResult, error) {
+	result := ClickHouseRestoreResult{Database: s.database, Counts: map[string]uint64{}, BaseBackup: opts.Base}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	plain, _, err := decompressedReader(ctx, archive)
@@ -651,6 +701,12 @@ func restoreClickHouseArchive(ctx context.Context, s clickhouseService, archive 
 		return result, err
 	}
 	result.Format, result.Source = manifest.Format, manifest.Database
+	switch {
+	case manifest.BaseBackup != opts.Base && manifest.BaseBackup != "":
+		return result, fmt.Errorf("the archive is an incremental backup against %s; its base must be named", manifest.BaseBackup)
+	case manifest.BaseBackup != opts.Base:
+		return result, errors.New("the archive is a full backup, not an incremental one against the named base")
+	}
 	existing, err := s.objects(ctx, s.database)
 	if err != nil {
 		return result, err
@@ -659,9 +715,11 @@ func restoreClickHouseArchive(ctx context.Context, s clickhouseService, archive 
 		return result, errors.New("the destination ClickHouse database already has tables; restore with replace")
 	}
 	err = s.replaceDatabase(ctx, func(ctx context.Context) error {
-		if err := s.restorePayload(ctx, tr, manifest); err != nil {
+		kept, err := s.restorePayload(ctx, tr, manifest, opts)
+		if err != nil {
 			return err
 		}
+		result.Backup = kept
 		var verifyErr error
 		result, verifyErr = s.verifyRestore(ctx, manifest, result)
 		return verifyErr
@@ -677,8 +735,9 @@ func restoreClickHouseArchive(ctx context.Context, s clickhouseService, archive 
 }
 
 // restorePayload restores the archive's payload into the service's
-// database, which does not exist yet.
-func (s clickhouseService) restorePayload(ctx context.Context, tr *tar.Reader, manifest ClickHouseManifest) error {
+// database, which does not exist yet. It returns the name of the extracted
+// backup directory it kept, when asked to keep one.
+func (s clickhouseService) restorePayload(ctx context.Context, tr *tar.Reader, manifest ClickHouseManifest, opts clickhouseRestoreOptions) (kept string, err error) {
 	target := mustCHIdent(s.database)
 	statement := "RESTORE DATABASE " + mustCHIdent(manifest.Database)
 	if manifest.Database != s.database {
@@ -688,10 +747,29 @@ func (s clickhouseService) restorePayload(ctx context.Context, tr *tar.Reader, m
 	case clickhouseFormatDirectory:
 		header, err := tr.Next()
 		if err != nil || !strings.HasPrefix(header.Name, clickhouseDirectoryPrefix) {
-			return errors.New("the archive has no ClickHouse backup")
+			return "", errors.New("the archive has no ClickHouse backup")
 		}
 		name := newClickHouseBackupDirName()
+		keep := false
+		suffix := ""
+		switch {
+		case opts.Base != "":
+			// The incremental backup is extracted under its own name beside
+			// the base and restored against the base's location here, which
+			// overrides the source's location recorded in its metadata.
+			name = clickhouseIncrementalBackupName(opts.Base)
+			_ = s.files.removeDir(ctx, name)
+			suffix = " SETTINGS base_backup = " + s.files.dirRef(opts.Base)
+		case opts.Keep && clickhouseBackupDirName.MatchString(manifest.Backup):
+			// The base keeps the source's name, so both sides refer to it alike.
+			name, keep = manifest.Backup, true
+			_ = s.files.removeDir(ctx, name)
+		}
 		defer func() {
+			if keep && err == nil {
+				kept = name
+				return
+			}
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 			defer cancel()
 			_ = s.files.removeDir(cleanup, name)
@@ -716,19 +794,19 @@ func (s clickhouseService) restorePayload(ctx context.Context, tr *tar.Reader, m
 		close(stop)
 		stream.Close()
 		if err != nil {
-			return err
+			return "", err
 		}
 		extracted := time.Since(started)
 		started = time.Now()
-		if _, err := runClickHouseOperationPhase(ctx, s.client, statement+" FROM "+s.files.dirRef(name), "Restoring the ClickHouse backup"); err != nil {
-			return err
+		if _, err := runClickHouseOperationPhase(ctx, s.client, statement+" FROM "+s.files.dirRef(name)+suffix, "Restoring the ClickHouse backup"); err != nil {
+			return "", err
 		}
 		commandDiagnostic(ctx, "restore", fmt.Sprintf("Extracting %s of the ClickHouse backup took %s; RESTORE took %s.", clickhouseFiles(files.Load()), extracted.Round(time.Millisecond), time.Since(started).Round(time.Millisecond)))
-		return nil
+		return "", nil
 	case clickhouseFormatBackup:
 		header, err := tr.Next()
 		if err != nil || header.Name != clickhouseBackupEntry || header.Size <= 0 {
-			return errors.New("the archive has no ClickHouse backup")
+			return "", errors.New("the archive has no ClickHouse backup")
 		}
 		name := newClickHouseBackupFileName()
 		defer func() {
@@ -737,12 +815,12 @@ func (s clickhouseService) restorePayload(ctx context.Context, tr *tar.Reader, m
 			_ = s.files.remove(cleanup, name)
 		}()
 		if err := s.files.create(ctx, name, io.LimitReader(tr, header.Size), header.Size); err != nil {
-			return err
+			return "", err
 		}
 		_, err = runClickHouseOperationPhase(ctx, s.client, statement+" FROM "+s.files.ref(name), "Restoring the ClickHouse backup")
-		return err
+		return "", err
 	}
-	return s.restoreNative(ctx, tr, manifest)
+	return "", s.restoreNative(ctx, tr, manifest)
 }
 
 func (s clickhouseService) restoreNative(ctx context.Context, tr *tar.Reader, manifest ClickHouseManifest) error {

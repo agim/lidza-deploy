@@ -66,7 +66,7 @@ func gatewayTestManager(t *testing.T) (*Manager, App, *StackManifest) {
 	manifest := fixtureStackManifest()
 	manifest.Version = 2
 	manifest.GatewayTransport = &StackGateway{Version: 1, Paths: []string{"/protected"}}
-	next, err := m.prepareGateway(a, &manifest)
+	next, err := m.prepareGateway(context.Background(), a, &manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func gatewayTestManager(t *testing.T) (*Manager, App, *StackManifest) {
 func TestGatewayPersistencePrivacyAndSettings(t *testing.T) {
 	m, a, manifest := gatewayTestManager(t)
 	first := m.data.GatewayPKI[a.resourceID()]
-	next, err := m.prepareGateway(a, manifest)
+	next, err := m.prepareGateway(context.Background(), a, manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,16 +129,16 @@ func TestGatewayPersistencePrivacyAndSettings(t *testing.T) {
 	a.Current = &Release{Stack: &StackRelease{Gateway: &GatewayRelease{Identity: a.resourceID()}, Manifest: *manifest}}
 	removed := *manifest
 	removed.GatewayTransport = nil
-	if _, err := m.prepareGateway(a, &removed); err == nil {
+	if _, err := m.prepareGateway(context.Background(), a, &removed); err == nil {
 		t.Fatal("protected release downgraded to ordinary HTTP")
 	}
 	missing := *manifest
 	missing.GatewayTransport = &StackGateway{Version: 1, Paths: []string{"/different"}}
-	if _, err := m.prepareGateway(a, &missing); err == nil {
+	if _, err := m.prepareGateway(context.Background(), a, &missing); err == nil {
 		t.Fatal("protected path removed in place")
 	}
 	delete(m.data.GatewayPKI, a.resourceID())
-	if _, err := m.prepareGateway(a, manifest); err == nil {
+	if _, err := m.prepareGateway(context.Background(), a, manifest); err == nil {
 		t.Fatal("missing live identity silently regenerated")
 	}
 }

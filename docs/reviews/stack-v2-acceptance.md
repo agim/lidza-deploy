@@ -3,7 +3,7 @@
 Implemented auxiliary services, conditional pinned service selection, explicit
 profile resources, existing database network attachments and private revisioned
 runtime snapshots. No production application, DNS, Caddy, TLS or provider setting
-was changed by this work. Framework issue73 remains open and no SMIP trusted
+was changed by this work. Framework issue73 remains open and no strict-TLS trusted
 transport bypass is included.
 
 An isolated real Docker stack on the session daemon passed:

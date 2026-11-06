@@ -98,6 +98,94 @@ reconciles the environment and redeploys a stale destination first. The
 databases the move created on the destination stay locked for the whole
 move. The move view and the application list report `locked` and `phase`.
 
+The destination is frozen during the final sync as well: it serves the bulk
+copy from the DNS switch on, so the final sync puts it in maintenance
+(containers) or stops it (native) next to the source, and the redeploy at
+the end starts it again; a failed attempt releases both. Writes the
+destination accepted before the final sync are not kept, and the cutover
+log says so. A dump restore waits until the destination runs no deployment
+of the application and no operation on the database, and logs what it waits
+for.
+
+## Continuous PostgreSQL replication
+
+The plan chooses per database between continuous logical replication and
+dump and restore, from the source agent's readiness report (server version,
+`wal_level`, free replication slots and WAL senders, tables without a
+replica identity), the destination's abilities and the operator's
+**Database copy** option (automatic, or dump and restore), and names the
+reason for every fallback. It warns when Prepare restarts the source once to
+set `wal_level=logical` (new databases start with it) and that schema
+changes on the source during the move break the replication.
+
+The bulk copy restores a schema-only dump, publishes the database on the
+source (a replication role with a fresh password and a publication of every
+table, or every table but the excluded ones) and subscribes the destination
+with an initial copy, followed as live progress. Tables without a replica
+identity are copied with a data dump. The replication connection travels:
+
+- over a private network both hosts share, when the destination agent
+  reaches the source's relay port within 5 seconds;
+- otherwise **through the control panel**, which already reaches every
+  agent: the panel keeps idle upgraded HTTP streams to the destination agent
+  and, when the destination hands one a PostgreSQL connection, opens a
+  stream to the source agent and copies bytes both ways. No extra port is
+  opened on either host, so a cloud firewall that admits only HTTPS and SSH
+  does not force a dump. Tunnels resume after an agent or panel restart;
+- over a public TLS relay on the source (with an owned host firewall rule
+  admitting only the destination's addresses) only when the move asks for
+  `replication_network=public`.
+
+While the move waits at the cutover, each status read renews the
+publication's lifetime, so only a move nobody follows loses its slot after
+seven days. The locked final sync waits until the subscriber has applied the
+publisher's LSN and sets the sequences; Cleanup drops the subscription,
+publication, slot, role, relay, tunnel and firewall rule. A subscription
+that breaks falls back to a fresh dump (a locked final sync fails with what
+to do). Estimates show seconds (replication lag) for replicated databases.
+
+## Automatic cutover and DNS checks
+
+At **Switch DNS** the check asks the zone's own authoritative nameservers,
+falling back to public resolvers and then the host's resolver, so a changed
+record is seen without waiting for cached TTLs; the cutover view names the
+server that answered.
+
+The `auto_cutover` option (plan, start request, and the `auto-cutover
+{"enabled": …}` action while the move waits at the cutover) is on by default
+when every copied database replicates continuously. Once every hostname
+resolves to the destination and HTTPS works there, the DNS check starts the
+final sync itself and finishes the move after it succeeds; both steps are
+logged. A failed automatic final sync switches the option off. The manual
+**Final sync** and **Finish** buttons stay available.
+
+## Ports and mail
+
+The source reports the host ports its release publishes; the destination
+reports the ports already bound on its public addresses (with their owning
+process) and its managed firewall state. A port the destination already
+uses blocks the plan, except one held by a host Postfix that served nobody
+outside the host and relayed nothing in the last 7 days: that is a warning,
+and Prepare backs up its configuration, binds it to loopback and switches
+off its SMTP listeners for the published ports (local system mail still
+works through the pickup queue), then verifies the ports are free on every
+address. A Postfix that serves mail, unreadable mail logs and other holders
+stay blockers that name the process and the evidence.
+
+Applications that publish a mail port (25, 465, 587) get their reverse DNS,
+SPF and MX looked up: a warning per destination address whose PTR is not
+one of the application's hostnames, a warning per MX pointing elsewhere, and
+the cutover records list the rewritten SPF record and a PTR line per address
+next to the A/AAAA records. The cutover re-checks reverse DNS on every DNS
+check; it never holds the move.
+
+## Protected applications
+
+A container release with `gateway_transport` moved to a host whose Caddy
+answers on its admin API gets the host gateway set up automatically at its
+first deployment (see [gateway transport](gateway-transport.md)); the plan
+notes it, or blocks when the destination cannot serve one.
+
 Before the final sync, `lock_estimate` gives the expected lock duration (from
 this move's measured bulk copy and deploy times). Above 15 minutes the
 `final-sync` action needs `{"confirm_lock": true}`.
@@ -203,6 +291,41 @@ and requires left-behind tables to be empty; the log and the finish summary
 name every table left behind. A backup that leaves out a table without a
 choice stops the move with the tables listed.
 
+**Incremental final sync.** A large excluded table is usually an append-only
+log, and copying it in full again with the source frozen would be most of
+the lock. At the bulk dump the source agent looks for an incremental key: a
+single-column integer primary key, or else the first indexed (btree, not
+null) `timestamptz`/`timestamp` column named `created_at`, `received_at`,
+`inserted_at`, `occurred_at`, `ts` or `timestamp` (the agent's
+`move_key_columns` setting changes the list). When the table saw no updates
+or deletes while the dump ran (`pg_stat_user_tables` counters), the dump
+records the key, its maximum before the dump (the watermark) and the
+counters; the job keeps them with the table (`exported.key`). At the final
+sync such a table is not dumped again: the destination keeps it across the
+base restore (`/restore?replace=1&keep=schema.table,…`, which restores the
+dump in place through a `pg_restore -L` list that leaves out the kept
+tables, their indexes, constraints, owned sequences and schemas), the source
+exports the rows at or after the watermark as a binary `COPY`
+(`/v1/move/databases/{id}/table-delta`; strictly after an integer key), and
+the destination deletes its rows from the watermark on and appends the
+export in one transaction (`/table-delta/restore`), so rows sharing the
+watermark instant are never duplicated and a retry is exact. Both ends then
+report `count(*)` and `max(key)`, which must match. A table that was updated
+or deleted from since the bulk copy, whose key the source no longer
+recognises, or whose statistics were reset falls back to the full copy of
+that table alone, and the log says why. The plan's final-sync estimate
+counts such a table by the source's average insert rate (rows per hour from
+`n_tup_ins` since the statistics reset, labelled as such) over the bulk
+copy's duration plus an hour, and the other tables in full; the lock
+estimate shown before the final sync takes the same share off the measured
+bulk copy.
+A bulk copy made without a recorded key gets one derived at the final sync:
+the destination reports the highest key it loaded and its row count, and the
+source confirms it holds exactly that many rows up to it. Loads of excluded
+tables run with `session_replication_role=replica`, so foreign-key and user
+triggers do not fire for each verified row (host clusters grant the
+application role that right on PostgreSQL 15 and later).
+
 ## Copy engines
 
 **ClickHouse.** The source runs `BACKUP DATABASE … TO Disk('backups',
@@ -221,9 +344,15 @@ under the target's name (views are rewritten to it) and its row counts
 verified, and only then is the aside copy dropped; any failure drops the
 partial database and renames the previous one back. A cancelled or
 aborted copy kills a running BACKUP or RESTORE (`KILL QUERY WHERE
-query_id = …`). The final sync is a fresh full directory backup of the
-frozen source (incremental backups grow back to full size once merges
-run). Destinations on an older release series get the per-table Native
+query_id = …`). When both agents advertise the `incremental` ClickHouse
+format, the bulk copy keeps its directory backup on both servers as a base,
+and the final sync exports `BACKUP … SETTINGS base_backup` against it,
+streaming only the parts added or merged since; the destination restores it
+against its copy of the base with the same count check and swap. A missing
+base, a failed BACKUP or RESTORE, or differing counts fall back to a full
+copy with the reason logged; the estimate measures the parts added since the
+base (`system.parts`), and the bases are removed when the move finishes or
+aborts. Destinations on an older release series get the per-table Native
 copy; destination agents without `clickhouse_formats` get the `.zip`
 BACKUP they understand. Scheduled ClickHouse backups use the same
 directory format as one local file and one off-site object; earlier

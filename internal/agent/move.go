@@ -25,6 +25,8 @@ import (
 //   - /v1/move/apps/{id}/files...         persistent files (see move_files.go)
 //   - /v1/move/uploads/{upload}           resumable uploads (see move_resume.go)
 //   - POST /v1/move/probe, GET /v1/move/apps/{id}/diagnostics (move_probe.go)
+//   - /v1/move/databases/{id}/replication, .../subscription, .../schema
+//     logical replication of a database during a move (move_replication.go)
 //
 // Like every /v1 route they require the agent API key, which only the control
 // panel holds; the control panel never forwards them to a browser. Handlers
@@ -76,6 +78,13 @@ type MoveSource struct {
 	// BuildPeakMiB is the largest memory peak of the application's recent
 	// build steps on this host; 0 when none was measured.
 	BuildPeakMiB int `json:"build_peak_mib,omitempty"`
+	// PublicPorts are the host ports the current release publishes (the
+	// stack's app services); the destination publishes them again. Never
+	// nil from agents that report them (move_ports.go).
+	PublicPorts []StackPort `json:"public_ports"`
+	// Protected reports that the current release uses gateway_transport;
+	// the destination needs a protected host gateway.
+	Protected bool `json:"protected,omitempty"`
 }
 
 // MoveSourceDatabase is one database of a moving application.
@@ -99,6 +108,9 @@ type MoveSourceDatabase struct {
 	// (backup_exclude_table_data); a move copies them separately or leaves
 	// them behind, as the operator chooses (move_table_data.go).
 	ExcludedTables []MoveExcludedTable `json:"excluded_tables,omitempty"`
+	// Replication reports whether the database can be copied with logical
+	// replication (move_replication.go); nil from agents without it.
+	Replication *MoveReplicationReadiness `json:"replication,omitempty"`
 }
 
 // MoveEnvironment is an application's complete environment for copying to
@@ -115,10 +127,26 @@ type MoveEnvironment struct {
 
 // MoveHost describes a possible destination.
 type MoveHost struct {
-	IPv4     string `json:"ipv4,omitempty"`
-	IPv6     string `json:"ipv6,omitempty"`
-	Native   bool   `json:"native"`
-	HostData bool   `json:"host_data"`
+	IPv4 string `json:"ipv4,omitempty"`
+	IPv6 string `json:"ipv6,omitempty"`
+	// PrivateIPv4 and PrivateNetwork are the host's preferred private
+	// address and its network: a replication relay listens on a private
+	// network both hosts share when the destination reaches it there.
+	PrivateIPv4    string `json:"private_ipv4,omitempty"`
+	PrivateNetwork string `json:"private_network,omitempty"`
+	// PrivateNetworks are all the host's private IPv4 addresses with their
+	// prefix length ("10.30.0.5/16"), without container bridges and cloud
+	// anchor addresses, so the panel finds a network both hosts share.
+	PrivateNetworks []string `json:"private_networks,omitempty"`
+	// Tunnel reports that this agent carries move replication through the
+	// control panel (move_replication_tunnel.go) and probes TCP reachability
+	// (POST /v1/move/reach).
+	Tunnel bool `json:"tunnel,omitempty"`
+	// Subscribe reports that this agent subscribes a destination database to
+	// a source with logical replication (move_replication.go).
+	Subscribe bool `json:"subscribe,omitempty"`
+	Native    bool `json:"native"`
+	HostData  bool `json:"host_data"`
 	// Files reports that this agent restores transferred file sets.
 	Files bool `json:"files,omitempty"`
 	// ClickHouse reports that this agent copies managed ClickHouse data.
@@ -131,11 +159,27 @@ type MoveHost struct {
 	// TableData reports that this agent dumps and loads the data of tables
 	// that backups leave out (move_table_data.go).
 	TableData bool `json:"table_data,omitempty"`
+	// TableKey reports that this agent derives incremental keys for tables
+	// loaded before their key was recorded (move_table_key.go).
+	TableKey bool `json:"table_key,omitempty"`
 	// ClickHouseFormats are the ClickHouse archive formats this agent
 	// restores (directory backups since this field exists); Zstd that it
 	// writes and reads Zstandard streams (the zstd tool is installed).
 	ClickHouseFormats []string `json:"clickhouse_formats,omitempty"`
 	Zstd              bool     `json:"zstd,omitempty"`
+	// ListeningPorts are the ports already bound on this host's public
+	// addresses with their processes; nil when they could not be listed
+	// (move_ports.go). HostFirewall is the managed host firewall's state:
+	// active, inactive or empty when unknown. HostMail describes the host's
+	// own mail server when it holds a public mail port (host_mail.go).
+	ListeningPorts []ListeningPort `json:"listening_ports"`
+	HostFirewall   string          `json:"host_firewall,omitempty"`
+	HostMail       *MoveHostMail   `json:"host_mail,omitempty"`
+	// Gateway is how this host serves protected releases (gateway_transport):
+	// configured (a host gateway exists), auto (the agent sets one up itself
+	// at the first protected deployment, gateway_auto.go) or unavailable;
+	// empty from agents without automatic gateways.
+	Gateway string `json:"gateway,omitempty"`
 }
 
 // MoveHealth is the result of an explicit readiness check.
@@ -170,8 +214,11 @@ func (m *Manager) moveTransfer(h http.HandlerFunc) http.HandlerFunc {
 func (m *Manager) moveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/move/host", func(w http.ResponseWriter, r *http.Request) {
 		addresses := moveDetectAddresses()
-		JSON(w, 200, MoveHost{IPv4: addresses.IPv4, IPv6: addresses.IPv6, Native: m.cfg.Native != nil, HostData: !m.cfg.IngressOnly, Files: true, ClickHouse: !m.cfg.IngressOnly, Resume: true, Probe: true, TableData: true,
-			ClickHouseFormats: []string{clickhouseFormatDirectory, clickhouseFormatBackup, clickhouseFormatNative}, Zstd: zstdAvailable()})
+		listening := moveListeningPorts(r.Context())
+		JSON(w, 200, MoveHost{IPv4: addresses.IPv4, IPv6: addresses.IPv6, PrivateIPv4: addresses.PrivateIPv4, PrivateNetwork: addresses.PrivateNetwork, PrivateNetworks: addresses.PrivateNetworks, Tunnel: !m.cfg.IngressOnly, Subscribe: !m.cfg.IngressOnly,
+			Native: m.cfg.Native != nil, HostData: !m.cfg.IngressOnly, Files: true, ClickHouse: !m.cfg.IngressOnly, Resume: true, Probe: true, TableData: true, TableKey: true,
+			ClickHouseFormats: []string{clickhouseFormatDirectory, clickhouseFormatBackup, clickhouseFormatNative, clickhouseFormatIncremental}, Zstd: zstdAvailable(),
+			ListeningPorts: listening, HostFirewall: moveHostFirewall(r.Context()), HostMail: probeHostMail(r.Context(), listening), Gateway: m.gatewayCapability(r.Context())})
 	})
 	mux.HandleFunc("GET /v1/move/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		source, err := m.moveSource(r.Context(), r.PathValue("id"))
@@ -213,6 +260,9 @@ func (m *Manager) moveRoutes(mux *http.ServeMux) {
 	m.moveUploadRoutes(mux)
 	m.moveProbeRoutes(mux)
 	m.moveTableDataRoutes(mux)
+	m.moveTableDeltaRoutes(mux)
+	m.moveTableKeyRoutes(mux)
+	m.moveReplicationRoutes(mux)
 }
 
 // moveSource inventories an application for a move. Table counts are
@@ -254,6 +304,7 @@ func (m *Manager) moveSource(ctx context.Context, id string) (MoveSource, error)
 		}
 		cancel()
 		database.ExcludedTables = m.moveExcludedTables(ctx, database.ID)
+		database.Replication = m.moveReplicationReadiness(ctx, database.ID)
 	}
 	if ch := source.ClickHouse; ch != nil && ch.Copyable {
 		if err := m.measureMoveClickHouse(ctx, id, ch); err != nil {
@@ -274,11 +325,12 @@ func (m *Manager) moveSource(ctx context.Context, id string) (MoveSource, error)
 func (m *Manager) containerMoveSourceLocked(a App) MoveSource {
 	id := a.ID
 	s := MoveSource{AppID: id, Runtime: a.runtimeKind(), Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: slices.Clone(a.AdditionalDomains),
-		EnvironmentKeys: []string{}, Databases: []MoveSourceDatabase{}, Volumes: []string{}, Tasks: []string{}, Blockers: []string{}, Notes: []string{}}
+		EnvironmentKeys: []string{}, Databases: []MoveSourceDatabase{}, Volumes: []string{}, Tasks: []string{}, Blockers: []string{}, Notes: []string{}, PublicPorts: movePublicPorts(a.Current)}
 	s.Container = &App{ID: id, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: slices.Clone(a.AdditionalDomains), CustomerHosts: a.CustomerHosts,
 		Build: a.Build, Astro: a.Astro, Rails: a.Rails, Runtime: a.Runtime, RuntimeProfile: a.RuntimeProfile}
 	if a.Current != nil {
 		s.Commit = a.Current.Commit
+		s.Protected = a.Current.Stack != nil && a.Current.Stack.Gateway != nil
 	} else {
 		s.Blockers = append(s.Blockers, "Deploy the application on its current server before moving it.")
 	}
@@ -389,7 +441,7 @@ func (m *Manager) nativeMoveSource(id string) (MoveSource, error) {
 		runtime = "rails"
 	}
 	s := MoveSource{AppID: id, Runtime: runtime, Native: true, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: slices.Clone(a.AdditionalDomains),
-		EnvironmentKeys: []string{}, Databases: []MoveSourceDatabase{}, Volumes: []string{}, Tasks: []string{}, Blockers: []string{}, Notes: []string{}}
+		EnvironmentKeys: []string{}, Databases: []MoveSourceDatabase{}, Volumes: []string{}, Tasks: []string{}, Blockers: []string{}, Notes: []string{}, PublicPorts: []StackPort{}}
 	m.mu.Lock()
 	policy, created := m.data.NativeCreated[id]
 	spec, recorded := m.data.NativeCreatedSpecs[id]

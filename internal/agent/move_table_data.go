@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -45,6 +46,10 @@ type MoveExcludedTable struct {
 	Name  string `json:"name"`
 	Rows  int64  `json:"rows"`
 	Bytes int64  `json:"bytes"`
+	// Key is the table's incremental key when it has one
+	// (move_table_delta.go): the final sync then copies only the rows added
+	// since the bulk copy.
+	Key *MoveTableKey `json:"key,omitempty"`
 }
 
 // MoveTableDataRequest names the tables of a data dump, restore or count.
@@ -60,6 +65,13 @@ type MoveTableDataExport struct {
 	SHA256 string           `json:"sha256"`
 	Tables []string         `json:"tables"`
 	Rows   map[string]int64 `json:"rows"`
+	// RowsAfter are the counts taken after the dump finished. A live
+	// table keeps growing while the dump streams, so the dump's snapshot
+	// holds between Rows and RowsAfter rows.
+	RowsAfter map[string]int64 `json:"rows_after,omitempty"`
+	// Keys are the incremental keys of the tables that have one, with the
+	// watermark taken before the dump: the dump holds every row up to it.
+	Keys map[string]MoveTableKey `json:"keys,omitempty"`
 }
 
 // MoveTableRows are exact row counts by table.
@@ -114,7 +126,18 @@ var movePSQL = func(ctx context.Context, m *Manager, id, sql string) (string, er
 // moveExcludedTables measures the tables whose data the database's backups
 // leave out.
 func (m *Manager) moveExcludedTables(ctx context.Context, id string) []MoveExcludedTable {
-	return m.measureMoveTables(ctx, id, m.backupExcludedTables(id))
+	tables := m.measureMoveTables(ctx, id, m.backupExcludedTables(id))
+	for i := range tables {
+		if tables[i].Bytes < 0 || !moveTableName.MatchString(tables[i].Name) {
+			continue
+		}
+		detect, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if key, err := m.moveTableKeyOf(detect, id, tables[i].Name); err == nil {
+			tables[i].Key = key
+		}
+		cancel()
+	}
+	return tables
 }
 
 // measureMoveTables estimates the rows and measures the size of tables in
@@ -219,15 +242,22 @@ var moveRestoreTableData = func(ctx context.Context, m *Manager, target moveData
 		return errors.New("the destination tables could not be emptied before loading their data")
 	}
 	options := []string{"--no-owner", "--no-acl", "--exit-on-error", "--single-transaction", "--data-only"}
+	// The rows are a verified copy of a consistent source and are counted
+	// afterwards, so the load skips foreign-key and user triggers: a
+	// foreign-key check of every loaded row at the end of the COPY takes
+	// as long as the load itself on a large table.
+	environment := []string{"PGOPTIONS=" + moveTableLoadOptions}
 	if target.Host != nil {
-		if err := m.moveHostPGTool(ctx, *target.Host, "pg_restore", options, dump, io.Discard); err != nil {
+		m.moveGrantLoadOptions(ctx, *target.Host)
+		if err := m.moveHostPGToolEnv(ctx, *target.Host, "pg_restore", options, environment, dump, io.Discard); err != nil {
 			return errors.New("loading the excluded tables' data failed; their tables are empty on the destination")
 		}
 		return nil
 	}
-	environment, flags := postgresEnvironment(target.Database.URL)
+	connection, flags := postgresEnvironment(target.Database.URL)
+	environment = append(environment, connection...)
 	container := "lidza-move-table-data-" + newID()
-	args := []string{"run", "--rm", "-i", "--name", container, "--network", target.Database.Network, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "128"}
+	args := []string{"run", "--rm", "-i", "--name", container, "--network", target.Database.Network, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "128", "--env", "PGOPTIONS"}
 	args = append(args, flags...)
 	u, err := url.Parse(target.Database.URL)
 	if err != nil || u.Path == "" {
@@ -246,9 +276,38 @@ var moveRestoreTableData = func(ctx context.Context, m *Manager, target moveData
 	return nil
 }
 
+// moveTableLoadOptions are the session options of a verified data load:
+// no foreign-key or user triggers (session_replication_role=replica).
+const moveTableLoadOptions = "-c session_replication_role=replica"
+
+// moveGrantLoadOptions lets the application's role set the load options
+// for its own sessions on a host cluster (PostgreSQL 15 and newer; the
+// provisioning script grants it to new roles, this covers roles created
+// before). A failure only costs the optimisation: the load then fires the
+// triggers, as before.
+func (m *Manager) moveGrantLoadOptions(ctx context.Context, pg NativeHostPostgres) {
+	if pg.Major < 15 {
+		return
+	}
+	ident, err := pgQuoteIdent(pg.Name)
+	if err != nil {
+		return
+	}
+	h := nativeHostDataHost(m)
+	if _, err := h.psql(ctx, pg.Port, "GRANT SET ON PARAMETER session_replication_role TO "+ident+";\n"); err != nil {
+		log.Printf("move: %s cannot be granted the data-load session options: %v", pg.Name, err)
+	}
+}
+
 // moveHostPGTool runs pg_dump or pg_restore as the application's own role
 // over loopback; the password travels in the tool's environment.
 func (m *Manager) moveHostPGTool(ctx context.Context, pg NativeHostPostgres, tool string, options []string, input io.Reader, output io.Writer) error {
+	return m.moveHostPGToolEnv(ctx, pg, tool, options, nil, input, output)
+}
+
+// moveHostPGToolEnv is moveHostPGTool with extra environment entries (for
+// example PGOPTIONS).
+func (m *Manager) moveHostPGToolEnv(ctx context.Context, pg NativeHostPostgres, tool string, options, extra []string, input io.Reader, output io.Writer) error {
 	password, err := m.unsealHostSecret(pg.Password)
 	if err != nil {
 		return err
@@ -263,6 +322,7 @@ func (m *Manager) moveHostPGTool(ctx context.Context, pg NativeHostPostgres, too
 	cmd.Dir = "/"
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent", "LANG=C.UTF-8", "PGHOST=127.0.0.1", "PGPORT=" + strconv.Itoa(pg.Port), "PGUSER=" + pg.Name,
 		"PGPASSWORD=" + password, "PGDATABASE=" + pg.Name, "PGAPPNAME=lidza-move", "PGCONNECT_TIMEOUT=10", "PGPASSFILE=/nonexistent"}
+	cmd.Env = append(cmd.Env, extra...)
 	cmd.Stdin = input
 	var stderr limitedBuffer
 	cmd.Stdout, cmd.Stderr = output, &stderr
@@ -305,7 +365,7 @@ func (m *Manager) moveTableDataRoutes(mux *http.ServeMux) {
 			Fail(w, 400, errors.New("invalid database"))
 			return
 		}
-		if err := os.RemoveAll(m.moveTableDataDir(id)); err != nil {
+		if err := errors.Join(os.RemoveAll(m.moveTableDataDir(id)), os.RemoveAll(m.moveTableDeltaDir(id))); err != nil {
 			Fail(w, 500, errors.New("the table data dumps could not be removed"))
 			return
 		}
@@ -361,6 +421,12 @@ func (m *Manager) moveTableDataExportRoute(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+	keys := map[string]MoveTableKey{}
+	for _, table := range in.Tables {
+		if key, err := m.moveTableKeyOf(ctx, id, table); err == nil && key != nil {
+			keys[table] = *key
+		}
+	}
 	file, err := os.CreateTemp(dir, ".dump-*")
 	if err != nil {
 		Fail(w, 500, errors.New("cannot store the dump"))
@@ -384,6 +450,10 @@ func (m *Manager) moveTableDataExportRoute(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	export := MoveTableDataExport{ID: nativeRandomSecret(), Size: counter.n.Load(), SHA256: hex.EncodeToString(hash.Sum(nil)), Tables: slices.Clone(in.Tables), Rows: rows}
+	if after, err := m.moveTableRows(ctx, id, in.Tables); err == nil {
+		export.RowsAfter = after
+	}
+	export.Keys = m.moveKeysAfterDump(ctx, id, keys)
 	if err := os.Rename(file.Name(), filepath.Join(dir, export.ID+".dump")); err != nil {
 		Fail(w, 500, errors.New("the dump could not be finalized"))
 		return
@@ -468,4 +538,24 @@ func (m *Manager) moveTableDataRestoreRoute(w http.ResponseWriter, r *http.Reque
 	}
 	w.Header().Set(MoveVerifiedHeader, staged.SHA256)
 	JSON(w, 200, MoveTableRows{Rows: rows})
+}
+
+// moveKeysAfterDump keeps the keys of the tables that were only appended
+// to while the dump ran: a table updated or deleted from meanwhile has no
+// watermark, and the final sync copies it in full. The counters recorded
+// are the ones after the dump, so changes after it are seen later.
+func (m *Manager) moveKeysAfterDump(ctx context.Context, id string, before map[string]MoveTableKey) map[string]MoveTableKey {
+	out := map[string]MoveTableKey{}
+	for table, key := range before {
+		now, err := m.moveTableStatsOf(ctx, id, table)
+		if err != nil || moveOnlyAppended(key, now) != "" {
+			continue
+		}
+		key.Updates, key.Deletes = now.Updates, now.Deletes
+		out[table] = key
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

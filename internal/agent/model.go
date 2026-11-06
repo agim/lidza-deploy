@@ -223,8 +223,18 @@ type diskState struct {
 	// history, and the managed firewall (host_updates.go, host_firewall.go).
 	HostUpdates  *HostUpdatesState  `json:"host_updates,omitempty"`
 	HostFirewall *HostFirewallState `json:"host_firewall,omitempty"`
+	// MoveReplications are the databases this agent publishes with logical
+	// replication for moves in progress, by database id (move_replication.go).
+	MoveReplications map[string]MoveReplicationRecord `json:"move_replications,omitempty"`
+	// MoveTunnels are the local listeners this agent runs for subscriptions
+	// that replicate through the control panel, by destination database id
+	// (move_replication_tunnel.go).
+	MoveTunnels map[string]MoveTunnelRecord `json:"move_tunnels,omitempty"`
 	// HostIngress is the panel's web ingress override (host_ingress.go).
 	HostIngress *HostIngressState `json:"host_ingress,omitempty"`
+	// HostGateway is the protected gateway the agent set up itself when no
+	// gateway is configured (gateway_auto.go).
+	HostGateway *HostGatewayState `json:"host_gateway,omitempty"`
 
 	// BuildPeaks are the measured memory peaks of recent build steps per
 	// application (build_resources.go), newest last and bounded, so later

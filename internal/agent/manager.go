@@ -63,6 +63,9 @@ type Manager struct {
 	gatewayClients             map[string]*gateway.Transport
 	gatewayTLS                 *tls.Config
 	gatewayVerify              func(http.Handler) http.Handler
+	gatewayConfig              *GatewayConfig // effective host gateway: configured or automatic
+	gatewayAuto                bool           // the agent serves its automatic gateway itself
+	gatewaySetupMu             sync.Mutex     // serialises automatic gateway setup
 	lastDiagnosticSave         time.Time
 	consoleJobs                map[string]*consoleJob
 	maintenanceOnce            sync.Once

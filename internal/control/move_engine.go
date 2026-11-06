@@ -101,6 +101,10 @@ type moveRun struct {
 	engineIndex, all int
 	// static is a job that is not stored, for measuring a plan.
 	static *MoveJob
+	// teardown marks a Cleanup that ends the engine's work for good (the
+	// final phase, a finish or an abort): a replicating PostgreSQL engine
+	// keeps its subscription through the bulk phase's cleanup.
+	teardown bool
 }
 
 func (r moveRun) job() MoveJob {
@@ -269,8 +273,19 @@ func (c *Control) runMoveEngines(ctx context.Context, id, step, phase string, ki
 		run.objects(info.Label, int64(i+1), int64(len(engines)))
 	}
 	c.setMoveLiveEngine(id, "")
+	run.teardown = phase == movePhaseFinal
+	for _, engine := range engines {
+		moveSetTeardown(engine, run.teardown)
+	}
 	moveCleanupOnce(ctx, engines)
 	return nil
+}
+
+// moveSetTeardown tells a PostgreSQL engine whether its cleanup is final.
+func moveSetTeardown(engine moveEngine, teardown bool) {
+	if pg, ok := engine.(*movePostgresEngine); ok {
+		pg.run.teardown = teardown
+	}
 }
 
 // moveCleanupOnce cleans up every engine; file sets share the move's spool,
@@ -320,6 +335,17 @@ type movePostgresCheckpoint struct {
 	// Tables is the verified load of the excluded tables' data that
 	// followed the restore of Restored.
 	Tables *moveTablesCheckpoint `json:"tables,omitempty"`
+	// Deltas are the incremental copies of the excluded tables verified
+	// after the restore of Restored (move_table_delta.go).
+	Deltas *moveDeltasCheckpoint `json:"deltas,omitempty"`
+	// Schema is the digest of the schema-only dump restored for continuous
+	// replication; Replicated marks the phase's replication work as done
+	// (the initial sync, or the caught-up final sync); NoIdentity the
+	// verified dump copy of the tables without a replica identity
+	// (move_replication.go).
+	Schema     string                `json:"schema,omitempty"`
+	Replicated bool                  `json:"replicated,omitempty"`
+	NoIdentity *moveTablesCheckpoint `json:"no_identity,omitempty"`
 }
 
 // moveTablesCheckpoint records one finished load of the data of tables the
@@ -361,12 +387,24 @@ func (e *movePostgresEngine) Measure(context.Context) (moveMeasurement, error) {
 	return moveMeasurement{ObjectLabel: "tables"}, nil
 }
 
+// BulkCopy replicates the database continuously when the plan chose that
+// (schema dump, then a subscription's initial table copy,
+// move_replication.go), else dumps and restores it.
 func (e *movePostgresEngine) BulkCopy(ctx context.Context, cp moveCheckpointRef) error {
+	if e.database().Replication == moveReplicationContinuous {
+		return e.run.c.moveReplicateDatabase(ctx, e.run, e.index, cp)
+	}
 	return e.run.c.moveCopyDatabase(ctx, e.run, e.index, cp)
 }
 
-// FinalSync copies the database again: there is no incremental copy yet.
+// FinalSync waits for a replicating database to catch up and copies its
+// sequences; otherwise it copies the database again through a fresh dump,
+// where excluded tables with a watermark only receive the rows added since
+// the bulk copy (move_table_delta.go).
 func (e *movePostgresEngine) FinalSync(ctx context.Context, cp moveCheckpointRef) error {
+	if e.database().Replication == moveReplicationContinuous {
+		return e.run.c.moveReplicationFinalSync(ctx, e.run, e.index, cp)
+	}
 	return e.run.c.moveCopyDatabase(ctx, e.run, e.index, cp)
 }
 
@@ -374,13 +412,21 @@ func (e *movePostgresEngine) Verify(ctx context.Context) error {
 	return e.run.c.moveVerifyExcludedTables(ctx, e.run, e.index)
 }
 
+// Cleanup removes the table dumps on the source and, once the engine's
+// work is over (run.teardown), the replication on both ends.
 func (e *movePostgresEngine) Cleanup(ctx context.Context) error {
 	job := e.run.job()
 	d := job.Databases[e.index]
-	if len(d.Excluded) == 0 {
-		return nil
+	var err error
+	// Link is cleared by a teardown alone: a replicating database without
+	// one either never published or was torn down already.
+	if e.run.teardown && (d.Link != nil || d.Replication == moveReplicationContinuous && d.Copied == "") {
+		err = e.run.c.moveReplicationTeardown(ctx, e.run, e.index)
 	}
-	return e.run.c.moveCall(ctx, time.Minute, job.SourceServer, http.MethodDelete, "/v1/move/databases/"+url.PathEscape(d.SourceID)+"/table-data", nil, nil)
+	if len(d.Excluded) == 0 && len(d.ReplicationExcluded) == 0 && d.Replication != moveReplicationContinuous {
+		return err
+	}
+	return errors.Join(err, e.run.c.moveCall(ctx, time.Minute, job.SourceServer, http.MethodDelete, "/v1/move/databases/"+url.PathEscape(d.SourceID)+"/table-data", nil, nil))
 }
 
 // moveCopyDatabase copies database index of the job.
@@ -449,7 +495,30 @@ func (c *Control) moveCopyDatabase(ctx context.Context, run moveRun, i int, cp m
 		}
 		return err
 	}
-	if err := c.moveTransferDump(ctx, job, d, record, moveUploadID(job, cp.key, record.SHA256)); err != nil {
+	// At the final sync the destination keeps the tables that only receive
+	// the rows added since the bulk copy.
+	keep := []string{}
+	if run.phase == movePhaseFinal {
+		if derived, err := c.moveDeriveIncrementalKeys(ctx, run, i); err != nil {
+			return err
+		} else if derived {
+			d = run.job().Databases[i]
+		}
+		keep = moveIncrementalTables(d)
+	}
+	if len(keep) > 0 {
+		c.moveLog(id, step, "%s keeps %s across the restore; only the rows added since the bulk copy follow.", job.TargetServer, moveKeyList(keep))
+	}
+	err := c.moveTransferDump(ctx, job, d, record, moveUploadID(job, cp.key, record.SHA256), keep)
+	if err != nil && len(keep) > 0 && ctx.Err() == nil {
+		// A restore that keeps tables is the optimisation, not the move:
+		// when it fails for any reason the database is restored in full
+		// and the excluded tables are copied again as before.
+		c.moveLog(id, step, "Restoring %s while keeping %s failed (%v); restoring it in full and copying the excluded tables again.", d.SourceID, moveKeyList(keep), err)
+		keep = nil
+		err = c.moveTransferDump(ctx, job, d, record, moveUploadID(job, cp.key+"/full", record.SHA256), nil)
+	}
+	if err != nil {
 		return fmt.Errorf("copying %s failed: %w", d.SourceID, err)
 	}
 	if _, err := c.updateMove(id, func(job *MoveJob) error {
@@ -457,6 +526,13 @@ func (c *Control) moveCopyDatabase(ctx context.Context, run moveRun, i int, cp m
 		job.logf(step, "Restored %s into %s on %s; the SHA-256 matched on both ends.", d.SourceID, d.TargetID, job.TargetServer)
 		// The restore is checkpointed with the job's record of it, in one
 		// write: a later attempt loads the excluded tables and nothing else.
+		// A fresh base restore invalidates any earlier load of the excluded
+		// tables: their data is copied again against this dump.
+		for j := range job.Databases[i].Excluded {
+			if !slices.Contains(keep, job.Databases[i].Excluded[j].Name) {
+				job.Databases[i].Excluded[j].Exported = nil
+			}
+		}
 		return job.setCheckpointMeta(cp.key, movePostgresCheckpoint{Restored: record.SHA256})
 	}); err != nil {
 		return err
@@ -510,7 +586,10 @@ func (e *moveClickHouseEngine) BulkCopy(ctx context.Context, cp moveCheckpointRe
 	return e.run.c.moveCopyClickHouse(ctx, e.run, cp)
 }
 
-// FinalSync copies the database again: there is no incremental copy yet.
+// FinalSync copies what was added since the bulk copy as an incremental
+// BACKUP against the base both servers kept, when both agents support it;
+// otherwise, or when the incremental copy fails, the whole database again
+// (move_clickhouse.go).
 func (e *moveClickHouseEngine) FinalSync(ctx context.Context, cp moveCheckpointRef) error {
 	return e.run.c.moveCopyClickHouse(ctx, e.run, cp)
 }
@@ -518,8 +597,13 @@ func (e *moveClickHouseEngine) FinalSync(ctx context.Context, cp moveCheckpointR
 // Verify: the copy checks the row counts of every table on both ends.
 func (e *moveClickHouseEngine) Verify(context.Context) error { return nil }
 
+// Cleanup removes the source's exports; the base backups of the
+// incremental final sync stay on both servers until the move finishes or
+// aborts, so a retried or repeated final sync is incremental too.
 func (e *moveClickHouseEngine) Cleanup(ctx context.Context) error {
-	e.run.c.moveCleanupClickHouse(ctx, e.run.job())
+	job := e.run.job()
+	ending := job.State == moveStateFinishing || job.State == moveStateFinished || job.State == moveStateAborting || job.State == moveStateAborted
+	e.run.c.moveCleanupClickHouse(ctx, job, ending)
 	return nil
 }
 

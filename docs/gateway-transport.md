@@ -60,8 +60,33 @@ TLS edge; an internal mTLS-only probe cannot replace them.
 ## Host opt-in
 
 The default HTTP ingress remains compatible with existing deployments. Protected
-stacks require a separately configured mTLS host ingress. Prepare reviewable files
-in a new private directory:
+stacks require an mTLS host gateway between Caddy and the agent.
+
+### Automatic (Caddy with its admin API)
+
+On a host whose agent configuration has no `gateway` section and whose Caddy
+answers on its admin API (127.0.0.1:2019), the agent sets the gateway up itself
+at the first protected deployment, without a restart, and records a
+`gateway-setup` host job:
+
+- credentials in a new root-only directory next to the agent configuration,
+  `<config dir>/gateway-<UTC date>/` (0700, files 0600);
+- Caddy's copies of `ca.pem`, `edge.pem` and `edge-key.pem` in
+  `/etc/lidza/gateway-<UTC date>/`: `root:caddy` 0750/0640 when a `caddy` group
+  exists, otherwise owned by the account `systemctl show caddy -p User` names;
+- the listener on 127.0.0.1:8444, or a free loopback port when that is taken;
+  the configuration is kept in the agent's encrypted state, never written into
+  the agent configuration file;
+- each protected application's Caddy route (`@id lidza-app-<id>`) proxies to
+  the listener over mTLS with the native-edge headers.
+
+An existing gateway identity is never regenerated. Moving a protected
+application to such a host needs no hand setup; the move plan notes it.
+
+### Reviewed manual setup
+
+Hosts whose Caddy is configured from a Caddyfile prepare reviewable files in a
+new private directory:
 
 ```sh
 sudo lidza-agent -gateway-transport prepare -gateway-output /etc/lidza-agent/gateway-new

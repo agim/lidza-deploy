@@ -83,7 +83,10 @@ func (m *Manager) reloadIngressSnapshot() error {
 			return err
 		}
 		if app.Current != nil && app.Current.Stack != nil && app.Current.Stack.Gateway != nil {
-			if m.cfg.Gateway == nil {
+			// An automatic gateway is served by the full agent itself
+			// (gateway_auto.go); this reader's proxy still refuses
+			// protected paths without gateway evidence.
+			if m.cfg.Gateway == nil && next.HostGateway == nil {
 				return errors.New("protected releases require the retained host gateway configuration")
 			}
 			identity := app.Current.Stack.Gateway.Identity

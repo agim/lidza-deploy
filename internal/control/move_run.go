@@ -111,6 +111,11 @@ func (c *Control) runMove(ctx context.Context, id string) {
 				continue
 			case failure != nil:
 				c.failMove(ctx, id, key, *failure, progress)
+				// An abort requested while the step was failing runs now
+				// instead of being lost under the failure.
+				if next, ok := c.moveJob(id); ok && next.State == moveStateAborting {
+					continue
+				}
 				return
 			}
 			if _, err := c.updateMove(id, func(job *MoveJob) error { job.setStep(key, "done"); job.setProgress(key, progress); return nil }); err != nil {
@@ -254,7 +259,11 @@ func (c *Control) failMove(ctx context.Context, id, key string, failure MoveFail
 		for _, line := range failure.Diagnostics {
 			job.logf(key, "Diagnostics: %s", line)
 		}
-		job.State = moveStateFailed
+		// An abort requested meanwhile keeps its state: the runner aborts
+		// next instead of leaving the move failed with the abort lost.
+		if job.State != moveStateAborting {
+			job.State = moveStateFailed
+		}
 		job.Error = failure.Message
 		job.Failure = &failure
 		job.Stall = nil
@@ -295,6 +304,10 @@ func (c *Control) moveCall(ctx context.Context, timeout time.Duration, serverID,
 
 func (c *Control) movePrepare(ctx context.Context, id string) error {
 	job, _ := c.moveJob(id)
+	if err := c.movePrepareReplication(ctx, job); err != nil {
+		return err
+	}
+	job, _ = c.moveJob(id)
 	if job.TargetRuntime == moveRuntimeNative {
 		return c.movePrepareNative(ctx, job)
 	}
@@ -418,6 +431,9 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 }
 
 func (c *Control) movePrepareContainer(ctx context.Context, job MoveJob) error {
+	if err := c.movePrepareHostMail(ctx, job); err != nil {
+		return err
+	}
 	r := moveRequestFor(ctx)
 	path := "/v1/apps/" + url.PathEscape(job.AppID)
 	var settings agent.Settings
@@ -501,6 +517,11 @@ func (c *Control) movePrepareContainer(ctx context.Context, job MoveJob) error {
 				}
 			}
 		}
+		// A database whose provisioning failed keeps its error until it is
+		// provisioned again; a retried Prepare finds it already bound and
+		// would only poll. Ask once per attempt for provisioning again, and
+		// fail only when that fails too.
+		reprovisioned := false
 		if err := c.movePoll(ctx, 15*time.Minute, func() (bool, error) {
 			var views []agent.DatabaseView
 			if err := c.agentCall(r, job.TargetServer, http.MethodGet, "/v1/databases", nil, &views); err != nil {
@@ -512,7 +533,15 @@ func (c *Control) movePrepareContainer(ctx context.Context, job MoveJob) error {
 						return true, nil
 					}
 					if v.Operation == "" && v.Error != "" {
-						return false, errors.New(v.Error)
+						if reprovisioned {
+							return false, errors.New(v.Error)
+						}
+						reprovisioned = true
+						c.moveLog(job.ID, moveStepPrepare, "Database %s on the destination failed earlier (%s); provisioning it again.", bound, moveBounded(v.Error, 160))
+						if err := c.agentCall(r, job.TargetServer, http.MethodPost, "/v1/databases/"+url.PathEscape(bound)+"/provision", nil, nil); err != nil {
+							return false, fmt.Errorf("%s; provisioning it again was refused: %s", v.Error, moveAgentError(err))
+						}
+						return false, nil
 					}
 				}
 			}
@@ -540,6 +569,25 @@ func (c *Control) movePrepareContainer(ctx context.Context, job MoveJob) error {
 			c.moveLog(job.ID, moveStepPrepare, "Configured the managed cache on the destination; it starts empty.")
 		}
 	}
+	return nil
+}
+
+// movePrepareHostMail binds the destination's host Postfix to loopback when
+// the plan found it holding a published port while serving only local
+// system mail (move_ports.go). The agent call is idempotent, so a retried
+// Prepare repeats it harmlessly.
+func (c *Control) movePrepareHostMail(ctx context.Context, job MoveJob) error {
+	mail := job.Plan.HostMail
+	if mail == nil || !mail.Loopback {
+		return nil
+	}
+	c.moveLog(job.ID, moveStepPrepare, "Binding the destination's host mail server (Postfix) to loopback to free port %s.", movePortLabels(mail.Ports))
+	var result agent.HostMailLoopbackResult
+	request := agent.HostMailLoopbackRequest{Ports: mail.Ports, Trigger: "move", Reference: "move " + job.ID + " of " + job.AppID}
+	if err := c.moveCall(ctx, 2*time.Minute, job.TargetServer, http.MethodPost, "/v1/host/mail/loopback", request, &result); err != nil {
+		return fmt.Errorf("the destination's host mail server could not be bound to loopback: %s", moveAgentError(err))
+	}
+	c.moveLog(job.ID, moveStepPrepare, "%s", cmp.Or(result.Summary, "The destination's host mail server listens on loopback only."))
 	return nil
 }
 
@@ -1070,9 +1118,17 @@ func (c *Control) enterMoveCutover(ctx context.Context, id string) {
 		job.setStep(moveStepCutover, "waiting")
 		job.logf(moveStepCutover, "The destination is ready and the source keeps serving. Set these DNS records at your DNS provider:")
 		for _, record := range moveRecords(*job) {
+			if record.Note != "" {
+				job.logf(moveStepCutover, "%s %s %s (%s)", record.Hostname, record.Type, record.Value, strings.TrimSuffix(record.Note, "."))
+				continue
+			}
 			job.logf(moveStepCutover, "%s %s %s", record.Hostname, record.Type, record.Value)
 		}
 		job.logf(moveStepCutover, "Remove every other A and AAAA record of these hostnames. The move continues when DNS resolves to the destination.")
+		job.logf(moveStepCutover, "Until the final sync, the destination serves the bulk copy; anything written there after DNS switches is replaced by the source's data at the final sync, which holds both servers in maintenance while it copies.")
+		if job.Plan.Mail != nil {
+			job.logf(moveStepCutover, "The application sends mail: the reverse DNS of the destination is checked with DNS and logged here; it does not hold the move. %s", moveMailDKIMNote)
+		}
 		return nil
 	})
 	if err == nil {
@@ -1110,7 +1166,11 @@ func (c *Control) runFinalSync(ctx context.Context, id string) {
 		if err := c.moveFreeze(ctx, job, true); err != nil {
 			return moveOn(job.SourceServer, fmt.Errorf("the source could not enter maintenance: %w", err))
 		}
-		c.moveLog(id, moveStepFinalSync, "The source is in maintenance; reconciling the destination and copying the databases and files again.")
+		if err := c.moveFreezeTarget(ctx, job, true); err != nil {
+			return moveOn(job.TargetServer, fmt.Errorf("the destination could not enter maintenance: %w", err))
+		}
+		_, _ = c.updateMove(id, func(job *MoveJob) error { job.TargetFrozen = true; return nil })
+		c.moveLog(id, moveStepFinalSync, "The source is in maintenance, and so is the destination: what it received since the DNS switch is replaced by the source's data. Reconciling the destination and copying the databases and files again.")
 		if err := c.moveReconcile(ctx, id, moveStepFinalSync); err != nil {
 			return err
 		}
@@ -1120,13 +1180,23 @@ func (c *Control) runFinalSync(ctx context.Context, id string) {
 		if err := c.moveCopyFiles(ctx, id, moveStepFinalSync); err != nil {
 			return err
 		}
-		return c.moveDeploy(ctx, id, moveStepFinalSync, true)
+		if err := c.moveDeploy(ctx, id, moveStepFinalSync, true); err != nil {
+			return err
+		}
+		// The redeploy starts a native destination; a container one is
+		// still flagged for maintenance.
+		if err := c.moveFreezeTarget(ctx, job, false); err != nil {
+			return moveOn(job.TargetServer, fmt.Errorf("the destination could not leave maintenance: %w", err))
+		}
+		_, _ = c.updateMove(id, func(job *MoveJob) error { job.TargetFrozen = false; return nil })
+		return nil
 	})
 	if stop != nil {
 		return
 	}
 	if failure != nil {
 		thaw := c.moveFreeze(ctx, job, false)
+		thawTarget := c.moveFreezeTarget(ctx, job, false)
 		job, _ = c.updateMove(id, func(job *MoveJob) error {
 			job.setStep(moveStepFinalSync, "failed")
 			job.setProgress(moveStepFinalSync, progress)
@@ -1140,9 +1210,19 @@ func (c *Control) runFinalSync(ctx context.Context, id string) {
 			} else {
 				job.logf(moveStepFinalSync, "The source could not leave maintenance (%s); abort or retry the final sync.", thaw)
 			}
+			if thawTarget == nil {
+				job.TargetFrozen = false
+				job.logf(moveStepFinalSync, "The destination serves the bulk copy again.")
+			} else {
+				job.logf(moveStepFinalSync, "The destination could not leave maintenance (%s); retry the final sync.", thawTarget)
+			}
 			job.State = moveStateCutover
 			job.Error = "final sync failed: " + failure.Message
 			job.Failure = failure
+			if job.AutoCutover {
+				job.AutoCutover = false
+				job.logf(moveStepFinalSync, "The automatic cutover is off after this failure: retry the final sync by hand, then finish the move or switch the automatic cutover on again.")
+			}
 			return nil
 		})
 		c.reportMoveFailure(ctx, job, *failure, true)
@@ -1165,13 +1245,26 @@ func (c *Control) runFinalSync(ctx context.Context, id string) {
 // moveFreeze puts the source in maintenance (containers) or stops its
 // processes (native applications), or undoes that.
 func (c *Control) moveFreeze(ctx context.Context, job MoveJob, freeze bool) error {
+	return c.moveFreezeOn(ctx, job, job.SourceServer, job.SourceRuntime, freeze)
+}
+
+// moveFreezeTarget does the same on the destination. The destination
+// serves the bulk copy from the DNS switch on, and anything written there
+// is replaced by the final sync; while the final sync runs it must not
+// write at all, or rows it adds collide with the same rows arriving from
+// the source. The redeploy at the end of the final sync starts it again.
+func (c *Control) moveFreezeTarget(ctx context.Context, job MoveJob, freeze bool) error {
+	return c.moveFreezeOn(ctx, job, job.TargetServer, job.TargetRuntime, freeze)
+}
+
+func (c *Control) moveFreezeOn(ctx context.Context, job MoveJob, server, runtime string, freeze bool) error {
 	r := moveRequestFor(ctx)
-	if job.SourceRuntime == moveRuntimeContainer {
-		return c.agentCall(r, job.SourceServer, http.MethodPut, "/v1/apps/"+url.PathEscape(job.AppID)+"/maintenance", agent.Maintenance{Enabled: freeze, Message: moveMaintenanceMessage}, nil)
+	if runtime == moveRuntimeContainer {
+		return c.agentCall(r, server, http.MethodPut, "/v1/apps/"+url.PathEscape(job.AppID)+"/maintenance", agent.Maintenance{Enabled: freeze, Message: moveMaintenanceMessage}, nil)
 	}
 	var status agent.NativeStatus
 	path := "/v1/native/apps/" + url.PathEscape(job.AppID)
-	if err := c.agentCall(r, job.SourceServer, http.MethodGet, path, nil, &status); err != nil {
+	if err := c.agentCall(r, server, http.MethodGet, path, nil, &status); err != nil {
 		return err
 	}
 	action := "stop"
@@ -1183,7 +1276,7 @@ func (c *Control) moveFreeze(ctx context.Context, job MoveJob, freeze bool) erro
 		slices.Reverse(units)
 	}
 	for _, unit := range units {
-		if err := c.moveCall(ctx, time.Minute, job.SourceServer, http.MethodPost, path+"/services/"+url.PathEscape(unit)+"/"+action, map[string]string{"confirm": status.Application.Name}, nil); err != nil {
+		if err := c.moveCall(ctx, time.Minute, server, http.MethodPost, path+"/services/"+url.PathEscape(unit)+"/"+action, map[string]string{"confirm": status.Application.Name}, nil); err != nil {
 			return fmt.Errorf("%s %s: %s", action, unit, moveAgentError(err))
 		}
 	}
@@ -1289,7 +1382,7 @@ func (c *Control) moveFinishOnce(ctx context.Context, id string) error {
 
 // moveCleanupEngines removes every engine's temporary artifacts.
 func (c *Control) moveCleanupEngines(ctx context.Context, id, step string) {
-	moveCleanupOnce(ctx, c.moveEngines(moveRun{c: c, id: id, step: step, phase: movePhaseBulk}))
+	moveCleanupOnce(ctx, c.moveEngines(moveRun{c: c, id: id, step: step, phase: movePhaseBulk, teardown: true}))
 }
 
 // switchMovedApplication makes the destination the live record: same id,
@@ -1474,5 +1567,9 @@ func (c *Control) moveTick(ctx context.Context) {
 	}
 	for _, id := range cutover {
 		c.checkMoveDNS(ctx, id, false)
+		c.moveReplicationKeepalive(ctx, id)
 	}
+	// Replication through the panel runs while its move lives, also after
+	// a panel restart and while the move waits at the cutover.
+	c.moveTunnelSync()
 }

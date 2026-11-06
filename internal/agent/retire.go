@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -85,6 +86,11 @@ func (m *Manager) retire(ctx context.Context, id string, origin *RetainedOrigin)
 	defer func() { m.mu.Lock(); delete(m.removing, id); m.mu.Unlock() }()
 	cleanup, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	if err := m.withdrawGatewayRoute(cleanup, a); err != nil {
+		// The route only reaches the gateway, which no longer serves the
+		// application; removal goes on.
+		log.Printf("%s: the protected Caddy route could not be removed: %v", id, err)
+	}
 	for _, release := range []*Release{a.Current, a.Previous} {
 		if release != nil {
 			if err := m.runtime.Remove(cleanup, release); err != nil {

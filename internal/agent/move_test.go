@@ -185,7 +185,7 @@ func TestMoveRestoreVerifiesTheUploadBeforeRestoring(t *testing.T) {
 	var replaced []bool
 	previousCount, previousRestore, previousLimit := moveTableCount, moveRestoreDump, moveMaxDumpSize
 	moveTableCount = func(context.Context, *Manager, string) (int, error) { return tables, nil }
-	moveRestoreDump = func(_ context.Context, m *Manager, target moveDatabaseTarget, dump *os.File, replace bool) error {
+	moveRestoreDump = func(_ context.Context, m *Manager, target moveDatabaseTarget, dump *os.File, replace bool, _ []string) error {
 		if target.Database.Operation != "restore" {
 			t.Error("restore runs while the database is reserved")
 		}

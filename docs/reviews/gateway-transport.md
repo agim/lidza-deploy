@@ -25,7 +25,7 @@ The managed PostgreSQL attachment and its limits were preserved. A candidate
 whose private TLS listener was disabled failed readiness and the previous release
 was restored; public protected traffic still succeeded after recovery.
 
-These are platform fixtures, not vendor SMIP, Matrix, local-model throughput,
+These are platform fixtures, not vendor protocol, Matrix, local-model throughput,
 Office/media or expanded 4 GiB application acceptance. The application repository
 owns those protocol and whole-stack tests. No production readiness claim follows
 from a fixture's protected response.

@@ -66,8 +66,11 @@ func (m *Manager) configureErrorReporting(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	m.reportMu.Lock()
-	defer m.reportMu.Unlock()
+	// The console tick holds reportMu for its whole run, reading every
+	// application's logs and posting them; waiting for it here made the
+	// control panel's configuration call time out on a busy host. The
+	// configuration only needs the state lock: the tick snapshots it under
+	// the same lock, and the wake-up below starts a tick with the new one.
 	m.mu.Lock()
 	old := m.data.ErrorReporting
 	if old != nil && old.URL == cfg.URL && old.Server == cfg.Server && maps.Equal(old.Apps, cfg.Apps) {

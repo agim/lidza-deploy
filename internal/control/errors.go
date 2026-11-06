@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,22 +35,28 @@ func (c *Control) reportingConfig(server Server) agent.ErrorReporting {
 }
 func (c *Control) configureCollectors(ctx context.Context, _ json.RawMessage) error {
 	var wg sync.WaitGroup
+	var mu sync.Mutex
 	sem := make(chan struct{}, 8)
-	failures := make(chan struct{}, 1)
+	failures := []string{}
 	for _, server := range c.servers() {
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(server Server) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			pairCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			// A busy agent persists its state under a lock before answering;
+			// five seconds was not enough on a loaded host.
+			pairCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			req, _ := http.NewRequestWithContext(pairCtx, "GET", c.cfg.PublicURL, nil)
 			if err := c.agentCall(req, server.ID, "PUT", "/v1/error-reporting", c.reportingConfig(server), nil); err != nil {
-				select {
-				case failures <- struct{}{}:
-				default:
+				name := server.Name
+				if name == "" {
+					name = server.ID
 				}
+				mu.Lock()
+				failures = append(failures, name+": "+moveBounded(err.Error(), 160))
+				mu.Unlock()
 			}
 		}(server)
 	}
@@ -58,7 +65,10 @@ func (c *Control) configureCollectors(ctx context.Context, _ json.RawMessage) er
 		return err
 	}
 	if len(failures) > 0 {
-		return errors.New("could not configure one or more console collectors; check agent connectivity/version")
+		// The failing servers are named so an unreachable or outdated
+		// agent can be found from the job log.
+		sort.Strings(failures)
+		return errors.New("could not configure the console collectors on " + strings.Join(failures, "; "))
 	}
 	return nil
 }

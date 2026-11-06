@@ -89,6 +89,11 @@ func TestMoveStreamProgressIsCountedAndServedFromMemory(t *testing.T) {
 	})
 	received := make(chan []byte, 1)
 	destination := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The transfer first checks that the destination is idle.
+		if r.Method == http.MethodGet {
+			agent.JSON(w, 200, []any{})
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		received <- body
 		<-restore
@@ -99,7 +104,7 @@ func TestMoveStreamProgressIsCountedAndServedFromMemory(t *testing.T) {
 	end := c.beginMoveLive(context.Background(), job.ID, moveStepData)
 	result := make(chan error, 1)
 	go func() {
-		result <- c.moveTransferDump(context.Background(), job, MoveDatabase{SourceID: "shop", TargetID: "shop-db0001"}, record, "")
+		result <- c.moveTransferDump(context.Background(), job, MoveDatabase{SourceID: "shop", TargetID: "shop-db0001"}, record, "", nil)
 	}()
 
 	// While the dump streams, the GET endpoint shows the bytes forwarded.

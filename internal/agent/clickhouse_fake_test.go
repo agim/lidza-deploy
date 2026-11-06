@@ -44,6 +44,11 @@ type fakeClickHouse struct {
 	killed      []string
 	// noRename refuses RENAME DATABASE (an Ordinary database).
 	noRename bool
+	// recent are the rows in parts newer than any point in time asked for
+	// (system.parts since a time); bases record the base_backup of each
+	// incremental BACKUP and RESTORE.
+	recent uint64
+	bases  []string
 }
 
 type fakeTable struct {
@@ -73,8 +78,9 @@ func (f *fakeClickHouse) table(db, name string) *fakeTable {
 
 var (
 	fakeIdent        = "`((?:[^`\\\\]|\\\\.)+)`"
-	fakeBackupRe     = regexp.MustCompile("^BACKUP DATABASE " + fakeIdent + " TO (Disk\\('backups', '([^']+)'\\)|File\\('([^']+)'\\)) ASYNC$")
-	fakeRestoreRe    = regexp.MustCompile("^RESTORE DATABASE " + fakeIdent + "(?: AS " + fakeIdent + ")? FROM (Disk\\('backups', '([^']+)'\\)|File\\('([^']+)'\\)) ASYNC$")
+	fakeTarget       = "(Disk\\('backups', '([^']+)'\\)|File\\('([^']+)'\\))"
+	fakeBackupRe     = regexp.MustCompile("^BACKUP DATABASE " + fakeIdent + " TO " + fakeTarget + "(?: SETTINGS base_backup = " + fakeTarget + ")? ASYNC$")
+	fakeRestoreRe    = regexp.MustCompile("^RESTORE DATABASE " + fakeIdent + "(?: AS " + fakeIdent + ")? FROM " + fakeTarget + "(?: SETTINGS base_backup = " + fakeTarget + ")? ASYNC$")
 	fakeCountRe      = regexp.MustCompile("^SELECT count\\(\\) FROM " + fakeIdent + "\\." + fakeIdent + "$")
 	fakeSelectRe     = regexp.MustCompile("^SELECT \\* FROM " + fakeIdent + "\\." + fakeIdent + " FORMAT Native$")
 	fakeInsertRe     = regexp.MustCompile("^INSERT INTO " + fakeIdent + "\\." + fakeIdent + " SETTINGS optimize_on_insert = 0 FORMAT Native$")
@@ -185,6 +191,13 @@ func (f *fakeClickHouse) answer(user, sql string, body []byte) (string, int, err
 			rows += table.Rows
 		}
 		return fmt.Sprintf(`{"tables":%d,"rows":%d}`+"\n", len(f.dbs[db]), rows), 0, nil
+	case strings.HasPrefix(sql, "SELECT toUInt64(sum(bytes_on_disk)) AS bytes, toUInt64(count()) AS parts"):
+		// Parts newer than a point in time: the rows seeded as recent.
+		parts := uint64(0)
+		if f.recent > 0 {
+			parts = 1
+		}
+		return fmt.Sprintf(`{"bytes":%d,"parts":%d}`+"\n", f.recent*16, parts), 0, nil
 	case strings.HasPrefix(sql, "SELECT toUInt64(sum(bytes_on_disk)) AS bytes"):
 		var rows uint64
 		for _, table := range f.dbs[db] {
@@ -247,6 +260,14 @@ func (f *fakeClickHouse) answer(user, sql string, body []byte) (string, int, err
 			return "", 81, errFakeNotFound
 		}
 		path := f.backupPath(match, 3, 4)
+		if match[5] != "" {
+			// An incremental backup needs its base; the fake stores the whole database.
+			base := f.backupPath(match, 6, 7)
+			if _, err := os.Stat(filepath.Join(base, ".backup")); err != nil {
+				return "", 598, errors.New("WRONG_BASE_BACKUP: base backup not found")
+			}
+			f.bases = append(f.bases, match[5])
+		}
 		raw, _ := json.Marshal(source)
 		if strings.HasSuffix(path, "/") {
 			// A directory backup: metadata plus a file per table.
@@ -281,6 +302,13 @@ func (f *fakeClickHouse) answer(user, sql string, body []byte) (string, int, err
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return "", 1, err
+		}
+		if match[6] != "" {
+			base := f.backupPath(match, 7, 8)
+			if _, err := os.Stat(filepath.Join(base, ".backup")); err != nil {
+				return "", 598, errors.New("WRONG_BASE_BACKUP: base backup not found")
+			}
+			f.bases = append(f.bases, match[6])
 		}
 		id := fmt.Sprintf("op-%d", len(f.ops)+1)
 		if f.holdOps {
@@ -433,4 +461,7 @@ func (b fileBackups) writeDir(ctx context.Context, name string, stream io.Reader
 }
 func (b fileBackups) removeDir(_ context.Context, name string) error {
 	return os.RemoveAll(filepath.Join(b.dir, name))
+}
+func (b fileBackups) dirSize(_ context.Context, name string) (int64, error) {
+	return directorySize(filepath.Join(b.dir, name))
 }

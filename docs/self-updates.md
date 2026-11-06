@@ -6,7 +6,7 @@ Open **Updates** in the GUI. No GitHub account, application registration, reposi
 - **Update control panel & agents** queues a durable batch using the installed CLI updater on each connected server.
 - **Automatically install stable releases** opts this installation into hourly release checks and installation. It is disabled by default. Checks and queued work continue when the browser is closed.
 
-Remote agents update first, one at a time. The colocated agent on the control-panel host updates last; its helper replaces both the agent and GUI binaries. The browser can briefly lose connection while the GUI restarts. Reload Updates after it reconnects. An installation with a remote-only GUI must also connect the local agent on its GUI host to update that host.
+Remote agents update first, one at a time. Each target behind the current one says what it waits for ("Waits for <server> to finish updating", or that an earlier one failed), and every target records when its state last changed; the console's activity drawer shows the same. The colocated agent on the control-panel host updates last; its helper replaces both the agent and GUI binaries. The browser can briefly lose connection while the GUI restarts. Reload Updates after it reconnects. An installation with a remote-only GUI must also connect the local agent on its GUI host to update that host.
 
 The root helper downloads assets and checksums from the fixed official release repository, verifies the archive and bundled checksums, restarts services and checks readiness. Failed startup restores previous binaries. Hosted application containers continue running. OAuth, operator accounts, database data and application configuration are preserved.
 

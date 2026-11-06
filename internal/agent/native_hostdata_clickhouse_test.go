@@ -395,7 +395,14 @@ func TestNativeClickHouseInstallsVerifiedAndProvisionsIdempotently(t *testing.T)
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(raw)
-	manifest, err := readClickHouseManifest(tar.NewReader(bytes.NewReader(raw)))
+	// The dump is a tar stream, Zstandard-compressed when the tool is
+	// installed: read it through the same detection the restore uses.
+	plain, _, err := decompressedReader(ctx, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := readClickHouseManifest(tar.NewReader(plain))
+	plain.Close()
 	if err != nil || hex.EncodeToString(sum[:]) != record.SHA256 || manifest.Format != clickhouseFormatDirectory || manifest.Database != "app_shop" || len(manifest.Tables) != 2 {
 		t.Fatalf("backup %+v %v", manifest, err)
 	}

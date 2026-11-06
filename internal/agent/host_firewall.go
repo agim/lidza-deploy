@@ -32,7 +32,9 @@ type HostFirewallRule struct {
 	From    []string `json:"from,omitempty"` // addresses or CIDR networks; empty = anywhere
 	Comment string   `json:"comment,omitempty"`
 	// Source is "system" (always present), "app:<id>" (a container's public
-	// port) or "user" (edited in the panel or imported from the host).
+	// port), "move:<id>" (a replication relay while a move runs,
+	// move_replication_firewall.go) or "user" (edited in the panel or
+	// imported from the host).
 	Source string `json:"source"`
 	// Enforced is "ufw", or "docker" for container ports governed by the
 	// Docker firewall chain.
@@ -428,7 +430,7 @@ func (m *Manager) loadFirewall(ctx context.Context) (firewallContext, error) {
 	}
 	fc.state = m.firewallStateCopy()
 	system := m.systemFirewallRules(fc.ssh, fc.state.Model.SSHFrom)
-	fc.rules = append(append(system, fc.state.Model.Rules...), m.appFirewallRules()...)
+	fc.rules = append(append(append(system, fc.state.Model.Rules...), m.appFirewallRules()...), m.moveFirewallRules()...)
 	fc.desired = expandRules(fc.rules)
 	return fc, nil
 }

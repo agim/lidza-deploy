@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/agim/lidza-deploy/internal/agent"
 )
@@ -42,7 +43,19 @@ type clickhouseFake struct {
 	counted       int
 	frozen        func() bool // whether the source was frozen at export time
 	frozenExports []bool
+	// Incremental copies: keeps and bases record each export's or restore's
+	// keep and base queries; baseDeletes the cleanups that removed the base.
+	// baseLost makes the source refuse an incremental export;
+	// rejectIncremental makes the destination refuse an incremental restore.
+	keeps             []bool
+	bases             []string
+	baseDeletes       int
+	baseLost          bool
+	rejectIncremental bool
+	deltaBytes        int64
 }
+
+const moveTestClickHouseBase = "lidza-base0001"
 
 func withClickHouse(f *moveFake, database, version string) *clickhouseFake {
 	ch := &clickhouseFake{version: version, database: database}
@@ -56,14 +69,30 @@ func withClickHouse(f *moveFake, database, version string) *clickhouseFake {
 		ch.mu.Lock()
 		defer ch.mu.Unlock()
 		format := r.URL.Query().Get("format")
+		keep, base := r.URL.Query().Get("keep") == "1" && format == "directory", r.URL.Query().Get("base")
+		if base != "" && ch.baseLost {
+			agent.JSON(w, 409, map[string]string{"error": "no incremental export: this server no longer keeps the base backup " + base})
+			return
+		}
 		ch.formats = append(ch.formats, format)
 		ch.compress = append(ch.compress, r.URL.Query().Get("compress"))
+		ch.keeps, ch.bases = append(ch.keeps, keep), append(ch.bases, base)
 		// The archive names its format, so the destination fake can tell.
 		ch.archive = []byte("lidza ClickHouse archive format=" + format)
+		export := agent.MoveClickHouseExport{ID: exportID, Format: format, Database: "telemetry", Version: "26.8.15.10", Tables: tables, Created: time.Now().UTC()}
+		if keep {
+			export.Backup = moveTestClickHouseBase
+			ch.archive = append(ch.archive, " backup="+export.Backup...)
+		}
+		if base != "" {
+			export.BaseBackup = base
+			ch.archive = append(ch.archive, " base="+base...)
+		}
+		export.Size, export.SHA256 = int64(len(ch.archive)), digest(ch.archive)
 		if ch.frozen != nil {
 			ch.frozenExports = append(ch.frozenExports, ch.frozen())
 		}
-		agent.JSON(w, 200, agent.MoveClickHouseExport{ID: exportID, Format: format, Database: "telemetry", Version: "26.8.15.10", Size: int64(len(ch.archive)), SHA256: digest(ch.archive), Tables: tables})
+		agent.JSON(w, 200, export)
 	})
 	f.mux.HandleFunc("GET /v1/move/apps/{id}/clickhouse/exports/{export}", func(w http.ResponseWriter, r *http.Request) {
 		ch.mu.Lock()
@@ -81,6 +110,9 @@ func withClickHouse(f *moveFake, database, version string) *clickhouseFake {
 	f.mux.HandleFunc("DELETE /v1/move/apps/{id}/clickhouse/exports", func(w http.ResponseWriter, r *http.Request) {
 		ch.mu.Lock()
 		ch.deletes++
+		if r.URL.Query().Get("base") == "1" {
+			ch.baseDeletes++
+		}
 		ch.mu.Unlock()
 		agent.JSON(w, 200, map[string]string{"status": "removed"})
 	})
@@ -99,6 +131,20 @@ func withClickHouse(f *moveFake, database, version string) *clickhouseFake {
 			ch.mu.Unlock()
 			target.Counts = map[string]uint64{"events": rows}
 		}
+		if raw := r.URL.Query().Get("since"); raw != "" {
+			since, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				agent.JSON(w, 400, map[string]string{"error": "since must be an RFC 3339 time"})
+				return
+			}
+			ch.mu.Lock()
+			bytes := ch.deltaBytes
+			ch.mu.Unlock()
+			if bytes == 0 {
+				bytes = 4 << 20
+			}
+			target.Delta = &agent.MoveClickHouseDelta{Since: since, Bytes: bytes, Parts: 3}
+		}
 		agent.JSON(w, 200, target)
 	})
 	f.mux.HandleFunc("POST /v1/move/apps/{id}/clickhouse/restore", func(w http.ResponseWriter, r *http.Request) {
@@ -114,17 +160,28 @@ func withClickHouse(f *moveFake, database, version string) *clickhouseFake {
 		ch.mu.Lock()
 		defer ch.mu.Unlock()
 		_, format, _ := strings.Cut(string(body), "format=")
+		format, _, _ = strings.Cut(format, " ")
 		if ch.rejectBackup && format == "backup" {
 			agent.JSON(w, 409, map[string]string{"error": "the ClickHouse restore failed: ClickHouse restore failed: unknown backup format"})
 			return
 		}
+		keep, base := r.URL.Query().Get("keep") == "1", r.URL.Query().Get("base")
+		if base != "" && ch.rejectIncremental {
+			agent.JSON(w, 409, map[string]string{"error": "no incremental restore: the base backup " + base + " is missing from the backups disk"})
+			return
+		}
+		ch.keeps, ch.bases = append(ch.keeps, keep), append(ch.bases, base)
 		rows := uint64(1200)
 		if ch.short {
 			rows--
 		}
 		ch.restores = append(ch.restores, body)
 		ch.restored = append(ch.restored, format)
-		agent.JSON(w, 200, agent.ClickHouseRestoreResult{Status: "restored", Format: format, Source: "telemetry", Database: ch.database, Tables: 2, Rows: rows, Counts: map[string]uint64{"events": rows}, Bytes: int64(len(body)), SHA256: digest(body)})
+		result := agent.ClickHouseRestoreResult{Status: "restored", Format: format, Source: "telemetry", Database: ch.database, Tables: 2, Rows: rows, Counts: map[string]uint64{"events": rows}, Bytes: int64(len(body)), SHA256: digest(body), BaseBackup: base}
+		if keep && strings.Contains(string(body), " backup=") {
+			result.Backup = moveTestClickHouseBase
+		}
+		agent.JSON(w, 200, result)
 	})
 	return ch
 }
@@ -434,5 +491,171 @@ func TestMoveResumeSkipsTheVerifiedClickHouseRestore(t *testing.T) {
 	}
 	if !moveLogged(job, moveStepData, "no longer matches the earlier restore") {
 		t.Fatalf("data log:\n%s", moveStepLog(job, moveStepData))
+	}
+}
+
+// incrementalHosts gives both agents the current ClickHouse capabilities.
+func (fx *moveFixture) incrementalHosts(destination bool) {
+	formats := []string{"directory", "backup", "native", "incremental"}
+	fx.a.host.ClickHouseFormats, fx.a.host.Zstd = formats, true
+	fx.b.host.ClickHouseFormats, fx.b.host.Zstd = formats, true
+	if !destination {
+		fx.b.host.ClickHouseFormats = formats[:3]
+	}
+}
+
+func TestMoveClickHouseFinalSyncIsIncremental(t *testing.T) {
+	fx := newMoveFixture(t)
+	source, destination := fx.clickhouseSource()
+	fx.incrementalHosts(true)
+	req := httptest.NewRequest("GET", "/api/control/apps/shop/move-plan?target_server=beta", nil)
+	plan, status, err := fx.c.computeMovePlan(req, "shop", moveStartInput{TargetServer: "beta"})
+	if err != nil || status != 200 {
+		t.Fatal(status, err)
+	}
+	if !slices.ContainsFunc(plan.Notes, func(n string) bool { return strings.Contains(n, "final sync of ClickHouse telemetry is incremental") }) {
+		t.Fatalf("plan notes %v", plan.Notes)
+	}
+	i := slices.IndexFunc(plan.Estimate.Engines, func(e MoveEngineEstimate) bool { return e.Kind == moveEngineClickHouse })
+	if i < 0 || plan.Estimate.Engines[i].FinalSeconds >= plan.Estimate.Engines[i].BulkSeconds || !strings.Contains(plan.Estimate.Engines[i].FinalBasis, "parts added over the last") {
+		t.Fatalf("estimate %+v", plan.Estimate.Engines)
+	}
+	status, view := startMove(t, fx.c, "shop", map[string]any{"target_server": "beta"})
+	if status != 202 {
+		t.Fatalf("start: %d %+v", status, view)
+	}
+	job := waitMove(t, fx.c, view.ID, moveStateCutover)
+	// The bulk copy keeps the directory backup as a base on both servers.
+	source.mu.Lock()
+	destination.mu.Lock()
+	if !slices.Equal(source.keeps, []bool{true}) || !slices.Equal(source.bases, []string{""}) || !slices.Equal(destination.keeps, []bool{true}) || !slices.Equal(destination.bases, []string{""}) || source.baseDeletes+destination.baseDeletes != 0 {
+		t.Fatalf("bulk copy: source keeps %v bases %v, destination keeps %v bases %v, base deletes %d/%d", source.keeps, source.bases, destination.keeps, destination.bases, source.baseDeletes, destination.baseDeletes)
+	}
+	source.mu.Unlock()
+	destination.mu.Unlock()
+	if base, created := moveClickHouseBase(job); base != moveTestClickHouseBase || created.IsZero() {
+		t.Fatalf("base %q %v", base, created)
+	}
+	if !moveLogged(job, moveStepData, "Both servers keep the backup "+moveTestClickHouseBase+" as the base") {
+		t.Fatalf("data log:\n%s", moveStepLog(job, moveStepData))
+	}
+	if estimate := moveLockEstimate(job); !strings.Contains(estimate.Basis, "synced incrementally") {
+		t.Fatalf("lock estimate %+v", estimate)
+	}
+	// The final sync exports and restores against the base.
+	if code := moveAction(t, fx.c, view.ID, "final-sync", nil); code != 202 {
+		t.Fatal(code)
+	}
+	job = waitMove(t, fx.c, view.ID, moveStateCutover)
+	if !job.FinalSynced {
+		t.Fatalf("final sync %s", job.Error)
+	}
+	source.mu.Lock()
+	destination.mu.Lock()
+	if !slices.Equal(source.bases, []string{"", moveTestClickHouseBase}) || !slices.Equal(destination.bases, []string{"", moveTestClickHouseBase}) || !slices.Equal(source.keeps, []bool{true, false}) || source.baseDeletes+destination.baseDeletes != 0 {
+		t.Fatalf("final sync: source bases %v keeps %v, destination bases %v, base deletes %d/%d", source.bases, source.keeps, destination.bases, source.baseDeletes, destination.baseDeletes)
+	}
+	if !bytes.Equal(destination.restores[1], []byte("lidza ClickHouse archive format=directory base="+moveTestClickHouseBase)) {
+		t.Fatalf("final restore %q", destination.restores[1])
+	}
+	source.mu.Unlock()
+	destination.mu.Unlock()
+	log := moveStepLog(job, moveStepFinalSync)
+	if !strings.Contains(log, "incremental BACKUP against base "+moveTestClickHouseBase) || !strings.Contains(log, "Restored the parts of ClickHouse telemetry added since the bulk copy") {
+		t.Fatalf("final sync log:\n%s", log)
+	}
+	// Aborting removes the base on both servers.
+	if code := moveAction(t, fx.c, view.ID, "abort", nil); code != 202 {
+		t.Fatal(code)
+	}
+	waitMove(t, fx.c, view.ID, moveStateAborted)
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	destination.mu.Lock()
+	defer destination.mu.Unlock()
+	if source.baseDeletes != 1 || destination.baseDeletes != 1 {
+		t.Fatalf("abort left bases: source %d, destination %d", source.baseDeletes, destination.baseDeletes)
+	}
+}
+
+func TestMoveClickHouseIncrementalFallsBackToTheFullCopy(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		fail          func(source, destination *clickhouseFake)
+		sourceBases   []string
+		expectedLog   string
+		restoredBases []string
+	}{
+		{"destination lost its base", func(_, d *clickhouseFake) { d.rejectIncremental = true }, []string{"", moveTestClickHouseBase, ""}, "Restoring the incremental ClickHouse backup against lidza-base0001 on beta failed", []string{"", ""}},
+		{"source lost its base", func(s, _ *clickhouseFake) { s.baseLost = true }, []string{"", ""}, "The source could not make an incremental ClickHouse backup against lidza-base0001", []string{"", ""}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fx := newMoveFixture(t)
+			source, destination := fx.clickhouseSource()
+			fx.incrementalHosts(true)
+			_, view := startMove(t, fx.c, "shop", map[string]any{"target_server": "beta"})
+			waitMove(t, fx.c, view.ID, moveStateCutover)
+			source.mu.Lock()
+			destination.mu.Lock()
+			c.fail(source, destination)
+			source.mu.Unlock()
+			destination.mu.Unlock()
+			if code := moveAction(t, fx.c, view.ID, "final-sync", nil); code != 202 {
+				t.Fatal(code)
+			}
+			job := waitMove(t, fx.c, view.ID, moveStateCutover)
+			if !job.FinalSynced {
+				t.Fatalf("final sync %s", job.Error)
+			}
+			source.mu.Lock()
+			defer source.mu.Unlock()
+			destination.mu.Lock()
+			defer destination.mu.Unlock()
+			if !slices.Equal(source.bases, c.sourceBases) || !slices.Equal(destination.bases, c.restoredBases) {
+				t.Fatalf("source bases %v, destination bases %v", source.bases, destination.bases)
+			}
+			// The fallback is a full copy that does not keep a new base.
+			if last := source.keeps[len(source.keeps)-1]; last {
+				t.Fatalf("the fallback kept a base: %v", source.keeps)
+			}
+			log := moveStepLog(job, moveStepFinalSync)
+			if !strings.Contains(log, c.expectedLog) || !strings.Contains(log, "copying the whole database instead") {
+				t.Fatalf("final sync log:\n%s", log)
+			}
+		})
+	}
+}
+
+func TestMoveClickHouseIncrementalNeedsBothAgents(t *testing.T) {
+	fx := newMoveFixture(t)
+	source, destination := fx.clickhouseSource()
+	fx.incrementalHosts(false)
+	req := httptest.NewRequest("GET", "/api/control/apps/shop/move-plan?target_server=beta", nil)
+	plan, _, err := fx.c.computeMovePlan(req, "shop", moveStartInput{TargetServer: "beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(plan.Notes, func(n string) bool { return strings.Contains(n, "upgrade it for an incremental final sync") }) {
+		t.Fatalf("plan notes %v", plan.Notes)
+	}
+	i := slices.IndexFunc(plan.Estimate.Engines, func(e MoveEngineEstimate) bool { return e.Kind == moveEngineClickHouse })
+	if i < 0 || plan.Estimate.Engines[i].FinalSeconds != plan.Estimate.Engines[i].BulkSeconds || plan.Estimate.Engines[i].FinalBasis != "" {
+		t.Fatalf("estimate %+v", plan.Estimate.Engines)
+	}
+	_, view := startMove(t, fx.c, "shop", map[string]any{"target_server": "beta"})
+	waitMove(t, fx.c, view.ID, moveStateCutover)
+	if code := moveAction(t, fx.c, view.ID, "final-sync", nil); code != 202 {
+		t.Fatal(code)
+	}
+	job := waitMove(t, fx.c, view.ID, moveStateCutover)
+	if !job.FinalSynced {
+		t.Fatalf("final sync %s", job.Error)
+	}
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	destination.mu.Lock()
+	defer destination.mu.Unlock()
+	if !slices.Equal(source.keeps, []bool{false, false}) || !slices.Equal(source.bases, []string{"", ""}) || !slices.Equal(destination.bases, []string{"", ""}) {
+		t.Fatalf("an older destination agent gets full copies: keeps %v, bases %v/%v", source.keeps, source.bases, destination.bases)
 	}
 }

@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agim/lidza-deploy/internal/agent"
 )
@@ -333,5 +335,77 @@ func TestUpdateTickWaitsForMovesInACopy(t *testing.T) {
 	tick()
 	if got := target("local"); got.State != "updating" || len(posts) != 3 || posts[2] != "127.0.0.1:9090" {
 		t.Fatalf("the panel host was not dispatched once the move finished: %+v %v", got, posts)
+	}
+}
+
+func TestUpdateQueueSaysWhatAWaitingTargetWaitsFor(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	targets := []UpdateTarget{
+		{ServerID: "a", Name: "Alpha", State: "updating", Message: "Installing"},
+		{ServerID: "b", Name: "Beta", State: "waiting"},
+		{ServerID: "gui", Name: "GUI", State: "waiting", Local: true},
+	}
+	annotateUpdateQueue(targets, nil, now)
+	if targets[0].Message != "Installing" {
+		t.Fatalf("the running target's message was replaced: %q", targets[0].Message)
+	}
+	if targets[1].Message != "Waits for Alpha to finish updating" {
+		t.Fatalf("waiting target: %q", targets[1].Message)
+	}
+	if targets[2].Message != "Waits for Alpha to finish updating; the control panel's host updates last" {
+		t.Fatalf("panel host: %q", targets[2].Message)
+	}
+	if !targets[1].Updated.Equal(now) {
+		t.Fatal("a changed target was not stamped")
+	}
+
+	// Alpha finishes: Beta becomes the next, the panel host now waits for Beta.
+	old := slices.Clone(targets)
+	targets[0].State, targets[0].Message = "succeeded", "Release installed"
+	later := now.Add(time.Minute)
+	annotateUpdateQueue(targets, old, later)
+	if targets[1].Message != updateQueueNext || !strings.HasPrefix(targets[2].Message, "Waits for Beta to finish updating") {
+		t.Fatalf("queue did not advance: %+v", targets)
+	}
+
+	// A hold set by the tick is the target's own reason and stays.
+	targets[1].Message = "Waiting for the move of shop to Beta to reach a safe point"
+	annotateUpdateQueue(targets, slices.Clone(targets), later)
+	if targets[1].Message != "Waiting for the move of shop to Beta to reach a safe point" {
+		t.Fatalf("move hold replaced: %q", targets[1].Message)
+	}
+
+	// A failed target stops the rollout; the next ones say so.
+	targets[1].State, targets[1].Message = "failed", "health checks failed"
+	annotateUpdateQueue(targets, slices.Clone(targets), later)
+	if !strings.HasPrefix(targets[2].Message, "Waits for Beta, whose update failed") {
+		t.Fatalf("failed head: %q", targets[2].Message)
+	}
+	unchanged := slices.Clone(targets)
+	annotateUpdateQueue(targets, unchanged, later.Add(time.Hour))
+	if !targets[2].Updated.Equal(later) {
+		t.Fatal("an unchanged target was restamped")
+	}
+}
+
+func TestPreparedUpdatePlanExplainsTheQueue(t *testing.T) {
+	token := strings.Repeat("a", 32)
+	cfg := Config{PublicURL: "https://deploy.example", User: "operator@example.com", Password: strings.Repeat("p", 20), DataDir: t.TempDir(), Key: []byte(strings.Repeat("k", 32)),
+		Servers: []Server{{ID: "local", Name: "GUI", URL: "http://127.0.0.1:9090", Token: token}, {ID: "alpha", Name: "Alpha", URL: "https://alpha.example", Token: token}}}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := c.updateSettingsSnapshot()
+	v.Latest = "v0.2.15"
+	if err := c.prepareUpdatePlan(v); err != nil {
+		t.Fatal(err)
+	}
+	got := c.updateSettingsSnapshot().Targets
+	if got[0].ServerID != "alpha" || got[0].Message != updateQueueNext {
+		t.Fatalf("first target: %+v", got[0])
+	}
+	if got[1].Message != "Waits for Alpha to finish updating; the control panel's host updates last" || !got[1].Local {
+		t.Fatalf("panel host: %+v", got[1])
 	}
 }

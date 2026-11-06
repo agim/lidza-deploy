@@ -64,6 +64,10 @@ type HostIngressStatus struct {
 	// directories of a fronting Caddy (error_pages.go); nil for the agent
 	// proxy and in cached detections.
 	ErrorPages *HostErrorPages `json:"error_pages,omitempty"`
+	// adminServer is the HTTPS server of a detected admin-API Caddy in
+	// either mode; the automatic gateway publishes protected routes there
+	// (gateway_auto.go).
+	adminServer string
 }
 
 // HostIngressSettings is the panel's override: a Caddy admin API to publish
@@ -473,6 +477,9 @@ func (m *Manager) refreshIngressDetection(ctx context.Context) *HostIngressStatu
 	detection := detectHostIngress(ctx, hostIngressDefaultAdmin, m.cfg.ProxyListen)
 	status := HostIngressStatus{Mode: detection.Mode, Detected: detection.Mode, Source: "detected", AdminAPI: detection.AdminAPI,
 		WebPorts: detection.Ports, Detail: detection.Detail, Checked: time.Now().UTC()}
+	if detection.AdminAPI {
+		status.adminServer = detection.Server
+	}
 	if detection.Mode == HostIngressCaddy {
 		status.CaddyAdmin, status.CaddyServer = hostIngressDefaultAdmin, detection.Server
 	}

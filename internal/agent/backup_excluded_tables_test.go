@@ -41,6 +41,8 @@ func excludedTablesFixture(t *testing.T) (*Manager, *[]string) {
 			return out, nil
 		case strings.Contains(sql, "reltuples"):
 			return "public.events\tr\t52000\t81920000\npublic.orders\tr\t1200\t409600\naudit.log_entries\tr\t-1\t8192\nMixed.Case\tr\t3\t8192\npublic.parted\tp\t0\t0\n", nil
+		case strings.HasPrefix(sql, "WITH t AS"): // no incremental key
+			return "\t\t0\t0\t0\t0\n", nil
 		case strings.Contains(sql, "c.relkind = 'r'"):
 			out := ""
 			for name := range tables {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/movetunnel"
 )
 
 const (
@@ -35,21 +37,26 @@ type moveFake struct {
 	t   *testing.T
 	srv *httptest.Server
 	mu  sync.Mutex
-	// mux takes further routes (move_clickhouse_test.go).
-	mux *http.ServeMux
+	// mux takes further routes (move_clickhouse_test.go); streams the
+	// upgraded tunnel streams, served without the fake's lock since they
+	// live long (move_tunnel_test.go).
+	mux     *http.ServeMux
+	streams *http.ServeMux
 
 	calls []string
 
 	// Source side.
-	source       *agent.MoveSource
-	env          agent.MoveEnvironment
-	tables       map[string]int
-	dumps        map[string][]byte // database → dump content
-	backups      map[string][]agent.BackupRecord
-	corrupt      bool
-	maintenance  []bool
-	nativeSource *agent.NativeStatus
-	memory       []uint64 // server health: total and available bytes
+	source         *agent.MoveSource
+	env            agent.MoveEnvironment
+	tables         map[string]int
+	dumps          map[string][]byte // database → dump content
+	backups        map[string][]agent.BackupRecord
+	corrupt        bool
+	maintenance    []bool
+	provisionError string // a requested database fails its provisioning
+	provisions     int    // POST /v1/databases/{id}/provision calls
+	nativeSource   *agent.NativeStatus
+	memory         []uint64 // server health: total and available bytes
 
 	// Destination side.
 	host       agent.MoveHost
@@ -61,6 +68,8 @@ type moveFake struct {
 	patches    []agent.SettingsPatch
 	databases  map[string]*agent.DatabaseView
 	restores   map[string][][]byte
+	keeps      []string // the ?keep= of each base restore
+	failKeep   bool     // refuse a restore that keeps tables
 	deploys    []map[string]any
 	deployment agent.Deployment
 	holdDeploy bool
@@ -136,6 +145,7 @@ func newMoveFake(t *testing.T) *moveFake {
 		fileData: map[string][]byte{}, fileRestores: map[string][][]byte{}, removals: map[string]agent.AppRemoveRequest{}}
 	mux := http.NewServeMux()
 	f.mux = mux
+	f.streams = http.NewServeMux()
 	j := func(w http.ResponseWriter, status int, v any) { agent.JSON(w, status, v) }
 	mux.HandleFunc("GET /v1/move/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if f.source == nil || f.source.AppID != r.PathValue("id") {
@@ -188,7 +198,7 @@ func newMoveFake(t *testing.T) *moveFake {
 		sum := sha256.Sum256(content)
 		record := agent.BackupRecord{ID: "b" + strconv.Itoa(len(f.backups[id])+1), Created: time.Now().UTC(), Size: int64(len(content)), SHA256: hex.EncodeToString(sum[:]), ExcludedTableData: f.excluded}
 		f.backups[id] = append(f.backups[id], record)
-		j(w, 202, map[string]string{"status": "queued"})
+		agent.JSON(w, 202, map[string]string{"status": "queued"})
 	})
 	mux.HandleFunc("GET /v1/move/databases/{id}/backups/{backup}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -244,6 +254,11 @@ func newMoveFake(t *testing.T) *moveFake {
 		}
 		if r.URL.Query().Get("replace") != "1" {
 			t.Error("move restores replace the destination's own database")
+		}
+		f.keeps = append(f.keeps, r.URL.Query().Get("keep"))
+		if f.failKeep && r.URL.Query().Get("keep") != "" {
+			j(w, 409, map[string]string{"error": "PostgreSQL restore failed; the destination database was left unchanged"})
+			return
 		}
 		f.restores[r.PathValue("id")] = append(f.restores[r.PathValue("id")], body)
 		j(w, 200, map[string]string{"status": "restored"})
@@ -357,7 +372,15 @@ func newMoveFake(t *testing.T) *moveFake {
 		}
 		f.settings.Bindings[in.EnvKey] = id
 		f.databases[id] = &agent.DatabaseView{Mode: "local", Ready: true}
+		if f.provisionError != "" {
+			f.databases[id] = &agent.DatabaseView{Mode: "local", Error: f.provisionError}
+		}
 		j(w, 202, map[string]string{"status": "provisioning"})
+	})
+	mux.HandleFunc("POST /v1/databases/{id}/provision", func(w http.ResponseWriter, r *http.Request) {
+		f.provisions++
+		f.databases[r.PathValue("id")] = &agent.DatabaseView{Mode: "local", Ready: true}
+		j(w, 202, map[string]string{"status": "queued"})
 	})
 	mux.HandleFunc("GET /v1/apps/{id}/cache", func(w http.ResponseWriter, r *http.Request) { j(w, 200, agent.CacheView{Mode: "automatic"}) })
 	mux.HandleFunc("POST /v1/apps/{id}/cache", func(w http.ResponseWriter, r *http.Request) { j(w, 202, map[string]string{"status": "provisioning"}) })
@@ -503,6 +526,10 @@ func newMoveFake(t *testing.T) *moveFake {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if movetunnel.Requested(r) {
+			f.streams.ServeHTTP(w, r)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/diagnostics") {
 			// Diagnostics answer while a transfer holds the fake.
 			j(w, 404, map[string]string{"error": "no diagnostics in this fake"})
@@ -553,6 +580,70 @@ func (f *moveFake) with(fn func()) {
 type moveResolverFake struct {
 	mu      sync.Mutex
 	answers map[string][]string
+	ptr     map[string][]string // address → names
+	txt     map[string][]string // name → TXT records
+	mx      map[string][]string // name → exchangers
+}
+
+func (r *moveResolverFake) setPTR(address string, names ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ptr == nil {
+		r.ptr = map[string][]string{}
+	}
+	r.ptr[address] = names
+}
+
+func (r *moveResolverFake) setTXT(name string, records ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.txt == nil {
+		r.txt = map[string][]string{}
+	}
+	r.txt[name] = records
+}
+
+func (r *moveResolverFake) setMX(name string, hosts ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.mx == nil {
+		r.mx = map[string][]string{}
+	}
+	r.mx[name] = hosts
+}
+
+func (r *moveResolverFake) LookupAddr(_ context.Context, address string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	names, ok := r.ptr[address]
+	if !ok || len(names) == 0 {
+		return nil, errors.New("no such host")
+	}
+	return slices.Clone(names), nil
+}
+
+func (r *moveResolverFake) LookupTXT(_ context.Context, name string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	records, ok := r.txt[name]
+	if !ok {
+		return nil, errors.New("no such host")
+	}
+	return slices.Clone(records), nil
+}
+
+func (r *moveResolverFake) LookupMX(_ context.Context, name string) ([]*net.MX, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	hosts, ok := r.mx[name]
+	if !ok {
+		return nil, errors.New("no such host")
+	}
+	out := []*net.MX{}
+	for i, host := range hosts {
+		out = append(out, &net.MX{Host: host, Pref: uint16(10 * (i + 1))})
+	}
+	return out, nil
 }
 
 func (r *moveResolverFake) set(host string, addresses ...string) {
@@ -623,6 +714,14 @@ func newMoveFixture(t *testing.T) *moveFixture {
 		t.Fatal(err)
 	}
 	fx.c = fx.wire(c)
+	t.Cleanup(func() {
+		c.moveTunnelMu.Lock()
+		running := maps.Clone(c.moveTunnels)
+		c.moveTunnelMu.Unlock()
+		for _, tunnel := range running {
+			c.moveTunnelStop(tunnel.move, tunnel.sourceDB)
+		}
+	})
 	fx.b.host = agent.MoveHost{IPv4: moveTestTargetIP, IPv6: moveTestTargetIP6, Native: true, HostData: true}
 	fx.resolver.set("shop.example.com", moveTestSourceIP)
 	fx.resolver.set("www.shop.example.com", moveTestSourceIP)
@@ -846,7 +945,15 @@ func TestMoveFinalSyncAndAbortLeaveTheSourceServing(t *testing.T) {
 		if got := fx.b.restores["shop"]; len(got) != 2 || string(got[1]) != "PGDMP container archive with newer rows" || len(fx.b.deploys) != 2 {
 			t.Fatalf("final data not copied: %q, %d deploys", got, len(fx.b.deploys))
 		}
+		// The destination writes nothing while its data is replaced, and
+		// serves again after the redeploy.
+		if !slices.Equal(fx.b.maintenance, []bool{true, false}) {
+			t.Fatalf("the destination must be in maintenance during the final sync: %v", fx.b.maintenance)
+		}
 	})
+	if job.TargetFrozen {
+		t.Fatalf("the destination stays frozen: %+v", job)
+	}
 	if code := moveAction(t, fx.c, view.ID, "abort", nil); code != 202 {
 		t.Fatalf("abort: %d", code)
 	}
@@ -1137,5 +1244,27 @@ func TestMoveCheckoutTicketsMatchTheDestination(t *testing.T) {
 	c.data.Moves["m1"] = job
 	if _, ok := c.moveCheckoutTarget("shop", "beta", "g-target"); ok {
 		t.Fatal("after the switch the live record authorizes checkouts")
+	}
+}
+
+// A destination database whose provisioning failed (the container runtime
+// was not running yet) is provisioned again by Prepare instead of failing
+// every retry with the stale error.
+func TestMovePrepareProvisionsAFailedDestinationDatabaseAgain(t *testing.T) {
+	fx := newMoveFixture(t)
+	fx.containerSource()
+	fx.b.with(func() { fx.b.provisionError = "Database operation failed: docker failed: exit status 1" })
+	status, view := startMove(t, fx.c, "shop", map[string]any{"target_server": "beta"})
+	if status != 202 {
+		t.Fatalf("start: %d", status)
+	}
+	job := waitMove(t, fx.c, view.ID, moveStateCutover)
+	fx.b.with(func() {
+		if fx.b.provisions != 1 {
+			t.Fatalf("provision requests: %d", fx.b.provisions)
+		}
+	})
+	if !moveLogContains(job, "failed earlier (Database operation failed: docker failed: exit status 1); provisioning it again.") {
+		t.Fatalf("log %+v", job.step(moveStepPrepare).Log)
 	}
 }

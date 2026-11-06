@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,10 +49,56 @@ var probeDockerBuild = func(ctx context.Context) dockerBuildMode {
 func currentDockerBuildMode(ctx context.Context) dockerBuildMode {
 	buildModeMu.Lock()
 	defer buildModeMu.Unlock()
-	if time.Since(buildModeChecked) > 10*time.Minute {
+	// Only a BuildKit-capable answer is cached: a host without buildx is
+	// probed again on every build, so a plugin installed meanwhile (by the
+	// agent or an operator) is used at once.
+	if !buildModeCapable(buildModeCached) || time.Since(buildModeChecked) > 10*time.Minute {
 		buildModeCached, buildModeChecked = probeDockerBuild(ctx), time.Now()
 	}
 	return buildModeCached
+}
+
+func buildModeCapable(mode dockerBuildMode) bool { return mode.Buildx || mode.Env != "" }
+
+// ensureBuildx installs the buildx plugin when this host's Docker lacks it
+// and the agent may install packages; builds then use BuildKit instead of
+// the deprecated legacy builder. Tests replace it.
+var ensureBuildx = func(ctx context.Context) {
+	if os.Geteuid() != 0 {
+		return
+	}
+	if ok, _ := aptHost(); !ok {
+		return
+	}
+	buildxInstallMu.Lock()
+	defer buildxInstallMu.Unlock()
+	if _, err := command(ctx, "", nil, "docker", "buildx", "version"); err == nil {
+		return
+	}
+	commandDiagnostic(ctx, "deployment", "Docker on this server has no buildx plugin; installing it so images build with BuildKit.")
+	out, err := installBuildx(ctx)
+	if err != nil {
+		commandDiagnostic(ctx, "deployment", "Installing the buildx plugin failed ("+lastLines(out)+"); building with the legacy builder.")
+		return
+	}
+	commandDiagnostic(ctx, "deployment", "Installed the Docker buildx plugin.")
+}
+
+var buildxInstallMu sync.Mutex
+
+// legacyBuildArgs drops the flags the legacy builder rejects (--progress).
+func legacyBuildArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--progress" && i+1 < len(args):
+			i++
+		case strings.HasPrefix(args[i], "--progress="):
+		default:
+			out = append(out, args[i])
+		}
+	}
+	return out
 }
 
 // dockerBuildInvocation turns `build <flags...>` arguments into the
@@ -61,13 +108,20 @@ func dockerBuildInvocation(ctx context.Context, args []string) ([]string, []stri
 	if len(args) == 0 || args[0] != "build" {
 		return args, nil
 	}
+	if !buildModeCapable(mode) {
+		ensureBuildx(ctx)
+		buildModeMu.Lock()
+		buildModeChecked = time.Time{}
+		buildModeMu.Unlock()
+		mode = currentDockerBuildMode(ctx)
+	}
 	if mode.Buildx {
 		return append([]string{"buildx", "build", "--load"}, args[1:]...), nil
 	}
 	if mode.Env != "" {
 		return args, []string{mode.Env}
 	}
-	return args, nil
+	return legacyBuildArgs(args), nil
 }
 
 // dockerBuildxInstalled reports whether the buildx plugin answers.

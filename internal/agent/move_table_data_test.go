@@ -38,6 +38,10 @@ func TestMoveTableDataRoundTrip(t *testing.T) {
 		case strings.HasPrefix(sql, "TRUNCATE"):
 			truncated = append(truncated, sql)
 			return "", nil
+		case strings.HasPrefix(sql, "WITH t AS"): // an indexed occurred_at, never updated
+			return "occurred_at\ttimestamptz\t0\t0\t1200\t86400\n", nil
+		case strings.Contains(sql, "max("):
+			return "2026-11-06T10:00:00.500000\n", nil
 		}
 		t.Fatalf("unexpected statement %q", sql)
 		return "", nil
@@ -69,6 +73,9 @@ func TestMoveTableDataRoundTrip(t *testing.T) {
 	var export MoveTableDataExport
 	if json.Unmarshal(w.Body.Bytes(), &export); w.Code != 200 || export.Rows["public.events"] != 1200 || export.Size == 0 {
 		t.Fatalf("export: %d %s", w.Code, w.Body.String())
+	}
+	if key := export.Keys["public.events"]; key.Column != "occurred_at" || key.Kind != "timestamptz" || key.Watermark != "2026-11-06T10:00:00.500000" || key.RowsPerHour != 50 {
+		t.Fatalf("the dump records the watermark: %+v", export.Keys)
 	}
 	w = call(Handler(source), "GET", "/v1/move/databases/shop/table-data/"+export.ID, nil, nil)
 	sum := sha256.Sum256(w.Body.Bytes())

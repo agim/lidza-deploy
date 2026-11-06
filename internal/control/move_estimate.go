@@ -59,6 +59,9 @@ type MoveEngineEstimate struct {
 	BulkSeconds  float64 `json:"bulk_seconds"`
 	FinalSeconds float64 `json:"final_seconds"`
 	Basis        string  `json:"basis"`
+	// FinalBasis explains a final-sync figure smaller than the bulk copy:
+	// tables copied incrementally, with their insert rates.
+	FinalBasis string `json:"final_basis,omitempty"`
 }
 
 // MoveLockEstimate is the expected duration of the final-sync lock.
@@ -183,15 +186,50 @@ func (c *Control) moveEstimateEngines(ctx context.Context, job MoveJob, rates mo
 		} else {
 			entry.BulkSeconds = bytes/rates.export + bytes/rates.transfer + bytes/rates.restore + moveEngineOverhead
 		}
-		// The current engines copy everything again at the final sync.
+		// The engines copy everything again at the final sync, except
+		// PostgreSQL tables with an incremental key: those only send the
+		// rows added since the bulk copy, expected from the source's insert
+		// rate over the bulk copy's duration and an hour more; and
+		// ClickHouse between agents with incremental copies, which sends
+		// the parts added since the base backup, measured on the source.
 		entry.FinalSeconds = entry.BulkSeconds
+		if info.Kind == moveEngineClickHouse && bytes > 0 {
+			window := time.Duration(entry.BulkSeconds)*time.Second + time.Hour
+			if delta, basis := c.moveClickHouseFinalEstimate(ctx, job, window); basis != "" {
+				final := min(float64(max(delta, 0)), bytes)
+				entry.FinalSeconds = moveEngineOverhead + (entry.BulkSeconds-moveEngineOverhead)*final/bytes
+				entry.FinalBasis = basis
+				out.Notes = append(out.Notes, fmt.Sprintf("Final sync of ClickHouse %s: %s.", info.Object, basis))
+			}
+		}
+		if info.Kind == moveEnginePostgres && bytes > 0 {
+			for _, d := range job.Databases {
+				if d.SourceID != info.Object {
+					continue
+				}
+				if d.Replication == moveReplicationContinuous {
+					// The destination follows the source continuously; the
+					// locked sync only waits for the last transactions.
+					entry.FinalSeconds, entry.FinalBasis = moveEngineOverhead, moveReplicationFinalBasis
+					out.Notes = append(out.Notes, fmt.Sprintf("Final sync of %s: seconds (replication lag); the destination follows the source continuously.", info.Object))
+					break
+				}
+				window := time.Duration(entry.BulkSeconds)*time.Second + time.Hour
+				if full, delta, basis := moveIncrementalEstimate(d, window); basis != "" {
+					final := max(bytes-float64(full)+delta, 0)
+					entry.FinalSeconds = moveEngineOverhead + (entry.BulkSeconds-moveEngineOverhead)*final/bytes
+					entry.FinalBasis = basis
+					out.Notes = append(out.Notes, fmt.Sprintf("Final sync of %s: %s.", info.Object, basis))
+				}
+			}
+		}
 		out.BulkSeconds += entry.BulkSeconds
 		out.FinalSeconds += entry.FinalSeconds
 		out.Engines = append(out.Engines, entry)
 	}
 	out.BulkSeconds += deploySeconds
 	out.FinalSeconds += deploySeconds + moveFreezeOverhead
-	out.Notes = append(out.Notes, "Estimates: the final sync copies every database and file set again with the application locked, then redeploys the destination.")
+	out.Notes = append(out.Notes, "Estimates: the final sync copies every file set and every dumped database again with the application locked, waits for replicated databases to catch up, then redeploys the destination.")
 	return out
 }
 
@@ -220,6 +258,19 @@ func moveLockEstimate(job MoveJob) *MoveLockEstimate {
 	estimate := &MoveLockEstimate{Basis: "this move's bulk copy"}
 	switch {
 	case measured:
+		if saved := moveIncrementalSavings(job) + moveClickHouseSavings(job); saved > 0 {
+			// An engine whose plan expects an incremental final sync
+			// (PostgreSQL tables with a watermark, ClickHouse with a kept
+			// base) takes the plan's share of its measured bulk time.
+			seconds = max(seconds-saved, 0)
+			estimate.Basis = "this move's bulk copy, less the data synced incrementally"
+		}
+		if saved := moveReplicatedSavings(job); saved > 0 {
+			// A replicated database's initial sync is not repeated: the
+			// locked sync waits for the lag only.
+			seconds = max(seconds-saved, 0)
+			estimate.Basis = "this move's bulk copy, less the databases that replicate continuously"
+		}
 		estimate.Seconds = seconds + deploy + moveFreezeOverhead
 	case job.Plan.Estimate != nil:
 		estimate.Seconds, estimate.Basis = job.Plan.Estimate.FinalSeconds, "the plan's estimate ("+job.Plan.Estimate.Basis+")"
@@ -249,7 +300,7 @@ func (c *Control) movePlanEstimate(ctx context.Context, plan MovePlan, source ag
 		entry := MoveDatabase{SourceID: d.ID, Copyable: true}
 		for _, p := range plan.Databases {
 			if p.ID == d.ID && p.Engine != moveEngineClickHouse {
-				entry.Excluded = p.ExcludedTables
+				entry.Excluded, entry.Replication = p.ExcludedTables, p.Replication
 			}
 		}
 		job.Databases = append(job.Databases, entry)
@@ -267,4 +318,32 @@ func (c *Control) movePlanEstimate(ctx context.Context, plan MovePlan, source ag
 		rates = c.moveEstimateRates(ctx, plan.SourceServer, plan.TargetServer, views, probe)
 	}
 	return c.moveEstimateEngines(ctx, job, rates, moveDeployDefault)
+}
+
+// moveIncrementalSavings is the time the plan expects the incremental
+// copies of excluded tables to save at the final sync, scaled to the
+// measured bulk copy of each database.
+func moveIncrementalSavings(job MoveJob) float64 {
+	if job.Plan.Estimate == nil {
+		return 0
+	}
+	saved := 0.0
+	for _, entry := range job.Plan.Estimate.Engines {
+		if entry.Kind != moveEnginePostgres || entry.FinalBasis == "" || entry.BulkSeconds <= 0 || len(moveIncrementalTables(moveDatabaseOf(job, entry.Object))) == 0 {
+			continue
+		}
+		if cp, ok := job.Checkpoints[moveCheckpointKey(movePhaseBulk, moveEnginePostgres, entry.Object)]; ok && cp.Done != nil && cp.Seconds > 0 {
+			saved += cp.Seconds * (1 - entry.FinalSeconds/entry.BulkSeconds)
+		}
+	}
+	return saved
+}
+
+func moveDatabaseOf(job MoveJob, source string) MoveDatabase {
+	for _, d := range job.Databases {
+		if d.SourceID == source {
+			return d
+		}
+	}
+	return MoveDatabase{}
 }

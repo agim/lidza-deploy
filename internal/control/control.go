@@ -134,6 +134,14 @@ type Control struct {
 	moveStallCancel time.Duration
 	// moveProbes caches disk probes of servers for estimates.
 	moveProbes map[string]moveProbeResult
+	// moveTunnels are the running replication tunnels through the panel by
+	// move and database (move_tunnel.go), guarded by moveTunnelMu.
+	moveTunnelMu sync.Mutex
+	moveTunnels  map[string]*moveTunnel
+	// activityCache is the fleet's deployment read for the activity
+	// drawer (activity.go), reused for activityCacheFor.
+	activityMu    sync.Mutex
+	activityCache *activityFleet
 }
 
 func New(cfg Config) (*Control, error) {
@@ -276,6 +284,9 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if err := q.Schedule("move.tick", jobs.Every(time.Minute), nil); err != nil {
 		return err
 	}
+	// Moves that replicate through the panel get their tunnels back at once
+	// after a restart, not only at the first tick.
+	c.moveTunnelSync()
 	q.Handle("backups.retention", func(ctx context.Context, _ json.RawMessage) error { return c.retentionTick(ctx) }, jobs.Concurrency(1))
 	if err := q.Schedule("backups.retention", jobs.Every(6*time.Hour), nil); err != nil {
 		return err
@@ -381,7 +392,9 @@ func (c *Control) agentRequest(r *http.Request, target Server, method, path stri
 			}
 			return errors.New("hosting agent connection interrupted; command outcome is unknown. Check agent connectivity before running the command again")
 		}
-		return errors.New("agent unavailable")
+		// The cause (a refused connection, a handshake or a deadline)
+		// follows the generic text so job logs say what failed.
+		return fmt.Errorf("agent unavailable: %s", moveBounded(err.Error(), 200))
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
@@ -526,6 +539,7 @@ func (c *Control) routes(handle func(string, http.HandlerFunc)) {
 	handle("GET /api/control/apps/{id}/errors", c.appErrors)
 	handle("GET /api/control/apps/{id}/security", c.appErrors)
 	handle("GET /api/control/apps/{id}/analytics-errors", c.analyticsErrors)
+	handle("GET /api/control/activity", c.activity)
 	handle("GET /api/control/deployments", c.deployments)
 	handle("GET /api/control/deployments/{id}", c.deployment)
 	handle("GET /api/control/deliveries", c.deliveries)
