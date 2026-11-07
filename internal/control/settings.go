@@ -130,6 +130,10 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if owner := redirectedHostOwner(c.data.Apps, spec.Hostnames()); owner != "" {
+		agent.Fail(w, 409, errors.New("domain already registered as a redirect domain of "+owner))
+		return
+	}
 	if len(input.EnvKindChanges) > 0 {
 		var current agent.Settings
 		if err := c.agentCall(r, old.ServerID, "GET", "/v1/apps/"+old.ID+"/settings", nil, &current); err != nil {

@@ -102,7 +102,10 @@ func (m *Manager) offsiteRetentionPlan(ctx context.Context, ids []string) (reten
 	for _, target := range targets {
 		listed, err := store.List(ctx, retention.Prefix(target.id), offsiteRetentionListLimit)
 		if err != nil {
-			return retention.Plan{}, cfg, fmt.Errorf("could not list off-site backups of %s; check ListBucket permission", target.id)
+			if offsiteAccessDenied(err) {
+				return retention.Plan{}, cfg, fmt.Errorf("could not list off-site backups of %s; check ListBucket permission", target.id)
+			}
+			return retention.Plan{}, cfg, fmt.Errorf("could not list off-site backups of %s: temporary off-site storage error; retried on the next run", target.id)
 		}
 		if len(listed) >= offsiteRetentionListLimit {
 			plans = append(plans, retention.KeepAll(target.id, retention.StatusProtected, "too many objects to plan safely", nil))

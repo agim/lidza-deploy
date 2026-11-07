@@ -129,6 +129,7 @@ func (m *Manager) maintenanceTick(now time.Time) {
 		return
 	}
 	m.hostTick(now)                // host updates, reboot window and firewall rollback (host_common.go)
+	m.resourceTuningTick(now)      // data service sizing at start and hourly (resource_tuning_apply.go)
 	m.moveReplicationSweep(now)    // publications and slots of moves that never tore them down (move_replication.go)
 	m.startClickHouseLogsTick(now) // system log retention (clickhouse_system_logs.go)
 	m.mu.Lock()

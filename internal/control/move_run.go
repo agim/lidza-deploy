@@ -32,7 +32,7 @@ var (
 )
 
 func (c *Control) startMoveRunner(ctx context.Context, id string) {
-	go c.runMove(ctx, id)
+	c.moveWork.goWith(ctx, func(ctx context.Context) { c.runMove(ctx, id) })
 }
 
 func (c *Control) claimMove(id string) bool {
@@ -308,10 +308,35 @@ func (c *Control) movePrepare(ctx context.Context, id string) error {
 		return err
 	}
 	job, _ = c.moveJob(id)
+	var err error
 	if job.TargetRuntime == moveRuntimeNative {
-		return c.movePrepareNative(ctx, job)
+		err = c.movePrepareNative(ctx, job)
+	} else {
+		err = c.movePrepareContainer(ctx, job)
 	}
-	return c.movePrepareContainer(ctx, job)
+	if err != nil {
+		return err
+	}
+	job, _ = c.moveJob(id)
+	return c.moveCarryRedirects(ctx, job, moveStepPrepare)
+}
+
+// moveCarryRedirects recreates the application's redirect domains on the
+// destination. Replacing them is idempotent, so retries repeat it.
+func (c *Control) moveCarryRedirects(ctx context.Context, job MoveJob, step string) error {
+	list := job.Target.RedirectDomains
+	if len(list) == 0 {
+		return nil
+	}
+	var view agent.RedirectView
+	if err := c.moveCall(ctx, time.Minute, job.TargetServer, http.MethodPut, "/v1/apps/"+url.PathEscape(job.AppID)+"/redirects", agent.RedirectRequest{Redirects: list}, &view); err != nil {
+		return moveOn(job.TargetServer, fmt.Errorf("the destination did not accept the redirect domains: %w", err))
+	}
+	c.moveLog(job.ID, step, "Recreated %d redirect %s on the destination: %s.", len(list), pluralWord(len(list), "domain", "domains"), strings.Join(agent.RedirectHosts(list), ", "))
+	if view.Note != "" {
+		c.moveLog(job.ID, step, "%s", view.Note)
+	}
+	return nil
 }
 
 // moveBackupStorage sends off-site storage to the destination when a

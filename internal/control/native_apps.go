@@ -25,7 +25,8 @@ func (c *Control) nativeContainerGuard(pattern string, next http.HandlerFunc) ht
 		if app, found := c.app(r.PathValue("id")); found && app.Native != nil {
 			// Moves handle both runtimes through their own agent endpoints;
 			// removal uses the native removal of the agent (retire.go).
-			if pattern == "DELETE /api/control/apps/{id}/webhook" || pattern == "DELETE /api/control/apps/{id}" || strings.HasSuffix(pattern, "/{id}/move") || strings.HasSuffix(pattern, "/{id}/move-plan") {
+			// Stop, start and restart work for every runtime (app_lifecycle.go).
+			if pattern == "DELETE /api/control/apps/{id}/webhook" || pattern == "DELETE /api/control/apps/{id}" || strings.HasSuffix(pattern, "/{id}/move") || strings.HasSuffix(pattern, "/{id}/move-plan") || appLifecyclePatterns[pattern] {
 				next(w, r)
 				return
 			}
@@ -67,6 +68,10 @@ func (c *Control) nativeContainerGuard(pattern string, next http.HandlerFunc) ht
 			// activity come from the agent's console collector (journals for
 			// native units), logs and processes from the native service routes.
 			switch pattern {
+			case "GET /api/control/apps/{id}/redirects", "PUT /api/control/apps/{id}/redirects":
+				// Redirect domains are served by the agent for every runtime.
+				next(w, r)
+				return
 			case "GET /api/control/apps/{id}/settings", "GET /api/control/apps/{id}/logs", "GET /api/control/apps/{id}/processes",
 				"GET /api/control/apps/{id}/errors", "GET /api/control/apps/{id}/security", "GET /api/control/apps/{id}/analytics-errors":
 				next(w, r)

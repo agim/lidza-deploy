@@ -6,6 +6,7 @@ import { Activity, BookOpen, CheckCircle2, ChevronDown, ClipboardList, Clock3, K
 import { type FormEvent, useEffect, useState } from 'react';
 import { del, get, patch, post, put } from '../lib/api';
 import { formatDate } from '../lib/format';
+import { searchHelp } from '../lib/help';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
 import { ActionForm, Badge, Button, Card, CopyButton, LogOutputHeader, EmptyState, ErrorBanner, Field, Loading, Notice, PageHeader, SearchField, SectionHeader, Tabs } from '../components/ui';
@@ -136,6 +137,10 @@ export function UpdatesPage() {
     } finally { setChannelBusy(false); }
   };
 
+  // The bound repository is the field's value (not its placeholder) until the operator edits it.
+  const boundRepository = data?.channel?.repository || '';
+  useEffect(() => { if (boundRepository) setRepository(current => current || boundRepository); }, [boundRepository]);
+
   const settings = data?.settings || {};
   const channel = data?.channel || {};
   const privateChannel = Boolean(channel.configured);
@@ -164,7 +169,7 @@ export function UpdatesPage() {
           {channel.bundle_version && <div><div><strong>Verified release</strong><small>{channel.bundle_version}{channel.key_id ? ` · signed by ${channel.key_id}` : ''}</small></div></div>}
           {settings.check_error && <div><div><strong>Last check</strong><small>{settings.check_error}</small></div></div>}
         </div>
-        <ActionForm onSubmit={event => { event.preventDefault(); void saveChannel(repository.trim()); }}><div className="form-grid two"><Field label="Release repository" hint="owner/name, readable by the connected GitHub App"><Input value={repository} onChange={event => setRepository(event.target.value)} placeholder={channel.repository || 'owner/deploy-private'} disabled={channelBusy || inProgress} /></Field></div><div className="sticky-actions"><Button variant="primary" disabled={channelBusy || inProgress || !repository.trim()}>{channelBusy ? 'Saving…' : 'Bind channel'}</Button>{privateChannel && <Button variant="danger" type="button" disabled={channelBusy || inProgress} onClick={() => void saveChannel('')}>Clear channel</Button>}</div></ActionForm>
+        <ActionForm onSubmit={event => { event.preventDefault(); void saveChannel(repository.trim()); }}><div className="form-grid two"><Field label="Release repository" hint="owner/name, readable by the connected GitHub App"><Input value={repository} onChange={event => setRepository(event.target.value)} placeholder="owner/deploy-private" disabled={channelBusy || inProgress} /></Field></div><div className="sticky-actions"><Button variant="primary" disabled={channelBusy || inProgress || !repository.trim() || repository.trim() === boundRepository}>{channelBusy ? 'Saving…' : 'Bind channel'}</Button>{privateChannel && <Button variant="danger" type="button" disabled={channelBusy || inProgress} onClick={() => void saveChannel('')}>Clear channel</Button>}</div></ActionForm>
       </Card>}
       <Card><SectionHeader title="Hosting agents" description="The durable queue waits for deployments, backups, restores and scheduled commands to finish, then updates one host at a time." /><div className="simple-list">{(data.servers || []).map(server => { const target = targetByServer.get(server.server_id); const state = target?.state || server.state || (server.current === latest ? 'current' : 'idle'); const message = target?.message || server.message || server.error; return <div key={server.server_id}><div><strong>{server.name || server.server_id}</strong><small>{server.current || 'unknown'} · {state}{message ? ` · ${message}` : ''}</small></div><Badge tone={state === 'succeeded' || state === 'current' ? 'success' : state === 'failed' || Boolean(server.error) ? 'danger' : state === 'waiting' || state === 'updating' ? 'warning' : 'neutral'}>{state}</Badge></div>; })}</div><label className="check-row"><Input type="checkbox" checked={Boolean(settings.automatic)} disabled={policyBusy || inProgress || !automaticSupported} onChange={event => void setAutomatic(event.target.checked)} /><span><strong>{privateBuild ? 'Automatically install verified private releases' : 'Automatically install stable releases'}</strong><small>{automaticSupported ? 'Uses the same durable queue and never interrupts deployments, backups or restores.' : 'Bind the private update channel first.'}</small></span></label></Card>
     </div>}
@@ -351,8 +356,12 @@ export function ActivityPage({ security = false, selectedID }: { security?: bool
 }
 
 export function HelpPage() {
-  const guides = [{ title: 'First administrator', body: 'Set ADMIN_USERS to a JSON array of user IDs or email addresses before the first sign-in.' }, { title: 'Database migrations', body: 'DB_MIGRATE=true is included for new applications. Keep migrations backward compatible during zero-downtime activation.' }, { title: 'Environment variables', body: 'Use Setting for non-sensitive values and Credential for secrets. Saved credentials stay encrypted and masked.' }, { title: 'Backups and recovery', body: 'Keep local and private off-site copies. Regularly test restoration into a separate database.' }, { title: 'DNS and HTTPS', body: 'Point every A and AAAA record to the hosting server. The agent rechecks DNS and Caddy issues HTTPS when all records arrive.' }];
-  return <><PageHeader eyebrow="Documentation" title="Help" description="Short operational guides attached to the workflows you use." /><div className="help-grid">{guides.map(guide => <Card key={guide.title}><BookOpen size={20} /><h2>{guide.title}</h2><p>{guide.body}</p></Card>)}</div><ComponentGallery /></>;
+  const [query, setQuery] = useState('');
+  const articles = searchHelp(query);
+  return <><PageHeader eyebrow="Documentation" title="Help" description="Short operational guides attached to the workflows you use." actions={<SearchField value={query} onChange={event => setQuery(event.target.value)} placeholder="Search help…" aria-label="Search help" />} />
+    <div className="help-grid">{articles.map(article => <Card key={article.id} id={`help-${article.id}`} data-help-article={article.id}><BookOpen size={20} /><h2>{article.title}</h2>{article.body.map(paragraph => <p key={paragraph}>{paragraph}</p>)}</Card>)}</div>
+    {!articles.length && <EmptyState icon={<BookOpen />} title="No matching guide" description="Try another word, such as redirect, delete, move or backup." />}
+    <ComponentGallery /></>;
 }
 
 export function TwoFactorPage() {

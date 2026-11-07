@@ -169,6 +169,7 @@ func (m *Manager) runDomainChecks(ctx context.Context, interval time.Duration, c
 				apps = append(apps, item)
 			}
 		}
+		apps = append(apps, m.redirectChecks()...)
 		live := map[string]string{}
 		for _, a := range apps {
 			if a.Current != nil && !a.Retiring {
@@ -249,13 +250,19 @@ func (m *Manager) checkAppDomainContext(parent context.Context, a App, port stri
 func (m *Manager) setDomainStatus(a App, status DomainStatus) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if strings.HasPrefix(checkKey(a), redirectStatusPrefix) {
+		if m.redirectOwnersLocked()[a.Domain] == a.ID {
+			m.domains[checkKey(a)] = status
+		}
+		return
+	}
 	current, ok := m.data.Apps[a.ID]
 	if ok && current.HasDomain(a.Domain) && domainStatusKey(current, a.Domain) == checkKey(a) && !current.Retiring {
 		m.domains[checkKey(a)] = status
 	}
 }
 func (m *Manager) serveDomainProof(w http.ResponseWriter, r *http.Request, domain string) {
-	if m.cfg.reservedHostname(domain) {
+	if m.hostReserved(domain) {
 		http.NotFound(w, r)
 		return
 	}
@@ -264,25 +271,43 @@ func (m *Manager) serveDomainProof(w http.ResponseWriter, r *http.Request, domai
 		http.NotFound(w, r)
 		return
 	}
+	// Created native applications and redirect domains are proven even on
+	// a host without container applications.
+	owned := m.nativeCreatedDomain(domain) || m.redirectHost(domain)
 	for _, a := range m.Apps() {
-		if a.HasDomain(domain) && !a.Retiring || m.nativeCreatedDomain(domain) {
-			w.Header().Set("Cache-Control", "no-store")
-			w.Header().Set("Content-Type", "text/plain")
-			io.WriteString(w, challengeProof(m.domainProof(domain), nonce))
-			return
+		if a.HasDomain(domain) && !a.Retiring {
+			owned = true
+			break
 		}
 	}
-	http.NotFound(w, r)
+	if !owned {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/plain")
+	io.WriteString(w, challengeProof(m.domainProof(domain), nonce))
 }
 
 // Certificate authorization uses a fresh route check, so an old successful
 // DNS result cannot authorize issuance after DNS is moved away from this host.
 func (m *Manager) domainAllowed(ctx context.Context, domain string) bool {
-	if m.cfg.reservedHostname(strings.ToLower(domain)) {
+	if m.hostReserved(strings.ToLower(domain)) {
 		return false
+	}
+	if m.controlDomainAllowed(domain) {
+		return true
 	}
 	if allowed, matched := m.nativeCreatedDomainAllowed(ctx, domain); matched {
 		return allowed
+	}
+	if m.redirectHost(strings.ToLower(domain)) {
+		if m.cfg.TLSListen == "" {
+			return true
+		}
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return checkDomainRoute(ctx, strings.ToLower(domain), m.domainProof(strings.ToLower(domain)), net.DefaultResolver.LookupIP, "80") == nil
 	}
 	for _, a := range m.Apps() {
 		if a.HasDomain(strings.ToLower(domain)) && !a.Retiring {

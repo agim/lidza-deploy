@@ -11,7 +11,13 @@ import (
 // Read legacy private JSON once; NewManager atomically replaces it with sealed
 // state before serving requests. Never fall back when a sealed file cannot open.
 func (m *Manager) load() error {
-	decode := func(raw []byte) error { return json.Unmarshal(raw, &m.data) }
+	decode := func(raw []byte) error {
+		if err := json.Unmarshal(raw, &m.data); err != nil {
+			return err
+		}
+		m.syncReleasedReservations()
+		return nil
+	}
 	data, err := os.ReadFile(m.path())
 	if os.IsNotExist(err) {
 		return nil

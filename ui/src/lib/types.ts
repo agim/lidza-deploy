@@ -61,8 +61,35 @@ export interface DomainStatus {
   recheck_seconds?: number;
 }
 
+/** A hostname that redirects (301 by default) to one of the application's hostnames or any other. */
+export interface RedirectDomain {
+  host: string;
+  /** Empty: the application's primary hostname. */
+  target?: string;
+  status?: number;
+  keep_path: boolean;
+}
+
+/** The redirect domains of an application, how its server serves them and the records their DNS needs. */
+export interface RedirectDomainsView {
+  redirects: RedirectDomain[];
+  hostnames: string[];
+  statuses?: DomainStatus[];
+  ingress: 'agent' | 'caddy' | 'caddyfile' | string;
+  detail: string;
+  note?: string;
+  server_id: string;
+  addresses: string[];
+  records: Array<{ hostname: string; type: string; value: string; note?: string }>;
+  warnings: string[];
+}
+
 export interface Application {
- management_capabilities?: {deploy?:boolean;rollback?:boolean;configure?:boolean;environment?:boolean;remove?:boolean};
+ management_capabilities?: {deploy?:boolean;rollback?:boolean;configure?:boolean;environment?:boolean;remove?:boolean;
+  /** The application can be stopped, started and restarted from the panel; lifecycle_reason says why not. */
+  lifecycle?:boolean;lifecycle_reason?:string;
+  /** A native application adopted from the existing host setup. */
+  adopted?:boolean};
   native?: { id: string; name: string; services: string[]; runtime?: string; document_root?:string };
   observed?: { name: string; source: string; processes: string[]; observed_at: string; automatic?: boolean; missing?: boolean };
   runtime?: "go" | "rails" | "astro";
@@ -76,6 +103,7 @@ export interface Application {
   branch: string;
   domain: string;
   additional_domains?: string[];
+  redirect_domains?: RedirectDomain[];
   domain_statuses?: DomainStatus[];
   auto_deploy?: boolean;
   customer_hosts?: boolean;
@@ -87,6 +115,8 @@ export interface Application {
   previous?: { commit?: string };
   domain_status?: DomainStatus;
   agent_error?: string;
+  /** Conditions of the current release to fix, such as a mail port without a certificate. */
+  warnings?: string[];
   maintenance?: { enabled?: boolean };
   previews?: { enabled?: boolean; database?: boolean; base_domain?: string };
   /** The application's active move; locked during its final sync, when changes are refused until it finishes or is aborted. */
@@ -141,7 +171,7 @@ export interface AppSettings extends Application {
  defaults_runtime?: 'go' | 'rails' | 'astro' | 'node';
  release_runtime?: string;
  build_configuration_supported?: boolean;
- capabilities?: {routing?:boolean;resources?:boolean;runtime_mode?:boolean;configure:boolean;environment:boolean;deploy:boolean;reload:boolean;rollback:boolean;processes:boolean;logs:boolean;reason?:string};
+ capabilities?: {routing?:boolean;resources?:boolean;runtime_mode?:boolean;configure:boolean;environment:boolean;deploy:boolean;reload:boolean;rollback:boolean;processes:boolean;logs:boolean;reason?:string;remove?:boolean;lifecycle?:boolean;lifecycle_reason?:string;adopted?:boolean};
  public_ports_supported?: boolean;
  master_key_generation_supported?: boolean;
  stack_profiles_supported?: boolean;
@@ -206,7 +236,7 @@ export interface WorkspaceData {
 export type PageKey =
   | 'applications' | 'deployments' | 'errors' | 'security' | 'servers'
   | 'databases' | 'remote-backups' | 'integrations' | 'defaults' | 'updates'
-  | 'team' | 'audit' | 'help' | 'new-application' | 'detail' | 'not-found';
+  | 'team' | 'audit' | 'help' | 'control-panel' | 'new-application' | 'deleted-apps' | 'detail' | 'not-found';
 
 export interface Route {
   page: PageKey;
@@ -345,3 +375,20 @@ export interface HostIngressStatus {
 export interface HostErrorPageRoot { server: string; root: string; exists: boolean; hosts: string[] }
 export interface HostErrorPages { dir: string; ready: boolean; problem?: string; caddy_user?: string; managed: number; unmanaged?: HostErrorPageRoot[]; unmanaged_hosts: number; detail?: string }
 export interface HostFirewallPlan { changes: { action: string; command: string }[]; unmanaged?: string[]; kept?: string[]; warnings?: string[]; fingerprint: string; confirm_seconds: number }
+export type RedisUse = 'cache' | 'queue' | 'persistent';
+export interface TuningOverrides { paused?: boolean; postgres?: Record<string, string>; connection_caps?: Record<string, number>; redis_max_memory_mib?: Record<string, number>; redis_use?: Record<string, RedisUse>; clickhouse_memory_ratio?: number }
+export interface TuningSetting { name: string; current?: string; computed: string; override?: string; target: string; restart?: boolean; pending?: boolean; formula?: string }
+export interface TuningCap { app_id: string; role: string; current: number; computed: number; override?: number; target: number; in_use: number; peak: number; pool?: number; pool_source?: string; superuser?: boolean; deferred?: boolean; warning?: string }
+export interface TuningRedisApp { app_id: string; dbs?: number[]; use: RedisUse; use_source: 'override' | 'probe' | 'default'; can_move?: boolean; move_blocked?: string }
+export interface TuningRedis { id: string; kind: 'shared' | 'own' | 'container'; apps: TuningRedisApp[]; used_bytes: number; max_bytes: number; policy?: string; target_mib: number; target_policy: string; override?: number; alert?: boolean; note?: string; error?: string }
+export interface TuningClickHouse { id: string; kind: 'native' | 'container'; users: number; current_ratio?: number; target_ratio: number; server_mib: number; query_memory_mib: number; override?: number }
+export interface TuningContainer { app_id: string; kind: string; container: string; settings: TuningSetting[]; note?: string }
+export interface TuningChange { resource: string; setting: string; old: string; new: string; apply: 'reload' | 'restart' | 'live' | 'next-restart' | 'deferred'; note?: string }
+export interface RedisMigration { app_id: string; dbs: number[]; use: RedisUse; status: 'running' | 'succeeded' | 'failed'; step?: string; copied?: number; started: string; finished?: string; error?: string }
+export interface ResourceTuningView {
+  supported: boolean; reason?: string; host: { cpus: number; memory_mib: number; disk_gib: number; rotational?: boolean }; apps: number; computed?: string; paused?: boolean;
+  overrides: TuningOverrides;
+  postgres?: { cluster: string; port: number; settings: TuningSetting[]; app_pool: number; headroom: number; in_use: number; conf_file?: string; note?: string };
+  caps?: TuningCap[]; redis?: TuningRedis[]; clickhouse?: TuningClickHouse[]; containers?: TuningContainer[]; changes?: TuningChange[];
+  pending_restart?: string[]; restart_note?: string; next_window?: string; warnings?: string[]; running?: boolean; migrations?: RedisMigration[]; jobs?: HostJob[];
+}

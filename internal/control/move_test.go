@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -699,6 +698,7 @@ type moveFixture struct {
 func (fx *moveFixture) wire(c *Control) *Control {
 	c.moveResolver, c.moveProbe, c.movePollInterval = fx.resolver, fx.probe.probe, time.Millisecond
 	c.moveRetryDelays = []time.Duration{time.Millisecond}
+	c.moveTunnelBackoff, c.moveTunnelDialLimit = 5*time.Millisecond, 2*time.Second
 	c.credentialsFixture = func(_ context.Context, a Application, key string) (agent.DeployRequest, error) {
 		return agent.DeployRequest{Key: key, Token: "short-lived-checkout"}, nil
 	}
@@ -706,6 +706,7 @@ func (fx *moveFixture) wire(c *Control) *Control {
 }
 
 func newMoveFixture(t *testing.T) *moveFixture {
+	moveIsolate(t)
 	fx := &moveFixture{a: newMoveFake(t), b: newMoveFake(t), resolver: &moveResolverFake{answers: map[string][]string{}}, probe: &moveProbeFake{}}
 	fx.cfg = Config{PublicURL: "https://deploy.example.com", User: "operator@example.com", Key: []byte(strings.Repeat("k", 32)), DataDir: t.TempDir(),
 		Servers: []Server{{ID: "alpha", Name: "Alpha", URL: fx.a.srv.URL, Token: moveTestToken}, {ID: "beta", Name: "Beta", URL: fx.b.srv.URL, Token: moveTestToken}}}
@@ -714,14 +715,7 @@ func newMoveFixture(t *testing.T) *moveFixture {
 		t.Fatal(err)
 	}
 	fx.c = fx.wire(c)
-	t.Cleanup(func() {
-		c.moveTunnelMu.Lock()
-		running := maps.Clone(c.moveTunnels)
-		c.moveTunnelMu.Unlock()
-		for _, tunnel := range running {
-			c.moveTunnelStop(tunnel.move, tunnel.sourceDB)
-		}
-	})
+	moveStopWork(t, c)
 	fx.b.host = agent.MoveHost{IPv4: moveTestTargetIP, IPv6: moveTestTargetIP6, Native: true, HostData: true}
 	fx.resolver.set("shop.example.com", moveTestSourceIP)
 	fx.resolver.set("www.shop.example.com", moveTestSourceIP)

@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "vite --config ui/vite.config.ts",
     "build": "vite build --config ui/vite.config.ts",
-    "typecheck": "tsc -p ui/tsconfig.json --noEmit",
+    "typecheck": "tsc -p ui/tsconfig.json --noEmit && npm run lint:spacing",
+    "lint": "npm run lint:spacing",
+    "lint:spacing": "node scripts/check-spacing.mjs",
     "test:ui": "vitest run --config ui/vitest.config.ts",
-    "test:console": "node tests/browser/template-redesign.cjs && node tests/browser/template-workflows.cjs && node tests/browser/template-failures.cjs"
+    "test:console": "node tests/browser/layout-spacing.cjs && node tests/browser/template-redesign.cjs && node tests/browser/template-workflows.cjs && node tests/browser/template-failures.cjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.2.8",

@@ -40,6 +40,10 @@ type job struct {
 	token         string
 }
 type Manager struct {
+	// releasedReservations mirrors State.ReleasedReservations for
+	// reservation checks made with or without m.mu held.
+	releasedReservations atomic.Pointer[map[string]string]
+
 	// moveTransfers counts running move exports, downloads and restores; an
 	// agent upgrade waits for them because it restarts the agent.
 	moveTransfers      atomic.Int64
@@ -85,6 +89,7 @@ type Manager struct {
 	ingressDetected            *HostIngressStatus
 	domainWake                 chan struct{}
 	domains                    map[string]DomainStatus
+	mailProbes                 map[string]mailProbeResult // latest mail-port probe by application (mail_tls.go)
 	databaseSlots              chan struct{}
 	mu                         sync.Mutex
 	removing                   map[string]bool
@@ -271,6 +276,8 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	if _, ok := rt.(*Docker); ok {
 		m.wg.Add(1)
 		go m.serviceTLSLoop()
+		m.wg.Add(1)
+		go m.mailProbeLoop()
 	}
 	m.wg.Add(1)
 	go m.work()
@@ -278,6 +285,14 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	go m.consoleLoop()
 	m.wg.Add(1)
 	go m.hostIngressLoop()
+	m.wg.Add(1)
+	go m.controlRouteLoop()
+	m.wg.Add(1)
+	go m.redirectLoop()
+	m.wg.Add(1)
+	go m.archiveLoop()
+	m.wg.Add(1)
+	go m.archiveLeftoversLoop()
 	m.wg.Add(1)
 	go m.swapLoop()
 	m.migrateConsoleService()
@@ -314,7 +329,9 @@ func (m *Manager) Apps() []App {
 		a.EnvKinds = nil
 		a.DomainStatus = nil
 		a.AdditionalDomains = slices.Clone(a.AdditionalDomains)
+		a.RedirectDomains = slices.Clone(m.data.Redirects[a.ID])
 		a.DomainStatuses = m.domainStatusesLocked(a)
+		a.Warnings = m.mailWarningsLocked(a)
 		if m.cfg.TLSListen != "" {
 			status, ok := m.domains[a.ID]
 			if !ok || status.Domain != a.Domain {
@@ -402,6 +419,10 @@ func (m *Manager) Upsert(a App) error {
 	if err := m.checkNativeDomainsLocked(a); err != nil {
 		return err
 	}
+	if err := m.checkRedirectHostsLocked(a.Hostnames(), ""); err != nil {
+		return err
+	}
+	a.RedirectDomains = nil
 	if m.removing[a.ID] || m.data.Caches[a.ID].Operation {
 		return errors.New("application cleanup or cache operation is active")
 	}
@@ -851,6 +872,7 @@ func (m *Manager) work() {
 			m.mu.Unlock()
 			if err == nil {
 				m.wakeDomains()
+				m.checkReleaseMail(ctx, j, release)
 			}
 			cancel()
 			cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)

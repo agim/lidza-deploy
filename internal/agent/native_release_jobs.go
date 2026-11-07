@@ -112,6 +112,9 @@ func (m *Manager) enqueueNativeRelease(id string, req nativeReleaseRequest, roll
 	if err != nil {
 		return Deployment{}, err
 	}
+	if _, stopped := m.nativeStopped(id); stopped {
+		return Deployment{}, errors.New("application is stopped; start it before deploying")
+	}
 	intent := nativeReleaseIntent{Rollback: rollback}
 	if rollback {
 		if req.Release != "" && !release.ValidID(req.Release) {

@@ -60,3 +60,16 @@ it('saves profile selection and preserves it when switching to environment', asy
   await waitFor(() => expect(requests.some(request => request.method === 'PATCH')).toBe(true));
   expect(JSON.parse(String(requests.find(item => item.method === 'PATCH')?.body))).toMatchObject({ runtime_profile: 'standard', domain: 'portal.example.com', branch: 'main' });
 });
+
+it('ends General with a Danger zone that stops, starts and deletes the application', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ id: 'ledger', server_id: 'host', runtime: 'rails', repository: 'acme/ledger', branch: 'main', domain: 'ledger.example.com', native: { id: 'ledger', name: 'Ledger', services: ['ledger-server.service'] }, stopped: true, environment: [], capabilities: { configure: true, environment: true, deploy: true, reload: false, rollback: true, processes: true, logs: true, remove: true, lifecycle: true, adopted: true } }) })));
+  const { container } = render(<AppSettingsPage appID="ledger" />);
+  const zone = await screen.findByText('Danger zone');
+  expect(container.querySelector('[data-danger-zone="ledger"]')).toContainElement(zone);
+  expect(screen.getByRole('button', { name: 'Start application' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Delete application' })).toBeEnabled();
+  // The zone sits after the settings form, so its dialogs never submit it.
+  expect(container.querySelector('form#settings-form [data-danger-zone]')).toBeNull();
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Environment' }), { button: 0, ctrlKey: false });
+  await waitFor(() => expect(screen.queryByText('Danger zone')).not.toBeInTheDocument());
+});

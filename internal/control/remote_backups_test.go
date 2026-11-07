@@ -88,7 +88,7 @@ func TestRemoteBackupListingFailure(t *testing.T) {
 }
 
 func TestSpacesBucketURLUsesFrameworkAddressingOption(t *testing.T) {
-	cfg := storage.Config{Provider: "s3", Endpoint: "https://kova.nyc3.digitaloceanspaces.com", Bucket: "kova", Region: "nyc3", AccessKey: "access", SecretKey: "secret", Prefix: "saved"}
+	cfg := storage.Config{Provider: "s3", Endpoint: "https://acme-backups.nyc3.digitaloceanspaces.com", Bucket: "acme-backups", Region: "nyc3", AccessKey: "access", SecretKey: "secret", Prefix: "saved"}
 	correct := backupStorageConfig(cfg)
 	if correct.PathStyle == nil || *correct.PathStyle {
 		t.Fatal("bucket-specific endpoint still uses path-style")
@@ -102,7 +102,7 @@ func TestSpacesBucketURLUsesFrameworkAddressingOption(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, _ := url.Parse(signed)
-	if u.Host != "kova.nyc3.digitaloceanspaces.com" || u.Path != "/saved/databases/app/snapshot.dump" {
+	if u.Host != "acme-backups.nyc3.digitaloceanspaces.com" || u.Path != "/saved/databases/app/snapshot.dump" {
 		t.Fatal("unexpected object location", u.Host, u.Path)
 	}
 	cfg.Endpoint = "https://nyc3.digitaloceanspaces.com"
@@ -112,7 +112,7 @@ func TestSpacesBucketURLUsesFrameworkAddressingOption(t *testing.T) {
 	c := &Control{}
 	c.data.BackupStorage = &cfg
 	_, legacy, configured := c.backupDestination()
-	if !configured || legacy != "kova/saved" {
+	if !configured || legacy != "acme-backups/saved" {
 		t.Fatal("regional endpoint lost older extra-folder backups", legacy)
 	}
 }
@@ -120,7 +120,7 @@ func TestSpacesBucketURLUsesFrameworkAddressingOption(t *testing.T) {
 func TestStoragePartialCredentialReplacementRejected(t *testing.T) {
 	c := &Control{}
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("PUT", "/", strings.NewReader(`{"endpoint":"https://nyc3.digitaloceanspaces.com","bucket":"kova","region":"nyc3","access_key":"replacement-only"}`))
+	r := httptest.NewRequest("PUT", "/", strings.NewReader(`{"endpoint":"https://nyc3.digitaloceanspaces.com","bucket":"acme-backups","region":"nyc3","access_key":"replacement-only"}`))
 	c.configureStorage(w, r)
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "enter both access and secret keys") {
 		t.Fatal(w.Code, w.Body)

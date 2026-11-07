@@ -49,10 +49,12 @@ func (c *Control) databases(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(unavailableIDs)
 	retained := []fleetRetainedResource{}
 	retainedUnavailable := []string{}
+	retainedUnavailableNames := []string{}
 	for _, result := range <-retainedResults {
 		var rows []agent.RetainedResourceView
 		if result.Err != nil || json.Unmarshal(result.Body, &rows) != nil {
 			retainedUnavailable = append(retainedUnavailable, result.Server.ID)
+			retainedUnavailableNames = append(retainedUnavailableNames, c.serverName(result.Server.ID))
 			continue
 		}
 		for _, row := range rows {
@@ -61,7 +63,7 @@ func (c *Control) databases(w http.ResponseWriter, r *http.Request) {
 	}
 	sortRetained(retained)
 	sort.Strings(retainedUnavailable)
-	agent.JSON(w, 200, map[string]any{"databases": list, "unavailable_servers": unavailable, "unavailable_server_ids": unavailableIDs, "retained_resources": retained, "retained_resources_unavailable_server_ids": retainedUnavailable})
+	agent.JSON(w, 200, map[string]any{"databases": list, "unavailable_servers": unavailable, "unavailable_server_ids": unavailableIDs, "retained_resources": retained, "retained_resources_unavailable_server_ids": retainedUnavailable, "retained_resources_unavailable_servers": retainedUnavailableNames})
 }
 func (c *Control) configureDatabase(w http.ResponseWriter, r *http.Request) {
 	a, ok := c.app(r.PathValue("id"))

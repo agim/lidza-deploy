@@ -184,6 +184,9 @@ func (c *Control) registerCreatedNative(r *http.Request, serverID string, instal
 			return Application{}, "", 409, errors.New("domain already registered")
 		}
 	}
+	if owner := redirectedHostOwner(c.data.Apps, spec.Hostnames()); owner != "" {
+		return Application{}, "", 409, errors.New("domain already registered as a redirect domain of " + owner)
+	}
 	warning := ""
 	if in.Data.Offsite {
 		switch {

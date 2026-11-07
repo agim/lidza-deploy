@@ -27,10 +27,10 @@ from unrelated configurations are not automatically searched. Use the storage
 provider's private bucket browser for the full inventory.
 
 For DigitalOcean Spaces, use the regional endpoint, for example
-`https://nyc3.digitaloceanspaces.com`, and enter `kova` separately as the bucket.
-Bucket-specific endpoints such as `https://kova.nyc3.digitaloceanspaces.com` are
+`https://nyc3.digitaloceanspaces.com`, and enter `acme-backups` separately as the bucket.
+Bucket-specific endpoints such as `https://acme-backups.nyc3.digitaloceanspaces.com` are
 normalized with the framework's addressing option. Older releases could write
-under an extra `kova/` folder. The inventory includes that previous layout and
+under an extra `acme-backups/` folder. The inventory includes that previous layout and
 labels its objects. A listing-permission failure for that layout produces an
 explicit partial-inventory warning. The extra-folder location is checked even if you previously corrected the URL.
 Saving configuration preserves its marker while the API destination, bucket and

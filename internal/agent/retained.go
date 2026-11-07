@@ -35,6 +35,9 @@ type RetainedResource struct {
 	Origin *RetainedOrigin `json:"origin,omitempty"`
 	// Error is why the last removal attempt failed.
 	Error string `json:"error,omitempty"`
+	// Archive is the deleted application (archive.go) that holds this
+	// data; such a resource is managed through its archive only.
+	Archive string `json:"archive,omitempty"`
 }
 
 // RetainedOrigin records the move a retained resource came from. A
@@ -112,9 +115,12 @@ type RetainedResourceView struct {
 	Copy   bool            `json:"copy,omitempty"`
 	// FinalBackupRequired is set when a database has no verified backup
 	// taken after its application stopped writing (never for a Copy).
-	FinalBackupRequired bool   `json:"final_backup_required"`
-	Removing            bool   `json:"removing,omitempty"`
-	Error               string `json:"error,omitempty"`
+	FinalBackupRequired bool `json:"final_backup_required"`
+	// DataSince is the earliest creation time of its volumes, when Docker
+	// reports one: when the data appeared here, for records without Created.
+	DataSince time.Time `json:"data_since,omitzero"`
+	Removing  bool      `json:"removing,omitempty"`
+	Error     string    `json:"error,omitempty"`
 }
 
 func (a App) resourceID() string {
@@ -194,5 +200,6 @@ func (m *Manager) resourceSnapshotLocked() diskState {
 	out.RetainedResources = maps.Clone(m.data.RetainedResources)
 	out.RetiredAppIDs = maps.Clone(m.data.RetiredAppIDs)
 	out.Tasks = maps.Clone(m.data.Tasks)
+	out.Redirects = maps.Clone(m.data.Redirects)
 	return out
 }

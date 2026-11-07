@@ -75,6 +75,10 @@ type RetainedDatabaseView struct {
 	// writing; without one, removal needs a final backup.
 	Covered    bool     `json:"covered"`
 	AttachedTo []string `json:"attached_to,omitempty"`
+	// Engine is postgresql or clickhouse; SizeBytes is its data volume's
+	// measured size (0 for a host database or until measured).
+	Engine    string `json:"engine"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
 }
 
 // RetainedRemoveRequest is the body of DELETE /v1/retained-resources/{id}.
@@ -83,6 +87,10 @@ type RetainedRemoveRequest struct {
 	Confirm string `json:"confirm"`
 	// FinalBackup takes a backup of every database first.
 	FinalBackup bool `json:"final_backup"`
+	// MoveLeftover removes data a move left (a resource with an origin)
+	// without a covering backup: the panel sends it when the application
+	// the data was copied from is deleted.
+	MoveLeftover bool `json:"move_leftover,omitempty"`
 }
 
 type dockerObject struct {
@@ -134,9 +142,10 @@ type retainedRuntime struct {
 }
 
 type retainedSize struct {
-	bytes int64
-	at    time.Time
-	ok    bool
+	bytes   int64
+	at      time.Time
+	ok      bool
+	created time.Time // the volume's creation time, when Docker reports it
 }
 
 var retainedRuntimes sync.Map // *Manager -> *retainedRuntime
@@ -225,8 +234,11 @@ func appDataObjects(storageVolume string, stack []string, cache CacheResource, c
 	return out
 }
 
-// retainedItemsLocked lists every removable retained resource.
-func (m *Manager) retainedItemsLocked() []retainedItem {
+// retainedItemsLocked lists every removable retained resource; the data
+// of deleted applications is managed through their archives.
+func (m *Manager) retainedItemsLocked() []retainedItem { return m.retainedItemsFilterLocked(false) }
+
+func (m *Manager) retainedItemsFilterLocked(includeArchived bool) []retainedItem {
 	var out []retainedItem
 	held := map[string]bool{}
 	for _, r := range m.data.RetainedResources {
@@ -241,6 +253,9 @@ func (m *Manager) retainedItemsLocked() []retainedItem {
 		}
 		if r.NativeData {
 			m.retainedNativeItemLocked(&it)
+		}
+		if r.Archive != "" && !includeArchived {
+			continue
 		}
 		out = append(out, it)
 	}
@@ -371,15 +386,14 @@ func (m *Manager) newestBackups(d Database) (local, offsite *BackupRecord) {
 	return local, offsite
 }
 
-// coveredLocked reports a verified backup taken at or after writesStopped.
-// An unknown time (older records) is never covered.
+// coveredLocked reports a verified backup taken at or after writesStopped,
+// or a verified final backup (taken for the removal, after the data's
+// application was gone). Without a known time (older records) only a
+// final backup covers.
 func (m *Manager) coveredLocked(id string, writesStopped time.Time) bool {
-	if writesStopped.IsZero() {
-		return false
-	}
 	d := m.data.Databases[id]
 	for _, b := range d.Backups {
-		if !b.Created.Before(writesStopped) && m.verifiedBackup(d, b) {
+		if (b.Kind == finalBackupKind || !writesStopped.IsZero() && !b.Created.Before(writesStopped)) && m.verifiedBackup(d, b) {
 			return true
 		}
 	}
@@ -418,7 +432,10 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 		}
 		for _, id := range it.databases {
 			d := m.data.Databases[id]
-			db := RetainedDatabaseView{ID: id, Covered: m.coveredLocked(id, it.writesStopped)}
+			db := RetainedDatabaseView{ID: id, Covered: m.coveredLocked(id, it.writesStopped), Engine: "postgresql"}
+			if m.data.NativeDatabases[id].Policy.ClickHouseDatabase != "" {
+				db.Engine = "clickhouse"
+			}
 			if d.Network != "" {
 				db.Volume = d.Network + "-data"
 			}
@@ -453,6 +470,14 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 			case size.ok:
 				c.SizeBytes, c.Measured = size.bytes, true
 				out[i].SizeBytes += size.bytes
+			}
+			if !size.created.IsZero() && (out[i].DataSince.IsZero() || size.created.Before(out[i].DataSince)) {
+				out[i].DataSince = size.created
+			}
+			for j := range out[i].Databases {
+				if out[i].Databases[j].Volume == c.Name {
+					out[i].Databases[j].SizeBytes = c.SizeBytes
+				}
 			}
 		}
 	}
@@ -490,6 +515,19 @@ var dockerVolumeSize = func(ctx context.Context, name string) (int64, error) {
 	return total, err
 }
 
+// dockerVolumeCreated is a volume's creation time, or zero.
+var dockerVolumeCreated = func(ctx context.Context, name string) time.Time {
+	out, err := command(ctx, "", nil, "docker", "volume", "inspect", "--format", "{{.CreatedAt}}", name)
+	if err != nil {
+		return time.Time{}
+	}
+	created, err := time.Parse(time.RFC3339, strings.TrimSpace(out))
+	if err != nil {
+		return time.Time{}
+	}
+	return created.UTC()
+}
+
 // measureRetainedSizes measures the volumes whose sizes are missing or
 // stale, one at a time.
 func (m *Manager) measureRetainedSizes(ctx context.Context, force bool) {
@@ -515,9 +553,10 @@ func (m *Manager) measureRetainedSizes(ctx context.Context, force bool) {
 		}
 		bounded, cancel := context.WithTimeout(ctx, retainedSizeTimeout)
 		bytes, err := dockerVolumeSize(bounded, name)
+		created := dockerVolumeCreated(bounded, name)
 		cancel()
 		rt.mu.Lock()
-		rt.sizes[name] = retainedSize{bytes: bytes, at: time.Now(), ok: err == nil}
+		rt.sizes[name] = retainedSize{bytes: bytes, at: time.Now(), ok: err == nil, created: created}
 		rt.mu.Unlock()
 	}
 }
@@ -585,6 +624,9 @@ func (m *Manager) beginRetainedRemoval(id string, req RetainedRemoveRequest, tri
 	if req.Confirm != id {
 		return retainedItem{}, HostJob{}, nil, errors.New("confirm the retained resource id to remove it")
 	}
+	if req.MoveLeftover && req.FinalBackup {
+		return retainedItem{}, HostJob{}, nil, errors.New("a move's leftover is removed without a final backup")
+	}
 	if m.upgradePending() {
 		return retainedItem{}, HostJob{}, nil, errors.New("agent upgrade in progress")
 	}
@@ -600,6 +642,12 @@ func (m *Manager) beginRetainedRemoval(id string, req RetainedRemoveRequest, tri
 	}
 	if item == nil {
 		return retainedItem{}, HostJob{}, nil, errRetainedNotFound
+	}
+	if req.MoveLeftover {
+		if item.origin == nil || item.origin.MoveID == "" {
+			return retainedItem{}, HostJob{}, nil, errors.New("this data was not left by a move; it needs a covering backup")
+		}
+		item.copy = true
 	}
 	rt.mu.Lock()
 	busy := rt.removing[id]
@@ -658,7 +706,7 @@ var errRetainedNotFound = errors.New("no such retained resource on this server")
 func (m *Manager) runRetainedRemoval(ctx context.Context, it retainedItem, final bool, target *storage.Config) (string, error) {
 	var log strings.Builder
 	logf := func(format string, args ...any) { fmt.Fprintf(&log, format+"\n", args...) }
-	if it.copy && !final {
+	if it.copy && !final && it.origin != nil {
 		logf("The data is a copy made by move %s that never switched; no backup is required.", it.origin.MoveID)
 	}
 	for _, dbID := range it.databases {
@@ -740,7 +788,7 @@ func (m *Manager) finalBackup(ctx context.Context, d Database, target *storage.C
 func (m *Manager) verifyCoveringBackup(d Database, writesStopped time.Time, final bool) error {
 	var candidates []BackupRecord
 	for _, b := range d.Backups {
-		if (final && b.Kind == finalBackupKind) || (!writesStopped.IsZero() && !b.Created.Before(writesStopped)) {
+		if b.Kind == finalBackupKind || (!writesStopped.IsZero() && !b.Created.Before(writesStopped)) {
 			candidates = append(candidates, b)
 		}
 	}

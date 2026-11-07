@@ -128,8 +128,11 @@ Removed or retiring applications do not produce new backups. Their retained data
 
 The control panel schedules checks once a minute through Līdza's persistent jobs pack; the agent performs the actual dump. The first scheduled backup becomes due when provisioning completes. Subsequent successful backups advance the next due time by the selected interval; changing a schedule starts its new interval from the save time. After downtime, a due backup runs once instead of producing a backlog for every missed interval. **The control panel and its job workers must be running** for scheduling and alerts. Manual agent requests still work while the control panel is offline.
 
-Removing an application releases its application ID while preserving its databases,
-files, cache and backups separately. Recreating the same ID starts fresh with a new
+Deleting an application archives it for 90 days: its databases and files are
+kept with every login disabled and can be restored from **Deleted apps**, while its
+cache and every local and off-site backup of its databases are deleted at once (see
+[deleting and restoring applications](deleting-applications.md)). Its application ID
+is released. Recreating the same ID starts fresh with a new
 resource identity and authentication secret. New local storage, cache and database
 resources do not inherit the removed application's data or credentials. You can
 explicitly attach an existing database through the database settings if you want

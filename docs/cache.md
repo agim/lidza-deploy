@@ -38,8 +38,9 @@ Docker volume, a 128 MiB eviction budget, and a 256 MiB container memory limit.
 Append-only persistence syncs every second. This is a cache, not a replacement
 for database backups or durable application storage. Cache data is not included
 in the PostgreSQL/S3 backup schedule. Switching services does not migrate data.
-Removing an app or attaching an external service retains its local cache volume
-and container; stop unused services and retain or remove their volumes according
+Deleting an app removes its cache (see
+[deleting and restoring applications](deleting-applications.md)); attaching an
+external service retains the local cache volume and container; stop unused services and retain or remove their volumes according
 to your recovery needs. Back up the agent's encryption keys together with its
 state so connections remain recoverable.
 

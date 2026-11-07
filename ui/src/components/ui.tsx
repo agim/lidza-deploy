@@ -30,9 +30,10 @@ export function Button({ variant = 'secondary', size = 'md', className, children
   return <PrimitiveButton variant={variant === 'primary' ? 'default' : variant === 'danger' ? 'destructive' : variant === 'ghost' ? 'ghost' : 'outline'} size={size === 'md' ? 'default' : size} className={cx('button', `button-${variant}`, `button-${size}`, className)} {...props} disabled={disabled || busy} aria-busy={busy || undefined} data-pending={busy || undefined} onClick={click}>{children}{busy && <span className="button-progress" aria-hidden="true"><span /></span>}</PrimitiveButton>;
 }
 
-export function ActionForm({ onSubmit, children, ...props }: Omit<FormHTMLAttributes<HTMLFormElement>, 'onSubmit'> & { onSubmit: (event: FormEvent<HTMLFormElement>) => unknown }) {
+export function ActionForm({ onSubmit, children, className, ...props }: Omit<FormHTMLAttributes<HTMLFormElement>, 'onSubmit'> & { onSubmit: (event: FormEvent<HTMLFormElement>) => unknown }) {
   const action = useActionFeedback();
-  return <FormPendingContext.Provider value={action.pending}><form {...props} aria-busy={action.pending || undefined} onSubmit={event => {
+  // form-stack: fields and rows sit --form-gap apart (layout.css) unless the form names its own layout.
+  return <FormPendingContext.Provider value={action.pending}><form className={cx('form-stack', className)} {...props} aria-busy={action.pending || undefined} onSubmit={event => {
     event.preventDefault();
     if (!action.active.current) void action.run(() => onSubmit(event));
   }}>{children}</form></FormPendingContext.Provider>;
@@ -82,8 +83,9 @@ export function PageHeader({ eyebrow, title, description, actions, back }: { eye
   return <header className="page-header"><div className="page-title-row">{back && <BackLink to={back} />}<div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h1>{title}<span aria-hidden="true">.</span></h1>{description && <p className="page-description">{description}</p>}</div></div>{actions && <div className="page-actions">{actions}</div>}</header>;
 }
 
-export function SectionHeader({ title, description, actions }: { title: string; description?: string; actions?: ReactNode }) {
-  return <div className="section-header"><div><h2>{title}</h2>{description && <p>{description}</p>}</div>{actions && <div className="section-actions">{actions}</div>}</div>;
+/** Heading block of a card or Section: title and description, actions on the right. It has no outer margin; the parent's gap spaces it. */
+export function SectionHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
+  return <div className="section-header"><div><h2>{title}</h2>{description && <p>{description}</p>}</div>{actions && <div className="section-actions cluster">{actions}</div>}</div>;
 }
 
 export function Toolbar({ children }: { children: ReactNode }) { return <div className="toolbar">{children}</div>; }
@@ -111,7 +113,7 @@ export function ActionMenu({ label = 'More actions', children, compact = false }
   return <CloseMenuContext.Provider value={() => setOpen(false)}><DropdownMenu.Root open={open} onOpenChange={setOpen}><DropdownMenu.Trigger asChild><Button variant={compact ? "ghost" : "secondary"} size={compact ? "icon" : "sm"} aria-label={label}><MoreHorizontal size={16} />{!compact && <>{label}<ChevronDown size={14} /></>}</Button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="menu-content" align="end" sideOffset={7}>{children}</DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></CloseMenuContext.Provider>;
 }
 
-export function MenuItem({ icon, danger, disabled, children, onSelect }: { icon?: ReactNode; danger?: boolean; disabled?: boolean; children: ReactNode; onSelect?: () => unknown }) {
+export function MenuItem({ icon, danger, disabled, title, children, onSelect }: { icon?: ReactNode; danger?: boolean; disabled?: boolean; title?: string; children: ReactNode; onSelect?: () => unknown }) {
   const action = useActionFeedback();
   const close = useContext(CloseMenuContext);
   return <DropdownMenu.Item className={cx('menu-item', danger && 'menu-danger')} disabled={disabled || action.pending} aria-busy={action.pending || undefined} onSelect={event => {
@@ -123,7 +125,7 @@ export function MenuItem({ icon, danger, disabled, children, onSelect }: { icon?
         void action.run(() => result).then(succeeded => { if (succeeded) close(); });
       }
     } catch (reason) { event.preventDefault(); void action.run(() => { throw reason; }); }
-  }}>{action.pending ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : icon}{children}</DropdownMenu.Item>;
+  }} title={title}>{action.pending ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : icon}{title && disabled ? <span className="menu-item-text">{children}<small className="menu-reason">{title}</small></span> : children}</DropdownMenu.Item>;
 }
 
 export function MenuLink({ href, icon, children }: { href: string; icon?: ReactNode; children: ReactNode }) {

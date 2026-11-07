@@ -1,31 +1,43 @@
-# Stop and start an application
+# Stop, start and restart an application
 
-Open **Applications → More actions → Stop application** and confirm. Admins and
-deployers can change this state; viewers cannot.
+Container, stack and native applications (created, adopted or static) share the
+same controls. Open **More** on the application's card: the **Application** group
+has **Restart**, **Stop**/**Start** and **Delete**. Stop/Start and Delete are also
+in the **Danger zone** at the end of the General settings. Admins and deployers
+can use them; viewers cannot.
 
-Stop shuts down the current container, retained previous container, and workers.
-Scheduled commands and automatic repository deployments pause. Public requests
-receive HTTP 503. Stopped state is saved and enforced after agent restarts;
-Docker's `unless-stopped` policy keeps deliberately stopped containers off after
-host restarts.
+The buttons are disabled, with the reason on hover, while a deployment is
+queued or building, while the application is moving or being removed, or when
+the server's agent is unavailable or cannot control the application yet.
 
-The domain, HTTPS certificate, application configuration, files, database and
-cache are retained. Database/cache services and database backups continue, so
-stopping an app does not discard data or stop shared infrastructure. OAuth
-configuration and credentials are preserved.
+**Restart** restarts every process; visitors may see errors for a few seconds.
+Units the operator keeps disabled are not started.
 
-Wait for an active deployment, restore, cache operation, scheduled command or
-worker startup to finish before stopping. Maintenance mode remains available
-when you want the app and workers to continue running behind a maintenance page.
+**Stop** shuts down the application and its workers and keeps it down after a
+reboot. Scheduled commands and automatic repository deployments pause and
+visitors see a maintenance page. For containers, the current container, the
+retained previous container and workers stop, and Docker's `unless-stopped`
+policy keeps them off after host restarts. For native applications the stopped
+state is saved first, every unit is disabled, the crontab block is paused and
+the stopped page is published in Caddy. A stopped application refuses deploys
+and per-service starts; its card shows the stopped badge with **Start** as its
+primary action.
 
-Choose **Start application** to queue a checked reload of the current image.
-Settings changed while stopped, including environment variables and database
-attachments, are applied to the new container. Follow **Deployments → Build logs**
-for backups, readiness and any startup failure. The app stays unavailable until
-the candidate passes `/readyz`; a failed start leaves it stopped. Enabled workers
-and schedules resume on the next scheduler tick after successful activation.
+The domain, HTTPS certificate, configuration, files, database and cache are
+retained. Database/cache services and database backups continue, so stopping an
+app does not discard data or stop shared infrastructure. Redirect domains keep
+working.
 
-Start uses the last successfully deployed image. Pushes received while stopped
-are acknowledged without deploying and are not replayed on Start; use **Deploy**
-after starting to fetch the latest repository commit. An app that never deployed
-successfully can also be stopped; Start enables it for its next deployment.
+**Start** brings back exactly the units that ran (native) or queues a checked
+reload of the last successfully deployed image (containers). Settings changed
+while stopped, including environment variables and database attachments, are
+applied. Follow **Deployments → Build logs** for readiness and startup failures;
+a failed start leaves the app stopped. Pushes received while stopped are not
+replayed on Start; use **Deploy** afterwards for the latest commit.
+
+Maintenance mode remains available when you want the app and workers to keep
+running behind a maintenance page. To remove an application, see
+[deleting and restoring applications](deleting-applications.md).
+
+API: `POST /api/control/apps/{id}/stop`, `/start` and `/restart` (agent:
+`POST /v1/apps/{id}/stop|start|restart`). They are refused during a move.

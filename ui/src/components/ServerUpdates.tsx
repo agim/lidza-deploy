@@ -13,7 +13,7 @@ const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const durations = [30, 60, 120, 180, 240, 360];
 const endpoint = (serverID: string) => `control/servers/${encodeURIComponent(serverID)}/host/updates`;
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
-const jobLabels: Record<string, string> = { 'security-updates': 'Security updates', 'all-updates': 'All updates', 'disruptive-updates': 'Disruptive updates (maintenance window)', configure: 'Automatic updates setup', reboot: 'Reboot', 'docker-live-restore': 'Docker live-restore', 'docker-restart': 'Docker restart (maintenance window)', firewall: 'Firewall change', 'gateway-setup': 'Protected gateway setup' };
+const jobLabels: Record<string, string> = { 'security-updates': 'Security updates', 'all-updates': 'All updates', 'disruptive-updates': 'Disruptive updates (maintenance window)', configure: 'Automatic updates setup', reboot: 'Reboot', 'docker-live-restore': 'Docker live-restore', 'docker-restart': 'Docker restart (maintenance window)', firewall: 'Firewall change', 'gateway-setup': 'Protected gateway setup', 'resource-tuning': 'Resource tuning' };
 const securityRule = 'Only packages whose new version comes from the distribution\'s security repositories qualify (for example noble-security or Debian-Security). Docker, Caddy and PostgreSQL repositories have no security channel, so their updates never count as security updates.';
 
 function windowLabel(policy: HostUpdatesPolicy) {

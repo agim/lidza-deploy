@@ -1,12 +1,14 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"github.com/agim/lidza-deploy/internal/agent"
 	"github.com/agim/lidza-deploy/internal/buildinfo"
+	"github.com/agim/lidza-deploy/internal/control"
 	"github.com/agim/lidza-deploy/internal/onboarding"
 	"github.com/agim/lidza-deploy/internal/webapp"
 	"github.com/agim/lidza-deploy/web"
@@ -67,6 +69,24 @@ func run() error {
 	_, tokenErr := os.Stat(filepath.Join(dir, "setup-token"))
 	_, doneErr := os.Stat(filepath.Join(dir, "setup-complete.json"))
 	legacyConfigured := os.IsNotExist(tokenErr) && os.IsNotExist(doneErr) && values["PUBLIC_URL"] != "" && values["CONTROL_USER"] != ""
+	// A panel that is not the active one serves only a notice and never
+	// boots the application: no ticks, jobs or updates, no agent calls.
+	// A standby copy still starts its database container so the move can
+	// restore into it.
+	if movedTo, moved := control.MovedTo(dir); moved {
+		return serveNotice(ctx, addr, control.MovedHandler(cmp.Or(movedTo, values["PUBLIC_URL"])), "moved away")
+	}
+	if values[agent.ControlStandbyEnv] == "1" {
+		if doneErr == nil {
+			recoverCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+			err = onboarding.RecoverManagedDatabase(recoverCtx, dir)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+		return serveNotice(ctx, addr, control.StandbyHandler(), "standing by")
+	}
 	if doneErr == nil || legacyConfigured {
 		recoverCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		err = onboarding.RecoverManagedDatabase(recoverCtx, dir)
@@ -118,9 +138,28 @@ func run() error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = server.Shutdown(shutdown)
+	// State changes are written in the background; write the last ones.
+	control.FlushState(shutdown)
 	_ = closeApp(shutdown)
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		return nil
 	}
 	return serveErr
+}
+
+func serveNotice(ctx context.Context, addr string, handler http.Handler, mode string) error {
+	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+	failures := make(chan error, 1)
+	go func() { failures <- server.ListenAndServe() }()
+	log.Printf("Control panel %s; notice on %s", mode, addr)
+	select {
+	case <-ctx.Done():
+	case err := <-failures:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return server.Shutdown(shutdown)
 }

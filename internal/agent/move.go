@@ -45,8 +45,10 @@ type MoveSource struct {
 	Branch            string   `json:"branch"`
 	Domain            string   `json:"domain"`
 	AdditionalDomains []string `json:"additional_domains,omitempty"`
-	Commit            string   `json:"commit,omitempty"`
-	EnvironmentKeys   []string `json:"environment_keys"`
+	// RedirectDomains are recreated on the destination (redirects.go).
+	RedirectDomains []RedirectDomain `json:"redirect_domains,omitempty"`
+	Commit          string           `json:"commit,omitempty"`
+	EnvironmentKeys []string         `json:"environment_keys"`
 	// EnvironmentSources names where each exported variable comes from
 	// (panel, deploy defaults, image); empty when all are panel settings.
 	EnvironmentSources map[string]string    `json:"environment_sources,omitempty"`
@@ -82,6 +84,13 @@ type MoveSource struct {
 	// stack's app services); the destination publishes them again. Never
 	// nil from agents that report them (move_ports.go).
 	PublicPorts []StackPort `json:"public_ports"`
+	// PublicTLS reports whether a service of the current stack release
+	// declares public_tls; nil when there is no stack release or the agent
+	// predates the field (mail_tls.go).
+	PublicTLS *bool `json:"public_tls,omitempty"`
+	// OutgoingMail names the provider the application sends mail through
+	// (OutgoingMailProvider); "" when it may deliver mail itself.
+	OutgoingMail string `json:"outgoing_mail,omitempty"`
 	// Protected reports that the current release uses gateway_transport;
 	// the destination needs a protected host gateway.
 	Protected bool `json:"protected,omitempty"`
@@ -286,6 +295,7 @@ func (m *Manager) moveSource(ctx context.Context, id string) (MoveSource, error)
 		effective := m.containerEffectiveEnvironment(ctx, a)
 		source.EnvironmentKeys = sortedKeys(effective.Values)
 		source.EnvironmentSources = effective.Sources
+		source.OutgoingMail = OutgoingMailProvider(effective.Values)
 	} else {
 		m.mu.Unlock()
 		var err error
@@ -318,6 +328,7 @@ func (m *Manager) moveSource(ctx context.Context, id string) (MoveSource, error)
 		}
 	}
 	source.BuildPeakMiB = m.buildPeakOf(id)
+	source.RedirectDomains = m.Redirects(id)
 	slices.Sort(source.Blockers)
 	return source, nil
 }
@@ -331,6 +342,10 @@ func (m *Manager) containerMoveSourceLocked(a App) MoveSource {
 	if a.Current != nil {
 		s.Commit = a.Current.Commit
 		s.Protected = a.Current.Stack != nil && a.Current.Stack.Gateway != nil
+		if a.Current.Stack != nil {
+			declared := releasePublicTLS(a.Current)
+			s.PublicTLS = &declared
+		}
 	} else {
 		s.Blockers = append(s.Blockers, "Deploy the application on its current server before moving it.")
 	}
@@ -460,6 +475,7 @@ func (m *Manager) nativeMoveSource(id string) (MoveSource, error) {
 	if _, _, err := m.nativeReleasePolicy(id); err == nil {
 		if values, err := nativeReleaseEnvValues(policy); err == nil {
 			s.EnvironmentKeys = slices.Sorted(maps.Keys(values))
+			s.OutgoingMail = OutgoingMailProvider(values)
 		} else {
 			s.Blockers = append(s.Blockers, "The application's environment file is unreadable.")
 		}

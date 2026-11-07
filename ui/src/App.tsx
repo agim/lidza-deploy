@@ -14,6 +14,8 @@ import { DatabaseDetailPage, DatabasesPage, RemoteBackupsPage } from './pages/Da
 import { IntegrationsPage } from './pages/IntegrationsPage';
 import { ActivityPage, DefaultsPage, HelpPage, TeamPage, TwoFactorPage, UpdatesPage } from './pages/WorkspacePages';
 import { CachePage, SimpleServerOperationPage } from './pages/ResourceDetailPages';
+import { ControlPanelPage } from './pages/ControlPanelPage';
+import { DeletedAppsPage } from './pages/DeletedAppsPage';
 
 export default function App() {
   // main.tsx starts the router before the first render, so the route is
@@ -39,6 +41,8 @@ function RouteView({ route }: { route: Route }) {
   if (route.page === 'errors') return <ActivityPage selectedID={route.id} />;
   if (route.page === 'security') return <ActivityPage security selectedID={route.id} />;
   if (route.page === 'help') return <HelpPage />;
+  if (route.page === 'control-panel') return <ControlPanelPage />;
+  if (route.page === 'deleted-apps') return <DeletedAppsPage />;
   if (route.page === 'new-application') return <NewApplicationPage serverID={route.id} />;
   if (route.page === 'detail' && route.id) {
     if (route.detail === 'settings') return <AppSettingsPage appID={route.id} />;

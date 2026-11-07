@@ -2,10 +2,9 @@ package onboarding
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/agim/lidza-deploy/internal/agent"
 	"github.com/agim/lidza-deploy/internal/control"
 	"github.com/agim/lidza/pkg/credentials"
 	"github.com/jackc/pgx/v5"
@@ -48,11 +47,10 @@ func docker(ctx context.Context, args ...string) (string, error) {
 }
 
 // managedDatabaseName derives the installation id and the container (and
-// volume) name from the data directory.
+// volume) name from the data directory; a control panel move restores into
+// the container of the same name on its destination.
 func managedDatabaseName(dir string) (id, name string) {
-	sum := sha256.Sum256([]byte(dir))
-	id = hex.EncodeToString(sum[:6])
-	return id, "lidza-control-db-" + id
+	return agent.ControlDatabaseContainer(dir)
 }
 
 // RecoverManagedDatabase starts and verifies the control panel's own database

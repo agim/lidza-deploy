@@ -6,7 +6,7 @@ import type { PageKey, Route } from './types';
 export const BASE = '/console';
 export const HOME = `${BASE}/applications`;
 
-const pages = new Set<PageKey>(['applications', 'deployments', 'errors', 'security', 'servers', 'databases', 'remote-backups', 'integrations', 'defaults', 'updates', 'team', 'audit', 'help', 'new-application']);
+const pages = new Set<PageKey>(['applications', 'deployments', 'errors', 'security', 'servers', 'databases', 'remote-backups', 'integrations', 'defaults', 'updates', 'team', 'audit', 'help', 'control-panel', 'new-application', 'deleted-apps']);
 const serverDetails = new Set(['cleanup', 'containers', 'console', 'ssh', 'upgrade']);
 // Preview parameters follow the visitor through the panel.
 const sticky = ['demo', 'design'];
@@ -223,7 +223,7 @@ export function useSearchParam(name: string) {
 
 // ---- Titles -----------------------------------------------------------------
 
-const sectionTitles: Partial<Record<PageKey, string>> = { applications: 'Applications', deployments: 'Deployments', errors: 'Errors', security: 'Security activity', servers: 'Servers', databases: 'Databases & backups', 'remote-backups': 'Remote backups', integrations: 'Integrations', defaults: 'Application defaults', updates: 'Updates', team: 'Team', audit: 'Audit log', help: 'Help', 'new-application': 'New application', 'not-found': 'Not found' };
+const sectionTitles: Partial<Record<PageKey, string>> = { applications: 'Applications', deployments: 'Deployments', errors: 'Errors', security: 'Security activity', servers: 'Servers', databases: 'Databases & backups', 'remote-backups': 'Remote backups', integrations: 'Integrations', defaults: 'Application defaults', updates: 'Updates', team: 'Team', 'control-panel': 'Control panel', audit: 'Audit log', help: 'Help', 'new-application': 'New application', 'deleted-apps': 'Deleted apps', 'not-found': 'Not found' };
 const detailTitles: Record<string, (id: string) => string> = {
   settings: id => `${id} settings`, 'runtime-logs': id => `${id} runtime logs`, cache: id => `${id} cache`, 'build-logs': id => `Build ${id.slice(0, 12)}`,
   database: id => `${id} database`, server: id => id === 'new' ? 'Connect server' : `${id} server`, cleanup: id => `${id} cleanup`, containers: id => `${id} processes`,

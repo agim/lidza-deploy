@@ -32,6 +32,10 @@ type MovePlanMail struct {
 	// Records are the SPF (TXT) and PTR records to set at the cutover, in
 	// addition to the A/AAAA records.
 	Records []MoveDNSRecord `json:"records"`
+	// OutgoingProvider names the provider the application sends mail
+	// through: the destination's reverse DNS does not affect it, so it is
+	// neither checked nor listed. Receiving mail is unaffected by this.
+	OutgoingProvider string `json:"outgoing_provider,omitempty"`
 }
 
 // MovePTRStatus is the reverse DNS of one address.
@@ -142,12 +146,15 @@ func movePTRWarning(status MovePTRStatus) string {
 // planMoveMail adds the mail checks to a plan of an application that
 // publishes a mail port: reverse DNS of the destination, SPF and MX of the
 // hostnames, and the records to set at the cutover.
-func (c *Control) planMoveMail(ctx context.Context, plan *MovePlan, sourceAddresses []string) {
+func (c *Control) planMoveMail(ctx context.Context, plan *MovePlan, sourceAddresses []string, provider string) {
 	ports := moveMailPortsOf(plan.PublicPorts)
 	if len(ports) == 0 || len(plan.Hostnames) == 0 {
 		return
 	}
-	mail := &MovePlanMail{Ports: ports, SourceAddresses: slices.Clone(sourceAddresses), PTR: []MovePTRStatus{}, Records: []MoveDNSRecord{}}
+	mail := &MovePlanMail{Ports: ports, SourceAddresses: slices.Clone(sourceAddresses), PTR: []MovePTRStatus{}, Records: []MoveDNSRecord{}, OutgoingProvider: provider}
+	if provider != "" {
+		plan.Notes = append(plan.Notes, moveOutgoingProviderNote(provider))
+	}
 	// The source's reverse DNS is the name to carry over when it is one of
 	// the application's hostnames; else the primary hostname.
 	want := plan.Hostnames[0]
@@ -162,7 +169,9 @@ func (c *Control) planMoveMail(ctx context.Context, plan *MovePlan, sourceAddres
 			break
 		}
 	}
-	mail.PTR = c.moveReverseDNS(ctx, plan.Addresses, plan.Hostnames, func(string) string { return want })
+	if provider == "" {
+		mail.PTR = c.moveReverseDNS(ctx, plan.Addresses, plan.Hostnames, func(string) string { return want })
+	}
 	for _, status := range mail.PTR {
 		record := MoveDNSRecord{Hostname: status.Address, Type: "PTR", Value: status.Want, Note: moveMailPTRNote}
 		if status.OK {
@@ -200,6 +209,11 @@ func (c *Control) planMoveMail(ctx context.Context, plan *MovePlan, sourceAddres
 	}
 	plan.Notes = append(plan.Notes, fmt.Sprintf("The application sends mail (port %s). The cutover lists the SPF and reverse DNS records next to the A/AAAA records. %s", movePortLabels(ports), moveMailDKIMNote))
 	plan.Mail = mail
+}
+
+// moveOutgoingProviderNote is the plan's note for mail sent through a provider.
+func moveOutgoingProviderNote(provider string) string {
+	return fmt.Sprintf("Outgoing mail goes through %s; reverse DNS of the destination does not affect it.", provider)
 }
 
 // moveRewriteSPF replaces, in an SPF record, every ip4:/ip6: mechanism that
@@ -274,7 +288,7 @@ func moveMailRecords(job MoveJob) []MoveDNSRecord {
 // never holds the cutover: the operator sets it at the provider, and mail
 // is accepted again as soon as it is there.
 func (c *Control) checkMovePTR(ctx context.Context, job MoveJob) []MovePTRStatus {
-	if job.Plan.Mail == nil {
+	if job.Plan.Mail == nil || job.Plan.Mail.OutgoingProvider != "" {
 		return nil
 	}
 	want := func(address string) string {

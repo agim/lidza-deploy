@@ -104,6 +104,27 @@ func ReplaceScheduleBlock(existing, identifier, entries string, adopt ...string)
 	return body + "\n", nil
 }
 
+// ScheduleBlock returns the entries of the block for identifier in existing
+// (without its markers), and whether the crontab has one.
+func ScheduleBlock(existing, identifier string) (string, bool) {
+	var entries []string
+	inside, found := false, false
+	for _, line := range strings.Split(existing, "\n") {
+		if inside {
+			if name, ok := scheduleMarker(line, scheduleEnd); ok && name == identifier {
+				inside = false
+				continue
+			}
+			entries = append(entries, line)
+			continue
+		}
+		if name, ok := scheduleMarker(line, scheduleBegin); ok && name == identifier {
+			inside, found = true, true
+		}
+	}
+	return strings.TrimSpace(strings.Join(entries, "\n")), found
+}
+
 // SyncSchedule installs entries as the application's crontab block and
 // removes adopted legacy blocks. It writes only when the crontab would change.
 func SyncSchedule(ctx context.Context, tab Crontab, identifier, entries string, adopt ...string) (bool, error) {

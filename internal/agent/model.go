@@ -28,33 +28,41 @@ type App struct {
 	DatabaseBudgets      []StackBudget           `json:"-"`
 	UseRecordedSelection bool                    `json:"-"`
 	domainCheckKey       string
-	AdditionalDomains    []string          `json:"additional_domains,omitempty"`
-	DomainStatuses       []DomainStatus    `json:"domain_statuses,omitempty"`
-	ResourceID           string            `json:"resource_id,omitempty"` // agent-owned incarnation; separates reused app IDs from retained data
-	CustomerHosts        bool              `json:"customer_hosts"`
-	Stopped              bool              `json:"stopped"`
-	DefaultsApplied      bool              `json:"defaults_applied,omitempty"`
-	EnvSources           map[string]string `json:"env_sources,omitempty"`
-	EnvKinds             map[string]string `json:"env_kinds,omitempty"`
-	StorageVolume        string            `json:"-"`
-	Preview              bool              `json:"preview,omitempty"`
-	PullRequest          int               `json:"pull_request,omitempty"`
-	Restoring            bool              `json:"restoring,omitempty"`
-	Maintenance          Maintenance       `json:"maintenance"`
-	DomainStatus         *DomainStatus     `json:"domain_status,omitempty"`
-	Bindings             map[string]string `json:"database_bindings,omitempty"`
-	BackupBeforeDeploy   *bool             `json:"backup_before_deploy,omitempty"`
-	Networks             []string          `json:"-"`
-	Network              string            `json:"-"`
-	Retiring             bool              `json:"retiring,omitempty"`
-	IngressNote          string            `json:"ingress_note,omitempty"` // creation response only: how the hostnames were published
-	ID                   string            `json:"id"`
-	Repository           string            `json:"repository"` // github owner/name, never a credential-bearing URL
-	Branch               string            `json:"branch"`
-	Domain               string            `json:"domain"`
-	Env                  map[string]string `json:"env,omitempty"`
-	Current              *Release          `json:"current,omitempty"`
-	Previous             *Release          `json:"previous,omitempty"`
+	AdditionalDomains    []string `json:"additional_domains,omitempty"`
+	// RedirectDomains are the application's redirect domains, in views
+	// only: they are stored in diskState.Redirects and changed through
+	// PUT /v1/apps/{id}/redirects (redirects.go).
+	RedirectDomains    []RedirectDomain  `json:"redirect_domains,omitempty"`
+	DomainStatuses     []DomainStatus    `json:"domain_statuses,omitempty"`
+	ResourceID         string            `json:"resource_id,omitempty"` // agent-owned incarnation; separates reused app IDs from retained data
+	CustomerHosts      bool              `json:"customer_hosts"`
+	Stopped            bool              `json:"stopped"`
+	DefaultsApplied    bool              `json:"defaults_applied,omitempty"`
+	EnvSources         map[string]string `json:"env_sources,omitempty"`
+	EnvKinds           map[string]string `json:"env_kinds,omitempty"`
+	StorageVolume      string            `json:"-"`
+	Preview            bool              `json:"preview,omitempty"`
+	PullRequest        int               `json:"pull_request,omitempty"`
+	Restoring          bool              `json:"restoring,omitempty"`
+	Maintenance        Maintenance       `json:"maintenance"`
+	DomainStatus       *DomainStatus     `json:"domain_status,omitempty"`
+	Bindings           map[string]string `json:"database_bindings,omitempty"`
+	BackupBeforeDeploy *bool             `json:"backup_before_deploy,omitempty"`
+	Networks           []string          `json:"-"`
+	Network            string            `json:"-"`
+	Retiring           bool              `json:"retiring,omitempty"`
+	IngressNote        string            `json:"ingress_note,omitempty"` // creation response only: how the hostnames were published
+	ID                 string            `json:"id"`
+	Repository         string            `json:"repository"` // github owner/name, never a credential-bearing URL
+	Branch             string            `json:"branch"`
+	Domain             string            `json:"domain"`
+	Env                map[string]string `json:"env,omitempty"`
+	Current            *Release          `json:"current,omitempty"`
+	Previous           *Release          `json:"previous,omitempty"`
+	// Warnings are conditions of the current release that need the
+	// operator's attention (mail_tls.go); computed for the app view, never
+	// stored.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 const (
@@ -173,6 +181,9 @@ type diskState struct {
 	NativeTransitions map[string]NativeReleaseTransition `json:"native_transitions,omitempty"`
 	NativeBindings    map[string]map[string]string       `json:"native_bindings,omitempty"`
 	NativeApps        map[string]NativeApplication       `json:"native_apps,omitempty"`
+	// NativeStopped holds the native applications an operator stopped
+	// (app_lifecycle.go).
+	NativeStopped     map[string]NativeStoppedState      `json:"native_stopped,omitempty"`
 	GatewayPKI        map[string]gatewayPKI              `json:"gateway_pki,omitempty"`
 	StackSelections   map[string]*StackSelectionSnapshot `json:"stack_selections,omitempty"`
 	StackVolumes      map[string][]string                `json:"stack_volumes,omitempty"`
@@ -181,17 +192,30 @@ type diskState struct {
 	ClickHouses       map[string]ClickHouseResource      `json:"clickhouses,omitempty"`
 	RetiredAppIDs     map[string]bool                    `json:"retired_app_ids,omitempty"`
 	RetainedResources map[string]RetainedResource        `json:"retained_resources,omitempty"`
-	StorageVolumes    map[string]string                  `json:"storage_volumes,omitempty"`
-	Caches            map[string]CacheResource           `json:"caches,omitempty"`
-	ErrorReporting    *ErrorReporting                    `json:"error_reporting,omitempty"`
-	ErrorOutbox       []ConsoleError                     `json:"error_outbox,omitempty"`
-	ErrorCursors      map[string]ConsoleCursor           `json:"error_cursors,omitempty"`
-	Tasks             map[string]Task                    `json:"tasks,omitempty"`
-	BindingsVersion   int                                `json:"bindings_version"`
-	Databases         map[string]Database                `json:"databases,omitempty"`
-	BackupStorage     *storage.Config                    `json:"backup_storage,omitempty"`
-	Apps              map[string]App                     `json:"apps"`
-	Deployments       []Deployment                       `json:"deployments"`
+	// AppArchives are deleted applications that can be restored, by
+	// archive id; ArchivePurges the latest permanently deleted (archive.go).
+	AppArchives   map[string]AppArchive `json:"app_archives,omitempty"`
+	ArchivePurges []ArchivePurge        `json:"archive_purges,omitempty"`
+
+	// ReleasedReservations are reserved_domains hostnames released by the
+	// deletion of the application they were reserved for, by hostname (the
+	// archive id is the value); the configuration file is never rewritten.
+	ReleasedReservations map[string]string `json:"released_reservations,omitempty"`
+
+	StorageVolumes  map[string]string        `json:"storage_volumes,omitempty"`
+	Caches          map[string]CacheResource `json:"caches,omitempty"`
+	ErrorReporting  *ErrorReporting          `json:"error_reporting,omitempty"`
+	ErrorOutbox     []ConsoleError           `json:"error_outbox,omitempty"`
+	ErrorCursors    map[string]ConsoleCursor `json:"error_cursors,omitempty"`
+	Tasks           map[string]Task          `json:"tasks,omitempty"`
+	BindingsVersion int                      `json:"bindings_version"`
+	Databases       map[string]Database      `json:"databases,omitempty"`
+	BackupStorage   *storage.Config          `json:"backup_storage,omitempty"`
+	Apps            map[string]App           `json:"apps"`
+	// Redirects holds each application's redirect domains, for container
+	// and native applications alike (redirects.go).
+	Redirects   map[string][]RedirectDomain `json:"redirects,omitempty"`
+	Deployments []Deployment                `json:"deployments"`
 
 	// BackupRetention is the workspace's off-site retention, sent by the
 	// control plane with the storage; nil until it sends one, and then no
@@ -240,6 +264,10 @@ type diskState struct {
 	// application (build_resources.go), newest last and bounded, so later
 	// builds size their memory caps from what the steps really need.
 	BuildPeaks map[string][]BuildPeak `json:"build_peaks,omitempty"`
+
+	// ResourceTuning holds the panel's tuning overrides, observed
+	// connection peaks and the last computed plan (resource_tuning*.go).
+	ResourceTuning *ResourceTuningState `json:"resource_tuning,omitempty"`
 }
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)

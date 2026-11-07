@@ -65,9 +65,9 @@ it('shows the native section without Docker on a native-only server', () => {
 });
 
 it('describes removing retained native data services without container wording', async () => {
-  const { removalDescription } = await import('./RetainedResources');
-  const text = removalDescription({ id: 'r1', app_id: 'shop', server_id: 'host', components: [{ kind: 'database', name: 'app_shop', host: true }, { kind: 'redis', name: 'lidza-redis@shop.service', host: true }] });
-  expect(text).toContain('Deletes these data services on host: PostgreSQL app_shop, Redis lidza-redis@shop.service');
-  expect(text).not.toMatch(/container|volume/i);
-  expect(removalDescription({ id: 'r2', app_id: 'api', server_id: 'host', components: [{ kind: 'files', name: 'api-files' }] })).toContain('deletes these volumes from host: api-files');
+  const { removalSummary } = await import('./RetainedResources');
+  const summary = removalSummary({ id: 'r1', app_id: 'shop', server_id: 'host', components: [{ kind: 'database', name: 'app_shop', host: true }, { kind: 'redis', name: 'lidza-redis@shop.service', host: true }] });
+  expect(summary.deleted).toEqual(['PostgreSQL app_shop (on the host)', 'Redis lidza-redis@shop.service (on the host)']);
+  expect(summary.deleted.join(' ')).not.toMatch(/container|volume/i);
+  expect(removalSummary({ id: 'r2', app_id: 'api', server_id: 'host', components: [{ kind: 'files', name: 'api-files' }] }).deleted).toEqual(['Files api-files']);
 });

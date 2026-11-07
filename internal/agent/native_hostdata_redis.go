@@ -115,6 +115,16 @@ MemorySwapMax=0
 // directives Redis 6.0 and later understand. noeviction is the default:
 // job queues (Sidekiq and similar) must never lose keys silently.
 func renderNativeRedisConfig(id, dir, password string, maxMiB int) string {
+	return renderNativeRedisConfigPolicy(id, dir, password, maxMiB, "noeviction")
+}
+
+// renderNativeRedisConfigPolicy renders the configuration with the eviction
+// policy resource tuning chose (allkeys-lru for a cache, noeviction for
+// queues and persistent data).
+func renderNativeRedisConfigPolicy(id, dir, password string, maxMiB int, policy string) string {
+	if policy != "allkeys-lru" {
+		policy = "noeviction"
+	}
 	return fmt.Sprintf(`# Managed by Līdza Deploy for application %s. Changes are overwritten.
 port 0
 unixsocket %s
@@ -130,9 +140,9 @@ appendonly yes
 appendfilename "appendonly.aof"
 appendfsync everysec
 maxmemory %dmb
-maxmemory-policy noeviction
+maxmemory-policy %s
 requirepass %s
-`, id, filepath.Join(dir, "redis.sock"), dir, maxMiB, password)
+`, id, filepath.Join(dir, "redis.sock"), dir, maxMiB, policy, password)
 }
 
 // validNativeRedisPath keeps paths usable unquoted in Redis and systemd
@@ -170,7 +180,7 @@ func (h nativeHostData) ensureRedisPackage(ctx context.Context) error {
 
 // ensureRedis installs and starts the application's instance. It restarts a
 // running instance only when its configuration changed.
-func (h nativeHostData) ensureRedis(ctx context.Context, id string, account NativeAppAccount, password string, maxMiB int) error {
+func (h nativeHostData) ensureRedis(ctx context.Context, id string, account NativeAppAccount, password string, maxMiB int, policy string) error {
 	if err := validNativeRedisPath(account.Root); err != nil {
 		return err
 	}
@@ -200,7 +210,7 @@ func (h nativeHostData) ensureRedis(ctx context.Context, id string, account Nati
 		return err
 	}
 	// The password is readable by root and the application's group only.
-	config, err := h.writeIfChanged(filepath.Join(nativeRedisConfigDir, id+".conf"), []byte(renderNativeRedisConfig(id, dir, password, maxMiB)), 0640, 0, account.GID)
+	config, err := h.writeIfChanged(filepath.Join(nativeRedisConfigDir, id+".conf"), []byte(renderNativeRedisConfigPolicy(id, dir, password, maxMiB, policy)), 0640, 0, account.GID)
 	if err != nil {
 		return err
 	}

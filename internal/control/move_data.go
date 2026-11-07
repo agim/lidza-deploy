@@ -593,8 +593,8 @@ func (c *Control) resolveMoveHostnames(ctx context.Context, job MoveJob) (status
 	resolver := c.resolver()
 	statuses = []MoveDNSStatus{}
 	all = len(job.Hostnames) > 0
-	for _, host := range job.Hostnames {
-		status := MoveDNSStatus{Hostname: host, Addresses: []string{}}
+	for i, host := range append(slices.Clone(job.Hostnames), job.RedirectHostnames...) {
+		status := MoveDNSStatus{Hostname: host, Addresses: []string{}, Redirect: i >= len(job.Hostnames)}
 		lookup, cancel := context.WithTimeout(ctx, 8*time.Second)
 		var addresses []net.IPAddr
 		var err error

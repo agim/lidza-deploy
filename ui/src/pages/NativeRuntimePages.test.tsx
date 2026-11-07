@@ -40,15 +40,15 @@ it('shows a native application runtime log and filters it by process', async () 
   expect(fetch.mock.calls.some(([url]) => String(url).includes('logs?unit=lidza-app-shop-jobs.service'))).toBe(true);
 });
 
-it('offers native processes, data and removal without container operations', async () => {
+it('offers native processes, data and the application actions without container operations', async () => {
   render(<ApplicationsPage />);
   fireEvent.keyDown(screen.getByRole('button', { name: 'More' }), { key: 'Enter' });
   expect(await screen.findByRole('menuitem', { name: 'Processes' })).toBeInTheDocument();
   expect(screen.getByRole('menuitem', { name: 'Data & storage' })).toBeInTheDocument();
-  expect(screen.getByText('Remove application')).toBeInTheDocument();
-  for (const name of ['Reload', 'Stop application', 'Cache', 'Database & backups']) expect(screen.queryByRole('menuitem', { name })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByText('Remove application'));
-  expect(await screen.findByText(/Its services, account and web route are removed/)).toBeInTheDocument();
-  expect(screen.getByText(/kept as a retained resource/)).toBeInTheDocument();
-  expect(document.body.textContent).not.toMatch(/containers will be removed/);
+  expect(screen.getByText('Delete')).toBeInTheDocument();
+  for (const name of ['Reload', 'Cache', 'Database & backups']) expect(screen.queryByRole('menuitem', { name })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText('Delete'));
+  expect(await screen.findByText(/Systemd units, the system user and its crontab/)).toBeInTheDocument();
+  expect(screen.getByText(/Host PostgreSQL and ClickHouse databases, with their logins disabled/)).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/Valkey container/);
 });

@@ -45,7 +45,7 @@ const near = (a, b, tolerance = 1.5) => Math.abs(a - b) <= tolerance;
 async function phoneApplications(page, width) {
   const context = `${width} applications`;
   await open(page, '/console/applications');
-  const content = await rect(page.locator('#main-content > .page-header'));
+  const content = await rect(page.locator('#main-content .page > .page-header'));
   // Toolbar: search field on the first row with the view toggle, selects two
   // per row with the lone last one spanning the row, nothing centred.
   const search = await rect(page.locator('.toolbar .search-field'));
@@ -65,7 +65,7 @@ async function phoneApplications(page, width) {
   assert.equal(await cards.count(), 3);
   for (const index of [0, 1, 2]) { const card = await rect(cards.nth(index)); assert(near(card.left, content.left) && near(card.width, content.width), `${context}: stat card ${index} spans the column`); assert(card.height < 110, `${context}: stat card ${index} is compact (${card.height}px)`); }
   // Inventory status lines are notice rows with an icon, not bare paragraphs.
-  assert.equal(await page.locator('#main-content > p[role=status]').count(), 0, `${context}: no bare status paragraphs`);
+  assert.equal(await page.locator('#main-content .page > p[role=status]').count(), 0, `${context}: no bare status paragraphs`);
   const notices = page.locator('#main-content .notice-stack [role=status]');
   assert.equal(await notices.count(), 2, `${context}: inventory notices`);
   assert.equal(await notices.locator('svg').count(), 2, `${context}: notice icons`);
@@ -84,7 +84,7 @@ async function phoneApplications(page, width) {
   await page.locator('[data-app-card]').first().getByRole('button', { name: 'More' }).click();
   const menu = await rect(page.locator('.menu-content'));
   assert(menu.left >= 0 && menu.right <= width && menu.top >= 0, `${context}: action menu inside the viewport`);
-  await page.getByText('Remove application').click();
+  await page.getByText('Delete application').click();
   const dialog = await rect(page.locator('.dialog'));
   assert(dialog.left >= 0 && dialog.right <= width && dialog.top >= 0 && dialog.bottom <= 844, `${context}: dialog inside the viewport`);
   await page.keyboard.press('Escape');

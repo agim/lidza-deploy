@@ -51,7 +51,7 @@ async function spacing(page, context) {
   assert.deepEqual(problems, [], `${context}: spacing`);
 }
 (async () => {
-  const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox'] });
+  const browser = await chromium.launch({ executablePath: process.env.TEST_CHROMIUM_PATH || '/usr/bin/chromium', args: ['--no-sandbox'] });
   try {
     for (const width of [320, 390, 768, 1440]) {
       const page = await browser.newPage({ viewport: { width, height: 900 } });

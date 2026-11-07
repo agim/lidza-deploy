@@ -110,8 +110,13 @@ type NativeHostRedis struct {
 	Socket       string `json:"socket"`
 	User         string `json:"user"`
 	MaxMemoryMiB int    `json:"max_memory_mib"`
-	Password     string `json:"password_sealed"`
-	Ready        bool   `json:"ready"`
+	// Policy is the eviction policy resource tuning chose; empty is
+	// noeviction. Tuned is set once resource tuning sized the instance, so
+	// re-provisioning keeps its limit instead of the configured default.
+	Policy   string `json:"policy,omitempty"`
+	Tuned    bool   `json:"tuned,omitempty"`
+	Password string `json:"password_sealed"`
+	Ready    bool   `json:"ready"`
 }
 
 func init() {
@@ -155,7 +160,13 @@ func (h nativeHostData) redisMemory(ctx context.Context, socket, password string
 }
 
 var nativeHostDataHost = func(m *Manager) nativeHostData {
-	return nativeHostData{cfg: m.nativeHostDataConfig(), chown: true, run: nativeHostRun}
+	cfg := m.nativeHostDataConfig()
+	// Resource tuning sizes the ClickHouse server from the host and its
+	// users; its ratio (or the panel's override) replaces the configured one.
+	if ratio := m.tuning().clickhouseRatio(); ratio > 0 {
+		cfg.ClickHouseMemoryRatio = ratio
+	}
+	return nativeHostData{cfg: cfg, chown: true, run: nativeHostRun}
 }
 
 func (h nativeHostData) path(name string) string {
@@ -526,16 +537,22 @@ func (m *Manager) provisionNativeRedis(ctx context.Context, h nativeHostData, id
 	if maxMiB == 0 {
 		maxMiB = nativeRedisDefaultMiB
 	}
+	policy := ""
+	tuned := record.Redis != nil && record.Redis.Tuned && record.Redis.MaxMemoryMiB > 0
+	if tuned {
+		// Resource tuning sized this instance (resource_tuning_apply.go).
+		maxMiB, policy = record.Redis.MaxMemoryMiB, record.Redis.Policy
+	}
 	sealed, err := m.sealHostSecret(password)
 	if err != nil {
 		return "", "", err
 	}
 	socket := nativeRedisSocket(account.Root)
-	redis := NativeHostRedis{Unit: nativeRedisUnit(id), Socket: socket, User: account.User, MaxMemoryMiB: maxMiB, Password: sealed}
+	redis := NativeHostRedis{Unit: nativeRedisUnit(id), Socket: socket, User: account.User, MaxMemoryMiB: maxMiB, Policy: policy, Tuned: tuned, Password: sealed}
 	if err = m.updateHostDataRecord(id, func(r *NativeHostDataRecord) { r.Redis = &redis }); err != nil {
 		return "", "", err
 	}
-	if err = h.ensureRedis(ctx, id, account, password, maxMiB); err != nil {
+	if err = h.ensureRedis(ctx, id, account, password, maxMiB, policy); err != nil {
 		return "", "", err
 	}
 	redis.Ready = true

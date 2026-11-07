@@ -1,0 +1,94 @@
+/* Layout primitives and the spacing of the shared blocks (ui/src/components/layout).
+   Imported last, so it is the single source of truth for page rhythm.
+
+   The rule: spacing between siblings comes from the parent's gap. Components
+   have no outer margins; a container (page, section, stack, card, form)
+   decides how far apart its children sit, with tokens from tokens.css. */
+
+/* ---- Page shell ---------------------------------------------------------- */
+#main-content { display: flex; flex-direction: column; gap: var(--page-gap); padding: var(--space-6) var(--page-gutter) var(--space-5); }
+#main-content > * { margin-block: 0; }
+#main-content > .page-footer, #main-content > footer { margin-top: auto; padding-top: var(--space-5); }
+@media (max-width: 860px) {
+  #main-content { padding-top: var(--space-5); padding-bottom: var(--space-4); }
+}
+
+/* ---- Primitives ---------------------------------------------------------- */
+.page, .section, .stack { display: flex; flex-direction: column; min-width: 0; }
+.page { gap: var(--page-gap); }
+.section { gap: var(--section-gap); }
+.section-body { display: flex; flex-direction: column; gap: var(--page-gap); min-width: 0; }
+.stack { gap: var(--stack-gap-md); }
+.stack.stack-row { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.stack-gap-1 { gap: var(--space-1); }
+.stack-gap-sm { gap: var(--stack-gap-sm); }
+.stack-gap-md { gap: var(--stack-gap-md); }
+.stack-gap-form { gap: var(--form-gap); }
+.stack-gap-section { gap: var(--section-gap); }
+.stack-gap-page { gap: var(--page-gap); }
+.cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--control-gap); min-width: 0; }
+.cluster.cluster-end { justify-content: flex-end; }
+.cluster.cluster-between { justify-content: space-between; }
+:is(.page, .section, .section-body, .stack, .cluster) > * { margin-block: 0; }
+/* A button in a vertical flow keeps its natural width. */
+:is(.page, .section-body, .stack:not(.stack-row)) > :is(.button, button, a.button) { align-self: flex-start; }
+
+/* ---- Page and section headers ------------------------------------------- */
+.page-header { display: flex; justify-content: space-between; gap: var(--space-5); margin: 0; }
+.page-title-row { display: flex; flex-direction: column; gap: var(--space-3); }
+.page-title-row > div { display: flex; flex-direction: column; gap: var(--space-2); }
+.page-title-row > div > *, .page-header h1, .page-header .eyebrow, .page-description { margin: 0; }
+.section-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin: 0; }
+.section-header > div:first-child { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.section-header h2, .section-header p { margin: 0; }
+@media (max-width: 860px) {
+  .page-header { gap: var(--space-4); }
+}
+@media (max-width: 640px) {
+  .section-header { gap: var(--space-3); }
+}
+
+/* ---- Action rows: buttons and badges never touch ------------------------ */
+.page-actions, .sticky-actions, .section-actions, .dialog-actions, .server-actions, .maintenance-actions, .card-actions, .process-log-actions, .wizard-done-actions, .component-example, .host-badges, .host-summary { gap: var(--control-gap); }
+.dialog-actions, .server-actions, .maintenance-actions { margin: 0; }
+
+/* ---- Cards --------------------------------------------------------------- */
+/* A card is a vertical stack: its heading block sits --section-gap above the
+   content and its blocks follow one another at the same rhythm. Cards with a
+   named layout (grid tiles, list rows) override display through their class. */
+:where(.card) { display: flex; flex-direction: column; gap: var(--section-gap); }
+.card { padding: var(--card-padding); }
+.card > * { margin-block: 0; }
+:where(.card) > :is(.button, a.button, .badge) { align-self: flex-start; }
+.form-card { gap: var(--form-gap); margin: 0; }
+
+/* Card collections: sibling cards sit --page-gap apart, in a column or a grid. */
+.settings-stack, .integration-stack, .console-grid, .move-lock-fieldset, .application-grid, .server-grid, .database-grid, .help-grid, .resource-settings-grid { gap: var(--page-gap); }
+.settings-stack > *, .integration-stack > *, .notice-stack > *, .help-grid > * { margin-block: 0; }
+.notice-stack { gap: var(--stack-gap-sm); }
+/* A move lock fieldset wraps whole page sections. */
+.move-lock-fieldset { display: flex; flex-direction: column; }
+.move-lock-fieldset > * { margin-block: 0; }
+/* Stat tiles are a dense strip, not a card flow. */
+.stats-grid { gap: var(--space-4); margin: 0; }
+@media (max-width: 600px) { .stats-grid { gap: var(--space-2); } }
+
+/* ---- Forms ---------------------------------------------------------------- */
+/* Forms are stacks of fields and rows; fields carry no margins of their own. */
+:where(form.form-stack, .form-card > form, .form-card .factor-setup form) { display: grid; gap: var(--form-gap); min-width: 0; }
+:where(form.form-stack, .form-card > form) > * { margin-block: 0; }
+:where(form.form-stack, .form-card > form) > :is(.button, button) { justify-self: start; }
+.form-grid { gap: var(--form-gap); }
+:where(.card, form) fieldset { display: flex; flex-direction: column; gap: var(--form-gap); min-width: 0; }
+:where(.card, form) fieldset > * { margin-block: 0; }
+.field { gap: var(--stack-gap-sm); margin: 0; }
+.check-row { margin: 0; }
+
+/* ---- Blocks that used to space themselves -------------------------------- */
+.alert, .toolbar, .tabs, .guidance-card, .workspace-note { margin-block: 0; }
+.toolbar { gap: var(--space-3); }
+.dialog { display: flex; flex-direction: column; gap: var(--space-4); }
+.dialog > *, .dialog-form > * { margin-block: 0; }
+.dialog-form { gap: var(--space-4); }
+.help-grid .card > svg { color: var(--accent-strong); }
+[data-slot=tabs] { gap: var(--page-gap); }

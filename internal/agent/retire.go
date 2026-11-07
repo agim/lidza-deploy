@@ -127,6 +127,7 @@ func (m *Manager) retire(ctx context.Context, id string, origin *RetainedOrigin)
 	delete(m.data.GatewayPKI, gatewayID)
 	delete(m.data.Apps, id)
 	delete(m.data.StackSelections, id)
+	droppedRedirects := m.dropRedirectsLocked(id)
 	if m.data.RetiredAppIDs == nil {
 		m.data.RetiredAppIDs = map[string]bool{}
 	}
@@ -148,5 +149,10 @@ func (m *Manager) retire(ctx context.Context, id string, origin *RetainedOrigin)
 	}
 	delete(m.gatewayKeys, gatewayID)
 	m.gatewayMu.Unlock()
+	if droppedRedirects {
+		// The state lock is held here; the ingress is updated after it.
+		m.wg.Add(1)
+		go func() { defer m.wg.Done(); m.withdrawRedirects(m.ctx, id) }()
+	}
 	return key, nil
 }

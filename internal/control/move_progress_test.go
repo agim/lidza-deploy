@@ -21,6 +21,7 @@ import (
 // destination, with one move whose data step runs.
 func newMoveProgressControl(t *testing.T, source, destination http.Handler) (*Control, MoveJob) {
 	t.Helper()
+	moveIsolate(t)
 	auth := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") != "Bearer "+moveTestToken {
@@ -39,6 +40,7 @@ func newMoveProgressControl(t *testing.T, source, destination http.Handler) (*Co
 		t.Fatal(err)
 	}
 	c.movePollInterval = time.Millisecond
+	moveStopWork(t, c)
 	started := time.Now().UTC().Add(-time.Minute)
 	job := MoveJob{ID: "move-progress", AppID: "shop", SourceServer: "alpha", TargetServer: "beta", State: moveStateRunning,
 		Steps:   []MoveStep{{Key: moveStepData, Title: "Copy data", Status: "running", Started: &started, Log: []MoveLogLine{{Time: started, Message: "Taking a fresh backup of shop (3 tables) on alpha."}}}},
@@ -84,19 +86,28 @@ func TestMoveStreamProgressIsCountedAndServedFromMemory(t *testing.T) {
 		w.WriteHeader(200)
 		w.Write(dump[:half])
 		w.(http.Flusher).Flush()
-		<-resume
+		select {
+		case <-resume:
+		case <-r.Context().Done():
+			return
+		}
 		w.Write(dump[half:])
 	})
 	received := make(chan []byte, 1)
 	destination := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The transfer first checks that the destination is idle.
 		if r.Method == http.MethodGet {
+			// No deployment or database operation runs on the
+			// destination (moveWaitTargetIdle).
 			agent.JSON(w, 200, []any{})
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
 		received <- body
-		<-restore
+		select {
+		case <-restore:
+		case <-r.Context().Done():
+			return
+		}
 		agent.JSON(w, 200, map[string]string{"status": "restored"})
 	})
 	c, job := newMoveProgressControl(t, source, destination)

@@ -421,7 +421,7 @@ func TestNativeReleasePreservedUnitsAreNeverRestarted(t *testing.T) {
 	m := testManager(t, &fakeRuntime{})
 	units := &fakeUserUnits{states: map[string]string{"app-monitor.service": "active/running"}}
 	m.nativeReleaseUserRun = units.run
-	services := m.nativeReleaseServices(nativeReleaseAccount{Name: "agim", Home: "/home/agim", UID: 1000, GID: 1000},
+	services := m.nativeReleaseServices(nativeReleaseAccount{Name: "deploy", Home: "/home/deploy", UID: 1000, GID: 1000},
 		NativeReleasePolicy{Preserve: []string{"app-monitor.service"}})
 	if err := services.Restart(context.Background(), "app-monitor.service"); err == nil || len(units.restarted) != 0 {
 		t.Fatal("preserved unit restarted")

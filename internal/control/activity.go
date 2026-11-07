@@ -78,6 +78,7 @@ func (c *Control) activity(w http.ResponseWriter, r *http.Request) {
 		queued, _ = q.Recent(r.Context(), 200)
 	}
 	items := c.moveActivity(now)
+	items = append(items, c.panelMoveActivity(now)...)
 	items = append(items, c.deploymentActivity(fleet.deployments, now)...)
 	items = append(items, c.updateActivity(c.updateSettingsSnapshot(), now)...)
 	items = append(items, c.jobActivity(queued, now)...)

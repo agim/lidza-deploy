@@ -105,9 +105,12 @@ type MoveJob struct {
 	CacheLocal    bool                       `json:"cache_local,omitempty"`
 	Commit        string                     `json:"commit,omitempty"`
 	Hostnames     []string                   `json:"hostnames"`
-	Addresses     []string                   `json:"addresses"`
-	DNS           []MoveDNSStatus            `json:"dns"`
-	DNSChecked    *time.Time                 `json:"dns_checked,omitempty"`
+	// RedirectHostnames are the application's redirect domains: recreated
+	// on the destination, and their DNS moves with the cutover.
+	RedirectHostnames []string        `json:"redirect_hostnames,omitempty"`
+	Addresses         []string        `json:"addresses"`
+	DNS               []MoveDNSStatus `json:"dns"`
+	DNSChecked        *time.Time      `json:"dns_checked,omitempty"`
 	// PTR is the reverse DNS of the destination's addresses, checked at the
 	// cutover of a mail-sending application (move_mail.go); it warns only.
 	PTR []MovePTRStatus `json:"ptr,omitempty"`
@@ -261,6 +264,8 @@ type MoveDNSStatus struct {
 	Addresses []string `json:"addresses"`
 	Ready     bool     `json:"ready"`
 	Error     string   `json:"error,omitempty"`
+	// Redirect marks a redirect domain of the application.
+	Redirect bool `json:"redirect,omitempty"`
 	// Source names the nameserver that answered: the zone's own
 	// nameserver (authoritative, so caches do not delay the cutover) or a
 	// fallback resolver.
@@ -278,28 +283,32 @@ type MoveDNSRecord struct {
 
 // MovePlan is reviewed before a move starts.
 type MovePlan struct {
-	AppID           string             `json:"app_id"`
-	SourceServer    string             `json:"source_server"`
-	TargetServer    string             `json:"target_server"`
-	SourceRuntime   string             `json:"source_runtime"`
-	Runtime         string             `json:"runtime"`
-	TargetRuntime   string             `json:"target_runtime"`
-	RuntimeChoices  []string           `json:"runtime_choices"`
-	Detection       *MoveDetection     `json:"detection,omitempty"`
-	Repository      string             `json:"repository"`
-	Branch          string             `json:"branch"`
-	Commit          string             `json:"commit,omitempty"`
-	Hostnames       []string           `json:"hostnames"`
-	EnvironmentKeys []string           `json:"environment_keys"`
-	CopiedKeys      []string           `json:"copied_keys"`
-	CopiedSources   map[string]int     `json:"copied_sources,omitempty"` // copied variables by origin: panel, deploy defaults, image
-	DestinationKeys []string           `json:"destination_keys"`
-	Databases       []MovePlanDatabase `json:"databases"`
-	Files           []MovePlanFileSet  `json:"files"`
-	Redis           bool               `json:"redis"`
-	Volumes         []string           `json:"volumes"`
-	Addresses       []string           `json:"addresses"`
-	Capacity        *MoveCapacity      `json:"capacity,omitempty"`
+	AppID          string         `json:"app_id"`
+	SourceServer   string         `json:"source_server"`
+	TargetServer   string         `json:"target_server"`
+	SourceRuntime  string         `json:"source_runtime"`
+	Runtime        string         `json:"runtime"`
+	TargetRuntime  string         `json:"target_runtime"`
+	RuntimeChoices []string       `json:"runtime_choices"`
+	Detection      *MoveDetection `json:"detection,omitempty"`
+	Repository     string         `json:"repository"`
+	Branch         string         `json:"branch"`
+	Commit         string         `json:"commit,omitempty"`
+	Hostnames      []string       `json:"hostnames"`
+	// RedirectDomains are recreated on the destination; their hostnames'
+	// DNS records are listed with the cutover's (redirects.go).
+	RedirectDomains []agent.RedirectDomain `json:"redirect_domains,omitempty"`
+	RedirectNote    string                 `json:"redirect_note,omitempty"`
+	EnvironmentKeys []string               `json:"environment_keys"`
+	CopiedKeys      []string               `json:"copied_keys"`
+	CopiedSources   map[string]int         `json:"copied_sources,omitempty"` // copied variables by origin: panel, deploy defaults, image
+	DestinationKeys []string               `json:"destination_keys"`
+	Databases       []MovePlanDatabase     `json:"databases"`
+	Files           []MovePlanFileSet      `json:"files"`
+	Redis           bool                   `json:"redis"`
+	Volumes         []string               `json:"volumes"`
+	Addresses       []string               `json:"addresses"`
+	Capacity        *MoveCapacity          `json:"capacity,omitempty"`
 	// BuildMemory compares the memory the application's build needs with
 	// the destination's memory.
 	BuildMemory *buildmem.Assessment `json:"build_memory,omitempty"`
@@ -485,6 +494,8 @@ func cloneMoveJob(job MoveJob) MoveJob {
 		job.Plan.Mail = &mail
 	}
 	job.Hostnames = slices.Clone(job.Hostnames)
+	job.RedirectHostnames = slices.Clone(job.RedirectHostnames)
+	job.Target.RedirectDomains = slices.Clone(job.Target.RedirectDomains)
 	job.Addresses = slices.Clone(job.Addresses)
 	return job
 }
@@ -657,14 +668,19 @@ func moveRecords(job MoveJob) []MoveDNSRecord {
 	out := []MoveDNSRecord{}
 	for _, host := range job.Hostnames {
 		for _, address := range job.Addresses {
-			kind := "A"
-			if ip, err := netip.ParseAddr(address); err == nil && ip.Is6() {
-				kind = "AAAA"
-			}
-			out = append(out, MoveDNSRecord{Hostname: host, Type: kind, Value: address})
+			out = append(out, MoveDNSRecord{Hostname: host, Type: moveRecordType(address), Value: address})
 		}
 	}
+	out = append(out, redirectRecords(job.RedirectHostnames, job.Addresses, job.Target.RedirectDomains, job.Target.Domain)...)
 	return append(out, moveMailRecords(job)...)
+}
+
+// moveRecordType is the DNS record type of an address.
+func moveRecordType(address string) string {
+	if ip, err := netip.ParseAddr(address); err == nil && ip.Is6() {
+		return "AAAA"
+	}
+	return "A"
 }
 
 func moveActions(job MoveJob) []string {
@@ -1058,6 +1074,11 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	}
 	plan.Runtime, plan.Commit = source.Runtime, source.Commit
 	plan.Hostnames = append([]string{source.Domain}, source.AdditionalDomains...)
+	plan.RedirectDomains = slices.Clone(source.RedirectDomains)
+	if len(plan.RedirectDomains) > 0 {
+		plan.RedirectNote = fmt.Sprintf("%d redirect %s (%s) %s recreated on the destination; the cutover lists their DNS records with the application's, and they keep redirecting from the source until DNS points to the destination.",
+			len(plan.RedirectDomains), pluralWord(len(plan.RedirectDomains), "domain", "domains"), strings.Join(agent.RedirectHosts(plan.RedirectDomains), ", "), pluralWord(len(plan.RedirectDomains), "is", "are"))
+	}
 	plan.EnvironmentKeys = source.EnvironmentKeys
 	plan.Redis = source.Redis
 	plan.Volumes = source.Volumes
@@ -1088,11 +1109,16 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	var remote []agent.App
 	if err := c.agentCall(req, target.ID, http.MethodGet, "/v1/apps", nil, &remote); err == nil {
 		hosts := agent.App{Domain: source.Domain, AdditionalDomains: source.AdditionalDomains}
+		redirects := agent.RedirectHosts(source.RedirectDomains)
 		for _, other := range remote {
 			if other.ID == appID {
 				plan.Blockers = append(plan.Blockers, "The destination already has an application with this id.")
 			} else if hosts.DomainsOverlap(other) {
 				plan.Blockers = append(plan.Blockers, "The destination already serves a hostname of this application ("+other.ID+").")
+			} else if slices.ContainsFunc(redirects, other.HasDomain) || slices.ContainsFunc(other.RedirectDomains, func(d agent.RedirectDomain) bool {
+				return slices.Contains(redirects, d.Host) || hosts.HasDomain(d.Host)
+			}) {
+				plan.Blockers = append(plan.Blockers, "The destination already serves or redirects a redirect domain of this application ("+other.ID+").")
 			}
 		}
 	} else {
@@ -1224,7 +1250,7 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	planMovePorts(&plan, source, host)
 	if len(moveMailPortsOf(plan.PublicPorts)) > 0 && plan.TargetRuntime == moveRuntimeContainer {
 		// The source's addresses are what the SPF records name today.
-		c.planMoveMail(r.Context(), &plan, moveTargetAddresses(sourceHost, sourceServer, nil))
+		c.planMoveMail(r.Context(), &plan, moveTargetAddresses(sourceHost, sourceServer, nil), source.OutgoingMail)
 	}
 	if copyable > 0 || source.ClickHouse != nil {
 		plan.Notes = append(plan.Notes, moveFinalSyncNote(plan))
@@ -1315,7 +1341,7 @@ func (c *Control) createMove(r *http.Request, plan MovePlan) (MoveJob, error) {
 	}
 	now := time.Now().UTC()
 	job := MoveJob{ID: random()[:24], AppID: src.ID, SourceServer: src.ServerID, TargetServer: plan.TargetServer, SourceRuntime: plan.SourceRuntime, TargetRuntime: plan.TargetRuntime,
-		Runtime: plan.Runtime, State: moveStateRunning, Plan: plan, Commit: plan.Commit, Hostnames: slices.Clone(plan.Hostnames), Addresses: slices.Clone(plan.Addresses),
+		Runtime: plan.Runtime, State: moveStateRunning, Plan: plan, Commit: plan.Commit, Hostnames: slices.Clone(plan.Hostnames), RedirectHostnames: agent.RedirectHosts(plan.RedirectDomains), Addresses: slices.Clone(plan.Addresses),
 		Redis: source.Redis, CacheLocal: source.Container != nil && source.Redis, DNS: []MoveDNSStatus{}, Databases: []MoveDatabase{}, Created: now, Updated: now}
 	job.MaxAttempts = plan.MaxAttempts
 	job.AutoCutover = plan.AutoCutover
@@ -1337,7 +1363,7 @@ func (c *Control) createMove(r *http.Request, plan MovePlan) (MoveJob, error) {
 		job.Files = append(job.Files, MoveFileCopy{ID: f.ID, Path: f.Path, Source: f.Source, Files: f.Files, Bytes: f.Bytes, Method: f.Method, Transfer: f.Action == "copy" || f.Action == "skip_empty"})
 	}
 	job.Target = Application{ID: src.ID, ServerID: plan.TargetServer, Repository: src.Repository, Branch: src.Branch, Domain: source.Domain, AdditionalDomains: slices.Clone(source.AdditionalDomains),
-		CustomerHosts: src.CustomerHosts, GitHubInstallation: src.GitHubInstallation, Generation: random()}
+		RedirectDomains: slices.Clone(plan.RedirectDomains), CustomerHosts: src.CustomerHosts, GitHubInstallation: src.GitHubInstallation, Generation: random()}
 	if plan.TargetRuntime == moveRuntimeNative {
 		spec, err := c.moveNativeSpec(r.Context(), src, source, plan)
 		if err != nil {

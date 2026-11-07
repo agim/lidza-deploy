@@ -180,7 +180,14 @@ func (m *Manager) validateNativeCreateRequest(req *NativeCreateRequest) error {
 	m.mu.Lock()
 	_, retained := m.data.NativeHostData[req.ID]
 	_, created := m.data.NativeCreated[req.ID]
+	archived := false
+	for _, a := range m.data.AppArchives {
+		archived = archived || (a.Kind == archiveKindNative || a.Kind == archiveKindAdopted) && a.AppID == req.ID
+	}
 	m.mu.Unlock()
+	if archived {
+		return errors.New("a deleted application with this id can still be restored; restore it, delete it permanently, or choose another id")
+	}
 	if retained && !created {
 		// Database, role and Redis names derive from the id.
 		return fmt.Errorf("the data services of an earlier application %s are retained on this server; remove them under the server's retained resources, or choose another id", req.ID)
@@ -233,7 +240,7 @@ func (m *Manager) validateNativeCreateRequest(req *NativeCreateRequest) error {
 		if err := validateHostname(domain); err != nil {
 			return fmt.Errorf("%s: %w", domain, err)
 		}
-		if seen[domain] || m.cfg.reservedHostname(domain) {
+		if seen[domain] || m.hostReserved(domain) {
 			return fmt.Errorf("%s is reserved or listed twice", domain)
 		}
 		seen[domain] = true
@@ -331,6 +338,9 @@ func (m *Manager) validateNativeCreateRequest(req *NativeCreateRequest) error {
 		if app.DomainsOverlap(hosts) {
 			return errors.New("domain belongs to a container application")
 		}
+	}
+	if err := m.checkRedirectHostsLocked(hosts.Hostnames(), ""); err != nil {
+		return err
 	}
 	if len(m.data.NativeApps) >= 100 {
 		return errors.New("native application limit reached")
@@ -676,8 +686,12 @@ func (m *Manager) deleteNativeApp(ctx context.Context, id string, purge bool, re
 	delete(m.data.NativeSettings, id)
 	delete(m.data.NativeReleases, id)
 	delete(m.data.NativeBindings, id)
+	droppedRedirects := m.dropRedirectsLocked(id)
 	err = m.save()
 	m.mu.Unlock()
+	if err == nil && droppedRedirects {
+		m.withdrawRedirects(ctx, id)
+	}
 	if err != nil || retained == "" || !req.DeleteData {
 		return err
 	}

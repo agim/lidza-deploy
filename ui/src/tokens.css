@@ -1,0 +1,34 @@
+/* Spacing tokens: the only place in the console where spacing lengths are
+   written. Every margin, padding and gap elsewhere uses one of these (checked by
+   `npm run lint:spacing`). Prefer the semantic tokens; the scale is for the rest. */
+:root {
+  /* Scale */
+  --space-hairline: 2px; /* optical nudges inside small controls only (badges, tab lists) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Semantic */
+  --page-gap: var(--space-5);        /* between page sections and sibling cards */
+  --section-gap: var(--space-3);     /* section heading block to its content */
+  --card-padding: var(--space-5);    /* inside a card */
+  --stack-gap-sm: var(--space-2);    /* dense lists, label to control */
+  --stack-gap-md: var(--space-3);    /* default vertical rhythm inside a block */
+  --form-gap: var(--space-4);        /* between fields and rows of a form */
+  --control-gap: var(--space-2);     /* between buttons, badges and chips in a row */
+  --page-gutter: var(--space-6);     /* main content side padding */
+
+  /* Shell */
+  --sidebar-width: 224px;
+}
+
+@media (max-width: 860px) {
+  :root { --page-gutter: var(--space-4); }
+}
+@media (max-width: 600px) {
+  :root { --card-padding: var(--space-4); }
+}

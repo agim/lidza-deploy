@@ -485,7 +485,8 @@ it('shows the mail records and reverse DNS of a mail-sending application', async
   expect(within(region).getByRole('button', { name: 'Copy TXT value for example.com' })).toBeInTheDocument();
   expect(within(region).getByText('Set at the server provider, not at the DNS provider.')).toBeInTheDocument();
   expect(within(region).getByText('Replaces the SPF record that names the source address.')).toBeInTheDocument();
-  expect(within(region).getByText(/203.0.113.9: reverse DNS is none; set it to shop.example.com at the server provider; outgoing mail is rejected until then/)).toBeInTheDocument();
+  expect(within(region).getByText(/203.0.113.9: reverse DNS is none; set it to shop.example.com at the server provider/)).toBeInTheDocument();
+  expect(within(region).getByText(/Optional: recommended for outgoing mail; the move does not wait for it/)).toBeInTheDocument();
   expect(within(region).getByText(/A PTR record is set at the server provider/)).toBeInTheDocument();
 });
 

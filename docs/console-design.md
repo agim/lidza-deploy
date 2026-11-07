@@ -37,6 +37,26 @@ cache; integrations, defaults, team, audit, security, errors and account 2FA.
 The Help page includes a component gallery using the same production primitives.
 Its examples are explicitly local previews and make no server changes.
 
+## Spacing
+
+Spacing lengths are written once, as tokens in `ui/src/tokens.css`: the scale
+`--space-1` … `--space-7` (4, 8, 12, 16, 24, 32, 48px) and semantic tokens
+(`--page-gap` 24px between page sections and sibling cards, `--section-gap` 12px
+from a heading block to its content, `--card-padding` 24px/16px on phones,
+`--stack-gap-sm/md`, `--form-gap`, `--control-gap` 8px between buttons,
+`--page-gutter`). Layout comes from the primitives in
+`ui/src/components/layout` (`Page`, `Section`, `Stack`, `Cluster`) and the
+shared rules in `ui/src/layout.css`: spacing between siblings is the parent's
+`gap`; components carry no outer margins. Every route renders inside a `Page`;
+cards, forms (`ActionForm`) and fieldsets are vertical flows too.
+
+`npm run lint` (also part of `npm run typecheck` and the UI test suite) fails on
+a raw pixel value in any margin, padding or gap outside `tokens.css`.
+`tests/browser/layout-spacing.cjs` (first step of `npm run test:console`; it
+serves `web/static` itself when `TEST_WEB_URL` is unset) measures every route at
+1440 and 390px: no overflow, headings at least 16px below the block before them,
+sibling cards 24px apart, no touching blocks in a flow, buttons at least 8px apart.
+
 ## Verification
 
 Run component and route tests with `npm run test:ui`, TypeScript with

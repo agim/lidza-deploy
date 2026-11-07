@@ -1,6 +1,7 @@
 const app = { id: 'portal', repository: 'acme/portal', branch: 'main', domain: 'portal.example.com', server_id: 'local', github_installation: 42, auto_deploy: true, current: { commit: 'abcdef1234567' }, domain_status: { state: 'ready' } };
 const ports = [{app_id:'portal',service:'app',container:'lidza-portal-'+'a'.repeat(48),release:'build-one',declared:true,protocol:'tcp',host_ip:'0.0.0.0',host_port:25,container_port:25,publication:'published',firewall:'allow_rule_installed',external:'unverified'}, {app_id:'portal',service:'app',container:'lidza-portal-'+'a'.repeat(48),release:'build-one',declared:false,protocol:'tcp',host_ip:'127.0.0.1',host_port:32790,container_port:3000,publication:'private_proxy',firewall:'not_required',external:'not_applicable'}];
 const now = '2026-10-15T14:00:00Z';
+const archive = { id: 'archive-one', app_id: 'legacy', kind: 'container', repository: 'acme/legacy', branch: 'main', deleted_at: now, deleted_by: 'ops@example.com', expires_at: '2027-01-08T14:00:00Z', phase: 'archived', hostnames: ['legacy.example.com'], kept: [{ kind: 'database', name: 'legacy', size_bytes: 4096 }], deleted: [{ kind: 'container', name: 'lidza-legacy' }], kept_bytes: 4096, id_available: true, server_id: 'local', server_name: 'Production', days_left: 84 };
 async function mockConsole(page) {
   const state = { apps: [app, { ...app, id: 'api', repository: 'acme/api', domain: 'api.example.com', auto_deploy: false, stopped: true }], calls: [], granted: false, consoleGranted: false, offline: false, unknown: [], maintenance: { policy: { enabled: true, interval_hours: 24, build_cache: true, logs: true, older_than_days: 7 }, running: false, next_run: '2099-10-15T14:00:00Z', next_backup_cleanup: '2099-10-15T14:00:00Z', messages: [] } };
   await page.addInitScript(() => { window.consoleCopied = ''; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.consoleCopied = value; } } }); });
@@ -49,6 +50,8 @@ async function mockConsole(page) {
     // No move recorded: the control answers 204 (not 404, which browsers log as a console error).
     if (method === 'GET' && /^control\/apps\/[^/]+\/move$/.test(path)) return route.fulfill({ status: 204 });
     if (method === 'GET' && /^control\/apps\/[^/]+\/processes$/.test(path)) return send({ processes: [] });
+    if (path === 'control/archives') return send({ archives: [archive], purged: [], retention_days: 90, unavailable_servers: [] });
+    if (/^control\/servers\/[^/]+\/host\/ruby\/bundlers$/.test(path)) return send({ groups: [{ user: 'deploy', ruby: '3.3.6', rubygems: '3.5.22', default_bundler: '2.5.22', apps: ['portal'], remove: ['2.4.1'], keep: [] }] });
     if (method !== 'GET') return send({ status: 'accepted', codes: ['fixture-recovery-code'] });
     state.unknown.push(path); return send({});
   });

@@ -46,3 +46,15 @@ it('disables changes on the card of an application a move holds, keeping read-on
   render(<ApplicationsPage/>);
   expect(screen.getByRole('button',{name:'Deploy'})).toBeEnabled();
 });
+
+it('shows the release warnings of an application on its card',()=>{
+  const warning='Port 25/tcp receives mail, but no service declares public_tls: senders that require STARTTLS (Gmail, Microsoft) fail and defer mail.';
+  state.workspace={apps:[{id:'mailer',repository:'org/mailer',branch:'main',domain:'mail.example.com',server_id:'local',warnings:[warning]} as unknown as Record<string,string>],servers:[{id:'local'}]};
+  const {container}=render(<ApplicationsPage/>);
+  const card=container.querySelector('[data-app-card="mailer"]')!;
+  expect(card.querySelector('.app-warnings .alert-warning')).toHaveTextContent(warning);
+  cleanup();
+  state.workspace=undefined;
+  const plain=render(<ApplicationsPage/>);
+  expect(plain.container.querySelector('.app-warnings')).toBeNull();
+});

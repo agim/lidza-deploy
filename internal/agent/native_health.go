@@ -17,16 +17,20 @@ type NativeReadiness struct {
 
 func (m *Manager) nativeEnvironment(name string) map[string]string {
 	values := map[string]string{}
-	for _, path := range []string{filepath.Join(name, "current", ".env"), filepath.Join(name, "current", ".asdf-vars"), filepath.Join(name, ".asdf-vars")} {
-		data := m.nativeMetadataFile(path)
-		for _, line := range strings.Split(string(data), "\n") {
-			key, val, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "export "), "=")
-			if ok && envPattern.MatchString(key) {
-				values[key] = strings.Trim(strings.TrimSpace(val), "\"'")
-			}
-		}
+	for _, path := range nativeEnvironmentFiles {
+		parseNativeEnvironment(m.nativeMetadataFile(filepath.Join(name, path)), values)
 	}
 	return values
+}
+
+// parseNativeEnvironment adds the KEY=value lines of an environment file.
+func parseNativeEnvironment(data []byte, values map[string]string) {
+	for _, line := range strings.Split(string(data), "\n") {
+		key, val, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "export "), "=")
+		if ok && envPattern.MatchString(key) {
+			values[key] = strings.Trim(strings.TrimSpace(val), "\"'")
+		}
+	}
 }
 
 func nativePort(values map[string]string) string {

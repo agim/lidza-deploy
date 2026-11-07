@@ -81,6 +81,9 @@ func (m *Manager) enqueueNativeStatic(id string, req DeployRequest) (Deployment,
 	if err != nil {
 		return Deployment{}, err
 	}
+	if _, stopped := m.nativeStopped(id); stopped {
+		return Deployment{}, errors.New("application is stopped; start it before deploying")
+	}
 	if _, err = m.nativeStaticPolicy(a); err != nil {
 		return Deployment{}, err
 	}

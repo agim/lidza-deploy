@@ -51,7 +51,8 @@ func (m *Manager) nativeSettings(id string) (Settings, error) {
 			bindings[key] = "Existing host database"
 		}
 	}
-	settings := Settings{Native: &a, ID: a.ID, Runtime: runtime, Branch: a.Branch, Domain: a.Domain, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), EnvKeys: keys, Environment: environment, Bindings: bindings, RuntimeDeployed: true, Capabilities: m.nativeManagementCapabilities(a)}
+	_, stopped := m.nativeStopped(id)
+	settings := Settings{Stopped: stopped, Native: &a, ID: a.ID, Runtime: runtime, Branch: a.Branch, Domain: a.Domain, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), EnvKeys: keys, Environment: environment, Bindings: bindings, RuntimeDeployed: true, Capabilities: m.nativeManagementCapabilities(a)}
 	m.mu.Lock()
 	for resource, binding := range m.data.NativeDatabases {
 		if binding.Policy.AppID == id && binding.Policy.EnvironmentKey != "" {
@@ -95,7 +96,14 @@ func (m *Manager) nativeSettings(id string) (Settings, error) {
 
 func (m *Manager) nativeManagementCapabilities(a NativeApplication) *ManagementCapabilities {
 	capability := &ManagementCapabilities{Logs: len(a.Services) > 0, Processes: true, Reason: "Existing runtime and deployment ownership are preserved. Configuration and deployment takeover require the reviewed host change plan."}
-	_, capability.Remove = m.nativeCreatedPolicy(a.ID)
+	// Every native application can be deleted into the archive: created
+	// ones with their account, adopted ones without touching the shared
+	// deployment account (archive_adopted.go).
+	capability.Remove = true
+	_, created := m.nativeCreatedPolicy(a.ID)
+	capability.Adopted = !created
+	capability.LifecycleReason = m.nativeLifecycleAllowed(a.ID)
+	capability.Lifecycle = capability.LifecycleReason == ""
 	if m.nativeReleaseManaged(a.ID) {
 		// The release policy owns branch, processes, schedule and backups;
 		// deploys and rollbacks run through the release engine.

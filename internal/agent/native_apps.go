@@ -262,6 +262,12 @@ func (m *Manager) nativeDiscovery(ctx context.Context) ([]NativeApplication, err
 	}
 	m.mu.Lock()
 	apps := maps.Clone(m.data.NativeApps)
+	// A configured policy of a deleted application is not offered again:
+	// it is restored from its archive, never re-adopted from the file.
+	archived := map[string]bool{}
+	for _, a := range m.data.AppArchives {
+		archived[a.AppID] = true
+	}
 	m.mu.Unlock()
 	out := []NativeApplication{}
 	reported := map[string]bool{}
@@ -281,7 +287,7 @@ func (m *Manager) nativeDiscovery(ctx context.Context) ([]NativeApplication, err
 	for _, id := range slices.Sorted(maps.Keys(m.cfg.Native.Releases)) {
 		policy := m.cfg.Native.Releases[id]
 		name := filepath.Base(policy.Root)
-		if _, registered := apps[id]; registered || reported[name] || !policy.Enabled || !policy.SystemUnits() || !nativeNamePattern.MatchString(name) || len(out) >= 100 {
+		if _, registered := apps[id]; registered || archived[id] || reported[name] || !policy.Enabled || !policy.SystemUnits() || !nativeNamePattern.MatchString(name) || len(out) >= 100 {
 			continue
 		}
 		units := nativeSystemUnitFiles(policy)
@@ -369,10 +375,18 @@ func (m *Manager) nativeRegistration(in NativeApplication) (NativeApplication, e
 	if _, exists := m.data.Apps[in.ID]; exists {
 		return in, errors.New("application ID belongs to a container application")
 	}
+	for _, archive := range m.data.AppArchives {
+		if archive.AppID == in.ID && archive.Kind == archiveKindAdopted {
+			return in, errors.New("a deleted application with this id can still be restored; restore it, delete it permanently, or choose another id")
+		}
+	}
 	for _, app := range m.data.Apps {
 		if app.DomainsOverlap(App{Domain: in.Domain, AdditionalDomains: in.AdditionalDomains}) {
 			return in, errors.New("domain belongs to a container application")
 		}
+	}
+	if err := m.checkRedirectHostsLocked((App{Domain: in.Domain, AdditionalDomains: in.AdditionalDomains}).Hostnames(), ""); err != nil {
+		return in, err
 	}
 	for id, app := range m.data.NativeApps {
 		if id != in.ID && (App{Domain: app.Domain, AdditionalDomains: app.AdditionalDomains}).DomainsOverlap(App{Domain: in.Domain, AdditionalDomains: in.AdditionalDomains}) {
@@ -446,6 +460,13 @@ func (m *Manager) nativeViews() []App {
 	m.mu.Lock()
 	apps := maps.Clone(m.data.NativeApps)
 	histories := maps.Clone(m.data.NativeReleases)
+	stopped := maps.Clone(m.data.NativeStopped)
+	redirects := map[string][]RedirectDomain{}
+	for id := range apps {
+		if list := m.data.Redirects[id]; len(list) > 0 {
+			redirects[id] = slices.Clone(list)
+		}
+	}
 	m.mu.Unlock()
 	views := []App{}
 	for _, binding := range apps {
@@ -456,7 +477,8 @@ func (m *Manager) nativeViews() []App {
 		if runtime == "" {
 			runtime = "rails"
 		}
-		view := App{Management: m.nativeManagementCapabilities(a), ID: a.ID, Runtime: runtime, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: slices.Clone(a.AdditionalDomains), Native: &a}
+		view := App{Management: m.nativeManagementCapabilities(a), ID: a.ID, Runtime: runtime, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: slices.Clone(a.AdditionalDomains), RedirectDomains: redirects[a.ID], Native: &a}
+		_, view.Stopped = stopped[a.ID]
 		if history := histories[a.ID]; history.Current.Path != "" {
 			view.Current = &Release{ID: history.Current.ID, Commit: history.Current.Commit}
 		}
@@ -578,6 +600,9 @@ func (m *Manager) nativeServiceAction(ctx context.Context, id, unit, action, con
 	}
 	if confirm != a.Name || !slices.Contains(a.Services, unit) || !slices.Contains([]string{"start", "stop", "restart"}, action) {
 		return errors.New("explicit application-name confirmation and a registered service action are required")
+	}
+	if _, stopped := m.nativeStopped(id); stopped && action != "stop" {
+		return errors.New("the application is stopped; start the application first")
 	}
 	m.mu.Lock()
 	if m.nativeOperations[id] {

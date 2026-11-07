@@ -131,11 +131,30 @@ Control metadata and remote agent settings cannot be committed atomically. If an
 Disable auto-deploy from the application card. This persists locally even when GitHub is disconnected. The GitHub webhook remains installed and signed deliveries are acknowledged without queuing work. Pending dispatch jobs skip disabled applications; deployments already accepted by the agent can finish. Re-enabling synchronizes the existing webhook and requires GitHub authorization.
 
 
-### Retiring an application
+### Deleting an application
 
-Choose Remove and type the application ID. This disables auto-deploy before contacting the agent. Active deployments must finish before removal; retry afterward. Once agent cleanup begins, the FQDN stops routing and is no longer authorized for certificates. Both retained containers and their images are removed, then the app configuration and environment are deleted. Both local and external databases and backup files are preserved, unattached databases stop their scheduled backups, and database IDs remain reserved on that agent. Databases shared with another active app keep their schedules. DNS records and existing Caddy certificate files are untouched. See [database recovery and retention](databases-backups.md).
+Choose **Delete** in the card's More menu (or **Delete application** in the
+Danger zone of the General settings) and type the application ID. The
+application is archived on its server for 90 days: its settings, files and
+databases (with every login disabled) are kept and can be restored from
+**Workspace → Deleted apps**; its cache, every local and off-site backup,
+routes, certificates nothing else uses, units or containers, tasks and the
+webhook are deleted at once, and its hostnames are released immediately. After
+90 days, or with **Delete now**, the archive is purged, databases included.
+Deletion is refused while the application deploys or moves. See
+[deleting and restoring applications](deleting-applications.md).
 
-If the agent is unavailable or Docker cleanup fails, the application remains marked “removal pending.” Retry removal to finish; do not delete its server record or state files to bypass cleanup. Pending webhook jobs are ignored, including old jobs after an ID is reused. The shared GitHub App webhook remains configured; app removal does not require a working GitHub connection. Retained deployment history remains available within the agent’s history limit.
+### Mail ports and STARTTLS
+
+Large senders such as Gmail and Microsoft require STARTTLS on port 25 and defer
+mail when the handshake fails. When a stack publishes 25, 465 or 587/tcp while
+no service declares `public_tls`, the deployment log records the warning after
+activation and the application card shows it. After each release starts, and
+every 15 minutes, the agent connects to each published mail port on loopback,
+reads the banner, sends EHLO and completes the STARTTLS (or implicit TLS on 465)
+handshake with the primary hostname as SNI, 5 seconds per port; a failed
+handshake becomes a warning with the TLS error. These checks never hold or fail
+a deployment.
 
 The live workspace opens directly at the root and uses the approved Līdza-branded Signal design. If one server is unavailable, deployment history from healthy servers remains visible with an explicit warning naming unavailable servers.
 

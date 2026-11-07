@@ -147,6 +147,96 @@ if [[ "$version" == control-boot ]];then
  report succeeded 'Control panel now waits for Docker and automatically recovers after reboot.'
  exit 0
 fi
+# lidza-control-move-v1
+# Control panel moves. The agent stages inputs in <agent data dir>/control-move
+# and queues one of these fixed operation names; paths are fixed here and every
+# staged input is checked (regular files, no symbolic links) before use.
+case "$version" in control-apply|control-remove|control-certificate|control-caddyfile|control-stop)
+ stage=$(dirname "$upgrade_dir")/control-move
+ control_report(){ local tmp;tmp=$(mktemp "$stage/.status.XXXXXX");printf '{"action":"%s","state":"%s","message":"%s"}\n' "$version" "$1" "$2" > "$tmp";chown "$(stat -c %u:%g "$stage")" "$tmp";chmod 0600 "$tmp";mv -T "$tmp" "$stage/status.json"; }
+ control_fail(){ control_report failed "$1";exit 1; }
+ [[ -d "$stage" && ! -L "$stage" ]] || exit 1
+ if [[ -n $(find "$stage" -type l -print -quit) ]];then control_fail 'Staged control panel files may not contain symbolic links.';fi
+ control_marker=/etc/lidza-control/.moved-in
+ control_dir=/var/lib/lidza-control
+ control_db="lidza-control-db-$(printf '%s' "$control_dir" | sha256sum | cut -c1-12)"
+ control_ready(){ for _ in {1..120};do curl --max-time 2 -fsS http://127.0.0.1:3000/readyz >/dev/null 2>&1 && return 0;sleep 1;done;return 1; }
+ control_report running 'Working'
+ case "$version" in
+ control-apply)
+  [[ -f "$stage/bin/lidza-control" && -f "$stage/lidza-control.service" && -f "$stage/control.env" ]] || control_fail 'The control panel binary, unit or environment is not staged.'
+  if [[ -e /etc/systemd/system/lidza-control.service && ! -f "$control_marker" ]];then control_fail 'A control panel that no move installed already runs on this server.';fi
+  grep -q 'lidza-control' "$stage/lidza-control.service" || control_fail 'The staged unit is not the control panel unit.'
+  id lidza-control >/dev/null 2>&1 || useradd --system --home-dir "$control_dir" --no-create-home --shell /usr/sbin/nologin lidza-control
+  if getent group docker >/dev/null;then usermod -aG docker lidza-control;fi
+  install -d -m 0750 -o root -g lidza-control /etc/lidza-control
+  [[ -f "$control_marker" ]] || printf 'Installed by a control panel move.\n' > "$control_marker"
+  install -m 0600 -o root -g root "$stage/control.env" /etc/lidza-control/control.env
+  install -m 0755 -o root -g root "$stage/bin/lidza-control" /usr/local/bin/lidza-control
+  install -m 0644 -o root -g root "$stage/lidza-control.service" /etc/systemd/system/lidza-control.service
+  if [[ -d "$stage/data" ]];then
+   systemctl stop lidza-control >/dev/null 2>&1 || true
+   next=$(mktemp -d /var/lib/.lidza-control.XXXXXX)
+   (cd "$stage/data" && find . -type d -print0) | while IFS= read -r -d '' d;do install -d -m 0700 -o lidza-control -g lidza-control "$next/$d";done
+   (cd "$stage/data" && find . -type f -print0) | while IFS= read -r -d '' f;do install -m 0600 -o lidza-control -g lidza-control "$stage/data/$f" "$next/$f";done
+   chmod 0700 "$next";chown lidza-control:lidza-control "$next"
+   if [[ -d "$control_dir" ]];then rm -rf "$control_dir.previous";mv -T "$control_dir" "$control_dir.previous";fi
+   mv -T "$next" "$control_dir"
+   rm -rf "$control_dir.previous" "$stage/data"
+  else
+   install -d -m 0700 -o lidza-control -g lidza-control "$control_dir"
+  fi
+  systemctl daemon-reload
+  systemctl enable lidza-control >/dev/null 2>&1
+  systemctl restart lidza-control
+  control_ready || control_fail 'The control panel did not answer on 127.0.0.1:3000; inspect journalctl -u lidza-control.'
+  control_report succeeded 'The control panel is installed and answering.'
+  exit 0;;
+ control-remove)
+  [[ -f "$control_marker" ]] || { [[ -e /etc/systemd/system/lidza-control.service ]] && control_fail 'This control panel was not installed by a move; nothing was removed.';control_report succeeded 'Nothing to remove.';exit 0; }
+  systemctl disable --now lidza-control >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/lidza-control.service
+  systemctl daemon-reload
+  if command -v docker >/dev/null;then
+   label=$(docker inspect --format '{{index .Config.Labels "io.lidza.control.database"}}' "$control_db" 2>/dev/null || true)
+   if [[ "$label" == "${control_db#lidza-control-db-}" ]];then docker rm -f "$control_db" >/dev/null 2>&1 || true;docker volume rm "$control_db" >/dev/null 2>&1 || true;fi
+  fi
+  if [[ -f "$stage/cert-storage" && -d "$stage/cert" ]];then
+   storage=$(head -n1 "$stage/cert-storage")
+   if [[ "$storage" == /* && -d "$storage/certificates" ]];then (cd "$stage/cert" && find . -mindepth 2 -maxdepth 2 -type d -print0) | while IFS= read -r -d '' d;do rm -rf "${storage:?}/certificates/${d#./}";done;fi
+  fi
+  rm -rf "$control_dir" /etc/lidza-control /usr/local/bin/lidza-control
+  userdel lidza-control >/dev/null 2>&1 || true
+  control_report succeeded 'The control panel installed by the move was removed.'
+  exit 0;;
+ control-certificate)
+  storage=$(head -n1 "$stage/cert-storage" 2>/dev/null || true)
+  [[ "$storage" =~ ^/[A-Za-z0-9._/-]+/caddy$ && -d "$storage" && ! -L "$storage" && -d "$stage/cert" ]] || control_fail 'Caddy storage or the staged certificate is missing.'
+  owner=$(stat -c %U:%G "$storage")
+  (cd "$stage/cert" && find . -type d -print0) | while IFS= read -r -d '' d;do install -d -m 0700 -o "${owner%%:*}" -g "${owner##*:}" "$storage/certificates/$d";done
+  (cd "$stage/cert" && find . -type f -print0) | while IFS= read -r -d '' f;do install -m 0600 -o "${owner%%:*}" -g "${owner##*:}" "$stage/cert/$f" "$storage/certificates/$f";done
+  control_report succeeded 'The certificate is in Caddy storage.'
+  exit 0;;
+ control-caddyfile)
+  target=/etc/caddy/Caddyfile
+  [[ -f "$target" && ! -L "$target" && -f "$stage/Caddyfile.next" ]] || control_fail 'The Caddyfile or its staged change is missing.'
+  command -v caddy >/dev/null || control_fail 'caddy is not installed.'
+  candidate=/etc/caddy/.Caddyfile.lidza-next
+  install -m 0644 "$stage/Caddyfile.next" "$candidate"
+  if ! caddy validate --adapter caddyfile --config "$candidate" >/dev/null 2>&1;then rm -f "$candidate";control_fail 'caddy validate refused the changed Caddyfile; nothing was changed.';fi
+  cp -p "$target" "$target.lidza-previous"
+  install -m "$(stat -c %a "$target")" -o "$(stat -c %u "$target")" -g "$(stat -c %g "$target")" "$candidate" "$target"
+  rm -f "$candidate" "$stage/Caddyfile.next"
+  if ! systemctl reload caddy;then mv -T "$target.lidza-previous" "$target";systemctl reload caddy || true;control_fail 'Caddy did not reload the changed Caddyfile; the previous one was restored.';fi
+  control_report succeeded 'Caddy reloaded the changed Caddyfile.'
+  exit 0;;
+ control-stop)
+  [[ -f "$control_dir/control-moved.json" ]] || control_fail 'The control panel here has not handed over; it was not stopped.'
+  systemctl disable --now lidza-control >/dev/null 2>&1 || control_fail 'The control panel unit could not be stopped.'
+  control_report succeeded 'The control panel unit is stopped and disabled.'
+  exit 0;;
+ esac;;
+esac
 # lidza-signed-bundle-v1
 # A signed distribution bundle was staged by the agent after it verified the
 # manifest. The installed binary verifies the staged files again here, with

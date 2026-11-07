@@ -149,7 +149,7 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
     } catch (reason) { setError(message(reason)); }
   };
 
-  if (created) return <div className="form-page"><PageHeader eyebrow="Create application" title={`${created.id} is ready`} description="The application is registered. Deploy its first release now, or later from Applications." back={href('applications')} />
+  if (created) return <div className="page form-page"><PageHeader eyebrow="Create application" title={`${created.id} is ready`} description="The application is registered. Deploy its first release now, or later from Applications." back={href('applications')} />
     <Card className="form-card wizard-done">{error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
       <div className="section-title"><Check size={21} /><div><h2>Application created</h2><p>{created.mode === 'native' ? 'Its account, services and route are prepared on the server.' : 'Its container configuration is saved on the server.'}</p></div></div>
       {created.warning && <Notice>{created.warning}</Notice>}
@@ -157,7 +157,7 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
     </Card></div>;
 
   const result = detection.result;
-  return <div className="form-page"><PageHeader eyebrow="Create application" title="A new home for your code" description="Name it. Point it at a repository. Review what was detected. Make it live." back={href('applications')} />
+  return <div className="page form-page"><PageHeader eyebrow="Create application" title="A new home for your code" description="Name it. Point it at a repository. Review what was detected. Make it live." back={href('applications')} />
     <nav className="stepper wizard-stepper" aria-label="Application setup progress"><ol>{steps.map((label, index) => { const done = index !== step && (index < step || index < reached); return <li key={label}><button type="button" disabled={index > reached} className={`step ${index === step ? 'current' : done ? 'complete' : ''}`} aria-current={index === step ? 'step' : undefined} onClick={() => go(index)}><span>{done ? <Check size={13} aria-label="Complete" /> : String(index + 1).padStart(2, '0')}</span><b className="wizard-step-label">{label}</b>{index < lastStep && <ChevronRight size={14} aria-hidden="true" />}</button></li>; })}</ol></nav>
     <form id="app-form" noValidate onSubmit={submit} aria-busy={busy || undefined}>{error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
       <div className="wizard-panels">

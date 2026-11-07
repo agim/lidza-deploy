@@ -51,7 +51,7 @@ func (m *Manager) nativeCreatedDomain(host string) bool {
 // applications. matched is false when the host is not a created one.
 func (m *Manager) nativeCreatedDomainAllowed(ctx context.Context, domain string) (allowed, matched bool) {
 	domain = strings.ToLower(domain)
-	if m.cfg.reservedHostname(domain) || !m.nativeCreatedDomain(domain) {
+	if m.hostReserved(domain) || !m.nativeCreatedDomain(domain) {
 		return false, false
 	}
 	if m.cfg.TLSListen == "" {

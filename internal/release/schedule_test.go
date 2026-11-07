@@ -105,3 +105,14 @@ func TestWheneverSetAndRailsScheduleStep(t *testing.T) {
 		t.Fatalf("invalid role accepted: %v", role.Args)
 	}
 }
+
+func TestScheduleBlockReturnsTheEntriesOfOneBlock(t *testing.T) {
+	tab := "MAILTO=\"\"\n# Begin Whenever generated tasks for: shop at: 2026-01-01\n0 3 * * * nightly\n5 * * * * hourly\n# End Whenever generated tasks for: shop at: 2026-01-01\n# Begin Whenever generated tasks for: other\n1 1 * * * other\n# End Whenever generated tasks for: other\n"
+	entries, found := ScheduleBlock(tab, "shop")
+	if !found || entries != "0 3 * * * nightly\n5 * * * * hourly" {
+		t.Fatalf("entries %q found=%v", entries, found)
+	}
+	if _, found := ScheduleBlock(tab, "missing"); found {
+		t.Fatal("found a missing block")
+	}
+}

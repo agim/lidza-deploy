@@ -83,6 +83,16 @@ func (c *Client) Repositories(ctx context.Context, token string, page int) ([]Re
 	err := c.Request(ctx, token, "GET", "/user/repos?per_page=100&sort=updated&page="+strconv.Itoa(page), nil, &repos)
 	return repos, err
 }
+
+// DeleteHook removes a repository webhook; one already gone is not an error.
+func (c *Client) DeleteHook(ctx context.Context, token, repo string, id int64) error {
+	err := c.Request(ctx, token, "DELETE", "/repos/"+repo+"/hooks/"+strconv.FormatInt(id, 10), nil, nil)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == 404 {
+		return nil
+	}
+	return err
+}
 func (c *Client) Hook(ctx context.Context, token, repo, callback, secret string, existing int64) (int64, error) {
 	body := map[string]any{"name": "web", "active": true, "events": []string{"push", "pull_request"}, "config": map[string]string{"url": callback, "content_type": "json", "secret": secret, "insecure_ssl": "0"}}
 	path := "/repos/" + repo + "/hooks"

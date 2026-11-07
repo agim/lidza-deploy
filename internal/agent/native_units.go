@@ -221,6 +221,13 @@ func (m *Manager) removeNativeUnits(ctx context.Context, units []string) error {
 	if _, err := m.nativeRootExec(ctx, "systemctl", "daemon-reload"); err != nil && failed == nil {
 		failed = errors.New("systemd could not reload after removing the application units")
 	}
+	// A removed unit that had failed stays listed as "not-found failed"
+	// until its state is reset; a unit that is not loaded fails harmlessly.
+	for _, unit := range units {
+		if nativeReleaseUnitPattern.MatchString(unit) && strings.HasPrefix(unit, "lidza-app-") {
+			_, _ = m.nativeRootExec(ctx, "systemctl", "reset-failed", unit)
+		}
+	}
 	return failed
 }
 

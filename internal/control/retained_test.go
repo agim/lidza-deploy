@@ -100,3 +100,24 @@ func TestRetainedResourcesShowMovesAndProxyRemoval(t *testing.T) {
 type errorString string
 
 func (e errorString) Error() string { return string(e) }
+
+func TestRetainedResourcesNameServersAndDateMoves(t *testing.T) {
+	fx := newMoveFixture(t)
+	finished := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	fx.c.mu.Lock()
+	fx.c.data.Apps["analytics"] = Application{ID: "analytics", ServerID: "beta", Repository: "acme/analytics", Domain: "analytics.example.com"}
+	fx.c.data.Moves = map[string]MoveJob{"m1": {ID: "m1", AppID: "analytics", SourceServer: "alpha", TargetServer: "beta", State: moveStateFinished, Updated: finished}}
+	fx.c.mu.Unlock()
+	row := fx.c.retainedFor("alpha", agent.RetainedResourceView{ID: "r", AppID: "analytics", Origin: &agent.RetainedOrigin{MoveID: "m1", Switched: true}})
+	if row.ServerName != "Alpha" || row.Reason != retainedReasonMoved || row.RunsOnName != "Beta" || !row.MovedAt.Equal(finished) {
+		t.Fatalf("row = %+v", row)
+	}
+	// A move the panel no longer remembers is still a move, by its origin.
+	fx.c.mu.Lock()
+	fx.c.data.Moves = nil
+	fx.c.mu.Unlock()
+	row = fx.c.retainedFor("alpha", agent.RetainedResourceView{ID: "r", AppID: "analytics", Origin: &agent.RetainedOrigin{MoveID: "m0", Switched: true}})
+	if row.Reason != retainedReasonMoved || row.RunsOn != "beta" {
+		t.Fatalf("forgotten move = %+v", row)
+	}
+}

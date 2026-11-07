@@ -9,6 +9,7 @@ import 'sonner/dist/styles.css';
 import './styles.css';
 import './template.css';
 import './console.css';
+import './layout.css';
 
 startRouter();
 createRoot(document.getElementById('root')!).render(<StrictMode><ToastProvider><PreferencesProvider><WorkspaceProvider><App /></WorkspaceProvider></PreferencesProvider></ToastProvider></StrictMode>);

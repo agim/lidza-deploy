@@ -1,50 +1,43 @@
 # Moving applications between servers
 
-## Move from the panel
+A move copies an application to another server and switches it there, for
+every runtime. In the console it starts from **Move to another server** on the
+application's card; the API is:
 
-Choose **Move** on an application to recreate it on another connected server:
-natively when its repository builds natively, otherwise with the same container
-runtime. The move copies the environment and databases, deploys the same commit
-and verifies it on the destination while the source keeps serving. Switch DNS
-next; the move shows the exact records, waits until every hostname resolves to
-the destination and HTTPS works there, then makes the destination the live
-application and retires the source. An optional final sync freezes writes on the
-source and copies the data once more. Every step is resumable, and a move can be
-aborted until it finishes.
+    GET  /api/control/apps/{id}/move-plan     review before starting
+    POST /api/control/apps/{id}/move          start {target_server, runtime_override?, ...}
+    GET  /api/control/apps/{id}/move          the application's latest move
+    GET  /api/control/moves/{id}              one move, with live progress
+    POST /api/control/moves/{id}/{action}     continue, retry-now, recheck-dns, auto-cutover,
+                                              final-sync, finish, abort, remove-retained,
+                                              excluded-tables
 
-Environment values and database dumps travel only between agents through the
-control plane. Values are never stored or logged, and dumps are verified end to
-end by length and SHA-256. The agent's part is served under `/v1/move/...` with
-the agent API key, which only the control panel holds.
+The plan lists databases (with their copy mode), file sets, published ports,
+mail records, build memory, estimates, warnings and blockers. Planning never
+starts or stops anything, writes state or changes DNS. A started move runs
+these steps: Plan, Prepare destination, Copy environment, Copy data, Copy
+files, Deploy on destination, Switch DNS, Final sync (application locked) and
+Finish. The source keeps serving until the move finishes. PostgreSQL databases
+replicate continuously when they can (through the control panel by default,
+so no port opens between the servers) and fall back to a dump and restore.
+DNS is switched by the operator: the move waits at Switch DNS, checking the
+zone's own nameservers, until every hostname resolves to the destination. The
+final sync puts the source and the destination in maintenance, copies the
+latest changes and redeploys the destination; with the automatic cutover it
+runs, and the move finishes, as soon as DNS and HTTPS work on the destination.
+Every step is checkpointed and idempotent, so a failed or interrupted step
+(including a control panel restart) is retried or resumed; an abort before the
+switch removes the destination copy. The sections below describe each part.
 
-## Read-only migration plan
+### Read-only migration inventory
 
-`GET /api/control/apps/{id}/migration-plan` provides an authenticated, read-only
-inventory before moving a Go application. The agent endpoint is
-`GET /v1/apps/{id}/migration-plan`. Plans contain environment **names**, database
-attachments and sharing, backup timestamps, persistent-file requirements, task
-IDs and blockers. They contain no environment values, database passwords, task
-commands or backup object names. Planning never starts/stops containers, writes
-state, copies data or changes DNS.
-
-The plan explicitly reports `execution_supported: false`. It is a preparation
-and review tool; the move above performs the transfer. A fresh plan and a verified destination
-are needed before execution. Database backup timestamps are inventory evidence,
-not proof that backups restore successfully. Test a restore before cutover.
-
-Database review includes both explicit application bindings and database IDs
-retained by the current live release. Older inventories may have live dependencies
-without explicit bindings; an empty environment-key list records that distinction.
-Sharing checks include those live dependencies as well. Manually configured
-connections still require review; planning never invents or rewrites bindings.
-
-The returned steps require a single-writer cutover: prepare the destination,
-quiesce the source and jobs, take final verified backups, restore data, check
-readiness, move traffic and certificates, then enable destination jobs. Preserve
-encryption keys and retain the stopped source for rollback. Local shared
-databases, queue contents, ClickHouse and stack volumes need explicit coordination.
-Never remove source data as part of planning or run source and destination
-workers concurrently.
+`GET /api/control/apps/{id}/migration-plan` (agent: `GET /v1/apps/{id}/migration-plan`)
+is an older, read-only inventory of a Go application: environment **names**,
+database attachments and sharing, backup timestamps, persistent-file
+requirements, task IDs and blockers, with no environment values, database
+passwords, task commands or backup object names. Its `execution_supported:
+false` means this inventory itself executes nothing; moves run through the
+move API above.
 
 ## Build memory
 
@@ -177,7 +170,19 @@ SPF and MX looked up: a warning per destination address whose PTR is not
 one of the application's hostnames, a warning per MX pointing elsewhere, and
 the cutover records list the rewritten SPF record and a PTR line per address
 next to the A/AAAA records. The cutover re-checks reverse DNS on every DNS
-check; it never holds the move.
+check; reverse DNS is optional and never holds the move. When the environment
+shows that outgoing mail goes through a provider (provider API settings such as
+`MAILGUN_*`, a `MAIL_PROVIDER` value, or an SMTP host of a known provider),
+reverse DNS does not affect it and is not checked or listed at all. A release
+that publishes a mail port while no service declares `public_tls` gets the same
+warning in the plan as on its card (see [deployment](deployment.md#mail-ports-and-starttls)).
+
+## Redirect domains
+
+The plan includes the application's [redirect domains](redirect-domains.md).
+Prepare recreates them on the destination (and again when they change before
+the final sync), the cutover lists their DNS records next to the application's,
+and the DNS check waits for them too.
 
 ## Protected applications
 

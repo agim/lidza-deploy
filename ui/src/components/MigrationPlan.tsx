@@ -2,10 +2,11 @@ import * as AlertDialog from '@radix-ui/react-alert-dialog';
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { AlertTriangle, LoaderCircle } from 'lucide-react';
 import { APIError, get, post } from '../lib/api';
-import { ActionForm, Badge, Button, ConfirmAction, CopyButton, ErrorBanner, Field, Notice, StatusBadge } from './ui';
+import { ActionForm, Badge, Button, ConfirmAction, ErrorBanner, Field, Notice, StatusBadge } from './ui';
+import { DnsRecordsTable } from './DnsRecords';
 import { LiveProgress, type OperationProgress } from './LiveProgress';
 import { buildMemorySummary } from '../lib/buildMemory';
-import type { BuildMemoryAssessment } from '../lib/types';
+import type { BuildMemoryAssessment, RedirectDomain } from '../lib/types';
 import { lastOutput, moveActive, moveDuration, moveHolds, movePhaseLabel, moveTone, stateLabels, terminal, working, type MoveExcludedTable, type MoveJob, type MovePTRStatus, type MoveRetainedData } from '../lib/move';
 import { MoveFailureNote, MoveStatusLine, useAppMoveLock } from './MoveLock';
 
@@ -35,6 +36,8 @@ type MovePlan = {
   branch: string;
   commit?: string;
   hostnames: string[];
+  redirect_domains?: RedirectDomain[];
+  redirect_note?: string;
   environment_keys: string[];
   copied_keys: string[];
   copied_sources?: Record<string, number>;
@@ -260,6 +263,7 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
         <dt>Runtime</dt><dd>{plan.runtime} · {plan.source_runtime} → <strong>{plan.target_runtime}</strong>{plan.detection?.mode && ` (repository detected as ${plan.detection.mode}${plan.detection.runtime ? ` ${plan.detection.runtime}` : ''})`}</dd>
         <dt>Release</dt><dd>{plan.repository}@{plan.branch} · commit <code>{plan.commit?.slice(0, 12) || 'not deployed'}</code></dd>
         <dt>Hostnames</dt><dd>{plan.hostnames.join(', ')}</dd>
+        {(plan.redirect_domains?.length ?? 0) > 0 && <><dt>Redirect domains</dt><dd>{plan.redirect_domains!.map(item => `${item.host} → ${item.status || 301}`).join(', ')}{plan.redirect_note && <span className="muted-copy"> {plan.redirect_note}</span>}</dd></>}
         <dt>DNS will point to</dt><dd>{plan.addresses.length ? plan.addresses.join(', ') : 'unknown'}</dd>
         <dt>Environment</dt><dd>{plan.copied_keys.length} copied{environmentSources(plan.copied_sources)}{plan.copied_keys.length > 0 && <>: <code>{plan.copied_keys.join(', ')}</code></>}{plan.destination_keys.length > 0 && <>; set by the destination: <code>{plan.destination_keys.join(', ')}</code></>}</dd>
         <dt>Redis</dt><dd>{plan.redis ? 'provisioned on the destination; contents are not copied' : 'none'}</dd>
@@ -366,9 +370,8 @@ function MoveProgress({ job, name, onUpdate, onPlanAnother }: { job: MoveJob; na
     {cutover && <section className="move-dns" aria-label="DNS records">
       <h4>DNS records</h4>
       <p>Set these records at your DNS provider and remove every other A and AAAA record of these hostnames. {name(job.source_server)} keeps serving until DNS points to {name(job.target_server)}.{job.records.some(record => record.type === 'PTR') && ' A PTR record is set at the server provider, where the server was created.'}</p>
-      <table className="move-records"><thead><tr><th>Hostname</th><th>Type</th><th>Value</th><th><span className="sr-only">Copy</span></th></tr></thead>
-        <tbody>{job.records.map(record => <tr key={`${record.hostname}-${record.type}-${record.value}`}><td><code>{record.hostname}</code></td><td>{record.type}</td><td><code>{record.value}</code>{record.note && <small className="move-record-note">{record.note}</small>}</td><td><CopyButton value={record.value} label={`Copy ${record.type} value for ${record.hostname}`} /></td></tr>)}</tbody></table>
-      <ul className="move-resolution">{job.dns.map(entry => <li key={entry.hostname} className={entry.ready ? 'move-dns-ready' : 'move-dns-waiting'}><code>{entry.hostname}</code> {entry.ready ? 'points to the destination' : entry.error ? entry.error : `resolves to ${entry.addresses.join(', ') || 'nothing'}`}{entry.source && <small className="muted-copy"> (answered by {entry.source})</small>}</li>)}{(job.ptr || []).map(entry => <li key={`ptr-${entry.address}`} className={entry.ok ? 'move-dns-ready' : 'move-dns-waiting'}>{ptrSummary(entry)}{entry.ok ? '' : '; outgoing mail is rejected until then (the move does not wait for it)'}</li>)}</ul>
+      <DnsRecordsTable records={job.records} />
+      <ul className="move-resolution">{job.dns.map(entry => <li key={entry.hostname} className={entry.ready ? 'move-dns-ready' : 'move-dns-waiting'}><code>{entry.hostname}</code> {entry.ready ? 'points to the destination' : entry.error ? entry.error : `resolves to ${entry.addresses.join(', ') || 'nothing'}`}{entry.source && <small className="muted-copy"> (answered by {entry.source})</small>}</li>)}{(job.ptr || []).map(entry => <li key={`ptr-${entry.address}`} className={entry.ok ? 'move-dns-ready' : 'move-dns-optional'}>{ptrSummary(entry)}{entry.ok ? '' : <small className="muted-copy"> Optional: recommended for outgoing mail; the move does not wait for it.</small>}</li>)}</ul>
       {job.dns_checked && <p className="muted-copy">Checked {new Date(job.dns_checked).toLocaleTimeString()}. DNS is checked every minute at the zone's own nameservers, so resolver caches do not delay the cutover.</p>}
       {job.tls_detail && <p className="muted-copy">{job.tls_detail}</p>}
       {can('auto-cutover') && <label className="check-row move-auto-cutover"><input type="checkbox" role="switch" aria-checked={!!job.auto_cutover} checked={!!job.auto_cutover} disabled={!!busy} onChange={event => { void act('auto-cutover', { enabled: event.target.checked }); }} /><span><strong>Final sync and finish start automatically when DNS points here</strong><small>{job.auto_cutover ? `On: the application is locked${lockEstimate ? ` for about ${moveDuration(lockEstimate.seconds)}` : ''} as soon as DNS resolves to ${name(job.target_server)} and HTTPS works there; the move then finishes by itself.` : 'Off: run the final sync and finish the move yourself once DNS points here. Until then the destination serves the bulk copy, and what it receives is replaced by the final sync.'}</small></span></label>}

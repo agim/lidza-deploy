@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"time"
 
 	"github.com/agim/lidza-deploy/internal/agent"
 )
@@ -31,6 +32,9 @@ type fleetRetainedResource struct {
 	// plane knows; RunsOnName is its display name.
 	RunsOn     string `json:"runs_on,omitempty"`
 	RunsOnName string `json:"runs_on_name,omitempty"`
+	// MovedAt is when the move that left the data here finished.
+	MovedAt    time.Time `json:"moved_at,omitzero"`
+	ServerName string    `json:"server_name"`
 }
 
 // retainedFor annotates one agent row with why it was retained.
@@ -39,13 +43,29 @@ func (c *Control) retainedFor(serverID string, row agent.RetainedResourceView) f
 	c.mu.Lock()
 	var latest *MoveJob
 	for _, job := range c.data.Moves {
+		if row.Origin != nil && row.Origin.MoveID != "" && job.ID == row.Origin.MoveID {
+			job := job
+			latest = &job
+			break
+		}
 		if job.State == moveStateFinished && job.AppID == row.AppID && job.SourceServer == serverID && (latest == nil || job.Updated.After(latest.Updated)) {
 			job := job
 			latest = &job
 		}
 	}
+	if latest == nil && row.Origin != nil && row.Origin.MoveID != "" && row.Origin.Switched {
+		// The move is no longer in the panel's history; the agent knows.
+		out.Reason = retainedReasonMoved
+		if a, live := c.data.Apps[row.AppID]; live && a.ServerID != serverID {
+			out.RunsOn = a.ServerID
+		}
+	}
 	if latest != nil {
-		out.Reason, out.RunsOn = retainedReasonMoved, latest.TargetServer
+		out.Reason, out.RunsOn, out.MovedAt = retainedReasonMoved, latest.TargetServer, latest.Updated
+		if latest.SourceServer != serverID {
+			// A destination that never switched holds a copy.
+			out.RunsOn = latest.SourceServer
+		}
 		if a, live := c.data.Apps[row.AppID]; live && a.ServerID != "" {
 			out.RunsOn = a.ServerID
 		}
@@ -54,6 +74,7 @@ func (c *Control) retainedFor(serverID string, row agent.RetainedResourceView) f
 	if out.RunsOn != "" {
 		out.RunsOnName = c.serverName(out.RunsOn)
 	}
+	out.ServerName = c.serverName(serverID)
 	return out
 }
 

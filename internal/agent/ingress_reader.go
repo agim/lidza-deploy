@@ -109,6 +109,7 @@ func (m *Manager) reloadIngressSnapshot() error {
 	}
 	m.gatewayKeys = maps.Clone(next.GatewayPKI)
 	m.data = next
+	m.syncReleasedReservations()
 	m.ingressError = nil
 	m.gatewayMu.Unlock()
 	m.mu.Unlock()

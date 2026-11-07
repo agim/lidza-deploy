@@ -39,7 +39,9 @@ const (
 	moveTunnelIdleLegs  = 2
 	moveTunnelMaxActive = 16
 	moveTunnelReadyWait = 20 * time.Second
-	moveTunnelDialLimit = 30 * time.Second
+	moveTunnelDialWait  = 30 * time.Second
+	moveTunnelBackoff   = time.Second
+	moveTunnelMaxPause  = 30 * time.Second
 )
 
 // moveTunnel is the panel's tunnel of one replicated database.
@@ -84,10 +86,18 @@ func (c *Control) moveTunnelStart(move, sourceServer, targetServer, sourceDB, ta
 		}
 		t.cancel()
 	}
+	t := &moveTunnel{move: move, sourceServer: sourceServer, targetServer: targetServer, sourceDB: sourceDB, targetDB: targetDB, done: make(chan struct{}), ready: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
-	t := &moveTunnel{move: move, sourceServer: sourceServer, targetServer: targetServer, sourceDB: sourceDB, targetDB: targetDB, cancel: cancel, done: make(chan struct{}), ready: make(chan struct{})}
+	t.cancel = cancel
+	if !c.moveWork.goWith(ctx, func(ctx context.Context) { t.run(ctx, c) }) {
+		// The panel stops: no tunnel starts any more; waitReady ends with
+		// its caller's context.
+		delete(c.moveTunnels, key)
+		cancel()
+		close(t.done)
+		return t
+	}
 	c.moveTunnels[key] = t
-	go t.run(ctx, c)
 	return t
 }
 
@@ -207,7 +217,11 @@ func (t *moveTunnel) fail(c *Control, format string, args ...any) time.Duration 
 	text := fmt.Sprintf(format, args...)
 	t.mu.Lock()
 	t.failures++
-	backoff := min(time.Second<<min(t.failures-1, 5), 30*time.Second)
+	base := c.moveTunnelBackoff
+	if base <= 0 {
+		base = moveTunnelBackoff
+	}
+	backoff := min(base<<min(t.failures-1, 5), moveTunnelMaxPause)
 	report := text != t.lastError || time.Since(t.logged) > 5*time.Minute
 	t.lastError = text
 	if report {
@@ -294,7 +308,11 @@ func (t *moveTunnel) dial(ctx context.Context, c *Control, client *http.Client, 
 	if err != nil {
 		return nil, err
 	}
-	handshake, cancel := context.WithTimeout(ctx, moveTunnelDialLimit)
+	limit := c.moveTunnelDialLimit
+	if limit <= 0 {
+		limit = moveTunnelDialWait
+	}
+	handshake, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	stream, err := movetunnel.Dial(handshake, client, server.URL+path, server.Token, token)
 	if err != nil {

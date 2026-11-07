@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -241,5 +242,61 @@ func TestMoveRewriteSPFReplacesOnlySourceAddresses(t *testing.T) {
 	}
 	if names := moveMailNames([]string{"Shop.example.com", "www.shop.example.com"}); !slices.Equal(names, []string{"shop.example.com", "example.com", "www.shop.example.com"}) {
 		t.Fatalf("names %v", names)
+	}
+}
+
+func TestMovePlanSkipsReverseDNSForMailSentThroughAProvider(t *testing.T) {
+	fx := newMoveFixture(t)
+	fx.mailSource()
+	declared := false
+	fx.a.source.PublicTLS = &declared
+	fx.a.source.OutgoingMail = "Mailgun"
+	fx.resolver.setPTR(moveTestTargetIP, "ubuntu-s-1vcpu-2gb-01")
+	plan := mailPlanFor(t, fx, moveStartInput{TargetServer: "beta"})
+	if containing(plan.Warnings, "Reverse DNS") || plan.Mail == nil || len(plan.Mail.PTR) != 0 || plan.Mail.OutgoingProvider != "Mailgun" {
+		t.Fatalf("warnings %v mail %+v", plan.Warnings, plan.Mail)
+	}
+	if !containing(plan.Notes, "Outgoing mail goes through Mailgun; reverse DNS of the destination does not affect it.") {
+		t.Fatalf("notes %v", plan.Notes)
+	}
+	for _, record := range plan.Mail.Records {
+		if record.Type == "PTR" {
+			t.Fatalf("a PTR record for provider mail: %+v", record)
+		}
+	}
+	// Receiving is separate: the inbound STARTTLS certificate warning stays.
+	if !containing(plan.Warnings, "public_tls") {
+		t.Fatalf("the inbound public_tls warning was dropped: %v", plan.Warnings)
+	}
+	if statuses := fx.c.checkMovePTR(context.Background(), MoveJob{Plan: plan, Addresses: plan.Addresses, Hostnames: plan.Hostnames}); statuses != nil {
+		t.Fatalf("the cutover checks reverse DNS for provider mail: %+v", statuses)
+	}
+}
+
+func TestOutgoingMailProviderDetection(t *testing.T) {
+	for _, tc := range []struct {
+		env  map[string]string
+		want string
+	}{
+		{map[string]string{"MAILGUN_API_KEY": "key"}, "Mailgun"},
+		{map[string]string{"SENDGRID_API_KEY": "key"}, "SendGrid"},
+		{map[string]string{"POSTMARK_API_TOKEN": "t"}, "Postmark"},
+		{map[string]string{"AWS_SES_REGION": "eu-west-1"}, "Amazon SES"},
+		{map[string]string{"RESEND_API_KEY": "re_x"}, "Resend"},
+		{map[string]string{"SMTP_ADDRESS": "smtp.mailgun.org"}, "Mailgun"},
+		{map[string]string{"SMTP_HOST": "email-smtp.eu-west-1.amazonaws.com"}, "Amazon SES"},
+		{map[string]string{"MAIL_SMTP_HOST": "mail.example.net"}, "the SMTP server mail.example.net"},
+		{map[string]string{"MAIL_PROVIDER": "mailgun"}, "Mailgun"},
+		{map[string]string{"MAIL_PROVIDER": "smtp", "SMTP_HOST": "smtp.postmarkapp.com"}, "Postmark"},
+		{map[string]string{"MAIL_PROVIDER": "smtp", "SMTP_HOST": "localhost"}, ""},
+		{map[string]string{"SMTP_ADDRESS": "127.0.0.1"}, ""},
+		{map[string]string{"SMTP_HOST": "mailserver"}, ""},
+		{map[string]string{"SMTP_HOST": "10.0.0.5"}, ""},
+		{map[string]string{"MAILGUN_API_KEY": ""}, ""},
+		{map[string]string{"DATABASE_URL": "postgres://x"}, ""},
+	} {
+		if got := agent.OutgoingMailProvider(tc.env); got != tc.want {
+			t.Fatalf("%v: got %q want %q", tc.env, got, tc.want)
+		}
 	}
 }

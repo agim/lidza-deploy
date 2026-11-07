@@ -118,10 +118,14 @@ func Handler(m *Manager) http.Handler {
 	m.maintenanceRoutes(private)
 	m.hostRoutes(private)
 	m.hostIngressRoutes(private)
+	m.redirectRoutes(private)
+	m.controlRoutes(private)
 	m.databaseRoutes(private)
 	m.moveRoutes(private)
 	m.cacheRoutes(private)
 	m.retainedRoutes(private)
+	m.archiveRoutes(private)
+	m.appLifecycleRoutes(private)
 	m.taskRoutes(private)
 	m.upgradeRoutes(private)
 	private.HandleFunc("DELETE /v1/previews/{id}", m.previewRoute)
@@ -288,8 +292,16 @@ func Proxy(m *Manager) http.Handler {
 			m.serveDomainProof(w, r, host)
 			return
 		}
+		if m.serveControlPanel(w, r, host) {
+			return
+		}
 		if operatorPath(r.URL.Path) {
 			http.NotFound(w, r)
+			return
+		}
+		// Redirect domains never reach the application, so they keep
+		// working while it is stopped or in maintenance.
+		if m.serveRedirect(w, r, host) {
 			return
 		}
 		if m.serveNativeCreated(w, r, host) {

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { mockConsole } = require('./fixtures/console.cjs');
 const base = process.env.TEST_WEB_URL || 'http://127.0.0.1:8880';
 (async () => {
- const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox'] });
+ const browser = await chromium.launch({ executablePath: process.env.TEST_CHROMIUM_PATH || '/usr/bin/chromium', args: ['--no-sandbox'] });
  try {
   for (const width of [390, 1440]) {
    const page = await browser.newPage({ viewport: { width, height: 900 } }), errors = [];

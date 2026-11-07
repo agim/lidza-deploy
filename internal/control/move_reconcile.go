@@ -177,8 +177,11 @@ func moveDatabasesUnchanged(job MoveJob, source agent.MoveSource) error {
 		"Abort this move and start a new one, so the new database layout is planned and copied.")
 }
 
-// moveReconcileSettings carries over hostname and branch changes.
+// moveReconcileSettings carries over hostname, redirect and branch changes.
 func (c *Control) moveReconcileSettings(ctx context.Context, id, step string, source agent.MoveSource) error {
+	if err := c.moveReconcileRedirects(ctx, id, step, source); err != nil {
+		return err
+	}
 	job, _ := c.moveJob(id)
 	hostnames := append([]string{source.Domain}, source.AdditionalDomains...)
 	if source.Domain == "" || slices.Equal(hostnames, job.Hostnames) && source.Branch == job.Target.Branch {
@@ -204,4 +207,34 @@ func (c *Control) moveReconcileSettings(ctx context.Context, id, step string, so
 		return nil
 	})
 	return err
+}
+
+// moveReconcileRedirects carries over redirect domains changed on the
+// source during the move.
+func (c *Control) moveReconcileRedirects(ctx context.Context, id, step string, source agent.MoveSource) error {
+	job, _ := c.moveJob(id)
+	if slices.Equal(source.RedirectDomains, job.Target.RedirectDomains) {
+		return nil
+	}
+	list := slices.Clone(source.RedirectDomains)
+	if list == nil {
+		list = []agent.RedirectDomain{}
+	}
+	if err := c.moveCall(ctx, time.Minute, job.TargetServer, http.MethodPut, "/v1/apps/"+url.PathEscape(job.AppID)+"/redirects", agent.RedirectRequest{Redirects: list}, nil); err != nil {
+		return moveOn(job.TargetServer, fmt.Errorf("the destination did not accept the source's new redirect domains: %w", err))
+	}
+	_, err := c.updateMove(id, func(job *MoveJob) error {
+		job.logf(step, "Carried over the source's redirect domains changed during the move: %s.", cmpOrNone(strings.Join(agent.RedirectHosts(list), ", ")))
+		job.Target.RedirectDomains = slices.Clone(source.RedirectDomains)
+		job.RedirectHostnames = agent.RedirectHosts(source.RedirectDomains)
+		return nil
+	})
+	return err
+}
+
+func cmpOrNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }

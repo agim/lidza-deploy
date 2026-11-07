@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,29 +55,36 @@ type Config struct {
 	Servers    []Server
 	GitHub     *gh.Client
 	Connectors []auth.Connector
+	// Standby is a panel installed by a control panel move that has not
+	// taken over yet: it runs no ticks, jobs or updates (cmd/web serves it
+	// a standby page and never boots it).
+	Standby bool
 }
 type Application struct {
-	Astro              *agent.AstroConfig       `json:"astro,omitempty"`
-	Build              agent.BuildConfig        `json:"build,omitempty,omitzero"`
-	Native             *agent.NativeApplication `json:"native,omitempty"`
-	Runtime            string                   `json:"runtime,omitempty"`
-	Rails              *agent.RailsConfig       `json:"rails,omitempty"`
-	RuntimeProfile     string                   `json:"runtime_profile,omitempty"`
-	AdditionalDomains  []string                 `json:"additional_domains,omitempty"`
-	CustomerHosts      bool                     `json:"customer_hosts"`
-	GitHubInstallation int64                    `json:"github_installation,omitempty"`
-	Previews           PreviewConfig            `json:"previews,omitempty"`
-	PreviewParent      string                   `json:"preview_parent,omitempty"`
-	Generation         string                   `json:"generation,omitempty"`
-	Retiring           bool                     `json:"retiring,omitempty"`
-	ID                 string                   `json:"id"`
-	ServerID           string                   `json:"server_id"`
-	Repository         string                   `json:"repository"`
-	Branch             string                   `json:"branch"`
-	Domain             string                   `json:"domain"`
-	AutoDeploy         bool                     `json:"auto_deploy"`
-	HookID             int64                    `json:"hook_id,omitempty"`
-	Secret             string                   `json:"secret,omitempty"`
+	Astro             *agent.AstroConfig       `json:"astro,omitempty"`
+	Build             agent.BuildConfig        `json:"build,omitempty,omitzero"`
+	Native            *agent.NativeApplication `json:"native,omitempty"`
+	Runtime           string                   `json:"runtime,omitempty"`
+	Rails             *agent.RailsConfig       `json:"rails,omitempty"`
+	RuntimeProfile    string                   `json:"runtime_profile,omitempty"`
+	AdditionalDomains []string                 `json:"additional_domains,omitempty"`
+	// RedirectDomains mirror the hosting agent's redirect domains of the
+	// application (redirects.go).
+	RedirectDomains    []agent.RedirectDomain `json:"redirect_domains,omitempty"`
+	CustomerHosts      bool                   `json:"customer_hosts"`
+	GitHubInstallation int64                  `json:"github_installation,omitempty"`
+	Previews           PreviewConfig          `json:"previews,omitempty"`
+	PreviewParent      string                 `json:"preview_parent,omitempty"`
+	Generation         string                 `json:"generation,omitempty"`
+	Retiring           bool                   `json:"retiring,omitempty"`
+	ID                 string                 `json:"id"`
+	ServerID           string                 `json:"server_id"`
+	Repository         string                 `json:"repository"`
+	Branch             string                 `json:"branch"`
+	Domain             string                 `json:"domain"`
+	AutoDeploy         bool                   `json:"auto_deploy"`
+	HookID             int64                  `json:"hook_id,omitempty"`
+	Secret             string                 `json:"secret,omitempty"`
 }
 type saved struct {
 	ObservedApps              map[string]ObservedApplication `json:"observed_apps,omitempty"`
@@ -90,6 +98,9 @@ type saved struct {
 	Moves                     map[string]MoveJob             `json:"moves,omitempty"`
 	Apps                      map[string]Application         `json:"apps"`
 	Servers                   []Server                       `json:"servers"`
+	// AppArchives are the deleted applications the panel can restore, by
+	// the agent's archive id (archive.go).
+	AppArchives map[string]ControlArchive `json:"app_archives,omitempty"`
 
 	// BackupRetention is the workspace's off-site retention; nil until an
 	// operator saves it, and until then nothing is cleaned up on its own.
@@ -97,8 +108,15 @@ type saved struct {
 	// server was first noticed (backup_retention.go).
 	BackupRetention *retention.Settings  `json:"backup_retention,omitempty"`
 	BackupOrphans   map[string]time.Time `json:"backup_orphans,omitempty"`
+
+	// PanelMove is the move of this control panel to another server and
+	// PanelArrival what a moved-in panel remembers (panel_move.go).
+	PanelMove    *PanelMove    `json:"panel_move,omitempty"`
+	PanelArrival *PanelArrival `json:"panel_arrival,omitempty"`
 }
 type Control struct {
+	// stateWriter writes the sealed state file outside mu (state_writer.go).
+	stateWriter stateWriter
 	// credentialsFixture replaces deploymentCredentials in unit tests that run
 	// without the framework's auth services; nil in production.
 	credentialsFixture func(context.Context, Application, string) (agent.DeployRequest, error)
@@ -138,10 +156,29 @@ type Control struct {
 	// move and database (move_tunnel.go), guarded by moveTunnelMu.
 	moveTunnelMu sync.Mutex
 	moveTunnels  map[string]*moveTunnel
+	// moveTunnelBackoff and moveTunnelDialLimit replace the tunnel's
+	// first retry delay and stream handshake limit in tests.
+	moveTunnelBackoff   time.Duration
+	moveTunnelDialLimit time.Duration
+	// moveWork tracks the move runners and tunnels the panel started;
+	// stopMoveWork cancels and waits for them (move_work.go).
+	moveWork moveWork
 	// activityCache is the fleet's deployment read for the activity
 	// drawer (activity.go), reused for activityCacheFor.
 	activityMu    sync.Mutex
 	activityCache *activityFleet
+	// Control panel move (panel_move.go): panelRunning is guarded by mu,
+	// panelJobs counts running queue jobs for the cutover; the rest are
+	// replaced in tests.
+	panelRunning        bool
+	panelDNSMu          sync.Mutex // one DNS check at a time
+	panelJobs           atomic.Int64
+	panelMachineID      func() string
+	panelPollInterval   time.Duration
+	panelRetryDelays    []time.Duration
+	panelBundleTransfer func(context.Context, Server, UpdateBundle, string) error
+	panelDatabase       func(context.Context) (bool, int64, error)
+	panelDumpFixture    func(context.Context, io.Writer) error
 }
 
 func New(cfg Config) (*Control, error) {
@@ -182,9 +219,17 @@ func New(cfg Config) (*Control, error) {
 		return nil, err
 	}
 	c.registry = append([]Server{}, c.data.Servers...)
+	liveControls.Store(c, struct{}{})
 	return c, nil
 }
 func (c *Control) path() string { return filepath.Join(c.cfg.DataDir, "control.enc.json") }
+
+// saveState writes the sealed state file. Unit tests replace it with an
+// atomic write that skips fsync (control_state_test.go): durability is not
+// what they test, and a shared disk's fsync stalls of seconds under load
+// held c.mu long enough to time out unrelated waits.
+var saveState = state.Save
+
 func (c *Control) save() error {
 	plain, err := json.Marshal(c.data)
 	if err != nil {
@@ -194,7 +239,11 @@ func (c *Control) save() error {
 	if err != nil {
 		return err
 	}
-	return state.Save(c.path(), sealed)
+	if !stateWritesAsync {
+		return saveState(c.path(), sealed)
+	}
+	c.stateWriter.submit(c.path(), sealed)
+	return nil
 }
 func random() string {
 	b := make([]byte, 32)
@@ -220,6 +269,11 @@ func (c *Control) Protect(next http.Handler) http.Handler {
 	}))
 }
 func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
+	if c.cfg.Standby {
+		// A standby panel never reaches here (cmd/web serves it a page);
+		// should one boot anyway, it touches nothing and schedules nothing.
+		return nil
+	}
 	ctx = lidza.WithServices(ctx, s)
 	pool := db.From(ctx)
 	// Versioned application bootstrap; framework-owned DDL comes from the pinned pack.
@@ -257,19 +311,19 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 	if err := fleetRoles.Grant(ctx, c.operatorID, fleetScope, "admin"); err != nil {
 		return err
 	}
-	jobs.FromServices(s).Handle("deploy.push", c.auditedJob("deploy.push", c.dispatchPush), jobs.Concurrency(2))
 	q := jobs.FromServices(s)
-	q.Handle("native.inventory", func(ctx context.Context, _ json.RawMessage) error { c.syncNativeInventory(ctx); return nil }, jobs.Concurrency(1))
+	q.Handle("deploy.push", c.gatedJob(false, c.auditedJob("deploy.push", c.dispatchPush)), jobs.Concurrency(2))
+	q.Handle("native.inventory", c.gatedJob(true, func(ctx context.Context, _ json.RawMessage) error { c.syncNativeInventory(ctx); return nil }), jobs.Concurrency(1))
 	if err := q.Schedule("native.inventory", jobs.Every(time.Minute), nil); err != nil {
 		return err
 	}
 	if _, err := q.Enqueue(ctx, "native.inventory", nil); err != nil {
 		return err
 	}
-	q.Handle("deploy.preview", c.auditedJob("deploy.preview", c.dispatchPreview), jobs.Concurrency(2))
-	q.Handle("deploy.task", c.auditedJob("deploy.task", c.dispatchTask), jobs.Concurrency(4))
-	q.Handle("ops.tick", c.operationsTick, jobs.Concurrency(1))
-	q.Handle("errors.sync", c.configureCollectors, jobs.Concurrency(1))
+	q.Handle("deploy.preview", c.gatedJob(false, c.auditedJob("deploy.preview", c.dispatchPreview)), jobs.Concurrency(2))
+	q.Handle("deploy.task", c.gatedJob(false, c.auditedJob("deploy.task", c.dispatchTask)), jobs.Concurrency(4))
+	q.Handle("ops.tick", c.gatedJob(true, c.operationsTick), jobs.Concurrency(1))
+	q.Handle("errors.sync", c.gatedJob(true, c.configureCollectors), jobs.Concurrency(1))
 	if err := q.Schedule("errors.sync", jobs.Every(time.Minute), nil); err != nil {
 		return err
 	}
@@ -280,18 +334,20 @@ func (c *Control) Start(ctx context.Context, s *lidza.Services) error {
 		return err
 	}
 	c.moveBase = audit.System(context.WithoutCancel(ctx), "move")
-	q.Handle("move.tick", func(ctx context.Context, _ json.RawMessage) error { c.moveTick(ctx); return nil }, jobs.Concurrency(1))
+	q.Handle("move.tick", c.gatedJob(true, func(ctx context.Context, _ json.RawMessage) error { c.moveTick(ctx); return nil }), jobs.Concurrency(1))
 	if err := q.Schedule("move.tick", jobs.Every(time.Minute), nil); err != nil {
 		return err
 	}
 	// Moves that replicate through the panel get their tunnels back at once
 	// after a restart, not only at the first tick.
 	c.moveTunnelSync()
-	q.Handle("backups.retention", func(ctx context.Context, _ json.RawMessage) error { return c.retentionTick(ctx) }, jobs.Concurrency(1))
+	// A panel restarted during its own move resumes it.
+	c.panelMoveResume()
+	q.Handle("backups.retention", c.gatedJob(true, func(ctx context.Context, _ json.RawMessage) error { return c.retentionTick(ctx) }), jobs.Concurrency(1))
 	if err := q.Schedule("backups.retention", jobs.Every(6*time.Hour), nil); err != nil {
 		return err
 	}
-	q.Handle("updates.tick", func(ctx context.Context, _ json.RawMessage) error { return c.updateTick(ctx) }, jobs.Concurrency(1))
+	q.Handle("updates.tick", c.gatedJob(true, func(ctx context.Context, _ json.RawMessage) error { return c.updateTick(ctx) }), jobs.Concurrency(1))
 	return q.Schedule("updates.tick", jobs.Every(time.Minute), nil)
 }
 func (c *Control) token(ctx context.Context) (string, error) {
@@ -424,12 +480,14 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	private := http.NewServeMux()
 	c.routes(func(pattern string, fn http.HandlerFunc) {
-		private.HandleFunc(pattern, c.protectedRoute(pattern, c.moveLock(pattern, c.nativeContainerGuard(pattern, fn))))
+		private.HandleFunc(pattern, c.protectedRoute(pattern, c.panelReadOnlyGuard(pattern, c.moveLock(pattern, c.nativeContainerGuard(pattern, fn)))))
 	})
-	mux.HandleFunc("POST /hooks/github/{id}", c.webhook)
-	mux.HandleFunc("POST /hooks/github-app", c.githubAppWebhook)
-	mux.HandleFunc("POST /api/agent/checkout-token", c.checkoutToken)
-	mux.HandleFunc("POST /api/agent/errors", c.ingestErrors)
+	// While the panel moves, webhooks, checkout tokens and agent error
+	// reports are refused too: what this panel records then is not copied.
+	mux.HandleFunc("POST /hooks/github/{id}", c.panelReadOnlyGuard("POST /hooks/github/{id}", c.webhook))
+	mux.HandleFunc("POST /hooks/github-app", c.panelReadOnlyGuard("POST /hooks/github-app", c.githubAppWebhook))
+	mux.HandleFunc("POST /api/agent/checkout-token", c.panelReadOnlyGuard("POST /api/agent/checkout-token", c.checkoutToken))
+	mux.HandleFunc("POST /api/agent/errors", c.panelReadOnlyGuard("POST /api/agent/errors", c.ingestErrors))
 	mux.Handle("/api/control/", c.Protect(private))
 	mux.Handle("/", frontend)
 	return mux
@@ -451,6 +509,7 @@ func (c *Control) routes(handle func(string, http.HandlerFunc)) {
 	handle("GET /api/control/application-defaults", c.applicationDefaults)
 	handle("GET /api/control/apps/{id}/migration-plan", c.migrationPlan)
 	c.moveRoutes(handle)
+	c.panelMoveRoutes(handle)
 	handle("PUT /api/control/application-defaults", c.applicationDefaults)
 	handle("POST /api/control/apps/{id}/apply-defaults", c.applyDefaults)
 	handle("GET /api/control/team", c.team)
@@ -517,12 +576,20 @@ func (c *Control) routes(handle func(string, http.HandlerFunc)) {
 	handle("GET /api/control/apps/{id}/settings", c.settings)
 	handle("POST /api/control/apps/{id}/master-key", c.generateMasterKey)
 	handle("PATCH /api/control/apps/{id}/settings", c.updateSettings)
+	handle("GET /api/control/apps/{id}/redirects", c.redirects)
+	handle("PUT /api/control/apps/{id}/redirects", c.updateRedirects)
 	handle("POST /api/control/apps/{id}/environment/{key}/reveal", c.revealCredential)
 	handle("DELETE /api/control/apps/{id}/webhook", c.disableHook)
 	handle("GET /api/control/apps", c.apps)
 	handle("GET /api/control/apps/{id}/processes", c.applicationProcesses)
 	handle("POST /api/control/apps", c.create)
-	handle("DELETE /api/control/apps/{id}", c.retire)
+	handle("DELETE /api/control/apps/{id}", c.deleteApp)
+	for _, action := range agentLifecycleActions {
+		handle("POST /api/control/apps/{id}/"+action, c.appLifecycle(action))
+	}
+	handle("GET /api/control/archives", c.archives)
+	handle("POST /api/control/archives/{id}/restore", c.restoreArchive)
+	handle("DELETE /api/control/archives/{id}", c.purgeArchive)
 	handle("POST /api/control/apps/{id}/reload", c.reloadApp)
 	handle("POST /api/control/servers/{server}/databases/{id}/{action}", c.databaseResourceAction)
 	handle("PATCH /api/control/servers/{server}/databases/{id}/backups", c.databaseResourcePolicy)
@@ -573,6 +640,9 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 		DomainStatus   *agent.DomainStatus  `json:"domain_status,omitempty"`
 		Current        *agent.Release       `json:"current,omitempty"`
 		AgentError     string               `json:"agent_error,omitempty"`
+		// Warnings are the current release's conditions to fix (mail ports
+		// without a certificate, for example).
+		Warnings []string `json:"warnings,omitempty"`
 		// Move is the move that holds the application; its settings are
 		// locked until the move finishes or is aborted (move_lock.go).
 		Move *moveSummary `json:"move,omitempty"`
@@ -617,11 +687,13 @@ func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 					out[i].DomainStatus = a.DomainStatus
 					out[i].DomainStatuses = a.DomainStatuses
 					out[i].AdditionalDomains = a.AdditionalDomains
+					out[i].RedirectDomains = a.RedirectDomains
 					out[i].RuntimeProfile = a.RuntimeProfile
 					out[i].Native = a.Native
 					out[i].Management = a.Management
 					out[i].Maintenance = a.Maintenance
 					out[i].Restoring = a.Restoring
+					out[i].Warnings = a.Warnings
 					break
 				}
 			}
@@ -715,6 +787,10 @@ func (c *Control) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if owner := redirectedHostOwner(c.data.Apps, spec.Hostnames()); owner != "" {
+		agent.Fail(w, 409, errors.New("domain already registered as a redirect domain of "+owner))
+		return
+	}
 	if err := c.agentCall(r, a.ServerID, "PUT", "/v1/apps/"+a.ID, spec, nil); err != nil {
 		failAgent(w, err)
 		return
@@ -757,36 +833,60 @@ func (c *Control) deploy(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	d, err := c.startDeployment(r, a.ID)
+	if err != nil {
+		var call deployAgentError
+		if errors.As(err, &call) {
+			failAgent(w, call.error)
+			return
+		}
+		agent.Fail(w, 409, err)
+		return
+	}
+	agent.JSON(w, 202, d)
+}
+
+// deployAgentError is a failed agent call of a deployment, answered with
+// the agent's status (failAgent).
+type deployAgentError struct{ error }
+
+func (e deployAgentError) Unwrap() error { return e.error }
+
+// startDeployment deploys the application's branch.
+func (c *Control) startDeployment(r *http.Request, id string) (agent.Deployment, error) {
+	a, ok := c.app(id)
+	if !ok || a.Retiring {
+		return agent.Deployment{}, errors.New("unknown application")
+	}
 	path := "/v1/apps/" + a.ID + "/deploy"
 	if a.Native != nil {
 		var status agent.NativeStatus
 		if err := c.agentCall(r, a.ServerID, "GET", "/v1/native/apps/"+a.ID, nil, &status); err != nil {
-			agent.Fail(w, 409, err)
-			return
+			return agent.Deployment{}, err
 		}
 		if !status.DeploymentSupported {
-			agent.Fail(w, 409, errors.New("native deployment ownership requires the reviewed host configuration"))
-			return
+			return agent.Deployment{}, errors.New("native deployment ownership requires the reviewed host configuration")
 		}
 		path = "/v1/native/apps/" + a.ID + "/deploy"
 	}
-	credentialRequest, err := c.deploymentCredentials(r.Context(), a, "")
+	credentials := c.deploymentCredentials
+	if c.credentialsFixture != nil {
+		credentials = c.credentialsFixture
+	}
+	credentialRequest, err := credentials(r.Context(), a, "")
 	if err != nil {
-		agent.Fail(w, 409, err)
-		return
+		return agent.Deployment{}, err
 	}
 	if a.Native == nil {
 		if err := c.syncStorageIfConfigured(r, a.ServerID); err != nil {
-			failAgent(w, err)
-			return
+			return agent.Deployment{}, deployAgentError{err}
 		}
 	}
 	var d agent.Deployment
 	if err := c.agentCall(r, a.ServerID, "POST", path, credentialRequest, &d); err != nil {
-		failAgent(w, err)
-		return
+		return agent.Deployment{}, deployAgentError{err}
 	}
-	agent.JSON(w, 202, d)
+	return d, nil
 }
 func (c *Control) rollback(w http.ResponseWriter, r *http.Request) {
 	a, ok := c.app(r.PathValue("id"))

@@ -1,4 +1,5 @@
-import { Activity, AppWindow, Boxes, CircleHelp, CloudCog, DatabaseBackup, ChevronDown, ChevronRight, ArrowUpRight, LayoutGrid, Menu, PackageOpen, RefreshCw, ScrollText, Server, Settings2, ShieldCheck, Users, X } from 'lucide-react';
+import { Page } from './layout';
+import { Activity, AppWindow, Boxes, CircleHelp, CloudCog, DatabaseBackup, ChevronDown, ChevronRight, ArrowUpRight, ArchiveRestore, LayoutGrid, Menu, PackageOpen, RefreshCw, ScrollText, Server, ServerCog, Settings2, ShieldCheck, Users, X } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import type { PageKey, Route } from '../lib/types';
 import { relativeTime } from '../lib/format';
@@ -28,6 +29,8 @@ const groups: Array<{ label: string; items: Array<{ page: PageKey; label: string
     { page: 'integrations', label: 'Integrations', icon: CloudCog },
     { page: 'defaults', label: 'Application defaults', icon: Settings2 },
     { page: 'team', label: 'Team', icon: Users },
+    { page: 'deleted-apps', label: 'Deleted apps', icon: ArchiveRestore },
+    { page: 'control-panel', label: 'Control panel', icon: ServerCog },
     { page: 'audit', label: 'Audit log', icon: ScrollText },
     { page: 'help', label: 'Help', icon: CircleHelp },
   ] },
@@ -49,7 +52,7 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
     <Sheet open={open} onOpenChange={setOpen}><SheetContent side="left" className="mobile-sidebar" showCloseButton={false}><SheetTitle className="sr-only">Workspace menu</SheetTitle><SheetDescription className="sr-only">Navigate applications, infrastructure and workspace settings.</SheetDescription><IconButton className="mobile-nav-close" label="Close menu" onClick={() => setOpen(false)}><X size={18} /></IconButton>{navigation}</SheetContent></Sheet>
     <div className="app-frame app-body">
       <header className="topbar"><div className="breadcrumbs topbar-left"><IconButton className="mobile-menu" label="Open menu" onClick={() => setOpen(true)}><Menu size={18} /></IconButton><span>Workspace</span><ChevronRight size={13} /><strong>{routeLabel(route)}</strong></div><div className="topbar-right"><span className="updated live-indicator" role="status"><span className={refreshing ? 'online-dot pulse' : 'online-dot'} />{loading ? 'Connecting…' : updatedAt ? `Updated ${relativeTime(updatedAt.toISOString())}` : 'Connected'}</span><ActivityDrawer /><DropdownMenu><DropdownMenuTrigger asChild><button className="user-avatar small account-trigger" aria-label="Account menu">A</button></DropdownMenuTrigger><DropdownMenuContent align="end" className="account-dropdown"><DropdownMenuItem asChild><a href={withSticky(detailHref('two-factor', 'account'))}>Two-factor authentication</a></DropdownMenuItem><DropdownMenuItem onSelect={() => { void (async () => { try { await preferences.flush().catch(() => {}); const response = await fetch('/api/v1/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); if (!response.ok) throw new Error('Sign out failed. Please try again.'); location.href = '/login.html'; } catch (reason) { notify(String(reason), true); } })(); }}>Sign out</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></header>
-      <main id="main-content">{preferences.error && <ErrorBanner>{preferences.error} <Button size="sm" onClick={() => { void preferences.flush().catch(() => {}); }}>Retry</Button></ErrorBanner>}{loading || !preferences.ready ? <Loading overlay label="Loading your workspace…" /> : children}<footer className="page-footer"><span>Built with Līdza <span aria-hidden="true">·</span> Independent apps. One place to deploy.</span><span>shadcn/ui · Nova</span></footer></main>
+      <main id="main-content">{preferences.error && <ErrorBanner>{preferences.error} <Button size="sm" onClick={() => { void preferences.flush().catch(() => {}); }}>Retry</Button></ErrorBanner>}{loading || !preferences.ready ? <Loading overlay label="Loading your workspace…" /> : <Page>{children}</Page>}<footer className="page-footer"><span>Built with Līdza <span aria-hidden="true">·</span> Independent apps. One place to deploy.</span><span>shadcn/ui · Nova</span></footer></main>
     </div>
   </div>;
 }

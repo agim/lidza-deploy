@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -9,8 +10,9 @@ import (
 )
 
 // hostAdminRoutes proxies per-server host updates, reboots, the managed
-// firewall, the web ingress setting and the removal of unused Bundler
-// versions to the server's agent. Mutations pass the panel's origin check,
+// firewall, the web ingress setting, the removal of unused Bundler
+// versions and resource tuning (settings, overrides, Redis moves) to the
+// server's agent. Mutations pass the panel's origin check,
 // role check and audit trail like every other server mutation.
 func (c *Control) hostAdminRoutes(handle func(string, http.HandlerFunc)) {
 	for _, pattern := range []string{
@@ -27,6 +29,10 @@ func (c *Control) hostAdminRoutes(handle func(string, http.HandlerFunc)) {
 		"PUT /api/control/servers/{server}/host/ingress",
 		"GET /api/control/servers/{server}/host/ruby/bundlers",
 		"POST /api/control/servers/{server}/host/ruby/bundlers/remove",
+		"GET /api/control/servers/{server}/host/resources",
+		"PUT /api/control/servers/{server}/host/resources/overrides",
+		"POST /api/control/servers/{server}/host/resources/apply",
+		"POST /api/control/servers/{server}/host/resources/redis/{app}/migrate",
 	} {
 		handle(pattern, c.hostAdmin)
 	}
@@ -43,11 +49,45 @@ func (c *Control) hostAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	_, rest, _ := strings.Cut(r.URL.Path, "/servers/"+r.PathValue("server"))
 	path := "/v1" + rest
-	if r.Method == http.MethodGet && (rest == "/host/updates" || rest == "/host/ingress") && r.URL.Query().Get("refresh") == "1" {
+	if r.Method == http.MethodGet && (rest == "/host/updates" || rest == "/host/ingress" || rest == "/host/resources") && r.URL.Query().Get("refresh") == "1" {
 		path += "?refresh=1"
 	}
 	var input any
+	accepted := false
 	switch {
+	case rest == "/host/resources/overrides":
+		var overrides agent.TuningOverrides
+		if err := agent.Decode(w, r, &overrides); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		if err := overrides.Validate(); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		input = overrides
+	case rest == "/host/resources/apply":
+		var apply agent.ResourceTuningApply
+		if err := agent.Decode(w, r, &apply); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		input, accepted = apply, !apply.DryRun
+	case strings.HasPrefix(rest, "/host/resources/redis/"):
+		if !databaseResourceID.MatchString(r.PathValue("app")) {
+			agent.Fail(w, 400, errors.New("invalid application id"))
+			return
+		}
+		var migration agent.RedisMigrationRequest
+		if err := agent.Decode(w, r, &migration); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		if migration.Confirm != r.PathValue("app") {
+			agent.Fail(w, 400, errors.New("confirm with the application id"))
+			return
+		}
+		input, accepted = migration, true
 	case rest == "/host/ingress" && r.Method == http.MethodPut:
 		var settings agent.HostIngressSettings
 		if err := agent.Decode(w, r, &settings); err != nil {
@@ -118,7 +158,7 @@ func (c *Control) hostAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := http.StatusOK
-	if rest == "/host/updates/run" || rest == "/host/reboot" || rest == "/host/ruby/bundlers/remove" {
+	if accepted || rest == "/host/updates/run" || rest == "/host/reboot" || rest == "/host/ruby/bundlers/remove" {
 		status = http.StatusAccepted
 	}
 	w.Header().Set("Content-Type", "application/json")

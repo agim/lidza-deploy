@@ -67,6 +67,13 @@ func planMovePorts(plan *MovePlan, source agent.MoveSource, host agent.MoveHost)
 		}
 		return
 	}
+	// A mail port published without public_tls answers STARTTLS without
+	// the primary hostname's certificate; the move carries that over.
+	if source.PublicTLS != nil && !*source.PublicTLS {
+		if warning := agent.MailTLSWarning(ports); warning != "" {
+			plan.Warnings = append(plan.Warnings, warning)
+		}
+	}
 	if host.ListeningPorts == nil {
 		plan.Notes = append(plan.Notes, fmt.Sprintf("The destination publishes port %s; its agent does not report bound ports, so a collision would only show at the deploy. Upgrade the destination agent to check beforehand.", movePortLabels(ports)))
 		return

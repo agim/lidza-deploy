@@ -355,6 +355,12 @@ func (m *Manager) nativeApplicationHealth(ctx context.Context) []AppHealth {
 			break
 		}
 		health := AppHealth{AppID: id, Release: releases[id].Current.ID, State: "unknown"}
+		if _, stopped := m.nativeStopped(id); stopped {
+			// Stopped from the panel: no incident, nothing to recover.
+			health.State = "stopped"
+			out = append(out, health)
+			continue
+		}
 		status, err := m.nativeStatus(ctx, id)
 		if err != nil {
 			out = append(out, health)
