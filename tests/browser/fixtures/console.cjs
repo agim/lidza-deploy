@@ -75,6 +75,14 @@ async function mockConsole(page) {
     if (method === 'GET' && /^control\/servers\/[^/]+\/databases\/[^/]+\/tables$/.test(path)) return send({ tables: [{ name: 'users', rows: 1200, bytes: 4 * 1024 ** 2, excludable: false, excluded: false }, { name: 'request_logs', rows: 2400000, bytes: 3 * 1024 ** 3, excludable: true, excluded: false }], total: 2, excluded: [] });
     if (path === 'control/activity') return send({ items: [], generated: now, unavailable_servers: [] });
     if (method === 'GET' && /^control\/apps\/[^/]+\/redirects$/.test(path)) return send({ redirects: [], hostnames: ['portal.example.com'] });
+    // Access log (internal/agent/access_log.go): on by default; switching it off removes the files.
+    if (/^control\/apps\/[^/]+\/access-log$/.test(path)) {
+      const id = path.split('/')[2];
+      state.accessLogs ||= {};
+      state.accessLogs[id] ||= { supported: true, enabled: true, active: true, env_set: true, path: `/var/log/lidza/apps/${id}/access.log`, directory: `/var/log/lidza/apps/${id}`, env: 'LIDZA_ACCESS_LOG', account: `app-${id}`, group: `app-${id}`, hosts: [`${id}.example.com`], files: 3, bytes: 3 * 1024 ** 2, caddy_version: 'v2.10.2', checked: now, restart_note: 'Running processes read LIDZA_ACCESS_LOG when they start: after the next restart or deploy. Scheduled jobs read it from their next run.' };
+      if (method === 'PUT') state.accessLogs[id] = { ...state.accessLogs[id], enabled: body.enabled, active: body.enabled, env_set: body.enabled, files: body.enabled ? 1 : 0, bytes: body.enabled ? 1024 : 0 };
+      return send(state.accessLogs[id]);
+    }
     if (path === 'control/repos/detect') return send({ repository: 'acme/portal', branch: 'main', default_branch: 'main', branches: ['main', 'release'], commit: 'abcdef1', installation_id: 42, detected: true, mode: 'container', needs_postgres: false, needs_redis: false, reasons: ['go.mod: Līdza (Go) application'] });
     if (path === 'control/team') return send({ members: [{ id: 'owner', name: 'Operator', email: 'ops@example.com', role: 'admin', owner: true }] });
     if (path === 'control/audit') return send({ entries: [{ id: 'audit-one', action: 'server.console.unlock', actor: 'ops@example.com', created: now, target: 'local' }] });

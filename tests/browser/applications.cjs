@@ -292,4 +292,25 @@ suite('applications', [
       assert.equal(saved.domain, 'portal.example.com');
     },
   },
+  {
+    name: 'settings: the access log shows its file and switches off at once',
+    widths: [320, 1440],
+    async run({ page, state, open }) {
+      await open('/console/applications/portal/settings');
+      const card = page.locator('[data-access-log=portal]');
+      await card.getByText('/var/log/lidza/apps/portal/access.log').waitFor();
+      assert.match(await card.innerText(), /LIDZA_ACCESS_LOG/);
+      assert.match(await card.innerText(), /Writing/);
+      const box = await card.boundingBox();
+      assert(box.x >= 0 && box.x + box.width <= page.viewportSize().width, 'the access log card runs past the viewport');
+      const toggle = card.getByRole('switch', { name: 'Write an access log for this application' });
+      assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+      await toggle.click();
+      await until(() => callsTo(state, 'control/apps/portal/access-log', 'PUT').length === 1, 'the switch did not save the setting');
+      assert.deepEqual(callsTo(state, 'control/apps/portal/access-log', 'PUT')[0].body, { enabled: false });
+      await card.getByText('Off', { exact: true }).waitFor();
+      assert.equal(await card.getByText('/var/log/lidza/apps/portal/access.log').count(), 0, 'a switched-off log still shows its file');
+      assert.equal(settingsPatches(state).length, 0, 'the access log must not save the settings form');
+    },
+  },
 ]).catch(error => { console.error(error); process.exit(1); });
