@@ -28,6 +28,7 @@ describe('help articles', () => {
     expect(searchHelp('redirect').map(article => article.id)).toContain('redirect-domains');
     expect(searchHelp('restore deleted').map(article => article.id)).toContain('deleted-apps');
     expect(searchHelp('STARTTLS').map(article => article.id)).toEqual(['mail-tls']);
+    expect(searchHelp('LIDZA_ACCESS_LOG').map(article => article.id)).toEqual(['access-logs']);
     expect(searchHelp('no such topic anywhere')).toEqual([]);
   });
 });

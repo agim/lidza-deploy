@@ -577,6 +577,10 @@ func nativeEnvironmentLogSecrets(values map[string]string) []string {
 			delete(values, key)
 		}
 	}
+	// The access log path is public knowledge, not a secret (access_log.go).
+	if path := values[accessLogEnv]; strings.HasPrefix(path, filepath.Clean(accessLogRoot)+"/") && strings.HasSuffix(path, "/"+accessLogFileName) {
+		delete(values, accessLogEnv)
+	}
 	for _, key := range []string{"RAILS_ENV", "RACK_ENV", "NODE_ENV"} {
 		if slices.Contains([]string{"production", "development", "test", "staging"}, values[key]) {
 			delete(values, key)

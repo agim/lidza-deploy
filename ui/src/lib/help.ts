@@ -74,6 +74,12 @@ export const helpArticles: HelpArticle[] = [
   { id: 'ssh-logs', title: 'Reading service logs over SSH', keywords: ['journalctl', 'logs', 'ssh', 'systemd-journal', 'deploy', 'agent tab'], body: [
     'Applications run as system units of their own accounts, so the shared deployment account sees their logs only with system log access. On the server’s Agent tab, turn on System log access for the deployment account; the agent adds that account to the systemd-journal group, shows whether it is a member now, and puts the membership back if it is changed by hand. Turning it off removes only that membership.',
     'Then open a new SSH session (group changes apply to new sessions only), for example ssh deploy@server.example.com, and read a unit’s logs with journalctl -u <unit>, without --user. Applications’ logs may contain secrets, so turn it on only for people who may read them.',
+    'An application reads its own requests from its access log, not from the journal: see Application access logs.',
+  ] },
+  { id: 'access-logs', title: 'Application access logs', keywords: ['access log', 'requests', 'caddy', 'LIDZA_ACCESS_LOG', 'crawler', 'journalctl', 'logs'], body: [
+    'Every application that runs as its own account on the server has an access log: Caddy writes each request to the application’s hostnames to /var/log/lidza/apps/<id>/access.log as well as to the system journal. Each line is the JSON entry the journal shows (journalctl -u caddy -o cat), with logger http.log.access.lidza-access-<id> instead of http.log.access.',
+    'Only the application’s account and root read the file; no other application can. The application finds it in LIDZA_ACCESS_LOG, which its environment file sets: running processes see it after their next restart or deploy, scheduled jobs from their next run. Rotated files stay next to it (access-<time>.log.gz) for up to 14 days.',
+    'It is on by default. To switch it off, open the application’s Settings tab and turn off Write an access log for this application under Access log; Caddy stops writing at once and the files are removed. The card shows the file, who reads it, the Caddy version and the last problem, such as a Caddy older than 2.9. Container applications have no access log yet: their requests stay in the journal.',
   ] },
 ];
 

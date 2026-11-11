@@ -25,6 +25,7 @@ var lockedMoveRoutes = []string{
 	"POST /api/control/apps/{id}/apply-defaults",
 	"PUT /api/control/apps/{id}/previews",
 	"PUT /api/control/apps/{id}/redirects",
+	"PUT /api/control/apps/{id}/access-log",
 	"PUT /api/control/apps/{id}/tasks/{task}",
 	"POST /api/control/apps/{id}/tasks/{task}/{action}",
 	"PUT /api/control/apps/{id}/{feature}",

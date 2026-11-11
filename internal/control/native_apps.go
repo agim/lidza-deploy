@@ -68,8 +68,10 @@ func (c *Control) nativeContainerGuard(pattern string, next http.HandlerFunc) ht
 			// activity come from the agent's console collector (journals for
 			// native units), logs and processes from the native service routes.
 			switch pattern {
-			case "GET /api/control/apps/{id}/redirects", "PUT /api/control/apps/{id}/redirects":
-				// Redirect domains are served by the agent for every runtime.
+			case "GET /api/control/apps/{id}/redirects", "PUT /api/control/apps/{id}/redirects",
+				"GET /api/control/apps/{id}/access-log", "PUT /api/control/apps/{id}/access-log":
+				// Redirect domains are served by the agent for every runtime;
+				// the access log is the agent's for every native application.
 				next(w, r)
 				return
 			case "GET /api/control/apps/{id}/settings", "GET /api/control/apps/{id}/logs", "GET /api/control/apps/{id}/processes",

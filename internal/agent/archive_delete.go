@@ -177,6 +177,7 @@ func (m *Manager) beginArchive(id string, req AppArchiveRequest, adopted *Archiv
 		return "", errArchiveNotFound
 	}
 	archive.Redirects = slices.Clone(m.data.Redirects[id])
+	archive.AccessLogOff = m.accessLogOffLocked(id)
 	for _, host := range RedirectHosts(archive.Redirects) {
 		if !slices.Contains(archive.Hostnames, host) {
 			archive.Hostnames = append(archive.Hostnames, host)
@@ -385,7 +386,7 @@ func (m *Manager) archiveNativeApp(ctx context.Context, archiveID string) error 
 				func() { delete(m.data.NativeCreated, id) }, func() { delete(m.data.NativeCreatedSpecs, id) }, func() { delete(m.data.NativeApps, id) },
 				func() { delete(m.data.NativeSettings, id) }, func() { delete(m.data.NativeReleases, id) }, func() { delete(m.data.NativeBindings, id) },
 				func() { delete(m.data.NativeTransitions, id) }, func() { delete(m.data.NativeRuby, id) }, func() { delete(m.data.BuildPeaks, id) },
-				func() { delete(m.data.NativeStopped, id) },
+				func() { delete(m.data.NativeStopped, id) }, func() { m.setAccessLogOffLocked(id, false) },
 			} {
 				table()
 			}
@@ -410,6 +411,7 @@ func (m *Manager) archiveNativeApp(ctx context.Context, archiveID string) error 
 			}
 			return nil
 		}},
+		{"access-log", func() error { return m.withdrawAccessLogLater(ctx, archiveID, id) }},
 	}
 	for _, step := range steps {
 		if err := m.archiveStep(archiveID, "native-"+step.name, step.run); err != nil {

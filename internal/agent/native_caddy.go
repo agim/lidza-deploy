@@ -543,6 +543,8 @@ func (m *Manager) publishNativeCaddyRoute(ctx context.Context, id, domain string
 	if err != nil {
 		return "", err
 	}
+	// The access log follows the application's hostnames (access_log.go).
+	m.wakeAccessLogs()
 	return tls.Line(), nil
 }
 

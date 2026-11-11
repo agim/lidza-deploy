@@ -586,6 +586,7 @@ func (m *Manager) restoreNativeState(ctx context.Context, archiveID string, plan
 		}
 		m.data.Redirects[id] = redirects
 	}
+	m.setAccessLogOffLocked(id, a.AccessLogOff)
 	delete(m.data.RetainedResources, a.Retained)
 	delete(m.data.AppArchives, archiveID)
 	err := m.save()

@@ -587,7 +587,9 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	m.data.NativeApps[req.ID] = app
 	m.data.NativeSettings[req.ID] = NativeSettingsOverride{Kinds: kinds}
 	m.data.NativeCreatedSpecs[req.ID] = nativeCreatedSpec(req)
+	m.setAccessLogOffLocked(req.ID, req.AccessLogOff)
 	if err := m.save(); err != nil {
+		m.setAccessLogOffLocked(req.ID, false)
 		delete(m.data.NativeCreated, req.ID)
 		delete(m.data.NativeApps, req.ID)
 		delete(m.data.NativeCreatedSpecs, req.ID)
@@ -602,6 +604,7 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	m.mu.Unlock()
 	succeeded = true
 	m.wakeDomains()
+	m.wakeAccessLogs()
 	for _, view := range m.nativeViews() {
 		if view.ID == req.ID {
 			view.IngressNote = ingressNote
@@ -686,11 +689,15 @@ func (m *Manager) deleteNativeApp(ctx context.Context, id string, purge bool, re
 	delete(m.data.NativeSettings, id)
 	delete(m.data.NativeReleases, id)
 	delete(m.data.NativeBindings, id)
+	m.setAccessLogOffLocked(id, false)
 	droppedRedirects := m.dropRedirectsLocked(id)
 	err = m.save()
 	m.mu.Unlock()
 	if err == nil && droppedRedirects {
 		m.withdrawRedirects(ctx, id)
+	}
+	if err == nil {
+		_ = m.withdrawAccessLogLater(ctx, "", id)
 	}
 	if err != nil || retained == "" || !req.DeleteData {
 		return err

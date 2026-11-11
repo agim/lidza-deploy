@@ -276,6 +276,9 @@ type diskState struct {
 	// deployment account; nil leaves the membership alone
 	// (native_log_access.go).
 	HostLogAccess *HostLogAccessState `json:"host_log_access,omitempty"`
+	// AccessLogOff lists the applications whose access log the panel
+	// switched off; every other application has one (access_log.go).
+	AccessLogOff map[string]bool `json:"access_log_off,omitempty"`
 	// HostGateway is the protected gateway the agent set up itself when no
 	// gateway is configured (gateway_auto.go).
 	HostGateway *HostGatewayState `json:"host_gateway,omitempty"`

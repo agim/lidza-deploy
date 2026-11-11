@@ -253,6 +253,7 @@ func (m *Manager) archiveAdoptedApp(ctx context.Context, archiveID string) error
 		{"logins", func() error { return m.archiveAdoptedLogins(ctx, archiveID) }},
 		{"files", func() error { return m.archiveAdoptedFiles(ctx, archiveID) }},
 		{"state", func() error { return m.archiveAdoptedState(ctx, archiveID) }},
+		{"access-log", func() error { return m.withdrawAccessLogLater(ctx, archiveID, m.archiveSnapshot(archiveID).AppID) }},
 	}
 	for _, step := range steps {
 		if err := m.archiveStep(archiveID, "adopted-"+step.name, step.run); err != nil {
@@ -1045,6 +1046,7 @@ func (m *Manager) archiveAdoptedState(ctx context.Context, archiveID string) err
 		func() { delete(m.data.NativeApps, id) }, func() { delete(m.data.NativeSettings, id) }, func() { delete(m.data.NativeReleases, id) },
 		func() { delete(m.data.NativeBindings, id) }, func() { delete(m.data.NativeTransitions, id) }, func() { delete(m.data.NativeRuby, id) },
 		func() { delete(m.data.BuildPeaks, id) }, func() { delete(m.data.NativeStopped, id) }, func() { delete(m.data.NativeIngress, id) },
+		func() { m.setAccessLogOffLocked(id, false) },
 	} {
 		table()
 	}
@@ -1334,6 +1336,7 @@ func (m *Manager) restoreAdoptedState(ctx context.Context, archiveID string, pla
 		}
 		m.data.Redirects[id] = redirects
 	}
+	m.setAccessLogOffLocked(id, a.AccessLogOff)
 	delete(m.data.AppArchives, archiveID)
 	err := m.save()
 	if err != nil {

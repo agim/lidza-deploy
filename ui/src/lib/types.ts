@@ -388,6 +388,32 @@ export interface LogAccessStatus {
   applied?: string;
 }
 
+/** An application's access log: its own Caddy access entries, readable by its account only (agent/access_log.go). */
+export interface AppAccessLogStatus {
+  supported: boolean;
+  /** Why the application has no access log (container applications, no account of its own). */
+  reason?: string;
+  enabled: boolean;
+  path: string;
+  directory: string;
+  /** The environment variable that names path: LIDZA_ACCESS_LOG. */
+  env: string;
+  /** Whether the application's environment file sets env. */
+  env_set: boolean;
+  /** Whether Caddy writes the application's entries now. */
+  active: boolean;
+  hosts?: string[];
+  account?: string;
+  group?: string;
+  caddy_version?: string;
+  files: number;
+  bytes: number;
+  error?: string;
+  warning?: string;
+  checked?: string;
+  restart_note?: string;
+}
+
 export interface HostIngressStatus {
   mode: 'agent' | 'caddy'; source: 'config' | 'setting' | 'detected'; caddy_admin?: string; caddy_server?: string;
   admin_api: boolean; web_ports?: number[]; detail?: string; checked: string; detected?: 'agent' | 'caddy';

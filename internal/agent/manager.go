@@ -135,6 +135,15 @@ type Manager struct {
 	// linkMu guards linkCancel, the running agent link (control_link.go).
 	linkMu     sync.Mutex
 	linkCancel context.CancelFunc
+
+	// Per-application access logs (access_log.go): accessLogMu serialises
+	// the passes; accessLogResults (guarded by mu) is the latest pass by
+	// application, accessLogVersion the cached Caddy version.
+	accessLogMu             sync.Mutex
+	accessLogWake           chan struct{}
+	accessLogResults        map[string]accessLogResult
+	accessLogVersion        string
+	accessLogVersionChecked time.Time
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
@@ -145,7 +154,7 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 		return nil, errors.New("ingress_only must use NewIngressReader, not a deployment manager")
 	}
 	ctx, cancel := context.WithCancel(parent)
-	m := &Manager{hostCache: map[string]hostVerdict{}, hostSlots: make(chan struct{}, 8), lifecycle: map[string]bool{}, reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
+	m := &Manager{hostCache: map[string]hostVerdict{}, hostSlots: make(chan struct{}, 8), lifecycle: map[string]bool{}, reportWake: make(chan struct{}, 1), domains: map[string]DomainStatus{}, domainWake: make(chan struct{}, 1), accessLogWake: make(chan struct{}, 1), databaseSlots: make(chan struct{}, 2), cfg: cfg, runtime: rt, queue: make(chan job, 16), ctx: ctx, cancel: cancel, data: diskState{Apps: map[string]App{}}}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		cancel()
 		return nil, err
@@ -329,6 +338,8 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	go m.archiveLeftoversLoop()
 	m.wg.Add(1)
 	go m.swapLoop()
+	m.wg.Add(1)
+	go m.accessLogLoop()
 	m.migrateConsoleService()
 	m.migrateControlBootService()
 	if cfg.TLSListen != "" {

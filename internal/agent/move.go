@@ -460,6 +460,7 @@ func (m *Manager) nativeMoveSource(id string) (MoveSource, error) {
 	m.mu.Lock()
 	policy, created := m.data.NativeCreated[id]
 	spec, recorded := m.data.NativeCreatedSpecs[id]
+	accessLogOff := m.accessLogOffLocked(id)
 	record := m.data.NativeHostData[id]
 	s.Busy = m.nativeOperations[id]
 	var database Database
@@ -503,6 +504,8 @@ func (m *Manager) nativeMoveSource(id string) (MoveSource, error) {
 		}
 	}
 	spec.Env, spec.EnvKinds, spec.Data.ExternalDatabaseURL = nil, nil, ""
+	// The destination keeps the source's access log setting (access_log.go).
+	spec.AccessLogOff = accessLogOff
 	spec.Data.Postgres, spec.Data.Redis = record.Postgres != nil, record.Redis != nil
 	spec.Data.ClickHouse, spec.Data.ClickHouseVersion = record.ClickHouse != nil, ""
 	if ch := record.ClickHouse; ch != nil {

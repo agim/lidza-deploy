@@ -805,7 +805,7 @@ func (m *Manager) withdrawLoggerNames(ctx context.Context, archiveID string, t l
 			if !hostIn(own, host) || !validLoggerHost(host) {
 				continue
 			}
-			record := ArchivedLoggerName{Server: name, Host: host, Value: slices.Clone(names[host])}
+			record := ArchivedLoggerName{Server: name, Host: host, Value: withoutAccessLogNames(names[host])}
 			if err := m.updateArchive(archiveID, func(x *AppArchive) {
 				if x.Native.Leftovers == nil {
 					x.Native.Leftovers = &ArchivedLeftovers{}
@@ -912,7 +912,29 @@ func (m *Manager) archiveLeftovers(ctx context.Context, archiveID string) error 
 	if err := m.withdrawErrorRouteHosts(ctx, archiveID, t); err != nil {
 		return err
 	}
-	return m.withdrawLoggerNames(ctx, archiveID, t)
+	if err := m.withdrawLoggerNames(ctx, archiveID, t); err != nil {
+		return err
+	}
+	return m.withdrawAccessLog(ctx, archiveID, t.appID)
+}
+
+// withoutAccessLogNames is a logger_names value without the per-application
+// access log names (access_log.go): a restore maps the hostnames to what
+// they logged to before, and the access log pass adds its own name again.
+func withoutAccessLogNames(value json.RawMessage) json.RawMessage {
+	var parsed any
+	if json.Unmarshal(value, &parsed) != nil {
+		return slices.Clone(value)
+	}
+	list := caddyNameList(parsed)
+	kept := slices.DeleteFunc(slices.Clone(list), accessLogOurs)
+	switch {
+	case len(kept) == len(list):
+		return slices.Clone(value)
+	case len(kept) == 0:
+		return nil // only the access log mapped it; a restore leaves it unmapped
+	}
+	return mustJSON(kept)
 }
 
 // sweepArchiveLeftovers re-applies archiveLeftovers to every archived

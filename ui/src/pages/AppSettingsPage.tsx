@@ -2,6 +2,7 @@ import { RetainedResources } from '../components/RetainedResources';
 import { indexHref, navigate, resourceHref, withSticky } from '../lib/router';
 import { NativeDataServices } from '../components/NativeDataServices';
 import { AppPorts } from '../components/AppPorts';
+import { AppAccessLog } from '../components/AppAccessLog';
 import { RedirectDomains } from '../components/RedirectDomains';
 import { RuntimeProfileField } from '../components/RuntimeProfileField';
 import { ApplyDefaultsButton } from '../components/ApplyDefaults';
@@ -23,7 +24,7 @@ import { Cluster } from '../components/layout';
 import { CacheSettings } from './ResourceDetailPages';
 
 // The application's settings, one tab each (docs/console-structure.md):
-// Settings (source, build, ports, lifecycle, Danger zone), Environment,
+// Settings (source, build, ports, access log, lifecycle, Danger zone), Environment,
 // Domains, Database & cache and Backups. Each tab loads the settings itself
 // and saves them with one PATCH; values another tab owns are sent unchanged.
 
@@ -119,6 +120,7 @@ export function AppSettingsTab({ appID }: { appID: string }) {
       <Field label="Branch" hint="Saving a new branch deploys it."><div className="input-action"><Input name="branch" value={settings.branch} onChange={event => setSettings(current => current ? { ...current, branch: event.target.value } : current)} required list="settings-branches" /><Button type="button" size="sm" onClick={loadBranches}><GitBranch size={15} />Load</Button></div><datalist id="settings-branches">{branches.map(branch => <option key={branch}>{branch}</option>)}</datalist></Field>
     </div>{settings.stack_profiles_supported && <RuntimeProfileField value={settings.runtime_profile || ''} disabled={Boolean(settings.runtime_deployed && !settings.runtime_profile)} allowSingle={!settings.runtime_deployed || !settings.runtime_profile} onChange={event => setSettings(current => current ? { ...current, runtime_profile: event.target.value } : current)} />}</fieldset></Card>}</SettingsForm>
     {settings?.public_ports_supported && <AppPorts appID={appID} />}
+    {settings && <AppAccessLog appID={appID} disabled={move.locked} />}
     {settings && <AppDangerZone app={dangerZoneApp(appID, settings, workspace?.apps?.find(item => item.id === appID), move.locked)} deployment={workspace?.latestDeployment?.(appID)} onChanged={async () => { state.reload(); await workspace?.refresh?.(); }} onDeleted={async () => { notify(`${appID} deleted. Restore it from Deleted apps within ${ARCHIVE_RETENTION_DAYS} days.`); navigate(indexHref('applications')); await workspace?.refresh?.(); }} />}
   </div>;
 }

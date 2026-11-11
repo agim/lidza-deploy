@@ -28,6 +28,13 @@ func init() {
 		panic(err)
 	}
 	errorPagesDir = filepath.Join(pages, "pages")
+	// Access logs go to a private scratch tree; tests reconcile them
+	// explicitly (access_log.go).
+	accessLogAutomatic = false
+	accessLogRoot = filepath.Join(pages, "log", "lidza", "apps")
+	accessLogCaddyDropIn = filepath.Join(pages, "caddy.service.d", "50-lidza-access-log.conf")
+	accessLogCaddyVersionProbe = func(context.Context) string { return "" }
+	accessLogCaddyOwner = func() (int, int, string, error) { return os.Getuid(), os.Getgid(), "caddy", nil }
 	caddyProcessUser = func() string { return "caddy" }
 	hostIngressListeners = func() []int { return nil }
 	hostIngressAdminGet = func(ctx context.Context, admin string) ([]byte, error) {

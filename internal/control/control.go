@@ -589,6 +589,8 @@ func (c *Control) routes(handle func(string, http.HandlerFunc)) {
 	handle("PATCH /api/control/apps/{id}/settings", c.updateSettings)
 	handle("GET /api/control/apps/{id}/redirects", c.redirects)
 	handle("PUT /api/control/apps/{id}/redirects", c.updateRedirects)
+	handle("GET /api/control/apps/{id}/access-log", c.accessLog)
+	handle("PUT /api/control/apps/{id}/access-log", c.updateAccessLog)
 	handle("POST /api/control/apps/{id}/environment/{key}/reveal", c.revealCredential)
 	handle("DELETE /api/control/apps/{id}/webhook", c.disableHook)
 	handle("GET /api/control/apps", c.apps)

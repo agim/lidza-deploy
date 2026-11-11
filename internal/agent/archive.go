@@ -90,6 +90,10 @@ type AppArchive struct {
 	Steps          map[string]bool         `json:"steps,omitempty"`
 	RestoreRequest *ArchiveRestoreRequest  `json:"restore_request,omitempty"`
 	Restored       *ArchiveRestoreResult   `json:"restored,omitempty"`
+
+	// AccessLogOff keeps a switched-off access log switched off on a
+	// restore (access_log.go).
+	AccessLogOff bool `json:"access_log_off,omitempty"`
 }
 
 // ArchivedNative is the snapshot of a native application: one this agent

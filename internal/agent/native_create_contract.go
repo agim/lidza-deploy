@@ -34,6 +34,9 @@ type NativeCreateRequest struct {
 	MemoryMiB         int                 `json:"memory_mib,omitempty"`  // runtime cap per process; 0 = default
 	CPUPercent        int                 `json:"cpu_percent,omitempty"` // runtime CPUQuota per process; 0 = none
 	AutoDeploy        bool                `json:"auto_deploy,omitempty"`
+	// AccessLogOff creates the application with its access log switched
+	// off (access_log.go); a move carries the source's setting in it.
+	AccessLogOff bool `json:"access_log_off,omitempty"`
 }
 
 // NativeProcessSpec is one long-running process. Exactly one process is the

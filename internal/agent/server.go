@@ -122,6 +122,7 @@ func Handler(m *Manager) http.Handler {
 	m.serviceControlRoutes(private)
 	m.logAccessRoutes(private)
 	m.redirectRoutes(private)
+	m.accessLogRoutes(private)
 	m.controlRoutes(private)
 	m.databaseRoutes(private)
 	m.moveRoutes(private)
