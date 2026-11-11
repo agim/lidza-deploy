@@ -189,8 +189,7 @@ func accessLogFixture(t *testing.T) (*nativeCreateFixture, *fakeCaddyAdmin) {
 	caddy := newFakeCaddyAdmin(t, map[string]any{"apps": map[string]any{"http": map[string]any{"servers": map[string]any{
 		"srv0": map[string]any{"listen": []any{":443"}, "routes": []any{}, "logs": map[string]any{"logger_names": map[string]any{"other.example.com": []any{""}}}},
 	}}}})
-	f.m.cfg.Native.Caddy = &NativeCaddyConfig{Admin: caddy.URL(), Server: "srv0"}
-	f.m.cfg.ProxyListen = "127.0.0.1:18081"
+	f.m.cfg.Native.Caddy = &NativeCaddyConfig{Admin: caddy.URL(), Server: "srv0", Upstream: "127.0.0.1:18081"}
 	body := `{"id":"shop","repository":"acme/shop","branch":"main","runtime":"go","domain":"shop.example.com","additional_domains":["www.shop.example.com"],"data":{}}`
 	if w := f.do(t, "POST", "/v1/native/apps", body); w.Code != 201 {
 		t.Fatalf("create: %d %s", w.Code, w.Body)
