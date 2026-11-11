@@ -92,3 +92,27 @@
 .dialog-form { gap: var(--space-4); }
 .help-grid .card > svg { color: var(--accent-strong); }
 [data-slot=tabs] { gap: var(--page-gap); }
+
+/* ---- Resource templates (components/resource) ---------------------------- */
+/* Index and detail pages are vertical flows like a Page; a tab panel too. */
+.resource-page, .tab-panel { display: flex; flex-direction: column; gap: var(--page-gap); min-width: 0; }
+:is(.resource-page, .tab-panel) > * { margin-block: 0; }
+.resource-index-list { gap: 0; padding: 0; overflow: clip; }
+.resource-index-list > .empty-state, .resource-index-list > .loading { padding: var(--card-padding); }
+.page-title-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); min-width: 0; }
+.page-facts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-4); margin: 0; padding: 0; list-style: none; }
+.resource-name, .resource-fact { display: grid; gap: var(--space-1); min-width: 0; }
+.value-list { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
+.link-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.link-list > li { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
+.copy-inline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--control-gap); }
+.app-progress-card { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
+/* Breadcrumbs: an ordered list; every segment but the last is a link. */
+.breadcrumb-list { display: flex; align-items: center; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; list-style: none; }
+.breadcrumb-list > li { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.breadcrumb-list > .breadcrumb-collapse { display: none; }
+@media (max-width: 640px) {
+  .breadcrumb-list > .breadcrumb-collapse { display: flex; }
+  .breadcrumb-list > .breadcrumb-middle { display: none; }
+}
+.page-facts a { display: inline-flex; align-items: center; gap: var(--space-1); white-space: nowrap; }

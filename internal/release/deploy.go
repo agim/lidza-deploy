@@ -349,6 +349,31 @@ func (p *Plan) restore(ctx context.Context, target, expected string) error {
 	return p.verify(ctx, &ignored)
 }
 
+// Restart restarts the current release's running processes in order and
+// checks health, as a deploy does after publishing, without building or
+// publishing anything: the processes read a changed environment when they
+// start. Nothing is rolled back when it fails; the error says which unit or
+// check failed and the log explains it.
+func Restart(ctx context.Context, p Plan) (result Result, err error) {
+	if err = p.validate(); err != nil {
+		return result, err
+	}
+	unlock, err := p.lock()
+	if err != nil {
+		return result, err
+	}
+	defer unlock()
+	if result.Release, err = p.Layout.CurrentID(); err != nil {
+		return result, err
+	}
+	if result.Release == "" {
+		return result, errors.New("release: no current release to restart")
+	}
+	result.Commit, _ = p.Layout.Revision(result.Release)
+	err = p.verify(ctx, &result)
+	return result, err
+}
+
 // Rollback republishes an earlier release (the previous one when target is
 // ""), restarts running processes, and restores that release's schedule.
 // Database migrations are not reversed.

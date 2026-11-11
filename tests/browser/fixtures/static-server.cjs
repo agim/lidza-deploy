@@ -1,9 +1,9 @@
 // Serves the built console (web/static) the way the Go server does: every
 // /console/... path is the one console page, everything else is a file.
-// Browser checks use it when TEST_WEB_URL is not set, so they run without a
-// separately started server. API calls are intercepted by the page fixtures.
-// `node tests/browser/fixtures/static-server.cjs 8880` serves on a fixed port
-// for the checks that expect TEST_WEB_URL=http://127.0.0.1:8880.
+// The browser suites (tests/browser/run.cjs) use it when TEST_WEB_URL is not
+// set, so they run without a separately started server. API calls are
+// intercepted by the page fixtures. `node tests/browser/fixtures/static-server.cjs 8880`
+// serves on a fixed port for running suites against TEST_WEB_URL by hand.
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');

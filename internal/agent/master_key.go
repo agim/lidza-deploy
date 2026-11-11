@@ -33,36 +33,45 @@ func provisionMasterKey(a App) (App, error) {
 	return a, nil
 }
 
-// An explicit operator action for older installations. Save without restarting
-// the running app; deployment/reload will use the new key.
+// An explicit operator action for older installations. The key is saved and
+// applied like any environment change (settings_apply.go): a running
+// application restarts with it.
 func (m *Manager) GenerateMasterKey(id string) error {
+	_, err := m.GenerateMasterKeyApply(id)
+	return err
+}
+
+// GenerateMasterKeyApply generates and saves the key and says how it was applied.
+func (m *Manager) GenerateMasterKeyApply(id string) (SettingsApplyResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.data.Apps[id]
 	if !ok || a.Retiring {
-		return errors.New("application unavailable")
+		return SettingsApplyResult{}, errors.New("application unavailable")
 	}
 	if a.isRails() || a.Runtime == "astro" {
-		return errors.New("import the original Rails master key as RAILS_MASTER_KEY; Rails encryption keys are never generated or replaced by the agent")
+		return SettingsApplyResult{}, errors.New("import the original Rails master key as RAILS_MASTER_KEY; Rails encryption keys are never generated or replaced by the agent")
 	}
 	if a.Env["LIDZA_MASTER_KEY"] != "" {
-		return errors.New("application already has a master key; generation will not replace it")
+		return SettingsApplyResult{}, errors.New("application already has a master key; generation will not replace it")
 	}
 	if m.busy(id) || a.Restoring || m.upgradePending() {
-		return errors.New("wait for the active application operation before generating a master key")
+		return SettingsApplyResult{}, errors.New("wait for the active application operation before generating a master key")
 	}
 	next, err := provisionMasterKey(a)
 	if err != nil {
-		return err
+		return SettingsApplyResult{}, err
 	}
 	next.EnvKinds = normalizeEnvironmentKinds(next.Env, next.EnvKinds)
 	if err = next.Validate(); err != nil {
-		return err
+		return SettingsApplyResult{}, err
 	}
-	m.data.Apps[id] = next
-	if err = m.save(); err != nil {
-		m.data.Apps[id] = a
-		return err
-	}
-	return nil
+	return m.applyContainerSettingsLocked(a, next, []string{"env:LIDZA_MASTER_KEY"})
+}
+
+// MasterKeyGenerated answers a key generation: the masked entry and how the
+// key was applied.
+type MasterKeyGenerated struct {
+	EnvironmentEntry
+	Apply SettingsApplyResult `json:"apply"`
 }

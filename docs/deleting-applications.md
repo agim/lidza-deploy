@@ -32,7 +32,7 @@ earlier agents.
 
 ## Restore
 
-**Workspace → Deleted apps** lists every server's archives with the days left.
+**Settings → Deleted apps** lists every server's archives with the days left.
 **Restore** recreates the application on the same server from its settings, with
 its files and databases, an empty cache, the hostnames no other application took
 meanwhile, its webhook and a new deployment of its branch. If another

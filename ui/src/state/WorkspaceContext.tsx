@@ -51,7 +51,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const failures = results.filter(result => result.status === 'rejected') as PromiseRejectedResult[];
     const history = results[2].status==='fulfilled' && !Array.isArray(results[2].value) ? results[2].value.unavailable_servers || [] : [];
     const reasons = results[2].status==='fulfilled' && !Array.isArray(results[2].value) ? Object.values(results[2].value.server_errors || {}).join('; ') : '';
-    setError(failures.length ? `Some workspace data could not be refreshed: ${failures.map(result => result.reason instanceof Error ? result.reason.message : String(result.reason)).join('; ')}` : history.length ? `Deployment history unavailable for ${history.join(', ')}${reasons ? `: ${reasons}` : ''}. Accepted deployments may still be running; check the hosting agent.` : '');
+    setError(failures.length ? `Some control panel data could not be refreshed: ${failures.map(result => result.reason instanceof Error ? result.reason.message : String(result.reason)).join('; ')}` : history.length ? `Deployment history unavailable for ${history.join(', ')}${reasons ? `: ${reasons}` : ''}. Accepted deployments may still be running; check the hosting agent.` : '');
     if (!failures.length) setUpdatedAt(new Date());
     setLoading(false); setRefreshing(false); busy.current = false;
   }, [demo]);

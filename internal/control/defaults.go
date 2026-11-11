@@ -225,7 +225,7 @@ func (c *Control) applyDefaults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Revision != profile.Revision {
-		agent.Fail(w, 409, errors.New("workspace defaults changed; review them again"))
+		agent.Fail(w, 409, errors.New("application defaults changed; review them again"))
 		return
 	}
 	limit := 6
@@ -248,7 +248,10 @@ func (c *Control) applyDefaults(w http.ResponseWriter, r *http.Request) {
 		}
 		patch.EnvChanges[k] = &v
 	}
-	if err := c.agentCall(r, a.ServerID, "PATCH", path, patch, nil); err != nil {
+	var saved struct {
+		Apply *agent.SettingsApplyResult `json:"apply"`
+	}
+	if err := c.agentCall(r, a.ServerID, "PATCH", path, patch, &saved); err != nil {
 		code := 502
 		if a.Native != nil {
 			code = 409
@@ -256,5 +259,5 @@ func (c *Control) applyDefaults(w http.ResponseWriter, r *http.Request) {
 		agent.Fail(w, code, err)
 		return
 	}
-	agent.JSON(w, 200, map[string]any{"saved": true, "runtime": runtime})
+	agent.JSON(w, 200, map[string]any{"saved": true, "runtime": runtime, "apply": c.finishSettingsApply(r, a.ID, saved.Apply)})
 }

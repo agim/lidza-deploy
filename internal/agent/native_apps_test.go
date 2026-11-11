@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -39,8 +40,34 @@ func nativeFixture(t *testing.T) (*Manager, string) {
 	if err := os.WriteFile(filepath.Join(units, "unrelated.service"), []byte("WorkingDirectory=/other/app\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	m.cfg.Native = &NativeHostConfig{Root: root, User: "agim"}
+	m.cfg.Native = &NativeHostConfig{Root: root, User: fixtureNativeUser(t)}
 	return m, app
+}
+
+// fixtureNativeUser makes the account running the tests the native
+// deployment user and returns its name. Native code resolves that user
+// through nativeLookupUser and runs its commands directly when it is the
+// current user, so the fixtures work for whichever non-root account runs
+// the suite (a developer, a CI runner) instead of assuming one by name.
+func fixtureNativeUser(t *testing.T) string {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("native release fixtures run as the native deployment user, which must not be root; run the tests as a regular user")
+	}
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := nativeLookupUser
+	nativeLookupUser = func(name string) (*user.User, error) {
+		if name == current.Username {
+			account := *current
+			return &account, nil
+		}
+		return saved(name)
+	}
+	t.Cleanup(func() { nativeLookupUser = saved })
+	return current.Username
 }
 
 func TestNativeRegistrationIsMetadataOnlyAndSeparateFromContainers(t *testing.T) {

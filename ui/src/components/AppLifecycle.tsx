@@ -1,12 +1,13 @@
-import { Play, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { Play, RefreshCw, Settings2, Square, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { post } from '../lib/api';
 import { ARCHIVE_RETENTION_DAYS } from '../lib/archive';
 import { moveActive } from '../lib/move';
+import { resourceHref, withSticky } from '../lib/router';
 import type { Application, Deployment } from '../lib/types';
 import { DeleteAppAction } from './DeleteAppDialog';
 import { useToast } from './ToastProvider';
-import { Button, Card, ConfirmAction, MenuItem, MenuLabel, MenuSeparator, SectionHeader } from './ui';
+import { Button, Card, ConfirmAction, MenuItem, MenuLabel, MenuLink, MenuSeparator, SectionHeader } from './ui';
 
 // Restart, stop/start and delete, the same for every runtime: the card's
 // "Application" menu group and the settings page's Danger zone.
@@ -21,6 +22,18 @@ export function lifecycleBlocked(app: Application, deployment?: Pick<Deployment,
   if (app.agent_error) return 'The server’s agent is unavailable.';
   if (app.native && !app.management_capabilities?.lifecycle) return app.management_capabilities?.lifecycle_reason || 'Update this server’s agent to stop, start and restart native applications.';
   return '';
+}
+
+/**
+ * Where the server setting that blocks the lifecycle can be changed: the
+ * service control setting on the server's Agent tab. Undefined when
+ * something else blocks it (or nothing does).
+ */
+export function lifecycleSettingHref(app: Application, deployment?: Pick<Deployment, 'status'>): string | undefined {
+  const capabilities = app.management_capabilities;
+  if (!app.native || capabilities?.lifecycle || capabilities?.lifecycle_setting !== 'service_control' || !app.server_id) return undefined;
+  if (lifecycleBlocked(app, deployment) !== capabilities.lifecycle_reason) return undefined;
+  return withSticky(resourceHref('servers', app.server_id, 'agent'));
 }
 
 /** Why the application cannot be deleted now; '' when it can. */
@@ -57,12 +70,14 @@ export function AppLifecycleMenu({ app, deployment, onChanged, onDeleted }: { ap
   const run = useLifecycle(app, onChanged);
   const blocked = lifecycleBlocked(app, deployment);
   const removal = deleteBlocked(app, deployment);
+  const setting = lifecycleSettingHref(app, deployment);
   return <>
     <MenuSeparator /><MenuLabel>Application</MenuLabel>
     <ConfirmMenuItem action="restart" icon={<RefreshCw size={16} />} label="Restart" blocked={blocked || (app.stopped ? 'The application is stopped; start it instead.' : '')} title={lifecycleCopy.restart.title(app.id)} description={lifecycleCopy.restart.description} confirmLabel={lifecycleCopy.restart.confirm} onConfirm={() => run('restart')} />
     {app.stopped
       ? <MenuItem disabled={!!blocked} title={blocked || undefined} icon={<Play size={16} />} onSelect={() => run('start')}>Start</MenuItem>
       : <ConfirmMenuItem action="stop" icon={<Square size={16} />} label="Stop" blocked={blocked} title={lifecycleCopy.stop.title(app.id)} description={lifecycleCopy.stop.description} confirmLabel={lifecycleCopy.stop.confirm} destructive onConfirm={() => run('stop')} />}
+    {setting && <MenuLink icon={<Settings2 size={16} />} href={setting}>Service control settings</MenuLink>}
     {removal ? <MenuItem disabled title={removal} icon={<Trash2 size={16} />}>Delete</MenuItem> : <DeleteAppAction app={app} onDeleted={onDeleted}><div className="menu-confirm-trigger" role="menuitem" tabIndex={0} data-lifecycle="delete"><Trash2 size={16} />Delete</div></DeleteAppAction>}
   </>;
 }
@@ -72,12 +87,14 @@ export function AppDangerZone({ app, deployment, onChanged, onDeleted }: { app: 
   const run = useLifecycle(app, onChanged);
   const blocked = lifecycleBlocked(app, deployment);
   const removal = deleteBlocked(app, deployment);
+  const setting = lifecycleSettingHref(app, deployment);
+  const note = blocked && <small role="note">{blocked}{setting && <> <a href={setting}>Change it in the server’s Agent settings.</a></>}</small>;
   return <Card className="form-card danger-zone" data-danger-zone={app.id}>
     <SectionHeader title="Danger zone" description="These actions affect visitors at once." />
     <div className="danger-zone-row">
       {app.stopped
-        ? <><div><strong>Start this application</strong><small>It is stopped: visitors see a maintenance page. Starting it brings back its processes and scheduled jobs.</small>{blocked && <small role="note">{blocked}</small>}</div><Button variant="primary" disabled={!!blocked} title={blocked || undefined} onClick={() => run('start')}><Play size={16} />Start application</Button></>
-        : <><div><strong>Stop this application</strong><small>{lifecycleCopy.stop.description}</small>{blocked && <small role="note">{blocked}</small>}</div><ConfirmAction title={lifecycleCopy.stop.title(app.id)} description={lifecycleCopy.stop.description} confirmLabel={lifecycleCopy.stop.confirm} destructive onConfirm={() => run('stop')}><Button variant="danger" disabled={!!blocked} title={blocked || undefined}><Square size={16} />Stop application</Button></ConfirmAction></>}
+        ? <><div><strong>Start this application</strong><small>It is stopped: visitors see a maintenance page. Starting it brings back its processes and scheduled jobs.</small>{note}</div><Button variant="primary" disabled={!!blocked} title={blocked || undefined} onClick={() => run('start')}><Play size={16} />Start application</Button></>
+        : <><div><strong>Stop this application</strong><small>{lifecycleCopy.stop.description}</small>{note}</div><ConfirmAction title={lifecycleCopy.stop.title(app.id)} description={lifecycleCopy.stop.description} confirmLabel={lifecycleCopy.stop.confirm} destructive onConfirm={() => run('stop')}><Button variant="danger" disabled={!!blocked} title={blocked || undefined}><Square size={16} />Stop application</Button></ConfirmAction></>}
     </div>
     <div className="danger-zone-row">
       <div><strong>Delete this application</strong><small>It stops serving at once and its hostnames become free. It can be restored from Deleted apps for {ARCHIVE_RETENTION_DAYS} days.</small>{removal && <small role="note">{removal}</small>}</div>

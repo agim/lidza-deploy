@@ -53,6 +53,7 @@ func (m *Manager) nativeSettings(id string) (Settings, error) {
 	}
 	_, stopped := m.nativeStopped(id)
 	settings := Settings{Stopped: stopped, Native: &a, ID: a.ID, Runtime: runtime, Branch: a.Branch, Domain: a.Domain, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), EnvKeys: keys, Environment: environment, Bindings: bindings, RuntimeDeployed: true, Capabilities: m.nativeManagementCapabilities(a)}
+	settings.DomainStatuses = m.caddyDomainStatuses(append([]string{a.Domain}, a.AdditionalDomains...))
 	m.mu.Lock()
 	for resource, binding := range m.data.NativeDatabases {
 		if binding.Policy.AppID == id && binding.Policy.EnvironmentKey != "" {
@@ -75,7 +76,7 @@ func (m *Manager) nativeSettings(id string) (Settings, error) {
 		settings.Astro = &AstroConfig{Mode: "static", OutputDir: a.DocumentRoot, HealthPath: a.HealthPath}
 	}
 	if settings.Capabilities.Configure {
-		settings.SettingsApplyOnDeploy = true
+		settings.ApplyEffects = settingsSubject{Runtime: "static", Native: true}.effects()
 		settings.BackupBeforeDeploy = true
 		if override.Branch != "" {
 			settings.Branch = override.Branch
@@ -104,6 +105,9 @@ func (m *Manager) nativeManagementCapabilities(a NativeApplication) *ManagementC
 	capability.Adopted = !created
 	capability.LifecycleReason = m.nativeLifecycleAllowed(a.ID)
 	capability.Lifecycle = capability.LifecycleReason == ""
+	if capability.LifecycleReason == serviceControlOffReason {
+		capability.LifecycleSetting = "service_control"
+	}
 	if m.nativeReleaseManaged(a.ID) {
 		// The release policy owns branch, processes, schedule and backups;
 		// deploys and rollbacks run through the release engine.
@@ -111,7 +115,7 @@ func (m *Manager) nativeManagementCapabilities(a NativeApplication) *ManagementC
 		capability.Routing, capability.Resources, capability.RuntimeMode = &no, &no, &no
 		capability.Deploy, capability.Rollback, capability.Logs = true, true, true
 		capability.Configure, capability.Environment = true, true
-		capability.Reason = "Environment variables are saved to the application's environment file on the server and the branch to its release policy; both apply on the next deploy. Hostnames stay with the existing web server configuration."
+		capability.Reason = "Environment variables are saved to the application's environment file on the server and the application restarts with them; saving a branch or toolchain change deploys it. Hostnames stay with the existing web server configuration."
 		return capability
 	}
 	if _, err := m.nativeStaticPolicy(a); err == nil {
@@ -121,7 +125,7 @@ func (m *Manager) nativeManagementCapabilities(a NativeApplication) *ManagementC
 		capability.Routing, capability.Resources, capability.RuntimeMode = &no, &no, &no
 		capability.Deploy = true
 		capability.Rollback = true
-		capability.Reason = "Branch, build output and application environment changes apply on the next deployment. Existing hostnames and Node version are preserved."
+		capability.Reason = "Saving a branch, build output or environment change deploys it: the site is built with them. Existing hostnames and Node version are preserved."
 	}
 	return capability
 }

@@ -141,10 +141,14 @@ func (m *Manager) consoleTick(ctx context.Context) {
 	}
 	natives := m.nativeConsoleTargetsLocked(cfg.Apps)
 	cursors := maps.Clone(m.data.ErrorCursors)
+	journals := maps.Clone(m.data.JournalCursors)
 	outbox := slices.Clone(m.data.ErrorOutbox)
 	m.mu.Unlock()
 	if cursors == nil {
 		cursors = map[string]ConsoleCursor{}
+	}
+	if journals == nil {
+		journals = map[string]JournalCursor{}
 	}
 	collectionError := ""
 	runtime, supported := m.runtime.(consoleRuntime)
@@ -182,7 +186,7 @@ func (m *Manager) consoleTick(ctx context.Context) {
 	// Native applications: the same cursors, parsers and outbox over their
 	// service units' journals.
 	if len(outbox) < 1000 {
-		records, warning := m.collectNativeConsole(ctx, cfg, natives, cursors, active, 1000-len(outbox))
+		records, warning := m.collectNativeConsole(ctx, cfg, natives, cursors, journals, active, 1000-len(outbox))
 		outbox = append(outbox, records...)
 		if warning != "" {
 			collectionError = warning
@@ -197,10 +201,10 @@ func (m *Manager) consoleTick(ctx context.Context) {
 		}
 	}
 	m.mu.Lock()
-	oldQueue, oldCursors := m.data.ErrorOutbox, m.data.ErrorCursors
-	m.data.ErrorOutbox, m.data.ErrorCursors = outbox, cursors
+	oldQueue, oldCursors, oldJournals := m.data.ErrorOutbox, m.data.ErrorCursors, m.data.JournalCursors
+	m.data.ErrorOutbox, m.data.ErrorCursors, m.data.JournalCursors = outbox, cursors, journals
 	if err := m.save(); err != nil {
-		m.data.ErrorOutbox, m.data.ErrorCursors = oldQueue, oldCursors
+		m.data.ErrorOutbox, m.data.ErrorCursors, m.data.JournalCursors = oldQueue, oldCursors, oldJournals
 		m.mu.Unlock()
 		return
 	}

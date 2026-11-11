@@ -202,8 +202,7 @@ func (m *Manager) nativeServiceUsage(ctx context.Context, id string) (NativeProc
 	if _, policy, err := m.nativeReleasePolicy(id); err == nil {
 		preserved = policy.Preserve
 	}
-	_, created := m.nativeCreatedPolicy(id)
-	control := created || m.cfg.Native != nil && m.cfg.Native.ServiceControl
+	control := m.nativeServiceControlFor(id)
 	read := func() (map[string]NativeServiceUsage, map[string]uint64, time.Time, error) {
 		out, err := m.nativeUsageQuery(ctx, id, a.Services)
 		at := nativeUsageClock()

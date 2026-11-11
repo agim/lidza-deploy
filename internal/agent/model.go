@@ -202,11 +202,14 @@ type diskState struct {
 	// archive id is the value); the configuration file is never rewritten.
 	ReleasedReservations map[string]string `json:"released_reservations,omitempty"`
 
-	StorageVolumes  map[string]string        `json:"storage_volumes,omitempty"`
-	Caches          map[string]CacheResource `json:"caches,omitempty"`
-	ErrorReporting  *ErrorReporting          `json:"error_reporting,omitempty"`
-	ErrorOutbox     []ConsoleError           `json:"error_outbox,omitempty"`
-	ErrorCursors    map[string]ConsoleCursor `json:"error_cursors,omitempty"`
+	StorageVolumes map[string]string        `json:"storage_volumes,omitempty"`
+	Caches         map[string]CacheResource `json:"caches,omitempty"`
+	ErrorReporting *ErrorReporting          `json:"error_reporting,omitempty"`
+	ErrorOutbox    []ConsoleError           `json:"error_outbox,omitempty"`
+	ErrorCursors   map[string]ConsoleCursor `json:"error_cursors,omitempty"`
+	// JournalCursors are the native console streams' resume points, by
+	// unit scope ("system", "user").
+	JournalCursors  map[string]JournalCursor `json:"journal_cursors,omitempty"`
 	Tasks           map[string]Task          `json:"tasks,omitempty"`
 	BindingsVersion int                      `json:"bindings_version"`
 	Databases       map[string]Database      `json:"databases,omitempty"`
@@ -245,8 +248,17 @@ type diskState struct {
 
 	// Host operating-system management: update/reboot policy with its job
 	// history, and the managed firewall (host_updates.go, host_firewall.go).
-	HostUpdates  *HostUpdatesState  `json:"host_updates,omitempty"`
-	HostFirewall *HostFirewallState `json:"host_firewall,omitempty"`
+	HostUpdates *HostUpdatesState `json:"host_updates,omitempty"`
+	// BackupToolApprovals are the native backup tool binaries the agent
+	// re-approved after a verified package update, by path; they replace
+	// the pins they supersede (native_backup_tool.go).
+	BackupToolApprovals map[string]BackupToolApproval `json:"backup_tool_approvals,omitempty"`
+	// DatabaseConfigApprovals are the approved config/database.yml files of
+	// adopted Rails applications, by application id: the copy kept at
+	// adoption and each change the agent re-approved because no database
+	// identity changed (native_database_config.go).
+	DatabaseConfigApprovals map[string]DatabaseConfigApproval `json:"database_config_approvals,omitempty"`
+	HostFirewall            *HostFirewallState                `json:"host_firewall,omitempty"`
 	// MoveReplications are the databases this agent publishes with logical
 	// replication for moves in progress, by database id (move_replication.go).
 	MoveReplications map[string]MoveReplicationRecord `json:"move_replications,omitempty"`
@@ -256,6 +268,14 @@ type diskState struct {
 	MoveTunnels map[string]MoveTunnelRecord `json:"move_tunnels,omitempty"`
 	// HostIngress is the panel's web ingress override (host_ingress.go).
 	HostIngress *HostIngressState `json:"host_ingress,omitempty"`
+	// NativeServiceControl is the panel's service control setting for
+	// adopted applications; nil keeps the configuration's
+	// native.service_control (native_service_control.go).
+	NativeServiceControl *bool `json:"native_service_control,omitempty"`
+	// HostLogAccess is the panel's system log access setting for the shared
+	// deployment account; nil leaves the membership alone
+	// (native_log_access.go).
+	HostLogAccess *HostLogAccessState `json:"host_log_access,omitempty"`
 	// HostGateway is the protected gateway the agent set up itself when no
 	// gateway is configured (gateway_auto.go).
 	HostGateway *HostGatewayState `json:"host_gateway,omitempty"`

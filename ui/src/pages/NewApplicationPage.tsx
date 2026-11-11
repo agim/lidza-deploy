@@ -1,10 +1,11 @@
 import { ArrowLeft, ArrowRight, Boxes, Check, ChevronRight, Cpu, Database, GitBranch, Github, Globe, KeyRound, LoaderCircle, Plus, Rocket, Search, Server as ServerIcon, ShieldCheck, Tag, X } from 'lucide-react';
-import { detailHref, goBack, href, navigate, previousEntry, searchHref, useSearchParam, withSticky } from '../lib/router';
+import { goBack, indexHref, navigate, resourceHref, previousEntry, searchHref, useSearchParam, withSticky } from '../lib/router';
 import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { RuntimeProfileField } from '../components/RuntimeProfileField';
 import { useToast } from '../components/ToastProvider';
 import { Badge, Button, Card, ErrorBanner, Field, Notice, PageHeader } from '../components/ui';
 import { Input } from '../components/primitives/input';
+import { SummaryList } from '../components/SummaryList';
 import { Switch } from '../components/primitives/switch';
 import { type DatabaseChoice, type EnvRow, type StepErrors, type WizardDraft, applyDetection, changeNativeRuntime, containerRequest, containerRuntimeLabels, defaultsKind, demoDetection, emptyDraft, frameworkLabel, hasBackups, idError, isLidza, lastStep, masterKeyName, mergeDefaults, nativeRequest, pinLabel, rowKey, runtimeLabels, stepErrors, steps } from '../components/wizard/model';
 import { get, post } from '../lib/api';
@@ -17,7 +18,7 @@ type Repo = { full_name: string; default_branch?: string; private?: boolean; ins
 type Detection = { state: 'idle' | 'loading' | 'done' | 'error'; result?: RepositoryDetection; error?: string };
 type Created = { id: string; mode: WizardDraft['mode']; warning?: string };
 
-const demoRepos: Repo[] = [{ full_name: 'acme/storefront', default_branch: 'main', private: true, installation_id: 1 }, { full_name: 'acme/workspace', default_branch: 'main', private: true, installation_id: 1 }];
+const demoRepos: Repo[] = [{ full_name: 'acme/storefront', default_branch: 'main', private: true, installation_id: 1 }, { full_name: 'acme/collaboration', default_branch: 'main', private: true, installation_id: 1 }];
 const stepSlugs: string[] = steps.map(label => label.toLowerCase());
 const stepSlug = (index: number) => stepSlugs[index] || stepSlugs[0];
 const stepIndex = (slug?: string) => Math.max(0, stepSlugs.indexOf(slug || ''));
@@ -60,7 +61,7 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
   const update = (patch: Partial<WizardDraft>) => setDraft(current => ({ ...current, ...patch }));
   const server = servers.find(item => item.id === draft.serverID);
 
-  useEffect(() => { if (!loading && !servers.length && !demo) navigate(href('servers'), { replace: true }); }, [servers.length, loading, demo]);
+  useEffect(() => { if (!loading && !servers.length && !demo) navigate(indexHref('servers'), { replace: true }); }, [servers.length, loading, demo]);
   useEffect(() => { if (!draft.serverID && servers.length) update({ serverID: serverID && servers.some(item => item.id === serverID) ? serverID : servers[0].id }); }, [servers, serverID, draft.serverID]);
 
   // Authorized repositories load when the repository step opens.
@@ -76,7 +77,7 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
     get<ServerHealthResponse>('control/server-health').then(response => setHealth(response.servers || [])).catch(() => setHealth([]));
   }, [step, health, demo]);
 
-  // Workspace defaults of the chosen runtime prefill the environment once.
+  // Application defaults of the chosen runtime prefill the environment once.
   const kind = defaultsKind(draft);
   useEffect(() => {
     if (step !== 6 || defaults.kind === kind || demo) return;
@@ -145,19 +146,19 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
     try {
       if (!demo) await post(`control/apps/${encodeURIComponent(created.id)}/deploy`);
       notify(`Deployment of ${created.id} started.`);
-      navigate(href('deployments'));
+      navigate(resourceHref('applications', created.id, 'deployments'));
     } catch (reason) { setError(message(reason)); }
   };
 
-  if (created) return <div className="page form-page"><PageHeader eyebrow="Create application" title={`${created.id} is ready`} description="The application is registered. Deploy its first release now, or later from Applications." back={href('applications')} />
+  if (created) return <div className="page form-page" data-template="create" data-resource="applications"><PageHeader title={`${created.id} is ready`} description="The application is registered. Deploy its first release now, or later from Applications." />
     <Card className="form-card wizard-done">{error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
       <div className="section-title"><Check size={21} /><div><h2>Application created</h2><p>{created.mode === 'native' ? 'Its account, services and route are prepared on the server.' : 'Its container configuration is saved on the server.'}</p></div></div>
       {created.warning && <Notice>{created.warning}</Notice>}
-      <div className="wizard-done-actions"><Button variant="primary" onClick={deployNow}><Rocket size={15} />Deploy now</Button><a className="button button-secondary" href={withSticky(detailHref('settings', created.id))}>Open settings</a><a className="button button-ghost" href={withSticky(href('applications'))}>Back to applications</a></div>
+      <div className="wizard-done-actions"><Button variant="primary" onClick={deployNow}><Rocket size={15} />Deploy now</Button><a className="button button-secondary" href={withSticky(resourceHref('applications', created.id))}>Open application</a><a className="button button-ghost" href={withSticky(indexHref('applications'))}>Back to applications</a></div>
     </Card></div>;
 
   const result = detection.result;
-  return <div className="page form-page"><PageHeader eyebrow="Create application" title="A new home for your code" description="Name it. Point it at a repository. Review what was detected. Make it live." back={href('applications')} />
+  return <div className="page form-page" data-template="create" data-resource="applications"><PageHeader title="A new home for your code" description="Name it. Point it at a repository. Review what was detected. Make it live." />
     <nav className="stepper wizard-stepper" aria-label="Application setup progress"><ol>{steps.map((label, index) => { const done = index !== step && (index < step || index < reached); return <li key={label}><button type="button" disabled={index > reached} className={`step ${index === step ? 'current' : done ? 'complete' : ''}`} aria-current={index === step ? 'step' : undefined} onClick={() => go(index)}><span>{done ? <Check size={13} aria-label="Complete" /> : String(index + 1).padStart(2, '0')}</span><b className="wizard-step-label">{label}</b>{index < lastStep && <ChevronRight size={14} aria-hidden="true" />}</button></li>; })}</ol></nav>
     <form id="app-form" noValidate onSubmit={submit} aria-busy={busy || undefined}>{error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
       <div className="wizard-panels">
@@ -231,12 +232,12 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
           {draft.database === 'external' && <Field label="PostgreSQL connection URL" hint="Use a server-reachable host and require TLS." error={shown('database_url')}><Input id="wizard-database_url" name="database_url" type="password" autoComplete="new-password" value={draft.databaseURL} onChange={event => update({ databaseURL: event.target.value })} placeholder="postgres://…?sslmode=require" /></Field>}
           {draft.mode === 'native' ? <label className="check-row switch-row"><Switch checked={draft.redis} onCheckedChange={value => update({ redis: value })} aria-label="Create Redis on the server" /><span><strong>Create Redis on the server</strong><small>A private Redis instance; REDIS_URL is set automatically.</small></span></label> : <p className="inline-guidance">Redis for container applications is defined by the repository's service configuration.</p>}
           <label className="check-row switch-row"><Switch checked={draft.clickhouse} onCheckedChange={value => update({ clickhouse: value })} aria-label="ClickHouse on this server" /><span><strong>ClickHouse on this server</strong><small>{result?.needs_clickhouse ? 'Detected from the repository. ' : ''}{draft.mode === 'native' ? 'A private ClickHouse database and user, backed up like PostgreSQL; ClickHouse is installed on first use.' : 'A private ClickHouse service started with the first deployment.'} CLICKHOUSE_URL, CLICKHOUSE_DATABASE, CLICKHOUSE_USER and CLICKHOUSE_PASSWORD are set automatically.</small></span></label>
-          {hasBackups(draft) && <div className="backup-options"><div className="form-grid two"><Field label="Backup frequency"><select name="backup_hours" value={draft.backupHours} onChange={event => update({ backupHours: event.target.value })}><option value="0">Manual only</option><option value="1">Hourly</option><option value="24">Daily</option><option value="168">Weekly</option></select></Field></div><label className="check-row"><Input type="checkbox" checked={draft.offsite} onChange={event => update({ offsite: event.target.checked })} /><span><strong>Also copy to S3-compatible storage</strong><small>Requires verified workspace storage credentials.</small></span></label></div>}
+          {hasBackups(draft) && <div className="backup-options"><div className="form-grid two"><Field label="Backup frequency"><select name="backup_hours" value={draft.backupHours} onChange={event => update({ backupHours: event.target.value })}><option value="0">Manual only</option><option value="1">Hourly</option><option value="24">Daily</option><option value="168">Weekly</option></select></Field></div><label className="check-row"><Input type="checkbox" checked={draft.offsite} onChange={event => update({ offsite: event.target.checked })} /><span><strong>Also copy to S3-compatible storage</strong><small>Requires verified backup storage credentials (Integrations → Backup storage).</small></span></label></div>}
         </Panel>}
 
         {step === 6 && <Panel icon={<KeyRound size={21} />} title="Environment" description="Values the application needs before its first deployment.">
           <MasterKeyField draft={draft} update={update} error={shown('master_key')} />
-          <p className="inline-guidance"><KeyRound size={18} />{defaults.state === 'loading' ? 'Loading workspace defaults…' : defaults.state === 'error' ? 'Workspace defaults could not be loaded; they still apply on the first deployment.' : `${defaultsRuntimeLabels[kind]} workspace defaults are prefilled. Defaults also fill any variable left unset on the first deployment.`}</p>
+          <p className="inline-guidance"><KeyRound size={18} />{defaults.state === 'loading' ? 'Loading application defaults…' : defaults.state === 'error' ? 'Application defaults could not be loaded; they still apply on the first deployment.' : `${defaultsRuntimeLabels[kind]} application defaults are prefilled. Defaults also fill any variable left unset on the first deployment.`}</p>
           <EnvironmentList rows={draft.env} setRows={rows => update({ env: rows })} error={shown} />
         </Panel>}
 
@@ -244,7 +245,7 @@ export function NewApplicationPage({ serverID }: { serverID?: string }) {
           <Review draft={draft} serverName={server?.name} />
         </Panel>}
       </div>
-      <div className="wizard-actions"><Button type="button" variant="ghost" disabled={busy} onClick={() => step > 0 ? back() : goBack(href('applications'))}>{step > 0 ? <><ArrowLeft size={14} />Back</> : 'Cancel'}</Button><Button type="submit" variant="primary" pending={busy}>{step < lastStep ? <>Continue<ArrowRight size={15} /></> : <><Rocket size={15} />Create application</>}</Button></div>
+      <div className="wizard-actions"><Button type="button" variant="ghost" disabled={busy} onClick={() => step > 0 ? back() : goBack(indexHref('applications'))}>{step > 0 ? <><ArrowLeft size={14} />Back</> : 'Cancel'}</Button><Button type="submit" variant="primary" pending={busy}>{step < lastStep ? <>Continue<ArrowRight size={15} /></> : <><Rocket size={15} />Create application</>}</Button></div>
     </form><p className="form-reassurance"><ShieldCheck size={14} />Your infrastructure. Your code. One place to deploy.</p></div>;
 }
 
@@ -299,7 +300,7 @@ function EnvironmentList({ rows, setRows, error }: { rows: EnvRow[]; setRows: (r
       <select aria-label={`Variable ${index + 1} type`} value={row.kind} onChange={event => change(row.key, { kind: event.target.value as EnvRow['kind'] })}><option value="setting">Setting</option><option value="credential">Credential</option></select>
       <Input aria-label={`Variable ${index + 1} value`} type={row.kind === 'setting' ? 'text' : 'password'} value={row.value} onChange={event => change(row.key, { value: event.target.value })} autoComplete={row.kind === 'setting' ? 'off' : 'new-password'} placeholder="Value" />
       <Button type="button" variant="ghost" size="icon" aria-label={`Remove variable ${index + 1}`} onClick={() => setRows(rows.filter(item => item.key !== row.key))}><X size={17} /></Button>
-      {(error(`env-${index}`) || row.origin === 'default' && !row.edited) && <small className={error(`env-${index}`) ? 'field-error wizard-env-note' : 'field-hint wizard-env-note'}>{error(`env-${index}`) || 'Workspace default'}</small>}
+      {(error(`env-${index}`) || row.origin === 'default' && !row.edited) && <small className={error(`env-${index}`) ? 'field-error wizard-env-note' : 'field-hint wizard-env-note'}>{error(`env-${index}`) || 'Application default'}</small>}
     </div>)}</div>
     <Button type="button" size="sm" onClick={() => setRows([...rows, { key: rowKey(), name: '', value: '', kind: 'credential' }])}><Plus size={15} />Add variable</Button>
   </div>;
@@ -317,10 +318,10 @@ function Review({ draft, serverName }: { draft: WizardDraft; serverName?: string
     ['Deployment', native ? 'Native (systemd)' : 'Containers (Docker)'], ['Runtime', `${runtime}${native && draft.framework && !['lidza', 'rails', 'go', draft.nativeRuntime].includes(draft.framework) ? ` · ${frameworkLabel(draft.framework)}` : ''}`],
     ['Repository directory', draft.sourceDirectory || 'Repository root'],
     ...(native && draft.nativeRuntime === 'static' ? [['Published directory', draft.staticOutput] as [string, ReactNode]] : []),
-    ...(native && draft.nativeRuntime !== 'static' ? [['Processes', <ul className="wizard-review-list">{draft.processes.map(process => <li key={process.key}><code>{process.name}</code> {process.command}{process.web ? ' (web)' : ''}</li>)}</ul>] as [string, ReactNode], ['Readiness path', draft.healthPath || '—'] as [string, ReactNode]] : []),
+    ...(native && draft.nativeRuntime !== 'static' ? [['Processes', <ul>{draft.processes.map(process => <li key={process.key}><code>{process.name}</code> {process.command}{process.web ? ' (web)' : ''}</li>)}</ul>] as [string, ReactNode], ['Readiness path', draft.healthPath || '—'] as [string, ReactNode]] : []),
     ['Server', serverName || draft.serverID], ['Hostnames', [draft.domain, ...draft.additionalDomains.map(row => row.value)].join(', ')],
     ['Database', database], ...(native ? [['Redis', draft.redis ? 'Redis on the server' : 'None'] as [string, ReactNode]] : []), ['ClickHouse', draft.clickhouse ? 'ClickHouse on the server' : 'None'], ['Backups', backups],
     ['Environment', variables.length ? variables.join(', ') : 'No variables'], ['Auto-deploy', draft.autoDeploy ? 'On branch pushes' : 'Manual'],
   ];
-  return <dl className="review-box wizard-review">{rows.map(([label, value]) => <div key={label}><dt><span>{label}</span></dt><dd><strong>{value}</strong></dd></div>)}</dl>;
+  return <SummaryList aria-label="Review" items={rows.map(([label, value]) => ({ label, value }))} />;
 }

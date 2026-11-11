@@ -47,12 +47,58 @@ func closedPort(t *testing.T) string {
 	return port
 }
 
+// narrowPortRange points the managed database at four consecutive free
+// ports below the kernel's ephemeral range. A range taken from a port the
+// kernel just handed out lies inside the ephemeral range, where any process
+// that connects or listens on port 0 (the other packages' tests running at
+// the same time) can take its next ports before the test probes them.
 func narrowPortRange(t *testing.T) {
 	t.Helper()
 	previous := managedDatabasePorts
-	first, _ := strconv.Atoi(closedPort(t))
+	first := freeFixedPorts(t, 4)
 	managedDatabasePorts = [2]int{first, first + 3}
 	t.Cleanup(func() { managedDatabasePorts = previous })
+}
+
+// freeFixedPorts returns the first of n consecutive loopback ports that are
+// free now and that the kernel does not assign on its own.
+func freeFixedPorts(t *testing.T, n int) int {
+	t.Helper()
+	ephemeral := 32768
+	if raw, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range"); err == nil {
+		if fields := strings.Fields(string(raw)); len(fields) == 2 {
+			if low, err := strconv.Atoi(fields[0]); err == nil {
+				ephemeral = low
+			}
+		}
+	}
+	const lowest = 10000
+	if ephemeral-lowest < 2*n {
+		t.Skipf("no fixed port range below the ephemeral ports (%d)", ephemeral)
+	}
+	// Start at a place that differs between concurrently running test
+	// processes, then walk the range.
+	span := ephemeral - lowest - n
+	start := os.Getpid() * 7 % span
+	for i := 0; i < span; i += n {
+		first := lowest + (start+i)%span
+		var held []net.Listener
+		for p := first; p < first+n; p++ {
+			l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
+			if err != nil {
+				break
+			}
+			held = append(held, l)
+		}
+		for _, l := range held {
+			l.Close()
+		}
+		if len(held) == n {
+			return first
+		}
+	}
+	t.Fatalf("no %d consecutive free ports below %d", n, ephemeral)
+	return 0
 }
 
 func TestManagedDatabasePortIsFixedAndSaved(t *testing.T) {

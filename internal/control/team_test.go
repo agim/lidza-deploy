@@ -17,6 +17,15 @@ import (
 	"github.com/agim/lidza/pkg/router"
 )
 
+func TestSignedInUserWithoutAccountKeepsTheSubject(t *testing.T) {
+	if got := signedInUser(context.Background()); got != (statusUser{}) {
+		t.Fatal("anonymous request named a user", got)
+	}
+	if got := signedInUser(auth.WithUser(context.Background(), &auth.User{ID: "operator"})); got != (statusUser{Subject: "operator"}) {
+		t.Fatal("user without the auth service", got)
+	}
+}
+
 func TestTeamAndAuditSurviveRestart(t *testing.T) {
 	if os.Getenv("TEST_DATABASE_URL") == "" {
 		t.Skip("PostgreSQL integration")
@@ -91,6 +100,21 @@ func TestTeamAndAuditSurviveRestart(t *testing.T) {
 	}
 	if code := request(); code != 200 {
 		t.Fatal("existing session lost after restart", code)
+	}
+	// The status names the signed-in person and the panel for the sidebar.
+	statusRequest := httptest.NewRequest("GET", "/api/control/status", nil)
+	for _, cookie := range cookies {
+		statusRequest.AddCookie(cookie)
+	}
+	statusResponse := httptest.NewRecorder()
+	second.Handler.ServeHTTP(statusResponse, statusRequest)
+	var status struct {
+		Hostname string     `json:"hostname"`
+		User     statusUser `json:"user"`
+		Roles    []string   `json:"roles"`
+	}
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil || status.Hostname != "127.0.0.1" || status.User != (statusUser{Subject: p.Subject, Email: p.Email, Name: "Member"}) || len(status.Roles) != 1 || status.Roles[0] != "viewer" {
+		t.Fatalf("status identity = %+v (%v)", status, err)
 	}
 	r := httptest.NewRequest("POST", "/api/control/apps/fixture/owner-claim", strings.NewReader("{}"))
 	r.Header.Set("Content-Type", "application/json")

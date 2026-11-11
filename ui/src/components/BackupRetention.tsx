@@ -30,7 +30,7 @@ export function policyLabel(policy?: RetentionPolicy) {
 
 function count(fields: FormData, name: string) { return Number(fields.get(name) || 0); }
 
-/** Load the workspace retention; mocked or older panels fall back to the defaults. */
+/** Load the panel-wide retention; mocked or older panels fall back to the defaults. */
 function useWorkspaceRetention() {
   const [state, setState] = useState<{ settings: RetentionSettings; reviewed: boolean; loaded: boolean }>({ settings: defaultRetention, reviewed: false, loaded: false });
   const load = async () => {
@@ -82,7 +82,7 @@ export function RetentionPlanView({ plan, onApply }: { plan: RetentionPlan; onAp
   </div>;
 }
 
-/** BackupRetentionCard edits the workspace retention and reviews a cleanup of the whole bucket. */
+/** BackupRetentionCard edits the panel-wide retention and reviews a cleanup of the whole bucket. */
 export function BackupRetentionCard() {
   const workspace = useWorkspaceRetention();
   const notify = useToast();
@@ -150,7 +150,7 @@ export function DatabaseRetentionCard({ serverID, databaseID, override, disabled
     try {
       await patch(`control/servers/${encodeURIComponent(serverID)}/databases/${encodeURIComponent(databaseID)}/backups/retention`, next);
       await onSaved();
-      notify(next ? 'Retention override saved.' : 'This database now follows the workspace retention.');
+      notify(next ? 'Retention override saved.' : 'This database now follows the default retention.');
     } catch (reason) {
       notify(message(reason), true);
     } finally {
@@ -160,7 +160,7 @@ export function DatabaseRetentionCard({ serverID, databaseID, override, disabled
   return <Card className="form-card">
     <SectionHeader title="Off-site retention" description="Which scheduled backups of this database stay in the bucket. The pre-deployment copy and the newest backup always stay." />
     <form onSubmit={submit}>
-      <label className="check-row"><input type="checkbox" checked={!own} onChange={event => setOwn(!event.target.checked)} />Use the workspace default ({policyLabel(workspace.settings)})</label>
+      <label className="check-row"><input type="checkbox" checked={!own} onChange={event => setOwn(!event.target.checked)} />Use the default retention ({policyLabel(workspace.settings)})</label>
       {own && <PolicyFields policy={override || workspace.settings} />}
       <Button type="submit" variant="primary" disabled={saving || disabled}>Save retention</Button>
     </form>

@@ -85,7 +85,7 @@ func run() error {
 				return err
 			}
 		}
-		return serveNotice(ctx, addr, control.StandbyHandler(), "standing by")
+		return serveNotice(ctx, addr, control.StandbyHandler(cmp.Or(values["CONTROL_SERVERS_FILE"], filepath.Join(dir, "servers.json"))), "standing by")
 	}
 	if doneErr == nil || legacyConfigured {
 		recoverCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
@@ -138,8 +138,12 @@ func run() error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = server.Shutdown(shutdown)
-	// State changes are written in the background; write the last ones.
-	control.FlushState(shutdown)
+	// State changes are written in the background; write the last ones,
+	// with their own deadline: the server's shutdown may have used up its
+	// own waiting for a request.
+	flush, cancelFlush := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelFlush()
+	control.FlushState(flush)
 	_ = closeApp(shutdown)
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		return nil

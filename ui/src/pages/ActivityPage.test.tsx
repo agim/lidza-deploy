@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ActivityPage } from './WorkspacePages';
+import { ActivityDetailPage, ActivityPage } from './WorkspacePages';
 
 const workspace = vi.hoisted(() => ({ apps: [{ id: 'portal' }] as Array<Record<string, unknown>> }));
 vi.mock('../state/WorkspaceContext', () => ({
@@ -46,23 +46,24 @@ describe('ActivityPage', () => {
       }),
     }) as Response));
 
-    const { container } = render(<ActivityPage />);
+    const index = render(<ActivityPage />);
+    expect(await screen.findByRole('link', { name: 'Database request timed out' })).toHaveAttribute('href', '/console/errors/database-timeout?app=portal');
+    expect(screen.getByText('2')).toBeInTheDocument();
+    expect(index.container.querySelector('time[datetime="2026-10-14T12:34:56Z"]')).toBeInTheDocument();
+    expect(screen.getByText(/\/api\/mail/)).toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/control/apps/portal/errors', expect.any(Object)));
+    index.unmount();
 
-    expect((await screen.findAllByText('Database request timed out'))[0]).toBeInTheDocument();
-    expect(screen.getByText('2 occurrences')).toBeInTheDocument();
-    expect(container.querySelector('time[datetime="2026-10-14T12:34:56Z"]')).toBeInTheDocument();
-    expect(screen.getByText('/api/mail')).toBeInTheDocument();
-
-    const detailsToggle = screen.getByText('View details');
-    fireEvent.click(detailsToggle);
-    expect(detailsToggle.closest('details')).toHaveAttribute('open');
+    const overview = render(<ActivityDetailPage appID="portal" id="database-timeout" tab="overview" />);
+    expect(await screen.findByText('2 occurrences')).toBeInTheDocument();
     expect(screen.getByText(/saveMessage/)).toBeInTheDocument();
     expect(screen.getByText('lidza-portal-123')).toBeInTheDocument();
     expect(screen.getByText('release-123')).toBeInTheDocument();
     expect(screen.getByText('abc123')).toBeInTheDocument();
-    expect(screen.getByText('req-latest')).toBeInTheDocument();
+    overview.unmount();
+    render(<ActivityDetailPage appID="portal" id="database-timeout" tab="occurrences" />);
+    expect(await screen.findByText('req-latest')).toBeInTheDocument();
     expect(screen.getByText('req-first')).toBeInTheDocument();
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/control/apps/portal/errors', expect.any(Object)));
   });
 
   it('renders error groups for a native application without a change-plan banner', async () => {
@@ -79,13 +80,12 @@ describe('ActivityPage', () => {
       }),
     }) as Response));
 
-    render(<ActivityPage selectedID="shop" />);
+    render(<ActivityDetailPage appID="shop" id="rails-nil-total" tab="overview" />);
 
     expect((await screen.findAllByText("NoMethodError (undefined method 'total' for nil)"))[0]).toBeInTheDocument();
     expect(screen.getByText('2 occurrences')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByText(/change plan/i)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText('View details'));
     expect(screen.getByText('Service unit')).toBeInTheDocument();
     expect(screen.getByText('lidza-app-shop-web.service')).toBeInTheDocument();
     expect(screen.getByText('20261105100000')).toBeInTheDocument();
@@ -106,7 +106,7 @@ describe('ActivityPage', () => {
       }),
     }) as Response));
 
-    render(<ActivityPage security selectedID="shop" />);
+    render(<ActivityPage security appID="shop" />);
 
     expect(await screen.findByText('secret file')).toBeInTheDocument();
     expect(screen.getAllByText(/\/\.env/)[0]).toBeInTheDocument();

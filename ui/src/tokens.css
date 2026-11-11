@@ -22,13 +22,24 @@
   --control-gap: var(--space-2);     /* between buttons, badges and chips in a row */
   --page-gutter: var(--space-6);     /* main content side padding */
 
+  /* Type and control sizes shared by the console's building blocks */
+  --text-body: 12px;                 /* body copy inside cards: summaries, check lists, alerts, tables */
+  --text-label: 11px;                /* field labels, summary labels */
+  --text-hint: 10px;                 /* field hints and secondary notes */
+  --control-height: 36px;            /* a standard button */
+  --control-height-sm: 31px;         /* a small button */
+
   /* Shell */
   --sidebar-width: 224px;
 }
 
 @media (max-width: 860px) {
-  :root { --page-gutter: var(--space-4); }
+  :root { --page-gutter: var(--space-4); --control-height: 38px; --control-height-sm: 34px; }
 }
 @media (max-width: 600px) {
-  :root { --card-padding: var(--space-4); }
+  :root { --card-padding: var(--space-4); --text-label: 12px; --text-hint: 11px; }
+}
+/* Touch targets: at least 40px on coarse pointers. */
+@media (pointer: coarse) {
+  :root { --control-height: 40px; --control-height-sm: 40px; }
 }

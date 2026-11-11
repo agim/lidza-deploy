@@ -205,9 +205,15 @@ func (m *Manager) workNativeRelease(j job) {
 	if result.RolledBack {
 		commandDiagnostic(ctx, "release", "The new release failed its checks; the previous release was republished and is serving.")
 	}
+	published := result.Release != "" && !result.RolledBack && err == nil
+	if published {
+		// After the unlock below: check the published release's
+		// database.yml before the next deployment's backup needs it.
+		defer m.recheckDatabaseConfigsAfterRelease(j.app.ID)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if result.Release != "" && !result.RolledBack && err == nil {
+	if published {
 		m.recordNativeReleaseLocked(j.app.ID, plan.Layout, result)
 	}
 	if err == nil {

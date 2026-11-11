@@ -7,11 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -98,9 +98,7 @@ func (m *Manager) nativeHealth(ctx context.Context) (HostNativeHealth, bool) {
 			}
 		}
 	}
-	if out, err := m.nativeRootExec(ctx, "journalctl", "--disk-usage", "--no-pager"); err == nil {
-		health.JournalBytes = journalDiskUsage(out)
-	}
+	health.JournalBytes = journalDirectoryUsage(journalDirectories)
 	m.mu.Lock()
 	ids := slices.Sorted(maps.Keys(m.data.NativeApps))
 	m.mu.Unlock()
@@ -150,27 +148,43 @@ func (m *Manager) nativeApplicationRoot(id string) string {
 	return filepath.Join(m.cfg.Native.Root, a.Name)
 }
 
-var journalUsagePattern = regexp.MustCompile(`take up ([0-9.]+)([KMGTP]?)(i?B)?\b`)
+// journalDirectories hold the persistent and volatile journals.
+var journalDirectories = []string{"/var/log/journal", "/run/log/journal"}
 
-// journalDiskUsage parses "Archived and active journals take up 1.2G in
-// the file system."
-func journalDiskUsage(out string) int64 {
-	match := journalUsagePattern.FindStringSubmatch(out)
-	if match == nil {
-		return 0
+// journalDirectoryUsage is the disk space of the journal files, counted
+// like `journalctl --disk-usage` (allocated blocks of *.journal and
+// *.journal~ files) without journalctl, which opens every journal file to
+// answer and costs seconds of CPU on a large journal.
+func journalDirectoryUsage(dirs []string) int64 {
+	var total int64
+	for _, dir := range dirs {
+		_ = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if entry.IsDir() {
+				if path != dir && filepath.Dir(path) != dir {
+					return filepath.SkipDir // machine-id directories only
+				}
+				return nil
+			}
+			name := entry.Name()
+			if !strings.HasSuffix(name, ".journal") && !strings.HasSuffix(name, ".journal~") {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil || !info.Mode().IsRegular() {
+				return nil
+			}
+			if st, ok := info.Sys().(*syscall.Stat_t); ok {
+				total += st.Blocks * 512
+			} else {
+				total += info.Size()
+			}
+			return nil
+		})
 	}
-	value, err := strconv.ParseFloat(match[1], 64)
-	if err != nil {
-		return 0
-	}
-	exponent := strings.Index("KMGTP", match[2]) + 1
-	if match[2] == "" {
-		exponent = 0
-	}
-	for range exponent {
-		value *= 1024
-	}
-	return int64(value)
+	return total
 }
 
 // Release directories are measured in the background: a walk of many

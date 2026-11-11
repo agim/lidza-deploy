@@ -4,6 +4,7 @@ import { get } from '../lib/api';
 import { formatBytes, formatDate } from '../lib/format';
 import type { ServerHealth, ServerHealthResponse } from '../lib/types';
 import { Badge, Notice, ProgressBar } from './ui';
+import { SummaryList } from './SummaryList';
 
 export function useServerHealth(serverIDs: string) {
   const [health, setHealth] = useState<ServerHealth[]>([]);
@@ -63,7 +64,7 @@ export function ServerResources({ health, loading, unavailable }: { health?: Ser
       {(health.disks || []).map(disk => <div className="host-metric host-metric-wide" key={disk.path}><span><HardDrive size={15} />Disk <code>{disk.path}</code></span><strong>{valid(disk.used_percent) ? `${disk.used_percent.toFixed(1)}% used` : 'Usage unavailable'}</strong><small>{valid(disk.available) ? `${formatBytes(disk.available)} free` : 'Free space unavailable'}{valid(disk.total) ? ` / ${formatBytes(disk.total)} total` : ''}</small>{valid(disk.used_percent) && <ProgressBar value={disk.used_percent} tone={disk.used_percent >= 95 ? 'danger' : disk.used_percent >= 85 ? 'warning' : 'accent'} />}</div>)}
     </div>
     {!health.disks?.length && <p className="muted-copy">Disk measurements unavailable.</p>}
-    <details className="host-databases"><summary><Database size={15} />Database sizes <span>{databases.length} measured</span></summary>{databases.length ? <dl>{databases.map(row => <div key={row.id}><dt>{row.id}</dt><dd>{databaseSize(row)}</dd></div>)}</dl> : <p className="muted-copy">No database size measurements available.</p>}{systemLogs.length > 0 && <dl aria-label="ClickHouse system logs">{systemLogs.map(([id, bytes]) => <div key={id}><dt>{id === 'host' ? 'Host ClickHouse system logs' : `${id} ClickHouse system logs`}</dt><dd>{formatBytes(bytes)}</dd></div>)}</dl>}</details>
+    <details className="host-databases"><summary><Database size={15} />Database sizes <span>{databases.length} measured</span></summary>{databases.length ? <SummaryList items={databases.map(row => ({ id: row.id, label: row.id, value: databaseSize(row) }))} /> : <p className="muted-copy">No database size measurements available.</p>}{systemLogs.length > 0 && <SummaryList aria-label="ClickHouse system logs" items={systemLogs.map(([id, bytes]) => ({ id, label: id === 'host' ? 'Host ClickHouse system logs' : `${id} ClickHouse system logs`, value: formatBytes(bytes) }))} />}</details>
     <RuntimeSections health={health} />
     {Boolean(health.warnings?.length) && <div className="alert alert-warning" role="status" aria-label="Server warnings"><AlertTriangle size={18} /><div>{health.warnings!.map(message => <p key={message}>{message}</p>)}</div></div>}
     {Boolean(health.notes?.length) && <details className="host-databases host-notes" aria-label="Server notes"><summary><Info size={15} />Notes <span>{health.notes!.length} note{health.notes!.length === 1 ? '' : 's'}</span></summary>{health.notes!.map(message => <p className="muted-copy" key={message}>{message}</p>)}</details>}
@@ -87,15 +88,15 @@ function RuntimeSections({ health }: { health: ServerHealth }) {
   const releases = [...(native?.releases || [])].sort((a, b) => b.bytes - a.bytes);
   return <>
     {native && <details className="host-databases" aria-label="Native services"><summary><Server size={15} />Native services <span>{native.units} service{native.units === 1 ? '' : 's'} · {native.active} active{failed.length ? ` · ${failed.length} failed` : ''}</span></summary>
-      <dl>
-        <div><dt>Applications</dt><dd>{native.applications}</dd></div>
-        <div><dt>Active / inactive services</dt><dd>{native.active} / {native.inactive}</dd></div>
-        <div><dt>Journal on disk</dt><dd>{native.journal_bytes ? formatBytes(native.journal_bytes) : 'Unavailable'}</dd></div>
-        {failed.map(unit => <div key={unit}><dt><code>{unit}</code></dt><dd>Failed</dd></div>)}
-        {releases.map(row => <div key={row.app_id}><dt>{row.app_id} releases <small>{row.releases} kept</small></dt><dd>{formatBytes(row.bytes)}</dd></div>)}
-      </dl>
+      <SummaryList items={[
+        { label: 'Applications', value: native.applications },
+        { label: 'Active / inactive services', value: `${native.active} / ${native.inactive}` },
+        { label: 'Journal on disk', value: native.journal_bytes ? formatBytes(native.journal_bytes) : 'Unavailable' },
+        ...failed.map(unit => ({ id: `unit-${unit}`, label: <code>{unit}</code>, value: 'Failed' })),
+        ...releases.map(row => ({ id: `releases-${row.app_id}`, label: <>{row.app_id} releases <small>{row.releases} kept</small></>, value: formatBytes(row.bytes) })),
+      ]} />
       {!releases.length && <p className="muted-copy">Release sizes are measured in the background and appear shortly.</p>}
     </details>}
-    {docker && <details className="host-databases" aria-label="Containers"><summary><Boxes size={15} />Containers <span>{docker.running} running / {docker.containers} total</span></summary><dl><div><dt>Docker</dt><dd>{docker.version || 'Not answering'}</dd></div></dl></details>}
+    {docker && <details className="host-databases" aria-label="Containers"><summary><Boxes size={15} />Containers <span>{docker.running} running / {docker.containers} total</span></summary><SummaryList items={[{ label: 'Docker', value: docker.version || 'Not answering' }]} /></details>}
   </>;
 }

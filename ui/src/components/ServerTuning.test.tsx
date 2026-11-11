@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ServerTuning } from './ServerTuning';
+import { ServerTuning, tuningOutputItems } from './ServerTuning';
 import type { ResourceTuningView } from '../lib/types';
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn(), patch: vi.fn() }));
@@ -32,14 +32,16 @@ it('shows settings, caps, Redis and the pending restart with its window', async 
   render(<ServerTuning serverID="edge" />);
   expect(await screen.findByText('PostgreSQL 17/main · port 5432')).toBeInTheDocument();
   expect(api.get).toHaveBeenCalledWith('control/servers/edge/host/resources');
-  expect(screen.getByRole('status', { name: 'Pending restart' })).toHaveTextContent('shared_buffers');
-  expect(screen.getByRole('status', { name: 'Pending restart' })).toHaveTextContent('maintenance window');
+  const notes = screen.getByRole('list', { name: 'Tuning notes' });
+  expect(within(notes).getByText('shared_buffers').closest('[data-status]')).toHaveAttribute('data-status', 'waiting');
+  expect(notes).toHaveTextContent('maintenance window');
+  expect(within(screen.getByLabelText('Tuning summary')).getByText('Last run')).toBeInTheDocument();
   expect(screen.getByText('3610MB', { selector: 'strong' })).toBeInTheDocument();
   expect(screen.getByText(/configured pool \(50\) exceeds its cap/)).toBeInTheDocument();
   expect(screen.getByText('not enforced')).toBeInTheDocument();
   expect(screen.getByText(/ignores connection limits/)).toBeInTheDocument();
   expect(screen.getByText('Cannot move: database 4 is also used by api')).toBeInTheDocument();
-  expect(screen.getByText(/Memory ratio 0.250 → 0.200/)).toBeInTheDocument();
+  expect(screen.getByText(/0.250 → 0.200/)).toBeInTheDocument();
   expect(screen.getByText('Applied 19 tuning changes.')).toBeInTheDocument();
 });
 
@@ -70,4 +72,43 @@ it('moves a shared-Redis application to its own instance after confirmation', as
   fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to its own Redis' }));
   await waitFor(() => expect(api.post).toHaveBeenCalledWith('control/servers/edge/host/resources/redis/blog/migrate', { confirm: 'blog' }));
   expect(await screen.findByText(/Provisioning/)).toBeInTheDocument();
+});
+
+it('shows the system log policy with its computed default and saves the override', async () => {
+  const journal = { disk_path: '/var/log/journal', disk_bytes: 386e9, computed: { max_use_bytes: 4 * 1073741824, keep_free_bytes: 18405 * 1048576, max_file_bytes: 512 * 1048576, retention: '30day' }, target: { max_use_bytes: 4 * 1073741824, keep_free_bytes: 18405 * 1048576, max_file_bytes: 512 * 1048576, retention: '30day' }, drop_in: '/etc/systemd/journald.conf.d/zz-lidza-journal.conf', usage_bytes: 22 * 1073741824,
+    neutralized: [{ file: '/etc/systemd/journald.conf.d/99-zz-retention-30d.conf', lines: ['SystemMaxUse=100G', 'SystemKeepFree=50G'], backup: '/var/lib/lidza-agent/journald-backups/99-zz-retention-30d.conf.20261106T140000Z', at: '2026-11-06T14:00:00Z' }] };
+  api.get.mockResolvedValue({ ...view, journal, jobs: [{ id: 'journal-policy-boot-1', kind: 'journal-policy', trigger: 'boot', status: 'succeeded', started: '2026-11-06T14:00:00Z', summary: 'System log size set to 4G.' }] });
+  api.put.mockResolvedValue({ ...view, journal, overrides: { journal_max_use_mib: 2048 } });
+  render(<ServerTuning serverID="edge" />);
+  const list = await screen.findByLabelText('System log policy');
+  expect(list).toHaveTextContent('22');
+  expect(list).toHaveTextContent('99-zz-retention-30d.conf');
+  expect(list).toHaveTextContent('SystemMaxUse=100G, SystemKeepFree=50G');
+  expect(screen.getByText('System log size (MiB)')).toBeInTheDocument();
+  const input = screen.getByLabelText('System log size');
+  expect(input).toHaveAttribute('placeholder', '4096');
+  fireEvent.change(input, { target: { value: '2048' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save overrides' }));
+  await waitFor(() => expect(api.put).toHaveBeenCalledWith('control/servers/edge/host/resources/overrides', expect.objectContaining({ journal_max_use_mib: 2048 })));
+});
+
+it('shows a run\'s failed changes as failed rows and waiting changes as waiting rows', async () => {
+  const output = ['postgresql 17/main work_mem: 4MB → 17MB (reload)', 'role app_portal CONNECTION LIMIT: 20 → 12 (deferred): waits until fewer sessions are open', 'container lidza-api-db shared_buffers: 128MB → 512MB (next-restart)', 'FAILED Redis shared: connection refused'].join('\n');
+  expect(tuningOutputItems(output).map(item => [item.status, item.children, item.detail])).toEqual([
+    ['ok', 'postgresql 17/main work_mem: 4MB → 17MB', 'reload'],
+    ['waiting', 'role app_portal CONNECTION LIMIT: 20 → 12', 'waits until fewer sessions are open'],
+    ['waiting', 'container lidza-api-db shared_buffers: 128MB → 512MB', 'next container restart'],
+    ['failed', 'Redis shared: connection refused', undefined],
+  ]);
+  api.get.mockResolvedValue({ ...view, jobs: [{ ...view.jobs![0], status: 'failed', output }] });
+  render(<ServerTuning serverID="edge" />);
+  const changes = await screen.findByRole('list', { name: 'Last run changes' });
+  expect(within(changes).getByText('Redis shared: connection refused').closest('[data-status]')).toHaveAttribute('data-status', 'failed');
+  expect(changes.querySelectorAll('[data-status=waiting]')).toHaveLength(2);
+});
+
+it('lists a Redis instance without applications', async () => {
+  api.get.mockResolvedValue({ ...view, redis: [...view.redis!, { id: 'lidza-redis-portal', kind: 'own', used_bytes: 0, max_bytes: 0, target_mib: 256, target_policy: 'allkeys-lru', apps: [] }] });
+  render(<ServerTuning serverID="edge" />);
+  expect(await screen.findByText('No application uses this instance.')).toBeInTheDocument();
 });

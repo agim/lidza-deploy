@@ -32,7 +32,7 @@ beforeEach(() => {
 
 const renderWithToast = (node: React.ReactNode) => render(<ToastContext.Provider value={notify}>{node}</ToastContext.Provider>);
 
-it('reviews the workspace cleanup plan and applies exactly the reviewed fingerprint', async () => {
+it('reviews the bucket cleanup plan and applies exactly the reviewed fingerprint', async () => {
   api.post.mockResolvedValue({ deleted: 3, deleted_bytes: 3 * GiB });
   renderWithToast(<BackupRetentionCard />);
   expect(await screen.findByText(/Retention has not been saved yet/)).toBeInTheDocument();
@@ -75,7 +75,7 @@ it('disables apply when nothing would be deleted and warns about unavailable ser
   expect(screen.queryByText(/Retention has not been saved yet/)).not.toBeInTheDocument();
 });
 
-it('saves workspace retention settings', async () => {
+it('saves default retention settings', async () => {
   api.put.mockResolvedValue({ status: 'saved', unsynced_servers: [] });
   renderWithToast(<BackupRetentionCard />);
   fireEvent.change(await screen.findByLabelText(/Daily backups/), { target: { value: '14' } });
@@ -91,7 +91,7 @@ it('sets and clears a per-database override', async () => {
   api.patch.mockResolvedValue({ status: 'saved' });
   const saved = vi.fn(async () => {});
   const view = renderWithToast(<DatabaseRetentionCard serverID="server-a" databaseID="portal" onSaved={saved} />);
-  const useDefault = await screen.findByLabelText(/Use the workspace default \(7 daily · 4 weekly · 0 monthly\)/);
+  const useDefault = await screen.findByLabelText(/Use the default retention \(7 daily · 4 weekly · 0 monthly\)/);
   expect(screen.queryByLabelText(/Daily backups/)).not.toBeInTheDocument();
   fireEvent.click(useDefault);
   fireEvent.change(screen.getByLabelText(/Daily backups/), { target: { value: '30' } });
@@ -101,7 +101,7 @@ it('sets and clears a per-database override', async () => {
   view.unmount();
   renderWithToast(<DatabaseRetentionCard serverID="server-a" databaseID="portal" override={{ daily: 30, weekly: 0, monthly: 0 }} onSaved={saved} />);
   expect(await screen.findByLabelText(/Daily backups/)).toHaveValue(30);
-  fireEvent.click(screen.getByLabelText(/Use the workspace default/));
+  fireEvent.click(screen.getByLabelText(/Use the default retention/));
   fireEvent.click(screen.getByRole('button', { name: 'Save retention' }));
   await waitFor(() => expect(api.patch).toHaveBeenLastCalledWith('control/servers/server-a/databases/portal/backups/retention', null));
   expect(saved).toHaveBeenCalledTimes(2);

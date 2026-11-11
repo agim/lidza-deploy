@@ -120,7 +120,7 @@ from then on the saved list applies, even when it is empty. Prefer the panel.
 
 Backups use `pg_dump --format=custom --compress=zstd:1 --no-owner --no-acl` and capture one database, not cluster roles or the control panel. They are written privately under `/var/lib/lidza-agent/backups/DATABASE_ID/` (or the agent's configured data directory), finalized before being listed, and include a SHA-256 checksum. Dumps are limited to 5 GiB, with two database operations per agent at once. Scheduled/manual backups retain their two-hour operation deadline; deployment backups use the shorter deadline described above. Large installations needing physical backups or point-in-time recovery should use their PostgreSQL provider's backup facilities.
 
-In **Integrations → S3-compatible storage**, enter an HTTPS endpoint, bucket, region, optional prefix, and access/secret keys. Saving writes and deletes a small connection-check object. Enable off-site copies per app after configuring the destination. The bucket must exist and grant object write/read-metadata/delete access within the prefix. Keep it private and enable provider-side encryption. Off-site history follows the workspace retention policy (see [Off-site retention](#off-site-retention)); no bucket lifecycle rule is needed. Pre-deployment backups overwrite one current object; if bucket versioning is enabled, configure lifecycle expiration for noncurrent versions to avoid retaining previous copies. This version does not provide client-side encryption or automatic S3 restores.
+In **Integrations → S3-compatible storage**, enter an HTTPS endpoint, bucket, region, optional prefix, and access/secret keys. Saving writes and deletes a small connection-check object. Enable off-site copies per app after configuring the destination. The bucket must exist and grant object write/read-metadata/delete access within the prefix. Keep it private and enable provider-side encryption. Off-site history follows the panel's default retention policy (see [Off-site retention](#off-site-retention)); no bucket lifecycle rule is needed. Pre-deployment backups overwrite one current object; if bucket versioning is enabled, configure lifecycle expiration for noncurrent versions to avoid retaining previous copies. This version does not provide client-side encryption or automatic S3 restores.
 
 A local dump is saved first. Off-site copying streams it through Līdza's signed PUT API and verifies the uploaded size. If S3 fails, the local copy is retained and the operation reports the failure. Scheduled failures retry after 15 minutes. Manual-only backups require another manual attempt. Changing the storage profile affects subsequent backups; old objects remain at the old destination. Blank credential fields preserve saved keys.
 
@@ -226,7 +226,7 @@ keeps, grandfather-father-son style, the newest backup of each of the last
 **daily** days, **weekly** ISO weeks and **monthly** months that have backups
 (UTC calendar periods; days without backups do not use up the count). New
 installations start with 7 daily, 4 weekly and 0 monthly backups. Change the
-workspace default in **Remote backups → Off-site retention**, and override it for
+panel-wide default in **Remote backups → Off-site retention**, and override it for
 one database in its **Off-site retention** card; both accept 0–365 daily, 0–260
 weekly and 0–120 monthly.
 
@@ -256,7 +256,7 @@ what is kept and what would be deleted, with sizes and the total reclaimed.
 changed since the review. The same plan is available from the API:
 
 ```sh
-# Workspace-wide dry run (bucket, every server, orphaned folders):
+# Panel-wide dry run (bucket, every server, orphaned folders):
 curl -sS -b cookies.txt https://deploy.example.com/api/control/storage/retention/plan
 # Apply exactly that plan (the Origin header must match the panel):
 curl -sS -b cookies.txt -H 'Origin: https://deploy.example.com' -X POST \

@@ -4,6 +4,9 @@ import { AlertTriangle, LoaderCircle } from 'lucide-react';
 import { APIError, get, post } from '../lib/api';
 import { ActionForm, Badge, Button, ConfirmAction, ErrorBanner, Field, Notice, StatusBadge } from './ui';
 import { DnsRecordsTable } from './DnsRecords';
+import { CheckList, checkStatus } from './CheckList';
+import { SummaryList } from './SummaryList';
+import { Stack } from './layout';
 import { LiveProgress, type OperationProgress } from './LiveProgress';
 import { buildMemorySummary } from '../lib/buildMemory';
 import type { BuildMemoryAssessment, RedirectDomain } from '../lib/types';
@@ -94,7 +97,7 @@ export function replicationLabel(db: { replication?: string; replication_reason?
   return db.replication_reason ? `dump and restore (${db.replication_reason})` : 'dump and restore';
 }
 const fileActionLabels: Record<string, string> = { copy: 'copied', skip_empty: 'skipped: no files', manual: 'not moved', blocked: 'cannot be moved' };
-const methodLabels: Record<string, string> = { s3: 'through workspace storage', direct: 'directly through the control panel' };
+const methodLabels: Record<string, string> = { s3: 'through backup storage', direct: 'directly through the control panel' };
 
 function gib(bytes: number) { return `${(bytes / 2 ** 30).toFixed(1)} GiB`; }
 // "25/tcp, 587/tcp"
@@ -259,19 +262,19 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
     <div className="move-actions"><Button type="button" onClick={() => { void review(); }} disabled={busy || !target}>Review move</Button></div>
     {error && <ErrorBanner>{error}</ErrorBanner>}
     {plan && <div className="move-plan-review">
-      <dl className="move-facts">
-        <dt>Runtime</dt><dd>{plan.runtime} · {plan.source_runtime} → <strong>{plan.target_runtime}</strong>{plan.detection?.mode && ` (repository detected as ${plan.detection.mode}${plan.detection.runtime ? ` ${plan.detection.runtime}` : ''})`}</dd>
-        <dt>Release</dt><dd>{plan.repository}@{plan.branch} · commit <code>{plan.commit?.slice(0, 12) || 'not deployed'}</code></dd>
-        <dt>Hostnames</dt><dd>{plan.hostnames.join(', ')}</dd>
-        {(plan.redirect_domains?.length ?? 0) > 0 && <><dt>Redirect domains</dt><dd>{plan.redirect_domains!.map(item => `${item.host} → ${item.status || 301}`).join(', ')}{plan.redirect_note && <span className="muted-copy"> {plan.redirect_note}</span>}</dd></>}
-        <dt>DNS will point to</dt><dd>{plan.addresses.length ? plan.addresses.join(', ') : 'unknown'}</dd>
-        <dt>Environment</dt><dd>{plan.copied_keys.length} copied{environmentSources(plan.copied_sources)}{plan.copied_keys.length > 0 && <>: <code>{plan.copied_keys.join(', ')}</code></>}{plan.destination_keys.length > 0 && <>; set by the destination: <code>{plan.destination_keys.join(', ')}</code></>}</dd>
-        <dt>Redis</dt><dd>{plan.redis ? 'provisioned on the destination; contents are not copied' : 'none'}</dd>
-        {(plan.public_ports?.length ?? 0) > 0 && <><dt>Published ports</dt><dd>{portList(plan.public_ports)}{plan.target_runtime === 'container' ? ' · opened by the destination agent' : ' · not published by the native runtime'}</dd></>}
-        {plan.mail && <><dt>Outgoing mail</dt><dd className="move-mail">port {portList(plan.mail.ports)}<ul className="move-ptr">{plan.mail.ptr.map(entry => <li key={entry.address} className={entry.ok ? 'move-dns-ready' : 'move-dns-waiting'}>{ptrSummary(entry)}</li>)}</ul>{plan.mail.records.length > 0 && <span className="muted-copy">The cutover lists {plan.mail.records.length === 1 ? 'the mail record' : `${plan.mail.records.length} mail records`} (SPF, reverse DNS) with the A/AAAA records.</span>}</dd></>}
-        {plan.build_memory && <><dt>Build memory</dt><dd className={`move-build-memory move-build-memory-${plan.build_memory.level}`}>{buildMemorySummary(plan.build_memory)}</dd></>}
-        {plan.capacity && <><dt>Destination capacity</dt><dd>{gib(plan.capacity.disk_available)} free disk (about {gib(plan.capacity.needed)} needed), {gib(plan.capacity.memory_available)} memory available</dd></>}
-      </dl>
+      <SummaryList aria-label="Move summary" items={[
+        { label: 'Runtime', value: <>{plan.runtime} · {plan.source_runtime} → <strong>{plan.target_runtime}</strong>{plan.detection?.mode && ` (repository detected as ${plan.detection.mode}${plan.detection.runtime ? ` ${plan.detection.runtime}` : ''})`}</> },
+        { label: 'Release', value: <>{plan.repository}@{plan.branch} · commit <code>{plan.commit?.slice(0, 12) || 'not deployed'}</code></> },
+        { label: 'Hostnames', value: plan.hostnames.join(', ') },
+        (plan.redirect_domains?.length ?? 0) > 0 && { label: 'Redirect domains', value: <>{plan.redirect_domains!.map(item => `${item.host} → ${item.status || 301}`).join(', ')}{plan.redirect_note && <span className="muted-copy"> {plan.redirect_note}</span>}</> },
+        { label: 'DNS will point to', value: plan.addresses.length ? plan.addresses.join(', ') : 'unknown' },
+        { label: 'Environment', value: <>{plan.copied_keys.length} copied{environmentSources(plan.copied_sources)}{plan.copied_keys.length > 0 && <>: <code>{plan.copied_keys.join(', ')}</code></>}{plan.destination_keys.length > 0 && <>; set by the destination: <code>{plan.destination_keys.join(', ')}</code></>}</> },
+        { label: 'Redis', value: plan.redis ? 'provisioned on the destination; contents are not copied' : 'none' },
+        (plan.public_ports?.length ?? 0) > 0 && { label: 'Published ports', value: `${portList(plan.public_ports)}${plan.target_runtime === 'container' ? ' · opened by the destination agent' : ' · not published by the native runtime'}` },
+        plan.mail && { label: 'Outgoing mail', value: <Stack gap="sm"><span>port {portList(plan.mail.ports)}</span><CheckList aria-label="Reverse DNS" items={plan.mail.ptr.map(entry => ({ id: entry.address, status: checkStatus(entry.ok, 'waiting'), children: ptrSummary(entry) }))} />{plan.mail.records.length > 0 && <span className="muted-copy">The cutover lists {plan.mail.records.length === 1 ? 'the mail record' : `${plan.mail.records.length} mail records`} (SPF, reverse DNS) with the A/AAAA records.</span>}</Stack> },
+        plan.build_memory && { label: 'Build memory', value: <span className={`move-build-memory move-build-memory-${plan.build_memory.level}`}>{buildMemorySummary(plan.build_memory)}</span> },
+        plan.capacity && { label: 'Destination capacity', value: `${gib(plan.capacity.disk_available)} free disk (about ${gib(plan.capacity.needed)} needed), ${gib(plan.capacity.memory_available)} memory available` },
+      ]} />
       <div className="move-caution" role="note"><strong>Don't change DNS until the move reaches Switch DNS.</strong> The destination serves the application only after it is deployed there; DNS pointing to it earlier takes the site down until the deploy finishes. The move shows the records to set when it is time.</div>
       {plan.databases.length > 0 && <><strong>Databases</strong><ul className="move-databases">{plan.databases.map(db => db.engine === 'clickhouse' ? <li key={`clickhouse-${db.id}`}>ClickHouse <code>{db.id}</code>: {[db.size_bytes ? mib(db.size_bytes) : '', db.tables >= 0 ? `${db.tables} tables` : ''].filter(Boolean).join(', ') || db.mode} · {actionLabels[db.action] || db.action}{db.note && db.action !== 'skip_empty' ? ` · ${db.note}` : ''}</li> : <li key={db.id}><code>{db.id}</code> {db.engine} ({db.mode}{db.tables >= 0 ? `, ${db.tables} tables` : ''}{db.size_bytes ? `, ${mib(db.size_bytes)}` : ''}) · {actionLabels[db.action] || db.action}{db.action === 'copy' && replicationLabel(db) ? <> · <strong>{replicationLabel(db)}</strong>{db.replication_restart ? ' · restarts the source once for wal_level=logical' : ''}</> : ''}{db.note && db.action !== 'skip_empty' ? ` · ${db.note}` : ''}{db.before_deploy ? ` · before deploys: ${db.before_deploy}` : ''}</li>)}</ul></>}
       {plan.databases.some(db => db.excluded_tables?.length) && <section className="move-excluded" aria-label="Tables the backups skip">
@@ -371,7 +374,10 @@ function MoveProgress({ job, name, onUpdate, onPlanAnother }: { job: MoveJob; na
       <h4>DNS records</h4>
       <p>Set these records at your DNS provider and remove every other A and AAAA record of these hostnames. {name(job.source_server)} keeps serving until DNS points to {name(job.target_server)}.{job.records.some(record => record.type === 'PTR') && ' A PTR record is set at the server provider, where the server was created.'}</p>
       <DnsRecordsTable records={job.records} />
-      <ul className="move-resolution">{job.dns.map(entry => <li key={entry.hostname} className={entry.ready ? 'move-dns-ready' : 'move-dns-waiting'}><code>{entry.hostname}</code> {entry.ready ? 'points to the destination' : entry.error ? entry.error : `resolves to ${entry.addresses.join(', ') || 'nothing'}`}{entry.source && <small className="muted-copy"> (answered by {entry.source})</small>}</li>)}{(job.ptr || []).map(entry => <li key={`ptr-${entry.address}`} className={entry.ok ? 'move-dns-ready' : 'move-dns-optional'}>{ptrSummary(entry)}{entry.ok ? '' : <small className="muted-copy"> Optional: recommended for outgoing mail; the move does not wait for it.</small>}</li>)}</ul>
+      <CheckList aria-label="DNS answers" items={[
+        ...job.dns.map(entry => ({ id: entry.hostname, status: checkStatus(entry.ready, 'waiting'), children: <span><code>{entry.hostname}</code> {entry.ready ? 'points to the destination' : entry.error ? entry.error : `resolves to ${entry.addresses.join(', ') || 'nothing'}`}</span>, detail: entry.source ? `Answered by ${entry.source}` : undefined })),
+        ...(job.ptr || []).map(entry => ({ id: `ptr-${entry.address}`, status: entry.ok ? 'ok' as const : 'info' as const, children: ptrSummary(entry), detail: entry.ok ? undefined : 'Optional: recommended for outgoing mail; the move does not wait for it.' })),
+      ]} />
       {job.dns_checked && <p className="muted-copy">Checked {new Date(job.dns_checked).toLocaleTimeString()}. DNS is checked every minute at the zone's own nameservers, so resolver caches do not delay the cutover.</p>}
       {job.tls_detail && <p className="muted-copy">{job.tls_detail}</p>}
       {can('auto-cutover') && <label className="check-row move-auto-cutover"><input type="checkbox" role="switch" aria-checked={!!job.auto_cutover} checked={!!job.auto_cutover} disabled={!!busy} onChange={event => { void act('auto-cutover', { enabled: event.target.checked }); }} /><span><strong>Final sync and finish start automatically when DNS points here</strong><small>{job.auto_cutover ? `On: the application is locked${lockEstimate ? ` for about ${moveDuration(lockEstimate.seconds)}` : ''} as soon as DNS resolves to ${name(job.target_server)} and HTTPS works there; the move then finishes by itself.` : 'Off: run the final sync and finish the move yourself once DNS points here. Until then the destination serves the bulk copy, and what it receives is replaced by the final sync.'}</small></span></label>}

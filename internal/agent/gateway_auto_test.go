@@ -69,11 +69,14 @@ func newAutoGatewayHost(t *testing.T) *autoGatewayHost {
 // Caddy is the fake admin API.
 func autoGatewayManager(t *testing.T, h *autoGatewayHost, admin *fakeCaddyAdmin) (*Manager, App, *StackManifest) {
 	t.Helper()
-	m := testManager(t, &fakeRuntime{})
-	m.cfg.nativeConfigPath = filepath.Join(h.root, "etc-lidza-agent", "config.json")
-	m.cfg.ProxyListen = "127.0.0.1:18081"
+	m := testManagerWith(t, &fakeRuntime{}, func(cfg *Config) {
+		cfg.nativeConfigPath = filepath.Join(h.root, "etc-lidza-agent", "config.json")
+		cfg.ProxyListen = "127.0.0.1:18081"
+	})
 	if admin != nil {
+		m.mu.Lock()
 		m.data.HostIngress = &HostIngressState{Caddy: &NativeCaddyConfig{Admin: admin.URL(), Server: "https"}}
+		m.mu.Unlock()
 	}
 	a := testApp("protected-app")
 	a.RuntimeProfile = "minimum"

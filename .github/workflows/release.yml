@@ -14,6 +14,32 @@ concurrency:
   group: release-${{ inputs.version || github.ref_name }}
   cancel-in-progress: false
 jobs:
+  browser:
+    # Browser suites (tests/browser/run.cjs) against the freshly built console;
+    # a failing check stops the release.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.version || github.ref }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tests/browser/package-lock.json
+      - name: Build console and run browser suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          npm ci --prefix tests/browser --no-audit --no-fund
+          npx --prefix tests/browser playwright install --with-deps chromium
+          npm run test:browser
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -75,7 +101,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   publish:
-    needs: build
+    needs: [build, browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

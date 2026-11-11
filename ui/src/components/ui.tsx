@@ -1,7 +1,7 @@
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
 import { DropdownMenu as MenuRoot, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from './primitives/dropdown-menu';
 import { AlertTriangle, Check, ChevronDown, Copy, LoaderCircle, MoreHorizontal, Search, X } from 'lucide-react';
-import { Fragment, createContext, type ButtonHTMLAttributes, type FormEvent, type FormHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type MouseEvent, type ReactNode, useContext, useEffect, useId, useState } from 'react';
+import { Fragment, createContext, type ButtonHTMLAttributes, type FormEvent, type FormHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type MouseEvent, type ReactElement, type ReactNode, useContext, useEffect, useId, useRef, useState } from 'react';
 import { Button as PrimitiveButton } from './primitives/button';
 import { Card as PrimitiveCard } from './primitives/card';
 import { Badge as PrimitiveBadge } from './primitives/badge';
@@ -79,8 +79,14 @@ export function BackLink({ to, children = '← Back' }: { to: string; children?:
   }}>{children}</a>;
 }
 
-export function PageHeader({ eyebrow, title, description, actions, back }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode; back?: string }) {
-  return <header className="page-header"><div className="page-title-row">{back && <BackLink to={back} />}<div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h1>{title}<span aria-hidden="true">.</span></h1>{description && <p className="page-description">{description}</p>}</div></div>{actions && <div className="page-actions">{actions}</div>}</header>;
+/**
+ * PageHeader: the title block of a view. `count` follows an index title,
+ * `status` a resource name; `facts` are the resource's primary facts on one
+ * wrapping line under it. Breadcrumbs (in the top bar) carry the location.
+ */
+export function PageHeader({ eyebrow, title, description, actions, back, count, status, facts }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode; back?: string; count?: number; status?: ReactNode; facts?: Array<ReactNode | false | null | undefined> }) {
+  const shown = (facts || []).filter(fact => fact !== false && fact !== null && fact !== undefined && fact !== '');
+  return <header className="page-header"><div className="page-title-row">{back && <BackLink to={back} />}<div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<div className="page-title-line"><h1>{title}<span aria-hidden="true">.</span></h1>{count !== undefined && <Badge>{String(count)}</Badge>}{status}</div>{description && <p className="page-description">{description}</p>}{shown.length > 0 && <ul className="page-facts" aria-label="Key facts">{shown.map((fact, index) => <li key={index}>{fact}</li>)}</ul>}</div></div>{actions && <div className="page-actions">{actions}</div>}</header>;
 }
 
 /** Heading block of a card or Section: title and description, actions on the right. It has no outer margin; the parent's gap spaces it. */
@@ -108,9 +114,13 @@ const DropdownMenu = { Root: MenuRoot, Trigger: DropdownMenuTrigger, Content: Dr
 
 const CloseMenuContext = createContext(() => undefined as void);
 
-export function ActionMenu({ label = 'More actions', children, compact = false }: { label?: string; children: ReactNode; compact?: boolean }) {
+/**
+ * ActionMenu is the shared dropdown menu: an Actions button by default, or
+ * `trigger` (one focusable element) such as the sidebar's account block.
+ */
+export function ActionMenu({ label = 'More actions', children, compact = false, trigger, side = 'bottom', align = 'end' }: { label?: string; children: ReactNode; compact?: boolean; trigger?: ReactElement; side?: 'top' | 'bottom'; align?: 'start' | 'end' }) {
   const [open, setOpen] = useState(false);
-  return <CloseMenuContext.Provider value={() => setOpen(false)}><DropdownMenu.Root open={open} onOpenChange={setOpen}><DropdownMenu.Trigger asChild><Button variant={compact ? "ghost" : "secondary"} size={compact ? "icon" : "sm"} aria-label={label}><MoreHorizontal size={16} />{!compact && <>{label}<ChevronDown size={14} /></>}</Button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="menu-content" align="end" sideOffset={7}>{children}</DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></CloseMenuContext.Provider>;
+  return <CloseMenuContext.Provider value={() => setOpen(false)}><DropdownMenu.Root open={open} onOpenChange={setOpen}><DropdownMenu.Trigger asChild>{trigger || <Button variant={compact ? "ghost" : "secondary"} size={compact ? "icon" : "sm"} aria-label={label}><MoreHorizontal size={16} />{!compact && <>{label}<ChevronDown size={14} /></>}</Button>}</DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="menu-content" side={side} align={align} sideOffset={7}>{children}</DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></CloseMenuContext.Provider>;
 }
 
 export function MenuItem({ icon, danger, disabled, title, children, onSelect }: { icon?: ReactNode; danger?: boolean; disabled?: boolean; title?: string; children: ReactNode; onSelect?: () => unknown }) {
@@ -192,6 +202,38 @@ export function ProgressBar({ value, tone = 'accent' }: { value: number; tone?: 
   return <div className="progress" aria-label={`${safe.toFixed(0)} percent`}><span className={`progress-${tone}`} style={{ width: `${safe}%` }} /></div>;
 }
 
-export function Tabs({ items, active, onChange, children }: { children: ReactNode; items: Array<{ id: string; label: string }>; active: string; onChange: (id: string) => void }) {
-  return <PrimitiveTabs value={active} onValueChange={onChange}><TabsList variant="line" className="tabs">{items.map(item => <TabsTrigger key={item.id} value={item.id} className={active === item.id ? 'active' : ''}>{item.label}</TabsTrigger>)}</TabsList><TabsContent value={active}>{children}</TabsContent></PrimitiveTabs>;
+/**
+ * Tabs: a line tab list over the active panel. `scroll` keeps the list on one
+ * row that scrolls sideways on phones (many tabs) instead of wrapping. An item
+ * with an `href` is a real link (a resource tab URL): it opens in a new tab on
+ * a modified click, and selecting it calls onChange like any other tab.
+ */
+export function Tabs({ items, active, onChange, children, scroll = false, label }: { children: ReactNode; items: Array<{ id: string; label: string; href?: string }>; active: string; onChange: (id: string) => void; scroll?: boolean; label?: string }) {
+  const list = useRef<HTMLDivElement>(null);
+  // A scrolling list brings the open tab into view (a linked or reloaded tab may start off-screen).
+  useEffect(() => {
+    if (!scroll || !list.current) return;
+    const tab = list.current.querySelector<HTMLElement>('[data-state=active]');
+    if (!tab || list.current.scrollWidth <= list.current.clientWidth) return;
+    const box = list.current.getBoundingClientRect(), own = tab.getBoundingClientRect();
+    list.current.scrollLeft += own.left - box.left - (box.width - own.width) / 2;
+  }, [scroll, active]);
+  // An edge fades while more tabs lie beyond it; the list has no scrollbar.
+  const [overflow, setOverflow] = useState<'start' | 'end' | 'both'>();
+  useEffect(() => {
+    const element = list.current;
+    if (!element) return;
+    const update = () => {
+      const start = element.scrollLeft > 1, end = element.scrollLeft + element.clientWidth < element.scrollWidth - 1;
+      setOverflow(start && end ? 'both' : start ? 'start' : end ? 'end' : undefined);
+    };
+    update();
+    element.addEventListener('scroll', update, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(update);
+    observer?.observe(element);
+    return () => { element.removeEventListener('scroll', update); observer?.disconnect(); };
+  }, [items.length]);
+  return <PrimitiveTabs value={active} onValueChange={onChange}><TabsList ref={list} variant="line" className={cx('tabs', scroll && 'tabs-scroll')} data-overflow={overflow} aria-label={label}>{items.map(item => item.href
+    ? <TabsTrigger key={item.id} value={item.id} data-tab={item.id} className={active === item.id ? 'active' : ''} asChild><a href={item.href} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); if (item.id !== active) onChange(item.id); }}>{item.label}</a></TabsTrigger>
+    : <TabsTrigger key={item.id} value={item.id} data-tab={item.id} className={active === item.id ? 'active' : ''}>{item.label}</TabsTrigger>)}</TabsList><TabsContent value={active}>{children}</TabsContent></PrimitiveTabs>;
 }

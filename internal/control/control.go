@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"github.com/agim/lidza"
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/agentlink"
 	"github.com/agim/lidza-deploy/internal/buildinfo"
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	gh "github.com/agim/lidza-deploy/internal/providers/github"
@@ -131,13 +132,19 @@ type Control struct {
 	registry           []Server
 	data               saved
 	client             *http.Client
-	operatorID         string
-	teamMu             sync.Mutex
+	// links holds the connections of agents that connect out to this
+	// panel (agent_link.go).
+	links      *agentlink.Hub
+	operatorID string
+	teamMu     sync.Mutex
 	// Application moves (move*.go). moveRunning is guarded by mu; the
 	// resolver, HTTPS probe and poll interval are replaced in tests.
-	moveRunning      map[string]bool
-	moveBase         context.Context
-	moveResolver     moveResolver
+	moveRunning  map[string]bool
+	moveBase     context.Context
+	moveResolver moveResolver
+	// moveCaches reads DNS TTLs for the propagation wait
+	// (move_propagation.go); nil uses the move resolver's.
+	moveCaches       moveCacheResolver
 	moveProbe        func(ctx context.Context, address, host string) error
 	movePollInterval time.Duration
 	// moveLive is the running step's live progress by move, guarded by mu
@@ -170,10 +177,12 @@ type Control struct {
 	// Control panel move (panel_move.go): panelRunning is guarded by mu,
 	// panelJobs counts running queue jobs for the cutover; the rest are
 	// replaced in tests.
-	panelRunning        bool
-	panelDNSMu          sync.Mutex // one DNS check at a time
-	panelJobs           atomic.Int64
-	panelMachineID      func() string
+	panelRunning   bool
+	panelDNSMu     sync.Mutex // one DNS check at a time
+	panelJobs      atomic.Int64
+	panelMachineID func() string
+	// panelLinkProbe replaces the HTTPS probe of a kept server's link (tests).
+	panelLinkProbe      func(ctx context.Context, address, hostname string, server Server) error
 	panelPollInterval   time.Duration
 	panelRetryDelays    []time.Duration
 	panelBundleTransfer func(context.Context, Server, UpdateBundle, string) error
@@ -195,7 +204,8 @@ func New(cfg Config) (*Control, error) {
 	if err := validateServers(cfg.Servers); err != nil {
 		return nil, err
 	}
-	c := &Control{cfg: cfg, client: &http.Client{Timeout: 25 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, data: saved{Apps: map[string]Application{}}}
+	links := agentlink.NewHub()
+	c := &Control{cfg: cfg, links: links, client: &http.Client{Timeout: 25 * time.Second, Transport: linkTransport(links), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, data: saved{Apps: map[string]Application{}}}
 	var encrypted string
 	if err := state.Load(c.path(), &encrypted); err != nil {
 		return nil, err
@@ -488,6 +498,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux.HandleFunc("POST /hooks/github-app", c.panelReadOnlyGuard("POST /hooks/github-app", c.githubAppWebhook))
 	mux.HandleFunc("POST /api/agent/checkout-token", c.panelReadOnlyGuard("POST /api/agent/checkout-token", c.checkoutToken))
 	mux.HandleFunc("POST /api/agent/errors", c.panelReadOnlyGuard("POST /api/agent/errors", c.ingestErrors))
+	c.agentLinkRoutes(mux)
 	mux.Handle("/api/control/", c.Protect(private))
 	mux.Handle("/", frontend)
 	return mux
@@ -626,7 +637,31 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 			return app.App.Slug
 		}
 		return ""
-	}(), "github_connected": appConnected || (err == nil && token != ""), "github_configured": appConfigured || githubConfigured(), "server_count": len(c.servers()), "roles": heldRoles(r.Context()), "github_owner": auth.CurrentUser(r.Context()).ID == c.operatorID})
+	}(), "github_connected": appConnected || (err == nil && token != ""), "github_configured": appConfigured || githubConfigured(), "server_count": len(c.servers()), "roles": heldRoles(r.Context()), "github_owner": auth.CurrentUser(r.Context()).ID == c.operatorID,
+		"hostname": panelHostname(c.cfg.PublicURL), "user": signedInUser(r.Context())})
+}
+
+// statusUser is the signed-in person the console names in its sidebar.
+type statusUser struct {
+	Subject string `json:"subject"`
+	Email   string `json:"email,omitempty"`
+	Name    string `json:"name,omitempty"`
+}
+
+// signedInUser is the request's user with the name and email of their
+// account; only the subject when the account cannot be read.
+func signedInUser(ctx context.Context) statusUser {
+	user := auth.CurrentUser(ctx)
+	if user == nil {
+		return statusUser{}
+	}
+	out := statusUser{Subject: user.ID}
+	if a, ok := lidza.Optional[*auth.Auth](ctx); ok {
+		if p, err := a.Profile(ctx, user.ID); err == nil {
+			out.Email, out.Name = p.Email, p.Name
+		}
+	}
+	return out
 }
 func (c *Control) apps(w http.ResponseWriter, r *http.Request) {
 	type view struct {

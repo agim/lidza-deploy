@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ContainersPage, LogPage } from './ServerDetailPages';
-import { ApplicationsPage } from './ApplicationsPage';
+import { ServerProcesses as ContainersPage } from './ServerDetailPages';
+import { LiveLog as LogPage } from './LogViews';
+import { ApplicationDetailPage } from './ApplicationDetailPage';
 
 const shop = { id: 'shop', runtime: 'go', repository: 'acme/shop', branch: 'main', domain: 'shop.example.com', server_id: 'host', native: { id: 'shop', name: 'shop', services: ['lidza-app-shop-web.service', 'lidza-app-shop-jobs.service'] }, management_capabilities: { deploy: true, rollback: true, remove: true } };
 vi.mock('../state/WorkspaceContext', () => ({ useWorkspace: () => ({ apps: [shop], servers: [{ id: 'host', name: 'Host' }], deployments: [], latestDeployment: () => undefined, refresh: vi.fn() }) }));
@@ -41,11 +42,12 @@ it('shows a native application runtime log and filters it by process', async () 
 });
 
 it('offers native processes, data and the application actions without container operations', async () => {
-  render(<ApplicationsPage />);
-  fireEvent.keyDown(screen.getByRole('button', { name: 'More' }), { key: 'Enter' });
-  expect(await screen.findByRole('menuitem', { name: 'Processes' })).toBeInTheDocument();
-  expect(screen.getByRole('menuitem', { name: 'Data & storage' })).toBeInTheDocument();
-  expect(screen.getByText('Delete')).toBeInTheDocument();
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, status: 204, json: async () => ({}) })));
+  render(<ApplicationDetailPage appID="shop" tab="overview" />);
+  expect(screen.getByRole('tab', { name: 'Processes' })).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'Database & cache' })).toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Actions' }), { key: 'Enter' });
+  expect(await screen.findByText('Delete')).toBeInTheDocument();
   for (const name of ['Reload', 'Cache', 'Database & backups']) expect(screen.queryByRole('menuitem', { name })).not.toBeInTheDocument();
   fireEvent.click(screen.getByText('Delete'));
   expect(await screen.findByText(/Systemd units, the system user and its crontab/)).toBeInTheDocument();

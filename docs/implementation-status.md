@@ -23,7 +23,7 @@ release engine; see [native releases](native-release.md) and
 
 ## Team access and audit
 
-[Līdza #28](https://github.com/agim/lidza/issues/28) shipped in v0.1.72. The control panel uses its released scoped role and audit APIs for one fleet workspace, with administrator/deployer/viewer membership, immediate revocation for existing sessions, protected installation-owner access, a paginated team GUI, and a durable audit view. Mutation intent must persist before an agent call; result failures are surfaced. No passwords, environment values or request bodies are recorded.
+[Līdza #28](https://github.com/agim/lidza/issues/28) shipped in v0.1.72. The control panel uses its released scoped role and audit APIs for the panel's one team, with administrator/deployer/viewer membership, immediate revocation for existing sessions, protected installation-owner access, a paginated team GUI, and a durable audit view. Mutation intent must persist before an agent call; result failures are surfaced. No passwords, environment values or request bodies are recorded.
 
 ## Validation and limits
 

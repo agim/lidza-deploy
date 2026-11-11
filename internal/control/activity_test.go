@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,9 +179,11 @@ func TestActivityListsRetryingAndFailedJobs(t *testing.T) {
 
 func TestActivityEndpointGroupsAndCachesTheFleetRead(t *testing.T) {
 	c := activityControl(t)
-	reads := 0
+	// The fleet read asks every server at once, so the counter is shared
+	// by concurrent requests.
+	var reads atomic.Int64
 	c.client = &http.Client{Transport: updateTransport(func(r *http.Request) (*http.Response, error) {
-		reads++
+		reads.Add(1)
 		body := `[]`
 		if strings.Contains(r.URL.Host, "media") {
 			body = `[{"id":"d1","app_id":"storefront","status":"building","kind":"deploy","created":"` + time.Now().UTC().Format(time.RFC3339) + `"}]`
@@ -206,9 +209,9 @@ func TestActivityEndpointGroupsAndCachesTheFleetRead(t *testing.T) {
 	if len(items) != 2 || items[0].State != "running" || items[0].Title != "Deploying storefront" || items[1].State != "waiting" || items[1].Kind != "move" {
 		t.Fatalf("items: %+v", items)
 	}
-	first := reads
+	first := reads.Load()
 	get()
-	if reads != first {
+	if reads.Load() != first {
 		t.Fatal("the fleet was read again within the cache window")
 	}
 }

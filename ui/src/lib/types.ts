@@ -1,3 +1,4 @@
+import type { SettingsApplyEffects } from './settingsApply';
 export type ID = string;
 
 export interface Server {
@@ -86,8 +87,8 @@ export interface RedirectDomainsView {
 
 export interface Application {
  management_capabilities?: {deploy?:boolean;rollback?:boolean;configure?:boolean;environment?:boolean;remove?:boolean;
-  /** The application can be stopped, started and restarted from the panel; lifecycle_reason says why not. */
-  lifecycle?:boolean;lifecycle_reason?:string;
+  /** The application can be stopped, started and restarted from the panel; lifecycle_reason says why not and lifecycle_setting names the server setting that allows it. */
+  lifecycle?:boolean;lifecycle_reason?:string;lifecycle_setting?:'service_control';
   /** A native application adopted from the existing host setup. */
   adopted?:boolean};
   native?: { id: string; name: string; services: string[]; runtime?: string; document_root?:string };
@@ -153,6 +154,11 @@ export interface ControlStatus {
   github_app_slug?: string;
   team_available?: boolean;
   two_factor_enabled?: boolean;
+  /** The panel's public hostname and running release. */
+  hostname?: string;
+  control_version?: string;
+  /** The signed-in person. */
+  user?: { subject: string; email?: string; name?: string };
   [key: string]: unknown;
 }
 
@@ -167,11 +173,12 @@ export interface EnvironmentEntry {
 
 export interface AppSettings extends Application {
  readonly_env_keys?:string[];
- settings_apply_on_deploy?:boolean;
+ /** What saving each field does (internal/agent/settings_apply.go). */
+ apply_effects?: SettingsApplyEffects;
  defaults_runtime?: 'go' | 'rails' | 'astro' | 'node';
  release_runtime?: string;
  build_configuration_supported?: boolean;
- capabilities?: {routing?:boolean;resources?:boolean;runtime_mode?:boolean;configure:boolean;environment:boolean;deploy:boolean;reload:boolean;rollback:boolean;processes:boolean;logs:boolean;reason?:string;remove?:boolean;lifecycle?:boolean;lifecycle_reason?:string;adopted?:boolean};
+ capabilities?: {routing?:boolean;resources?:boolean;runtime_mode?:boolean;configure:boolean;environment:boolean;deploy:boolean;reload:boolean;rollback:boolean;processes:boolean;logs:boolean;reason?:string;remove?:boolean;lifecycle?:boolean;lifecycle_reason?:string;lifecycle_setting?:'service_control';adopted?:boolean};
  public_ports_supported?: boolean;
  master_key_generation_supported?: boolean;
  stack_profiles_supported?: boolean;
@@ -233,18 +240,7 @@ export interface WorkspaceData {
   unavailableServers: string[];
 }
 
-export type PageKey =
-  | 'applications' | 'deployments' | 'errors' | 'security' | 'servers'
-  | 'databases' | 'remote-backups' | 'integrations' | 'defaults' | 'updates'
-  | 'team' | 'audit' | 'help' | 'control-panel' | 'new-application' | 'deleted-apps' | 'detail' | 'not-found';
-
-export interface Route {
-  page: PageKey;
-  detail?: string;
-  id?: string;
-  /** Selected tab of a tabbed detail view (application settings). */
-  tab?: string;
-}
+export type { Route } from './resources';
 
 export interface ForwardedPort {
  app_id: string; service: string; container: string; release: string;
@@ -367,16 +363,46 @@ export interface HostFirewallView {
   last_applied?: string; last_error?: string; notes?: string[];
 }
 export interface HostIngressCaddy { admin: string; server?: string }
+/** The server's service control setting for adopted applications (agent native_service_control.go). */
+export interface ServiceControlStatus {
+  supported: boolean;
+  enabled: boolean;
+  source: 'config' | 'setting';
+  config_default: boolean;
+  /** The shared deployment account adopted applications run as. */
+  account?: string;
+}
+/** The server's system log access setting for the shared deployment account (agent native_log_access.go). */
+export interface LogAccessStatus {
+  supported: boolean;
+  reason?: string;
+  enabled: boolean;
+  /** "config" until the panel set it; the agent then leaves the membership alone. */
+  source: 'config' | 'setting';
+  account?: string;
+  group: string;
+  /** Whether the account is in the group now. */
+  member: boolean;
+  /** The last reconcile failure. */
+  error?: string;
+  applied?: string;
+}
+
 export interface HostIngressStatus {
   mode: 'agent' | 'caddy'; source: 'config' | 'setting' | 'detected'; caddy_admin?: string; caddy_server?: string;
   admin_api: boolean; web_ports?: number[]; detail?: string; checked: string; detected?: 'agent' | 'caddy';
   override?: HostIngressCaddy; configured: boolean; error_pages?: HostErrorPages;
+  /** TLS automation upkeep of a fronting Caddy. */
+  tls?: CaddyTLSReport;
 }
+/** A Caddy TLS policy that validates through a DNS provider and falls back to HTTP validation. */
+export interface CaddyTLSFallback { policy: number; provider?: string; subjects: number; examples?: string[]; added?: boolean }
+export interface CaddyTLSReport { checked: string; fallbacks?: CaddyTLSFallback[]; moved?: string[]; not_issued?: string[]; error?: string }
 export interface HostErrorPageRoot { server: string; root: string; exists: boolean; hosts: string[] }
 export interface HostErrorPages { dir: string; ready: boolean; problem?: string; caddy_user?: string; managed: number; unmanaged?: HostErrorPageRoot[]; unmanaged_hosts: number; detail?: string }
 export interface HostFirewallPlan { changes: { action: string; command: string }[]; unmanaged?: string[]; kept?: string[]; warnings?: string[]; fingerprint: string; confirm_seconds: number }
 export type RedisUse = 'cache' | 'queue' | 'persistent';
-export interface TuningOverrides { paused?: boolean; postgres?: Record<string, string>; connection_caps?: Record<string, number>; redis_max_memory_mib?: Record<string, number>; redis_use?: Record<string, RedisUse>; clickhouse_memory_ratio?: number }
+export interface TuningOverrides { paused?: boolean; postgres?: Record<string, string>; connection_caps?: Record<string, number>; redis_max_memory_mib?: Record<string, number>; redis_use?: Record<string, RedisUse>; clickhouse_memory_ratio?: number; journal_max_use_mib?: number }
 export interface TuningSetting { name: string; current?: string; computed: string; override?: string; target: string; restart?: boolean; pending?: boolean; formula?: string }
 export interface TuningCap { app_id: string; role: string; current: number; computed: number; override?: number; target: number; in_use: number; peak: number; pool?: number; pool_source?: string; superuser?: boolean; deferred?: boolean; warning?: string }
 export interface TuningRedisApp { app_id: string; dbs?: number[]; use: RedisUse; use_source: 'override' | 'probe' | 'default'; can_move?: boolean; move_blocked?: string }
@@ -385,10 +411,15 @@ export interface TuningClickHouse { id: string; kind: 'native' | 'container'; us
 export interface TuningContainer { app_id: string; kind: string; container: string; settings: TuningSetting[]; note?: string }
 export interface TuningChange { resource: string; setting: string; old: string; new: string; apply: 'reload' | 'restart' | 'live' | 'next-restart' | 'deferred'; note?: string }
 export interface RedisMigration { app_id: string; dbs: number[]; use: RedisUse; status: 'running' | 'succeeded' | 'failed'; step?: string; copied?: number; started: string; finished?: string; error?: string }
+export interface JournalPolicy { max_use_bytes: number; keep_free_bytes: number; max_file_bytes: number; retention: string }
+export interface JournalNeutralized { file: string; lines: string[]; backup: string; at: string }
+/** The systemd journal size policy the agent owns (journal_policy.go). */
+export interface JournalPolicyState { disk_path?: string; disk_bytes?: number; computed: JournalPolicy; override_mib?: number; target: JournalPolicy; drop_in: string; usage_bytes?: number; neutralized?: JournalNeutralized[]; last_run?: string; last_applied?: string; restart_pending?: boolean; error?: string }
 export interface ResourceTuningView {
   supported: boolean; reason?: string; host: { cpus: number; memory_mib: number; disk_gib: number; rotational?: boolean }; apps: number; computed?: string; paused?: boolean;
   overrides: TuningOverrides;
   postgres?: { cluster: string; port: number; settings: TuningSetting[]; app_pool: number; headroom: number; in_use: number; conf_file?: string; note?: string };
   caps?: TuningCap[]; redis?: TuningRedis[]; clickhouse?: TuningClickHouse[]; containers?: TuningContainer[]; changes?: TuningChange[];
   pending_restart?: string[]; restart_note?: string; next_window?: string; warnings?: string[]; running?: boolean; migrations?: RedisMigration[]; jobs?: HostJob[];
+  journal?: JournalPolicyState;
 }

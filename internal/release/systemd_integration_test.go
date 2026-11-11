@@ -24,7 +24,7 @@ import (
 //
 // It needs a running systemd user manager, Ruby with puma and rack gems, and
 // opts in with LIDZA_RELEASE_SYSTEMD_IT=1. Only units named
-// lidza-release-it-* are created, and they are removed afterwards.
+// lidza-systemd-it-* are created, and they are removed afterwards.
 func TestUserSystemdSocketActivatedPumaDeployAndRollback(t *testing.T) {
 	if os.Getenv("LIDZA_RELEASE_SYSTEMD_IT") != "1" {
 		t.Skip("set LIDZA_RELEASE_SYSTEMD_IT=1 to run against the systemd user manager")
@@ -65,7 +65,7 @@ func TestUserSystemdSocketActivatedPumaDeployAndRollback(t *testing.T) {
 
 	root := filepath.Join(t.TempDir(), "app")
 	os.Mkdir(root, 0o755)
-	name := fmt.Sprintf("lidza-release-it-%d", time.Now().UnixNano()%1_000_000_000)
+	name := fmt.Sprintf("lidza-systemd-it-%d", time.Now().UnixNano()%1_000_000_000)
 	server, socket, worker := name+"-server.service", name+"-server.socket", name+"-worker.service"
 	unitDir := filepath.Join(home, ".config/systemd/user")
 	os.MkdirAll(unitDir, 0o755)

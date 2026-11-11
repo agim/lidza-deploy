@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -237,7 +236,7 @@ func (m *Manager) prepareNativeStatic(ctx context.Context, a NativeApplication, 
 	if err := os.WriteFile(filepath.Join(candidate, "REVISION"), []byte(commit+"\n"), 0644); err != nil {
 		return NativeReleaseRef{}, err
 	}
-	account, err := user.Lookup(m.cfg.Native.User)
+	account, err := nativeLookupUser(m.cfg.Native.User)
 	if err != nil {
 		return NativeReleaseRef{}, errors.New("native build user is unavailable")
 	}

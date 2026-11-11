@@ -64,7 +64,7 @@ Upgrades replace binaries; they do not change Docker/Caddy packages or migrate h
 
 Līdza v0.1.72 supplies `auth.Roles` and `packs/audit` ([framework #28](https://github.com/agim/lidza/issues/28)). Tables are bootstrapped from the pack's exported DDL at startup; existing installations retain their configured owner and gain its administrator membership automatically. No manual schema migration is required.
 
-This control panel has one fleet workspace. Its members share its apps and hosting servers; it does not offer multiple isolated tenants.
+One control panel is one installation: one team, its hosting servers and its apps. Its members share all of them; it does not offer multiple isolated tenants.
 
 | Role | Access |
 | --- | --- |
@@ -88,7 +88,7 @@ If build and uploaded-asset verification pass but an existing draft cannot be pu
 
 ## Application error reports
 
-Use **Errors** in the workspace or on an app card. Paired hosting agents automatically forward console errors to central storage, with no app analytics pack or database required. Optional app analytics supplies richer/frontend reports separately. See [Application errors](application-errors.md) for setup, database scope, retention, privacy and bounded-sample behavior.
+Use **Errors** in the sidebar or on an app card. Paired hosting agents automatically forward console errors to central storage, with no app analytics pack or database required. Optional app analytics supplies richer/frontend reports separately. See [Application errors](application-errors.md) for setup, database scope, retention, privacy and bounded-sample behavior.
 
 ## Server connections
 

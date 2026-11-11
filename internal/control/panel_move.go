@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/agentlink"
 	"github.com/agim/lidza-deploy/internal/buildinfo"
 )
 
@@ -67,6 +68,7 @@ const (
 	panelStepDatabase = "database"
 	panelStepCert     = "certificate"
 	panelStepRoute    = "route"
+	panelStepLink     = "link"
 	panelStepFreeze   = "freeze"
 	panelStepFinal    = "final-copy"
 	panelStepActivate = "activate"
@@ -78,13 +80,13 @@ const (
 
 var panelStepTitles = map[string]string{
 	panelStepCheck: "Check the destination", panelStepBundle: "Panel binary", panelStepInstall: "Install in standby",
-	panelStepDatabase: "Copy the database", panelStepCert: "Copy the certificate", panelStepRoute: "Publish the hostname",
+	panelStepDatabase: "Copy the database", panelStepCert: "Copy the certificate", panelStepRoute: "Publish the hostname", panelStepLink: "Link this server",
 	panelStepFreeze: "Read-only", panelStepFinal: "Final copy", panelStepActivate: "Activate the destination",
 	panelStepDNS: "DNS and HTTPS", panelStepRetire: "Retire this panel",
 }
 
 var (
-	panelPrepareSteps = []string{panelStepCheck, panelStepBundle, panelStepInstall, panelStepDatabase, panelStepCert, panelStepRoute}
+	panelPrepareSteps = []string{panelStepCheck, panelStepBundle, panelStepInstall, panelStepDatabase, panelStepCert, panelStepRoute, panelStepLink}
 	panelCutoverSteps = []string{panelStepFreeze, panelStepFinal, panelStepActivate}
 )
 
@@ -94,6 +96,10 @@ type PanelMoveInput struct {
 	// SourceURL is an agent URL of this host the destination reaches; only
 	// needed while this host still holds applications.
 	SourceURL string `json:"source_url,omitempty"`
+	// KeepSource keeps this host as a server of the new panel (the
+	// default); false retires it with the move, which needs it to hold no
+	// applications.
+	KeepSource *bool `json:"keep_source,omitempty"`
 	// ServerURLs replace other servers' agent URLs for the new panel.
 	ServerURLs map[string]string `json:"server_urls,omitempty"`
 	Addresses  []string          `json:"addresses,omitempty"`
@@ -135,11 +141,19 @@ type PanelMovePlan struct {
 	IngressDetail string            `json:"ingress_detail"`
 	Certificate   string            `json:"certificate"`
 	CertificateOK bool              `json:"certificate_ok"`
-	Version       string            `json:"version"`
-	Checks        []PanelMoveCheck  `json:"checks"`
-	Blockers      []string          `json:"blockers"`
-	Warnings      []string          `json:"warnings"`
-	Ready         bool              `json:"ready"`
+	// DNSTTL is the hostname's TTL (seconds) at its nameservers: how long
+	// resolvers may keep the old address after the DNS change.
+	DNSTTL   int              `json:"dns_ttl,omitempty"`
+	Version  string           `json:"version"`
+	Checks   []PanelMoveCheck `json:"checks"`
+	Blockers []string         `json:"blockers"`
+	Warnings []string         `json:"warnings"`
+	Ready    bool             `json:"ready"`
+	// KeepSource is the choice for this host: kept as a server of the new
+	// panel, or retired. SourceLink: kept through an agent link
+	// (agent_link.go), set up and verified before the cutover.
+	KeepSource bool `json:"keep_source"`
+	SourceLink bool `json:"source_link,omitempty"`
 	// agentURL and token stay on the server.
 	agentURL string
 }
@@ -162,31 +176,34 @@ type PanelMoveLog struct {
 
 // PanelMove is the move of this control panel.
 type PanelMove struct {
-	ID           string          `json:"id"`
-	Target       string          `json:"target"`
-	TargetName   string          `json:"target_name"`
-	Source       string          `json:"source,omitempty"`
-	Hostname     string          `json:"hostname"`
-	State        string          `json:"state"`
-	Phase        string          `json:"phase"`
-	ReadOnly     bool            `json:"read_only"`
-	Plan         PanelMovePlan   `json:"plan"`
-	AgentURL     string          `json:"agent_url"`
-	Addresses    []string        `json:"addresses"`
-	Steps        []PanelMoveStep `json:"steps"`
-	Log          []PanelMoveLog  `json:"log"`
-	Error        string          `json:"error,omitempty"`
-	Certificate  string          `json:"certificate,omitempty"`
-	TLSSubject   bool            `json:"tls_subject,omitempty"`
-	DNS          []MoveDNSStatus `json:"dns,omitempty"`
-	DNSChecked   *time.Time      `json:"dns_checked,omitempty"`
-	TLSReady     bool            `json:"tls_ready,omitempty"`
-	TLSDetail    string          `json:"tls_detail,omitempty"`
-	Created      time.Time       `json:"created"`
-	Updated      time.Time       `json:"updated"`
-	Finished     *time.Time      `json:"finished,omitempty"`
-	FinalCopied  *time.Time      `json:"final_copied,omitempty"`
-	RetireDetail []string        `json:"retire_detail,omitempty"`
+	ID          string          `json:"id"`
+	Target      string          `json:"target"`
+	TargetName  string          `json:"target_name"`
+	Source      string          `json:"source,omitempty"`
+	Hostname    string          `json:"hostname"`
+	State       string          `json:"state"`
+	Phase       string          `json:"phase"`
+	ReadOnly    bool            `json:"read_only"`
+	Plan        PanelMovePlan   `json:"plan"`
+	AgentURL    string          `json:"agent_url"`
+	Addresses   []string        `json:"addresses"`
+	Steps       []PanelMoveStep `json:"steps"`
+	Log         []PanelMoveLog  `json:"log"`
+	Error       string          `json:"error,omitempty"`
+	Certificate string          `json:"certificate,omitempty"`
+	TLSSubject  bool            `json:"tls_subject,omitempty"`
+	DNS         []MoveDNSStatus `json:"dns,omitempty"`
+	DNSChecked  *time.Time      `json:"dns_checked,omitempty"`
+	// Propagation holds the retire until cached DNS no longer sends
+	// visitors here (move_propagation.go).
+	Propagation  *MoveDNSPropagation `json:"propagation,omitempty"`
+	TLSReady     bool                `json:"tls_ready,omitempty"`
+	TLSDetail    string              `json:"tls_detail,omitempty"`
+	Created      time.Time           `json:"created"`
+	Updated      time.Time           `json:"updated"`
+	Finished     *time.Time          `json:"finished,omitempty"`
+	FinalCopied  *time.Time          `json:"final_copied,omitempty"`
+	RetireDetail []string            `json:"retire_detail,omitempty"`
 }
 
 // PanelArrival is what a moved-in panel remembers about its move.
@@ -284,6 +301,13 @@ func (c *Control) panelReadOnly() bool {
 	return c.data.PanelMove != nil && c.data.PanelMove.ReadOnly
 }
 
+// panelRetired reports that this panel handed over to its new server.
+func (c *Control) panelRetired() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.data.PanelMove != nil && c.data.PanelMove.State == panelMoveDone
+}
+
 // ticksAllowed gates the panel's scheduled work: a standby panel runs none
 // and a read-only (moving or moved) panel must not change the fleet.
 func (c *Control) ticksAllowed() bool {
@@ -377,6 +401,9 @@ func (c *Control) panelMoveStart(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	move := &PanelMove{ID: random()[:16], Target: in.Target, TargetName: plan.TargetName, Source: plan.SourceServer, Hostname: plan.Hostname, State: panelMoveRunning, Phase: panelPhasePrepare,
 		Plan: plan, AgentURL: plan.agentURL, Addresses: slices.Clone(plan.Addresses), Created: now, Updated: now}
+	if plan.DNSTTL > 0 {
+		move.Propagation = &MoveDNSPropagation{OldTTL: plan.DNSTTL}
+	}
 	for _, name := range append(append(append([]string{}, panelPrepareSteps...), panelCutoverSteps...), panelStepDNS, panelStepRetire) {
 		move.Steps = append(move.Steps, PanelMoveStep{Name: name, Title: panelStepTitles[name], Status: "pending"})
 	}
@@ -535,7 +562,7 @@ func (c *Control) localMachineID() string {
 }
 
 func (c *Control) panelMovePlan(ctx context.Context, in PanelMoveInput) (PanelMovePlan, error) {
-	plan := PanelMovePlan{Input: in, Hostname: panelHostname(c.cfg.PublicURL), Servers: []PanelMoveServer{}, Addresses: []string{}, Checks: []PanelMoveCheck{}, Blockers: []string{}, Warnings: []string{}, Version: buildinfo.Version}
+	plan := PanelMovePlan{Input: in, Hostname: panelHostname(c.cfg.PublicURL), Servers: []PanelMoveServer{}, Addresses: []string{}, Checks: []PanelMoveCheck{}, Blockers: []string{}, Warnings: []string{}, Version: buildinfo.Version, KeepSource: in.KeepSource == nil || *in.KeepSource}
 	check := func(name string, ok bool, passed, failed string) {
 		detail := pick(ok, passed, failed)
 		plan.Checks = append(plan.Checks, PanelMoveCheck{Name: name, OK: ok, Detail: detail})
@@ -582,6 +609,10 @@ func (c *Control) panelMovePlan(ctx context.Context, in PanelMoveInput) (PanelMo
 	_ = c.moveCall(ctx, 15*time.Second, target.ID, http.MethodGet, "/v1/move/host", nil, &host)
 	plan.Addresses = moveTargetAddresses(host, target, in.Addresses)
 	check("addresses", len(plan.Addresses) > 0, "DNS will point to "+strings.Join(plan.Addresses, ", ")+".", "The destination's public address is unknown; enter it.")
+	if ttl := c.trackPropagation(ctx, nil, []string{plan.Hostname}, plan.Addresses, false, time.Now().UTC()).OldTTL; ttl > 0 {
+		plan.DNSTTL = ttl
+		check("dns-ttl", true, fmt.Sprintf("Resolvers may keep the old address of %s for up to %s after the DNS change; this panel keeps serving (read-only) until they return the new one, and the old server then forwards the hostname to the new one for %s.", plan.Hostname, moveMinutes(time.Duration(ttl)*time.Second), panelForwardFor), "")
+	}
 
 	// The registry the new panel gets.
 	plan.SourceServer = c.panelSourceServer(ctx, target.ID)
@@ -612,14 +643,25 @@ func (c *Control) panelMovePlan(ctx context.Context, in PanelMoveInput) (PanelMo
 				entry.NewURL = in.SourceURL
 				entry.Reachable, entry.Detail = c.panelProbe(ctx, target.ID, in.SourceURL, s.Token)
 			}
-			if !entry.Reachable {
-				if entry.Apps > 0 {
-					entry.Detail = strings.TrimSpace(entry.Detail + fmt.Sprintf(" %s still holds %d application(s): move them first, or give an agent URL of it that the destination reaches.", entry.Name, entry.Apps))
+			switch {
+			case entry.Reachable:
+			case plan.KeepSource:
+				// No URL the destination reaches: the agent connects out
+				// to the new panel instead, through its public HTTPS.
+				var source agent.ControlHostStatus
+				if err := c.moveCall(ctx, 10*time.Second, s.ID, http.MethodGet, "/v1/host/control", nil, &source); err != nil || !source.Links {
+					entry.Detail = fmt.Sprintf("%s's agent cannot connect out to the new panel yet; update it, or give an agent URL of it that the destination reaches.", entry.Name)
 					plan.Blockers = append(plan.Blockers, entry.Detail)
-				} else {
-					entry.Retire, entry.NewURL = true, ""
-					entry.Detail = "Holds no applications; it leaves the new panel's server list. Shut it down after the move."
+					break
 				}
+				entry.NewURL, plan.SourceLink = agentlink.URL(s.ID), true
+				entry.Detail = fmt.Sprintf("Stays a server of the new panel: its agent connects out to %s over HTTPS, so no port is opened. The link is verified before the cutover.", plan.Hostname)
+			case entry.Apps > 0:
+				entry.Detail = strings.TrimSpace(entry.Detail + fmt.Sprintf(" %s still holds %d application(s): keep it as a server, or move them first.", entry.Name, entry.Apps))
+				plan.Blockers = append(plan.Blockers, entry.Detail)
+			default:
+				entry.Retire, entry.NewURL = true, ""
+				entry.Detail = "Retired with the move: it leaves the new panel's server list. Shut it down after the move."
 			}
 		default:
 			candidate := s.URL
@@ -667,6 +709,11 @@ func (c *Control) panelMovePlan(ctx context.Context, in PanelMoveInput) (PanelMo
 		}
 	} else if status.CertificateStorage == "" {
 		plan.Certificate = "The destination's Caddy storage was not found; " + plan.Certificate
+	}
+	if plan.SourceLink && !plan.CertificateOK {
+		// The link connects to the destination by HTTPS before DNS points
+		// there, which needs the copied certificate.
+		plan.Blockers = append(plan.Blockers, fmt.Sprintf("Keeping %s needs the current certificate of %s copied to the destination, so its agent can connect there before the DNS change; it could not be read. Give an agent URL of %s the destination reaches, or retire it.", plan.SourceName, plan.Hostname, plan.SourceName))
 	}
 	plan.Ready = len(plan.Blockers) == 0
 	return plan, nil
@@ -891,6 +938,8 @@ func (c *Control) panelStep(ctx context.Context, name string) (detail string, sk
 		return c.panelCopyCertificate(ctx, move)
 	case panelStepRoute:
 		return c.panelPublishRoute(ctx, move, move.Certificate != "")
+	case panelStepLink:
+		return c.panelLinkSource(ctx, move)
 	case panelStepFreeze:
 		return c.panelFreeze(ctx)
 	case panelStepFinal:
@@ -1118,6 +1167,11 @@ func (c *Control) panelPublishRoute(ctx context.Context, move PanelMove, tls boo
 }
 
 // panelCheckDNS checks the hostname once; true when the move finished.
+// DNS pointing to the destination (at the zone's nameservers) and HTTPS
+// answering there complete the DNS step; the retire then waits until cached
+// DNS no longer sends visitors here (move_propagation.go). An explicit check
+// (the operator's request) retires in the background, so the request does
+// not wait for the agent that stops this process.
 func (c *Control) panelCheckDNS(ctx context.Context, explicit bool) bool {
 	c.panelDNSMu.Lock()
 	defer c.panelDNSMu.Unlock()
@@ -1142,35 +1196,76 @@ func (c *Control) panelCheckDNS(ctx context.Context, explicit bool) bool {
 		}
 	}
 	now := time.Now().UTC()
+	propagation := c.trackPropagation(ctx, move.Propagation, []string{move.Hostname}, move.Addresses, all, now)
+	ready := all && tlsReady
 	updated, err := c.updatePanelMove(func(m *PanelMove) error {
 		if m.State != panelMoveDNS {
 			return errors.New("state changed")
 		}
-		m.DNS, m.DNSChecked, m.TLSReady, m.TLSDetail = statuses, &now, tlsReady, tlsDetail
-		if all && tlsReady {
+		m.DNS, m.DNSChecked, m.TLSReady, m.TLSDetail, m.Propagation = statuses, &now, tlsReady, tlsDetail, propagation
+		dns, retire := m.step(panelStepDNS), m.step(panelStepRetire)
+		switch {
+		case ready && dns != nil && dns.Status != "done":
 			m.setStep(panelStepDNS, "done", "DNS points to the destination and HTTPS answers there.")
 			m.logf(panelStepDNS, "DNS for %s points to %s and HTTPS answers there.", m.Hostname, m.TargetName)
-			m.setStep(panelStepRetire, "running", "")
+		case !all && dns != nil && dns.Status == "done":
+			m.setStep(panelStepDNS, "waiting", "Set the DNS records shown below.")
+			m.setStep(panelStepRetire, "pending", "")
+			m.logf(panelStepDNS, "DNS for %s no longer points only to %s; waiting again.", m.Hostname, m.TargetName)
 		}
+		if !ready {
+			return nil
+		}
+		if propagation.Complete {
+			m.setStep(panelStepRetire, "running", "")
+			m.logf(panelStepRetire, "Cached DNS: %s Retiring this panel.", propagation.Detail)
+			return nil
+		}
+		if retire != nil && retire.Status != "waiting" {
+			m.logf(panelStepRetire, "%s This panel keeps serving (read-only) until then.", propagation.Detail)
+		}
+		m.setStep(panelStepRetire, "waiting", propagation.Detail)
 		return nil
 	})
-	if err != nil || !(all && tlsReady) {
+	if err != nil || !ready || !propagation.Complete {
 		return false
 	}
-	c.panelRetire(ctx, updated)
+	if !c.panelHandOver(updated) {
+		return true
+	}
+	if explicit {
+		base := c.moveBase
+		if base == nil {
+			base = context.Background()
+		}
+		if c.moveWork.goWith(base, func(ctx context.Context) { c.panelRetireSource(ctx, updated) }) {
+			return true
+		}
+	}
+	c.panelRetireSource(ctx, updated)
 	return true
 }
 
-// panelRetire hands over: the moved marker first (a restart then serves only
-// the notice), then the move is done, then this host's agent replaces the
-// Caddy site and stops this panel's unit, which ends this process.
-func (c *Control) panelRetire(ctx context.Context, move PanelMove) {
+// panelHandOver writes the moved marker (a restart then serves only the
+// notice) and marks the move done; true when this host's agent is to retire
+// the panel next (panelRetireSource).
+func (c *Control) panelHandOver(move PanelMove) bool {
 	marker, _ := json.MarshalIndent(map[string]any{"moved_to": c.cfg.PublicURL, "server": move.TargetName, "at": time.Now().UTC()}, "", "  ")
 	markErr := os.WriteFile(filepath.Join(c.cfg.DataDir, agent.ControlMovedFile), marker, 0o600)
 	now := time.Now().UTC()
 	notes := []string{}
 	if markErr != nil {
 		notes = append(notes, "The moved marker could not be written: "+markErr.Error())
+	}
+	forward := panelForwardAddress(move)
+	if move.Source != "" && markErr == nil {
+		if forward != "" {
+			// The agent stops this process before it answers, so the note
+			// is written beforehand.
+			notes = append(notes, fmt.Sprintf("This server's route for %s forwards to %s (%s) for %s, for visitors whose DNS still returns this server; its agent removes the forward afterwards.", move.Hostname, move.TargetName, forward, panelForwardFor))
+		} else {
+			notes = append(notes, "The destination's address is unknown, so visitors whose DNS still returns this server are not forwarded.")
+		}
 	}
 	_, _ = c.updatePanelMove(func(m *PanelMove) error {
 		m.State, m.Finished = panelMoveDone, &now
@@ -1179,13 +1274,23 @@ func (c *Control) panelRetire(ctx context.Context, move PanelMove) {
 		m.RetireDetail = notes
 		return nil
 	})
-	if move.Source == "" || markErr != nil {
-		return
-	}
+	return move.Source != "" && markErr == nil
+}
+
+// panelRetireSource has this host's agent replace the hostname's route
+// with a forward to the destination and stop this panel's unit, which ends
+// this process.
+func (c *Control) panelRetireSource(ctx context.Context, move PanelMove) {
+	forward := panelForwardAddress(move)
+	// The retire stops this process: the state it ends with is on disk
+	// first, so the shutdown has nothing left to write.
+	flush, cancel := context.WithTimeout(ctx, 30*time.Second)
+	_ = c.stateWriter.flush(flush)
+	cancel()
 	var out struct {
 		Notes []string `json:"notes"`
 	}
-	err := c.moveCall(ctx, 6*time.Minute, move.Source, http.MethodPost, "/v1/host/control/retire", map[string]string{"hostname": move.Hostname, "moved_to": move.TargetName}, &out)
+	err := c.moveCall(ctx, 6*time.Minute, move.Source, http.MethodPost, "/v1/host/control/retire", map[string]string{"hostname": move.Hostname, "moved_to": move.TargetName, "forward_to": forward}, &out)
 	_, _ = c.updatePanelMove(func(m *PanelMove) error {
 		if err != nil {
 			m.RetireDetail = append(m.RetireDetail, "This server's agent did not stop the panel ("+moveBounded(err.Error(), 200)+"); run systemctl disable --now lidza-control on it or shut it down.")
@@ -1194,6 +1299,16 @@ func (c *Control) panelRetire(ctx context.Context, move PanelMove) {
 		}
 		return nil
 	})
+}
+
+// panelForwardFor is how long the old host forwards the hostname (the
+// agent's controlForwardFor).
+const panelForwardFor = "7 days"
+
+// panelForwardAddress is the destination address the old host forwards
+// to: the recorded IPv4 address, else IPv6.
+func panelForwardAddress(move PanelMove) string {
+	return moveProbeAddress(move.Addresses)
 }
 
 // panelMoveAbort returns the destination to nothing and this panel to
@@ -1214,6 +1329,10 @@ func (c *Control) panelMoveAbort(ctx context.Context) error {
 		return err
 	}
 	err := c.moveCall(ctx, 6*time.Minute, move.Target, http.MethodDelete, "/v1/host/control", nil, nil)
+	if err == nil && move.Plan.SourceLink && move.Source != "" {
+		// The kept server's link pointed at the removed standby panel.
+		_ = c.moveCall(ctx, time.Minute, move.Source, http.MethodDelete, "/v1/host/control/link", nil, nil)
+	}
 	now := time.Now().UTC()
 	_, uerr := c.updatePanelMove(func(m *PanelMove) error {
 		if err != nil {
@@ -1256,6 +1375,9 @@ func (c *Control) panelMoveActivity(now time.Time) []ActivityItem {
 		item.WaitingOn = "The destination stands by; start the cutover."
 	case panelMoveDNS:
 		item.WaitingOn = "Point " + move.Hostname + " to " + strings.Join(move.Addresses, ", ") + "."
+		if s := move.step(panelStepRetire); s != nil && s.Status == "waiting" && s.Detail != "" {
+			item.WaitingOn = s.Detail
+		}
 	case panelMoveFailed:
 		item.Message = move.Error
 	case panelMoveAborted:

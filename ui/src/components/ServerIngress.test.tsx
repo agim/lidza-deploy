@@ -62,3 +62,12 @@ it('reports unmanaged error pages and adopts the managed ones', async () => {
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Use Līdza error pages' })).not.toBeInTheDocument());
   expect(screen.getByText(/3 use the managed pages/)).toBeInTheDocument();
 });
+
+it('lists the TLS policies with an HTTP fallback and the hostnames without certificates', async () => {
+  api.get.mockResolvedValue({ ...caddy, tls: { checked: '2026-11-07T10:00:00Z', fallbacks: [{ policy: 1, provider: 'dnsimple', subjects: 7, examples: ['*.tenant.example.net', 'a.example.com'], added: true }], moved: ['cars.example.com'], not_issued: ['new.example.com'] } });
+  render(<ServerIngress serverID="edge" />);
+  expect(await screen.findByText('Policy 2: dnsimple DNS validation, then HTTP · 7 hostnames (*.tenant.example.net, a.example.com, …) · fallback added by the agent')).toBeInTheDocument();
+  expect(screen.getByText('cars.example.com')).toBeInTheDocument();
+  expect(screen.getByText('Certificates not issued')).toBeInTheDocument();
+  expect(screen.getByText('new.example.com')).toBeInTheDocument();
+});

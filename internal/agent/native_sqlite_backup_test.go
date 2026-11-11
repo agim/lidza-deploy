@@ -76,12 +76,12 @@ func TestNativeSQLiteResourcePolicyCannotMixAdapters(t *testing.T) {
 	}
 	invalid := policy
 	invalid.PostgresMajor = 17
-	if validateNativeDatabasePolicy("native-fixture", invalid) == nil || sameNativeDatabasePolicy(policy, invalid) {
+	if validateNativeDatabasePolicy("native-fixture", invalid) == nil || sameNativeDatabaseIdentity(policy, invalid) {
 		t.Fatal("SQLite policy accepted PostgreSQL tool settings")
 	}
 	invalid = policy
 	invalid.SQLitePath = "storage/../other.sqlite3"
-	if validateNativeDatabasePolicy("native-fixture", invalid) == nil || sameNativeDatabasePolicy(policy, invalid) {
+	if validateNativeDatabasePolicy("native-fixture", invalid) == nil || sameNativeDatabaseIdentity(policy, invalid) {
 		t.Fatal("SQLite policy accepted a path alias")
 	}
 }

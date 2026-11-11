@@ -10,7 +10,8 @@ import (
 )
 
 // hostAdminRoutes proxies per-server host updates, reboots, the managed
-// firewall, the web ingress setting, the removal of unused Bundler
+// firewall, the web ingress setting, service control of adopted
+// applications, the deployment account's system log access, the removal of unused Bundler
 // versions and resource tuning (settings, overrides, Redis moves) to the
 // server's agent. Mutations pass the panel's origin check,
 // role check and audit trail like every other server mutation.
@@ -27,6 +28,10 @@ func (c *Control) hostAdminRoutes(handle func(string, http.HandlerFunc)) {
 		"POST /api/control/servers/{server}/host/firewall/confirm",
 		"GET /api/control/servers/{server}/host/ingress",
 		"PUT /api/control/servers/{server}/host/ingress",
+		"GET /api/control/servers/{server}/host/service-control",
+		"PUT /api/control/servers/{server}/host/service-control",
+		"GET /api/control/servers/{server}/host/log-access",
+		"PUT /api/control/servers/{server}/host/log-access",
 		"GET /api/control/servers/{server}/host/ruby/bundlers",
 		"POST /api/control/servers/{server}/host/ruby/bundlers/remove",
 		"GET /api/control/servers/{server}/host/resources",
@@ -90,6 +95,28 @@ func (c *Control) hostAdmin(w http.ResponseWriter, r *http.Request) {
 		input, accepted = migration, true
 	case rest == "/host/ingress" && r.Method == http.MethodPut:
 		var settings agent.HostIngressSettings
+		if err := agent.Decode(w, r, &settings); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		if err := settings.Validate(); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		input = settings
+	case rest == "/host/service-control" && r.Method == http.MethodPut:
+		var settings agent.ServiceControlSettings
+		if err := agent.Decode(w, r, &settings); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		if err := settings.Validate(); err != nil {
+			agent.Fail(w, 400, err)
+			return
+		}
+		input = settings
+	case rest == "/host/log-access" && r.Method == http.MethodPut:
+		var settings agent.LogAccessSettings
 		if err := agent.Decode(w, r, &settings); err != nil {
 			agent.Fail(w, 400, err)
 			return

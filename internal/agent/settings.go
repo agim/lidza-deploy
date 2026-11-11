@@ -37,10 +37,11 @@ type EnvironmentEntry struct {
 	Source  string `json:"source,omitempty"`
 }
 type Settings struct {
-	Native                *NativeApplication `json:"native,omitempty"`
-	ReadonlyEnvKeys       []string           `json:"readonly_env_keys,omitempty"`
-	SettingsApplyOnDeploy bool               `json:"settings_apply_on_deploy,omitempty"`
-	ReleaseRuntime        string             `json:"release_runtime,omitempty"`
+	Native          *NativeApplication `json:"native,omitempty"`
+	ReadonlyEnvKeys []string           `json:"readonly_env_keys,omitempty"`
+	// ApplyEffects says what saving each field does (settings_apply.go).
+	ApplyEffects   *SettingsApplyEffects `json:"apply_effects,omitempty"`
+	ReleaseRuntime string                `json:"release_runtime,omitempty"`
 	// Toolchains is "managed" or "account" for release-managed native
 	// applications (NativeReleasePolicy.Toolchains); "" elsewhere.
 	Toolchains                   string                  `json:"toolchains,omitempty"`
@@ -96,9 +97,11 @@ type ManagementCapabilities struct {
 	Remove bool `json:"remove,omitempty"`
 	// Lifecycle reports that the application can be stopped, started and
 	// restarted from the panel (app_lifecycle.go); LifecycleReason says why
-	// not.
-	Lifecycle       bool   `json:"lifecycle,omitempty"`
-	LifecycleReason string `json:"lifecycle_reason,omitempty"`
+	// not; LifecycleSetting names the server setting that would allow it
+	// ("service_control", native_service_control.go).
+	Lifecycle        bool   `json:"lifecycle,omitempty"`
+	LifecycleReason  string `json:"lifecycle_reason,omitempty"`
+	LifecycleSetting string `json:"lifecycle_setting,omitempty"`
 	// Adopted marks a native application adopted from the existing host
 	// setup (not created by this agent); deleting it keeps the shared
 	// deployment account (archive_adopted.go).
@@ -148,7 +151,7 @@ func (m *Manager) Settings(id string) (Settings, error) {
 	if a.Current != nil && a.Current.Stack != nil {
 		selection = cloneStackSelection(a.Current.Stack.Selection)
 	}
-	return Settings{Capabilities: &ManagementCapabilities{Configure: true, Environment: true, Deploy: true, Reload: true, Rollback: true, Processes: true, Logs: true, Remove: true, Lifecycle: true}, BuildConfigurationSupported: true, Astro: a.Astro, Build: a.Build, Runtime: a.runtimeKind(), Rails: a.Rails, GatewayTransportSupported: true, GatewayHostConfigured: m.gatewayReady(), StackManifestVersions: []int{1, 2}, RuntimeSelection: selection, PublicPortsSupported: true, MasterKeyGenerationSupported: a.runtimeKind() == "go", RuntimeDeployed: a.Current != nil, StackProfilesSupported: a.runtimeKind() == "go", RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: visibleKeys, Environment: environment}, nil
+	return Settings{Capabilities: &ManagementCapabilities{Configure: true, Environment: true, Deploy: true, Reload: true, Rollback: true, Processes: true, Logs: true, Remove: true, Lifecycle: true}, BuildConfigurationSupported: true, Astro: a.Astro, Build: a.Build, Runtime: a.runtimeKind(), Rails: a.Rails, GatewayTransportSupported: true, GatewayHostConfigured: m.gatewayReady(), StackManifestVersions: []int{1, 2}, RuntimeSelection: selection, PublicPortsSupported: true, MasterKeyGenerationSupported: a.runtimeKind() == "go", RuntimeDeployed: a.Current != nil, StackProfilesSupported: a.runtimeKind() == "go", RuntimeProfile: a.RuntimeProfile, StackProfiles: stackProfiles, AdditionalDomainsSupported: true, AdditionalDomains: slices.Clone(a.AdditionalDomains), DomainStatuses: m.domainStatusesLocked(a), AppManagedStorageSupported: true, StorageProviderOverride: a.Env["STORAGE_PROVIDER"] != "", CustomerHosts: a.CustomerHosts, Stopped: a.Stopped, DefaultsApplied: a.DefaultsApplied, EnvSources: maps.Clone(a.EnvSources), PersistentStorage: m.data.StorageVolumes[id] != "", Cache: m.cacheViewLocked(id), BackupBeforeDeploy: a.BackupBeforeDeploy == nil || *a.BackupBeforeDeploy, Bindings: maps.Clone(a.Bindings), ID: id, Branch: a.Branch, Domain: a.Domain, EnvKeys: visibleKeys, Environment: environment, ApplyEffects: containerSettingsSubject(a).effects()}, nil
 }
 
 func (m *Manager) RevealCredential(id, key string) (string, error) {
@@ -167,27 +170,41 @@ func (m *Manager) RevealCredential(id, key string) (string, error) {
 	}
 	return value, nil
 }
+
+// PatchSettings saves settings and applies them (settings_apply.go).
 func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
+	_, err := m.PatchSettingsApply(id, p)
+	return err
+}
+
+// PatchSettingsApply saves settings, applies them as settings_apply.go
+// classifies them and says what it did.
+func (m *Manager) PatchSettingsApply(id string, p SettingsPatch) (SettingsApplyResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.patchSettingsLocked(id, p)
+}
+
+func (m *Manager) patchSettingsLocked(id string, p SettingsPatch) (SettingsApplyResult, error) {
+	var none SettingsApplyResult
 	old, ok := m.data.Apps[id]
 	if !ok {
-		return errors.New("unknown application")
+		return none, errors.New("unknown application")
 	}
 	if old.Retiring {
-		return errors.New("application is being removed")
+		return none, errors.New("application is being removed")
 	}
 	if m.busy(id) || old.Restoring || m.data.Caches[id].Operation {
-		return errors.New("application has an active deployment")
+		return none, errors.New("application has an active deployment")
 	}
 	for key := range p.EnvChanges {
 		if strings.HasPrefix(key, gatewayEnvPrefix) {
-			return errors.New("gateway transport settings are managed by the agent")
+			return none, errors.New("gateway transport settings are managed by the agent")
 		}
 	}
 	for key := range p.EnvKindChanges {
 		if strings.HasPrefix(key, gatewayEnvPrefix) {
-			return errors.New("gateway transport settings are managed by the agent")
+			return none, errors.New("gateway transport settings are managed by the agent")
 		}
 	}
 	if p.FromDefaults {
@@ -195,12 +212,12 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 
 		for k, v := range p.EnvChanges {
 			if v == nil {
-				return errors.New("defaults cannot delete variables")
+				return none, errors.New("defaults cannot delete variables")
 			}
 			values[k] = *v
 		}
 		if err := ValidateRuntimeDefaults(old.runtimeKind(), values); err != nil {
-			return err
+			return none, err
 		}
 	}
 	a := old
@@ -213,7 +230,7 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	if p.RuntimeProfile != nil {
 		a.RuntimeProfile = *p.RuntimeProfile
 		if old.Current != nil && (a.RuntimeProfile == "") != (old.RuntimeProfile == "") {
-			return errors.New("changing runtime family requires a new application; existing data is retained")
+			return none, errors.New("changing runtime family requires a new application; existing data is retained")
 		}
 	}
 	if p.CustomerHosts != nil {
@@ -248,26 +265,26 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 		}
 		if c := m.data.ClickHouses[id]; c.Ready {
 			if _, managed := c.env()[k]; managed {
-				return errors.New("ClickHouse connection is managed by the hosting agent")
+				return none, errors.New("ClickHouse connection is managed by the hosting agent")
 			}
 		}
 		if k == "STORAGE_DIR" && m.data.StorageVolumes[id] != "" {
-			return errors.New("STORAGE_DIR is managed by the persistent storage attachment")
+			return none, errors.New("STORAGE_DIR is managed by the persistent storage attachment")
 		}
 		if k == "CACHE_URL" && m.data.Caches[id].Mode != "" {
-			return errors.New("CACHE_URL is managed through Cache settings")
+			return none, errors.New("CACHE_URL is managed through Cache settings")
 		}
 		if k == runtimeSelectionTokenKey(a) && (v == nil || *v == "") {
-			return errors.New("runtime-selection credential cannot be cleared; preserve the installation's authenticated exchange identity")
+			return none, errors.New("runtime-selection credential cannot be cleared; preserve the installation's authenticated exchange identity")
 		}
 		if k == "AUTH_SECRET" && (v == nil || *v == "") {
-			return errors.New("AUTH_SECRET cannot be removed or cleared; supply a replacement explicitly to rotate authentication tokens")
+			return none, errors.New("AUTH_SECRET cannot be removed or cleared; supply a replacement explicitly to rotate authentication tokens")
 		}
 		if k == "LIDZA_MASTER_KEY" && (v == nil || *v == "") {
-			return errors.New("LIDZA_MASTER_KEY cannot be removed or cleared; replacing it requires the key matching your encrypted application data")
+			return none, errors.New("LIDZA_MASTER_KEY cannot be removed or cleared; replacing it requires the key matching your encrypted application data")
 		}
 		if _, managed := a.Bindings[k]; managed {
-			return errors.New("database variables are managed by database attachments")
+			return none, errors.New("database variables are managed by database attachments")
 		}
 		if v == nil {
 			delete(a.Env, k)
@@ -281,48 +298,74 @@ func (m *Manager) PatchSettings(id string, p SettingsPatch) error {
 	}
 	for key, kind := range p.EnvKindChanges {
 		if key == runtimeSelectionTokenKey(a) && kind != EnvironmentCredential {
-			return errors.New("runtime-selection credentials remain masked; they cannot be changed to plain settings")
+			return none, errors.New("runtime-selection credentials remain masked; they cannot be changed to plain settings")
 		}
 		if kind != EnvironmentSetting && kind != EnvironmentCredential {
-			return fmt.Errorf("invalid environment classification for %q", key)
+			return none, fmt.Errorf("invalid environment classification for %q", key)
 		}
 		if _, ok := a.Env[key]; !ok {
-			return fmt.Errorf("cannot classify missing environment variable %q", key)
+			return none, fmt.Errorf("cannot classify missing environment variable %q", key)
 		}
 		a.EnvKinds[key] = kind
 	}
 	if err := a.Validate(); err != nil {
-		return err
+		return none, err
 	}
 	if err := m.checkReservedDomains(a); err != nil {
-		return err
+		return none, err
 	}
 	if err := m.checkNativeDomainsLocked(a); err != nil {
-		return err
+		return none, err
 	}
 	if err := m.checkRedirectHostsLocked(a.Hostnames(), ""); err != nil {
-		return err
+		return none, err
 	}
 	for otherID, other := range m.data.Apps {
 		if otherID != id && a.DomainsOverlap(other) {
-			return errors.New("domain already assigned")
+			return none, errors.New("domain already assigned")
 		}
 	}
-	m.data.Apps[id] = a
-	var err error
-	changes := changeKeys(old, a)
-	if a.Current != nil && !(len(changes) == 1 && changes[0] == "additional_domains") {
-		_, err = m.queueLocked(a, DeployRequest{}, true, changes)
-	} else {
-		err = m.save()
-	}
+	result, err := m.applyContainerSettingsLocked(old, a, containerSettingsChanges(old, a))
 	if err != nil {
-		m.data.Apps[id] = old
-		return err
+		return none, err
 	}
 	if m.serviceTLS != nil {
 		m.serviceTLS.setOwner(a)
 	}
 	m.wakeDomains()
-	return nil
+	return result, nil
+}
+
+// applyContainerSettingsLocked stores a's saved settings and applies them
+// (settings_apply.go): a restart reloads the current image with them; the
+// record is restored when that fails.
+func (m *Manager) applyContainerSettingsLocked(old, a App, changes []string) (SettingsApplyResult, error) {
+	id := a.ID
+	m.data.Apps[id] = a
+	effect := containerSettingsSubject(a).classify(changes)
+	result := settingsResult(effect, changes)
+	var err error
+	switch {
+	case effect == effectRestart && a.Current != nil && !a.Stopped:
+		// The current image is started again with the saved settings: the
+		// new container takes traffic once healthy (Restart does the same).
+		var d Deployment
+		if d, err = m.queueLocked(a, DeployRequest{}, true, changes); err == nil {
+			result = withDeployment(SettingsApplyResult{Applied: SettingsAppliedRestart, Message: "Settings saved. Restarting the application with them.", Changes: changes}, d)
+		}
+	default:
+		err = m.save()
+		switch {
+		case effect < effectRestart:
+		case a.Stopped:
+			result.Applied, result.Message = SettingsAppliedImmediate, "Settings saved. The application is stopped; starting it applies them."
+		case a.Current == nil && effect == effectRestart:
+			result.Applied, result.Message = SettingsAppliedImmediate, "Settings saved. The first deployment uses them."
+		}
+	}
+	if err != nil {
+		m.data.Apps[id] = old
+		return SettingsApplyResult{}, err
+	}
+	return result, nil
 }

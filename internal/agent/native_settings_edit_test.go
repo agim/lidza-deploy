@@ -14,7 +14,7 @@ func TestNativeAstroSettingsAreSealedDeferredAndPreserveCanonicalBinding(t *test
 	before, _ := os.ReadFile(filepath.Join(app, ".asdf-vars"))
 	current, _ := os.Readlink(filepath.Join(app, "current"))
 	value, secret := "next-title", "new-private-credential-value"
-	if err := m.patchNativeSettings(a.ID, SettingsPatch{Branch: "preview", Domain: a.Domain, Astro: &AstroConfig{Mode: "static", OutputDir: "build"}, EnvChanges: map[string]*string{"TITLE": &value, "API_TOKEN": &secret}, EnvKindChanges: map[string]string{"TITLE": EnvironmentSetting}}); err != nil {
+	if _, err := m.patchNativeSettings(a.ID, SettingsPatch{Branch: "preview", Domain: a.Domain, Astro: &AstroConfig{Mode: "static", OutputDir: "build"}, EnvChanges: map[string]*string{"TITLE": &value, "API_TOKEN": &secret}, EnvKindChanges: map[string]string{"TITLE": EnvironmentSetting}}); err != nil {
 		t.Fatal(err)
 	}
 	settings, err := m.nativeSettings(a.ID)
@@ -22,7 +22,7 @@ func TestNativeAstroSettingsAreSealedDeferredAndPreserveCanonicalBinding(t *test
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(settings)
-	if settings.Branch != "preview" || settings.Astro.OutputDir != "build" || !settings.Capabilities.Configure || !settings.SettingsApplyOnDeploy || strings.Contains(string(raw), secret) {
+	if settings.Branch != "preview" || settings.Astro.OutputDir != "build" || !settings.Capabilities.Configure || settings.ApplyEffects == nil || settings.ApplyEffects.Env != SettingsAppliedDeploy || strings.Contains(string(raw), secret) {
 		t.Fatal("incorrect or unmasked settings", string(raw))
 	}
 	after, _ := os.ReadFile(filepath.Join(app, ".asdf-vars"))
@@ -53,7 +53,7 @@ func TestNativeAstroSettingsAreSealedDeferredAndPreserveCanonicalBinding(t *test
 	if err != nil || d.Branch != "preview" {
 		t.Fatal("deployment ignored the saved branch", err)
 	}
-	if err := m.patchNativeSettings(a.ID, SettingsPatch{Branch: "main"}); err == nil {
+	if _, err := m.patchNativeSettings(a.ID, SettingsPatch{Branch: "main"}); err == nil {
 		t.Fatal("settings changed during an active build")
 	}
 	j := <-m.queue
@@ -86,7 +86,7 @@ func TestNativeSettingsRejectUnapprovedAndHostChanges(t *testing.T) {
 			case "output":
 				p.Astro = &AstroConfig{OutputDir: "../outside"}
 			}
-			if err := m.patchNativeSettings(a.ID, p); err == nil {
+			if _, err := m.patchNativeSettings(a.ID, p); err == nil {
 				t.Fatal("unapproved native change accepted")
 			}
 			if len(m.data.NativeSettings) != 0 {
@@ -126,11 +126,11 @@ func TestNativeStaticInheritsHostPinAndRejectsBuildTimeMutation(t *testing.T) {
 func TestNativeAstroStaticApplyWorkspaceDefaults(t *testing.T) {
 	m, a, _ := nativeStaticPublisherFixture(t)
 	value := func(s string) *string { return &s }
-	if err := m.patchNativeSettings(a.ID, SettingsPatch{Domain: a.Domain, EnvChanges: map[string]*string{"NODE_ENV": value("development")}}); err != nil {
+	if _, err := m.patchNativeSettings(a.ID, SettingsPatch{Domain: a.Domain, EnvChanges: map[string]*string{"NODE_ENV": value("development")}}); err != nil {
 		t.Fatal(err)
 	}
 	defaults := SettingsPatch{FromDefaults: true, OnlyMissing: true, EnvChanges: map[string]*string{"NODE_ENV": value("production"), "ASTRO_TELEMETRY_DISABLED": value("1")}}
-	if err := m.patchNativeSettings(a.ID, defaults); err != nil {
+	if _, err := m.patchNativeSettings(a.ID, defaults); err != nil {
 		t.Fatal(err)
 	}
 	values, err := m.nativeStaticEnvironment(a)
@@ -138,7 +138,7 @@ func TestNativeAstroStaticApplyWorkspaceDefaults(t *testing.T) {
 		t.Fatal("missing-only defaults", values, err)
 	}
 	defaults.OnlyMissing = false
-	if err := m.patchNativeSettings(a.ID, defaults); err != nil {
+	if _, err := m.patchNativeSettings(a.ID, defaults); err != nil {
 		t.Fatal(err)
 	}
 	if values, _ := m.nativeStaticEnvironment(a); values["NODE_ENV"] != "production" {
@@ -150,7 +150,7 @@ func TestNativeAstroStaticApplyWorkspaceDefaults(t *testing.T) {
 		"imported":   {"SECRET_KEY": value("shared")},
 		"delete":     {"NODE_ENV": nil},
 	} {
-		if err := m.patchNativeSettings(a.ID, SettingsPatch{FromDefaults: true, EnvChanges: changes}); err == nil {
+		if _, err := m.patchNativeSettings(a.ID, SettingsPatch{FromDefaults: true, EnvChanges: changes}); err == nil {
 			t.Fatal("accepted default", name)
 		}
 	}

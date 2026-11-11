@@ -10,14 +10,14 @@ The accepted review changes are:
 - New-app empty states distinguish an available server, no server and no search matches, with permission-aware next-step actions.
 - App creation keeps required repository, server, hostname and database choices visible, with optional branch/environment settings behind a disclosure. Named dialogs keep actions visible during scrolling and retain native Escape/focus behavior.
 - Integrations gives app creation secondary emphasis. Local GitHub limitations lead with a short explanation; installation detail is expandable.
-- Workspace status reports refresh age, unavailable data or a pause for unsaved edits. Background polling does not replace edited forms. Saving one settings form preserves other unsaved fields; section navigation asks before discarding them. Drafts remain only in the current page, not browser storage.
+- The console's status reports refresh age, unavailable data or a pause for unsaved edits. Background polling does not replace edited forms. Saving one settings form preserves other unsaved fields; section navigation asks before discarding them. Drafts remain only in the current page, not browser storage.
 - Login returns to a bookmarked console section. Return targets are restricted to the same-origin console page.
 - Deployment queues emphasize pending, retrying and failed jobs; completed deliveries are collapsed.
 - Setup explains the ownership key and its installed path. It reports already-paired agents without returning their credentials, and groups optional extra-server fields behind a disclosure.
 
 ## Verification
 
-`npm test --prefix tests/browser` runs console workflow checks and the UX regressions. The UX suite checks palette preservation, alignment, spacing, touch targets, draft survival, safe login return, empty states, queue grouping, mobile navigation and keyboard focus. Its provider calls use local browser fixtures.
+`npm run test:browser` runs the console browser suites with fixture API responses; see [console design](console-design.md#browser-suites).
 
 The 200% zoom-equivalent check uses a 720 CSS-pixel viewport for a 1440-pixel desktop. This checks responsive reflow; it is not a complete accessibility certification or a claim about every native browser zoom implementation.
 
@@ -27,13 +27,12 @@ Broader application, database/backup, feature, team, console-error and GitHub fi
 
 ## Walnut preview and reinstall recovery
 
-Walnut is available at `/console/applications?demo=1&design=walnut` and `/setup.html?design=walnut`. It shares Signal’s layout and uses the proposed brown/silver tokens. Signal remains the live default. `tests/browser/walnut.cjs` checks contrast, desktop/mobile/setup rendering and the unchanged default; point `TEST_WEB_URL` at a running panel or a static server serving `web/static`.
 
 Managed setup recovers a missing or rejected database password through the labelled container’s local socket, with SQL on stdin, and seals the replacement using the existing framework credentials API. Existing data is retained, including when the container was recreated on its previous volume. Unrelated containers are refused; inspect failures report Docker access separately. No destructive reset option was added. Real-Docker regression tests cover both recovery cases, retained data and ownership refusal; a fake-Docker test covers inspect access errors.
 
 ## Persistent notifications
 
-Action errors and status notices remain visible until dismissed. Successful background polling clears only recovered refresh errors, preserving action errors. Setup retains the previous error while a retry is in progress and focuses/scrolls to new errors. Each notice has a keyboard-accessible Dismiss button, and message text is inserted as text rather than HTML. `tests/browser/notifications.cjs` covers polling, expiry, retry retention, focus and dismissal against the actual UI with fixture API responses.
+Action errors and status notices remain visible until dismissed. Successful background polling clears only recovered refresh errors, preserving action errors. Setup retains the previous error while a retry is in progress and focuses/scrolls to new errors. Each notice has a keyboard-accessible Dismiss button, and message text is inserted as text rather than HTML.
 
 GitHub Apps are the primary GUI connection flow. OAuth connectors, configured callback routes and existing saved grants remain supported. Legacy reconnect UI is hidden. Public deploys remain available without authorization. API integration and browser checks cover OAuth configuration/reload, manifest registration, selected repositories, installation tokens and repository attachment.
 
@@ -43,5 +42,5 @@ Details & build logs updates every two seconds while a deployment is queued or b
 
 Deployment and application log dialogs provide Copy logs and Download logs. Deployment exports include application/server/deployment IDs, status, branch, domain, commit, elapsed time, the explicit failure and retained agent build output. Exports use the already-redacted API data and omit environment/credential objects. Clipboard failures remain visible inside the dialog with a download alternative. Browser checks cover matching copied/downloaded content, failure metadata and denied clipboard permissions.
 
-Host cards use two actions, Add application and Manage server. Connection settings, SSH administration and agent upgrades share server page navigation; disconnect is separate and blocked while apps are registered. Run `npm run test:servers --prefix tests/browser` against a panel or static server with `TEST_WEB_URL`. This checks desktop/mobile spacing and overflow, host selection for a new app, token omission/preservation, unsaved changes, deep-link reloads and disconnect protection.
-Long repository branch names wrap inside the picker without enlarging settings or application-creation fields. Form grid cells can shrink to the available width; inputs remain within their cards. `npm run test:branches --prefix tests/browser` covers direct settings links, long Dependabot names and unbroken names at 320–1440px, picker overflow, exact selection/saving and refresh preservation.
+Host cards use two actions, Add application and Manage server. Connection settings, SSH administration and agent upgrades share server page navigation; disconnect is separate and blocked while apps are registered. The `servers` browser suite checks connecting a server, keeping the saved token and the agent tabs at phone and desktop widths.
+Long repository branch names wrap inside the picker without enlarging settings or application-creation fields. Form grid cells can shrink to the available width; inputs remain within their cards. The `applications` browser suite saves a long branch name exactly and checks the field stays inside the page at 320 and 1440px.

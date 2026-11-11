@@ -128,7 +128,7 @@ func nativeReleaseInside(root, path string) bool {
 // nativeReleaseEnvironmentFile writes the command environment where only the
 // owner can read it. The confined shell sources it after privileges drop.
 func nativeReleaseEnvironmentFile(root string, account nativeReleaseAccount, env []string) (string, error) {
-	file, err := os.CreateTemp(root, ".lidza-release-env-")
+	file, err := os.CreateTemp(root, ".lidza-deploy-env-")
 	if err != nil {
 		return "", err
 	}
@@ -198,7 +198,7 @@ func nativeReleaseArgv(account nativeReleaseAccount, root, unit, envFile string,
 		// Large temporary files (linkers, package builds) go to the
 		// application's disk, not the small private /tmp.
 		"TMPDIR="+nativeReleaseScratchDir(root), "GOTMPDIR="+nativeReleaseScratchDir(root),
-		"/bin/sh", "-c", "set -eu; set -a; . \"$1\"; set +a; shift; exec \"$@\"", "lidza-release-env", envFile)
+		"/bin/sh", "-c", "set -eu; set -a; . \"$1\"; set +a; shift; exec \"$@\"", "lidza-deploy-env", envFile)
 	return append(argv, c.Args...)
 }
 

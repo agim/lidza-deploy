@@ -13,7 +13,7 @@ Only an allowlist of display keys is accepted by the client. Search values are
 bounded to 256 characters. Credentials, form values, commands, destructive choices
 and service/deployment actions are never saved by this feature.
 
-The console waits for preference hydration before displaying the workspace. It
+The console waits for preference hydration before displaying the console. It
 retains edits across slow reads and failed writes, serializes partial patches and
 retries on reconnection. A warning and Retry button appear when synchronization
 fails. Sign-out flushes queued edits first; a preference outage cannot trap the

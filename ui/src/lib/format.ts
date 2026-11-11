@@ -20,3 +20,12 @@ export function relativeTime(value?: string) {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
+
+/** roleLabels names the team roles as the console shows them. */
+export const roleLabels: Record<string, string> = { admin: 'Admin', deployer: 'Deployer', viewer: 'Viewer' };
+
+/** heldRoleLabel is the broadest of the roles a person holds. */
+export function heldRoleLabel(roles: string[] = []) {
+  const role = ['admin', 'deployer', 'viewer'].find(item => roles.includes(item)) || roles[0];
+  return role ? roleLabels[role] || role : '';
+}

@@ -30,9 +30,11 @@ import (
 // agent's neutral error and maintenance pages (error_pages.go).
 //
 // Such a Caddy issues certificates only for the subjects of its TLS
-// automation policies, so publishing also adds the hostnames to the policy
-// that holds the ACME issuer (and withdrawing removes them again, unless
-// another published application still serves them). A Caddy that issues
+// automation policies, so publishing also adds the hostnames to a policy
+// that validates over HTTP, never to one that validates only through a DNS
+// provider (and withdrawing removes them again, unless another published
+// application still serves them). DNS-only policies get an HTTP fallback
+// issuer (caddy_tls_failover.go). A Caddy that issues
 // certificates on demand needs no subjects. The admin API is the detected
 // or configured one (host_ingress.go).
 
@@ -259,18 +261,6 @@ type caddyTLSPolicy struct {
 	OnDemand bool              `json:"on_demand,omitempty"`
 }
 
-func (p caddyTLSPolicy) hasACMEIssuer() bool {
-	for _, raw := range p.Issuers {
-		var issuer struct {
-			Module string `json:"module"`
-		}
-		if json.Unmarshal(raw, &issuer) == nil && issuer.Module == "acme" {
-			return true
-		}
-	}
-	return false
-}
-
 // matches reports whether the policy applies to host: every host when it
 // has no subjects, else an exact or single-label wildcard subject.
 func (p caddyTLSPolicy) matches(host string) bool {
@@ -326,16 +316,14 @@ type caddyTLSApp struct {
 	} `json:"automation,omitempty"`
 }
 
-// targetPolicy chooses the policy that receives subjects: the first with an
-// ACME issuer, else the first without a subjects restriction; -1 when none.
+// caddyTargetPolicy chooses the policy that receives new subjects: the
+// first that validates over HTTP (HTTP-01 or TLS-ALPN-01) and has no DNS
+// challenge issuer at all (caddy_tls_failover.go); -1 when none, and the
+// caller creates a plain ACME policy. A hostname is never added to a policy
+// that validates only through a DNS provider, which may not host its zone.
 func caddyTargetPolicy(policies []caddyTLSPolicy) int {
 	for i, policy := range policies {
-		if policy.hasACMEIssuer() {
-			return i
-		}
-	}
-	for i, policy := range policies {
-		if policy.Subjects == nil {
+		if policy.httpCapable() && !policy.hasDNSIssuer() {
 			return i
 		}
 	}
@@ -343,9 +331,9 @@ func caddyTargetPolicy(policies []caddyTLSPolicy) int {
 }
 
 // ensureTLSSubjects makes Caddy's automation cover hosts. Hostnames a policy
-// already matches are left alone; the rest are added to the ACME policy's
-// subjects (or a new policy when there is no automation). Other subjects are
-// never changed.
+// already matches are left alone; the rest are added to the subjects of the
+// HTTP-validating policy (or a new plain ACME policy when there is none).
+// Other subjects are never changed.
 func (c nativeCaddy) ensureTLSSubjects(ctx context.Context, hosts []string) (nativeCaddyTLS, error) {
 	out := nativeCaddyTLS{Policy: -1}
 	var tlsApp caddyTLSApp
@@ -361,6 +349,13 @@ func (c nativeCaddy) ensureTLSSubjects(ctx context.Context, hosts []string) (nat
 			policiesFound = true
 			policies = *tlsApp.Automation.Policies
 		}
+	}
+	// Policies that validate only through a DNS provider get an HTTP
+	// fallback issuer first, so their hostnames do not depend on it alone.
+	// A refused fallback must not stop the hostnames from being added; the
+	// TLS upkeep reports it (caddy_tls_failover.go).
+	if _, err := c.applyTLSFallbacks(ctx, policies); err != nil {
+		log.Printf("caddy tls: %v", err)
 	}
 	var pending []string
 	onDemand := 0
@@ -438,8 +433,11 @@ func (c nativeCaddy) ensureTLSSubjects(ctx context.Context, hosts []string) (nat
 	return out, nil
 }
 
-// removeTLSSubjects drops hosts from the ACME policy's subjects. Only exact
-// subjects are removed, never wildcards or other names.
+// removeTLSSubjects drops hosts from the policies that list them as exact
+// subjects (the agent may have added them to an older target policy). Only
+// exact subjects are removed, never wildcards or other names, and a policy
+// left without subjects is deleted rather than turned into one that applies
+// to every hostname.
 func (c nativeCaddy) removeTLSSubjects(ctx context.Context, hosts []string) error {
 	if len(hosts) == 0 {
 		return nil
@@ -449,24 +447,39 @@ func (c nativeCaddy) removeTLSSubjects(ctx context.Context, hosts []string) erro
 		return err
 	}
 	policies := *tlsApp.Automation.Policies
-	target := caddyTargetPolicy(policies)
-	if target < 0 || policies[target].Subjects == nil {
-		return nil
-	}
-	remaining := make([]string, 0, len(*policies[target].Subjects))
-	removed := false
-	for _, subject := range *policies[target].Subjects {
-		if slices.ContainsFunc(hosts, func(host string) bool { return strings.EqualFold(host, subject) }) {
-			removed = true
+	// From the last policy down, so a deleted policy shifts no index still
+	// to be visited.
+	for i := len(policies) - 1; i >= 0; i-- {
+		if policies[i].Subjects == nil {
 			continue
 		}
-		remaining = append(remaining, subject)
+		if err := c.removePolicySubjects(ctx, i, *policies[i].Subjects, hosts); err != nil {
+			return err
+		}
 	}
-	if !removed {
+	return nil
+}
+
+// removePolicySubjects removes hosts from policy index's subjects; a policy
+// left empty is deleted. Nothing is written when no subject matches.
+func (c nativeCaddy) removePolicySubjects(ctx context.Context, index int, subjects, hosts []string) error {
+	remaining := make([]string, 0, len(subjects))
+	for _, subject := range subjects {
+		if !slices.ContainsFunc(hosts, func(host string) bool { return strings.EqualFold(host, subject) }) {
+			remaining = append(remaining, subject)
+		}
+	}
+	path := caddyTLSPath + "/automation/policies/" + strconv.Itoa(index)
+	switch {
+	case len(remaining) == len(subjects):
 		return nil
+	case len(remaining) == 0:
+		_, err := c.call(ctx, http.MethodDelete, path, nil)
+		return err
+	default:
+		_, err := c.call(ctx, http.MethodPatch, path+"/subjects", mustJSON(remaining))
+		return err
 	}
-	_, err := c.call(ctx, http.MethodPatch, caddyTLSPath+"/automation/policies/"+strconv.Itoa(target)+"/subjects", mustJSON(remaining))
-	return err
 }
 
 func mustJSON(v any) []byte {

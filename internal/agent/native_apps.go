@@ -11,7 +11,6 @@ import (
 	"maps"
 	"net/http"
 	"os"
-	"os/user"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -318,22 +317,35 @@ func (m *Manager) nativeExec(ctx context.Context, args ...string) (string, error
 	if m.nativeCommand != nil {
 		return m.nativeCommand(ctx, args)
 	}
-	account, err := user.Lookup(m.cfg.Native.User)
+	name, argv, err := m.nativeUserArgv(args)
 	if err != nil {
-		return "", errors.New("native deployment user is unavailable")
+		return "", err
+	}
+	return command(ctx, "", nil, name, argv...)
+}
+
+// nativeUserArgv is the program and arguments that run args as the native
+// deployment user, with a clean environment pointing at its user manager.
+func (m *Manager) nativeUserArgv(args []string) (string, []string, error) {
+	if m.cfg.Native == nil {
+		return "", nil, errors.New("native deployment user is unavailable")
+	}
+	account, err := nativeLookupUser(m.cfg.Native.User)
+	if err != nil {
+		return "", nil, errors.New("native deployment user is unavailable")
 	}
 	uid, err := strconv.Atoi(account.Uid)
 	if err != nil || uid <= 0 {
-		return "", errors.New("invalid native deployment user")
+		return "", nil, errors.New("invalid native deployment user")
 	}
 	// No PAM session is opened for observation/control. A session opener can
 	// start a previously stopped user manager and its enabled applications.
-	argv := []string{"--reuid=" + account.Uid, "--regid=" + account.Gid, "--init-groups", "--no-new-privs", "--", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "HOME=" + account.HomeDir, "XDG_RUNTIME_DIR=/run/user/" + account.Uid}
-	argv = append(argv, args...)
+	environment := []string{"-i", "PATH=/usr/bin:/bin", "HOME=" + account.HomeDir, "XDG_RUNTIME_DIR=/run/user/" + account.Uid}
 	if os.Geteuid() == uid {
-		return command(ctx, "", nil, "/usr/bin/env", append([]string{"-i", "PATH=/usr/bin:/bin", "HOME=" + account.HomeDir, "XDG_RUNTIME_DIR=/run/user/" + account.Uid}, args...)...)
+		return "/usr/bin/env", append(environment, args...), nil
 	}
-	return command(ctx, "", nil, "/usr/bin/setpriv", argv...)
+	argv := append([]string{"--reuid=" + account.Uid, "--regid=" + account.Gid, "--init-groups", "--no-new-privs", "--", "/usr/bin/env"}, environment...)
+	return "/usr/bin/setpriv", append(argv, args...), nil
 }
 
 func (m *Manager) nativeRegistration(in NativeApplication) (NativeApplication, error) {
@@ -479,6 +491,14 @@ func (m *Manager) nativeViews() []App {
 		}
 		view := App{Management: m.nativeManagementCapabilities(a), ID: a.ID, Runtime: runtime, Repository: a.Repository, Branch: a.Branch, Domain: a.Domain, AdditionalDomains: slices.Clone(a.AdditionalDomains), RedirectDomains: redirects[a.ID], Native: &a}
 		_, view.Stopped = stopped[a.ID]
+		// On a Caddy host the TLS upkeep reports each hostname's
+		// certificate (caddy_tls_failover.go).
+		if statuses := m.caddyDomainStatuses(append([]string{a.Domain}, a.AdditionalDomains...)); len(statuses) > 0 {
+			view.DomainStatuses = statuses
+			if statuses[0].Domain == strings.ToLower(a.Domain) {
+				view.DomainStatus = &statuses[0]
+			}
+		}
 		if history := histories[a.ID]; history.Current.Path != "" {
 			view.Current = &Release{ID: history.Current.ID, Commit: history.Current.Commit}
 		}
@@ -493,8 +513,7 @@ func (m *Manager) nativeStatus(ctx context.Context, id string) (NativeStatus, er
 	if err != nil {
 		return NativeStatus{}, err
 	}
-	_, created := m.nativeCreatedPolicy(id)
-	status := NativeStatus{Application: a, Services: []NativeService{}, ServiceControl: m.cfg.Native.ServiceControl || created, Checked: time.Now().UTC()}
+	status := NativeStatus{Application: a, Services: []NativeService{}, ServiceControl: m.nativeServiceControlFor(id), Checked: time.Now().UTC()}
 	if _, err := m.nativeStaticPolicy(a); err == nil {
 		status.DeploymentSupported = true
 	}
@@ -595,8 +614,8 @@ func (m *Manager) nativeServiceAction(ctx context.Context, id, unit, action, con
 	if err != nil {
 		return err
 	}
-	if _, created := m.nativeCreatedPolicy(id); !m.cfg.Native.ServiceControl && !created {
-		return errors.New("native service control is disabled; review and approve the agent configuration first")
+	if !m.nativeServiceControlFor(id) {
+		return errors.New("service control is off for this server; turn it on in the server's Agent settings")
 	}
 	if confirm != a.Name || !slices.Contains(a.Services, unit) || !slices.Contains([]string{"start", "stop", "restart"}, action) {
 		return errors.New("explicit application-name confirmation and a registered service action are required")

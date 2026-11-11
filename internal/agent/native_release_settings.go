@@ -210,29 +210,38 @@ func (m *Manager) nativeReleaseSettings(settings *Settings, policy NativeRelease
 	if policy.ManagedToolchains() {
 		settings.Toolchains = "managed"
 	}
-	settings.SettingsApplyOnDeploy = true
+	settings.ApplyEffects = settingsSubject{Runtime: policy.Runtime, Native: true}.effects()
 	settings.BackupBeforeDeploy = true
 	return nil
 }
 
 // patchNativeReleaseSettings saves environment and branch changes for a
-// release-managed application.
-func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatch) error {
+// release-managed application, then applies them (native_settings_apply.go).
+func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatch) (SettingsApplyResult, error) {
+	changes, policy, err := m.saveNativeReleaseSettings(a, p)
+	if err != nil {
+		return SettingsApplyResult{}, err
+	}
+	return m.applyNativeSettings(a.ID, settingsSubject{Runtime: policy.Runtime, Native: true}, changes), nil
+}
+
+// saveNativeReleaseSettings saves the changes and names what changed.
+func (m *Manager) saveNativeReleaseSettings(a NativeApplication, p SettingsPatch) ([]string, NativeReleasePolicy, error) {
 	_, policy, err := m.nativeReleasePolicy(a.ID)
 	if err != nil {
-		return err
+		return nil, policy, err
 	}
 	if p.Domain != "" && p.Domain != a.Domain || p.AdditionalDomains != nil && !slices.Equal(*p.AdditionalDomains, a.AdditionalDomains) || p.CustomerHosts != nil && *p.CustomerHosts {
-		return errors.New("hostnames for this application are served by the existing web server configuration and cannot be changed here yet")
+		return nil, policy, errors.New("hostnames for this application are served by the existing web server configuration and cannot be changed here yet")
 	}
 	if p.Build != nil && p.Build.SourceDirectory != "" || p.RuntimeProfile != nil && *p.RuntimeProfile != "" || p.Astro != nil && *p.Astro != (AstroConfig{}) {
-		return errors.New("runtime changes are not available for this application")
+		return nil, policy, errors.New("runtime changes are not available for this application")
 	}
 	if p.BackupBeforeDeploy != nil && !*p.BackupBeforeDeploy {
-		return errors.New("deploys of this application always take a verified backup first")
+		return nil, policy, errors.New("deploys of this application always take a verified backup first")
 	}
 	if p.Branch != "" && !nativeReleaseBranchValue.MatchString(p.Branch) {
-		return errors.New("invalid branch name")
+		return nil, policy, errors.New("invalid branch name")
 	}
 	if p.Toolchains != nil {
 		m.mu.Lock()
@@ -240,21 +249,21 @@ func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatc
 		m.mu.Unlock()
 		switch {
 		case *p.Toolchains != "managed" && *p.Toolchains != "account":
-			return errors.New("toolchains must be managed or account")
+			return nil, policy, errors.New("toolchains must be managed or account")
 		case created && *p.Toolchains == "account":
-			return errors.New("applications created here have no version manager of their own; they use managed toolchains")
+			return nil, policy, errors.New("applications created here have no version manager of their own; they use managed toolchains")
 		}
 	}
 	for key, value := range p.EnvChanges {
 		if !envPattern.MatchString(key) {
-			return fmt.Errorf("invalid environment variable name %q", key)
+			return nil, policy, fmt.Errorf("invalid environment variable name %q", key)
 		}
 		if nativeReleaseHostKey(key) {
-			return fmt.Errorf("%s is managed by the host", key)
+			return nil, policy, fmt.Errorf("%s is managed by the host", key)
 		}
 		if value != nil {
 			if _, err := nativeReleaseEnvLine(key, *value); err != nil {
-				return err
+				return nil, policy, err
 			}
 		}
 	}
@@ -262,18 +271,18 @@ func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatc
 		values := map[string]string{}
 		for key, value := range p.EnvChanges {
 			if value == nil {
-				return errors.New("defaults cannot delete variables")
+				return nil, policy, errors.New("defaults cannot delete variables")
 			}
 			values[key] = *value
 		}
 		if err := ValidateRuntimeDefaults(nativeReleaseDefaultsRuntime(policy), values); err != nil {
-			return err
+			return nil, policy, err
 		}
 	}
 	m.mu.Lock()
 	if m.nativeOperations[a.ID] {
 		m.mu.Unlock()
-		return errors.New("a deployment of this application is running; save settings after it finishes")
+		return nil, policy, errors.New("a deployment of this application is running; save settings after it finishes")
 	}
 	if m.nativeOperations == nil {
 		m.nativeOperations = map[string]bool{}
@@ -285,14 +294,15 @@ func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatc
 		delete(m.nativeOperations, a.ID)
 		m.mu.Unlock()
 	}()
+	before, err := nativeReleaseEnvValues(policy)
+	if err != nil {
+		return nil, policy, err
+	}
 	changes := p.EnvChanges
 	if p.FromDefaults && p.OnlyMissing {
 		// Workspace defaults fill gaps only: any key already assigned in an
 		// environment file, even to an empty value, is preserved.
-		current, err := nativeReleaseEnvValues(policy)
-		if err != nil {
-			return err
-		}
+		current := before
 		changes = map[string]*string{}
 		for key, value := range p.EnvChanges {
 			if _, exists := current[key]; !exists {
@@ -302,13 +312,15 @@ func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatc
 	}
 	if len(changes) > 0 {
 		if err := rewriteNativeReleaseEnvFiles(policy.EnvFiles, changes); err != nil {
-			return err
+			return nil, policy, err
 		}
 	}
 	values, err := nativeReleaseEnvValues(policy)
 	if err != nil {
-		return err
+		return nil, policy, err
 	}
+	applied := envValueChanges(before, values)
+	kinds := normalizeEnvironmentKinds(before, m.nativeOverride(a.ID).Kinds)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	old := m.data.NativeSettings[a.ID]
@@ -319,10 +331,13 @@ func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatc
 	}
 	for key, kind := range p.EnvKindChanges {
 		if _, ok := values[key]; !ok {
-			return errors.New("environment classification references a missing variable")
+			return nil, policy, errors.New("environment classification references a missing variable")
 		}
 		if kind != EnvironmentSetting && kind != EnvironmentCredential {
-			return errors.New("invalid environment classification")
+			return nil, policy, errors.New("invalid environment classification")
+		}
+		if _, existed := before[key]; existed && kinds[key] != kind {
+			applied = append(applied, "env_kind:"+key)
 		}
 		next.Kinds[key] = kind
 	}
@@ -330,6 +345,12 @@ func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatc
 		if _, ok := values[key]; !ok {
 			delete(next.Kinds, key)
 		}
+	}
+	if p.Branch != "" && p.Branch != policy.Branch {
+		applied = append(applied, "branch")
+	}
+	if p.Toolchains != nil && (*p.Toolchains == "managed") != policy.ManagedToolchains() {
+		applied = append(applied, "toolchains")
 	}
 	if p.Branch != "" {
 		next.Branch = p.Branch
@@ -349,9 +370,9 @@ func (m *Manager) patchNativeReleaseSettings(a NativeApplication, p SettingsPatc
 	m.data.NativeSettings[a.ID] = next
 	if err := m.save(); err != nil {
 		m.data.NativeSettings[a.ID] = old
-		return err
+		return nil, policy, err
 	}
-	return nil
+	return slices.Compact(slices.Sorted(slices.Values(applied))), policy, nil
 }
 
 // nativeReleaseDefaultsRuntime names the workspace defaults set that applies

@@ -52,7 +52,7 @@ func TestNativeMaintenanceOnlyRewritesTheReviewedLoopbackPool(t *testing.T) {
 	if direct, err = nativePostgresMaintenanceURL(source, bad); err != nil || direct != source {
 		t.Fatal("ordinary database bindings must retain the exact URL")
 	}
-	if sameNativeDatabasePolicy(policy, bad) {
+	if sameNativeDatabaseIdentity(policy, bad) {
 		t.Fatal("the maintenance binding changed without triggering policy review")
 	}
 }

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,28 +38,6 @@ func (m *Manager) nativeConsoleTargetsLocked(assigned map[string]string) []nativ
 	return targets
 }
 
-// nativeConsoleLogs reads one unit's journal since a time, as "RFC3339Nano
-// message" lines. The read starts at the cursor's second; the parser's
-// cursor skips the entries it has already reported.
-func (m *Manager) nativeConsoleLogs(ctx context.Context, id, unit string, since time.Time) (string, error) {
-	if !nativeUnitPattern.MatchString(unit) {
-		return "", errors.New("invalid unit")
-	}
-	args := []string{"journalctl", "--unit=" + unit, "--no-pager", "--quiet", "--output=json", "--lines=1000", "--since=@" + strconv.FormatInt(since.Unix(), 10)}
-	var out string
-	var err error
-	if m.nativeCreatedSystemUnits(id) {
-		out, err = m.nativeRootExec(ctx, args...)
-	} else {
-		args[1] = "--user-unit=" + unit
-		out, err = m.nativeExec(ctx, args...)
-	}
-	if err != nil {
-		return "", err
-	}
-	return journalConsoleLines(out), nil
-}
-
 // journalConsoleLines converts journalctl JSON export entries to the
 // collector's line form. A multi-line message becomes one line per text
 // line at the entry's time; binary (non-UTF-8) messages are skipped.
@@ -74,64 +51,126 @@ func journalConsoleLines(raw string) string {
 			Stamp   string          `json:"__REALTIME_TIMESTAMP"`
 			Message json.RawMessage `json:"MESSAGE"`
 		}
-		var message string
-		if json.Unmarshal([]byte(entry), &fields) != nil || json.Unmarshal(fields.Message, &message) != nil {
+		if json.Unmarshal([]byte(entry), &fields) != nil {
 			continue
 		}
-		micros, err := strconv.ParseInt(fields.Stamp, 10, 64)
-		if err != nil || micros <= 0 {
-			continue
-		}
-		at := time.UnixMicro(micros).UTC().Format(time.RFC3339Nano)
-		for _, part := range strings.Split(strings.TrimRight(message, "\n"), "\n") {
-			b.WriteString(at)
-			b.WriteByte(' ')
-			b.WriteString(part)
+		_, lines := journalEntryLines(fields.Stamp, fields.Message)
+		for _, line := range lines {
+			b.WriteString(line)
 			b.WriteByte('\n')
 		}
 	}
 	return b.String()
 }
 
+// journalEntryLines is one export entry's message as collector lines, and
+// the entry's time. Entries without a time or a text message have none.
+func journalEntryLines(stamp string, raw json.RawMessage) (time.Time, []string) {
+	var message string
+	if json.Unmarshal(raw, &message) != nil {
+		return time.Time{}, nil
+	}
+	micros, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil || micros <= 0 {
+		return time.Time{}, nil
+	}
+	at := time.UnixMicro(micros).UTC()
+	prefix := at.Format(time.RFC3339Nano) + " "
+	parts := strings.Split(strings.TrimRight(message, "\n"), "\n")
+	for i, part := range parts {
+		parts[i] = prefix + part
+	}
+	return at, parts
+}
+
+// nativeConsoleUnit is one collected service unit and where its reports go.
+type nativeConsoleUnit struct {
+	key     string // parser cursor key: incarnation:unit
+	unit    string
+	user    bool
+	app     string
+	secrets []string
+	release Release
+}
+
 // collectNativeConsole reads the journals of assigned native applications
-// into the outbox. It returns the records, the updated cursors (keyed like
-// container cursors: incarnation:unit) and the collection warning, if any.
-func (m *Manager) collectNativeConsole(ctx context.Context, cfg ErrorReporting, targets []nativeConsoleTarget, cursors map[string]ConsoleCursor, active map[string]bool, room int) ([]ConsoleError, string) {
+// into the outbox through one journal stream per unit scope. It returns the
+// records and the collection warning, if any, and updates the parser
+// cursors (keyed like container cursors: incarnation:unit) and the
+// streams' resume points.
+func (m *Manager) collectNativeConsole(ctx context.Context, cfg ErrorReporting, targets []nativeConsoleTarget, cursors map[string]ConsoleCursor, journals map[string]JournalCursor, active map[string]bool, room int) ([]ConsoleError, string) {
 	records := []ConsoleError{}
 	warning := ""
+	units := []nativeConsoleUnit{}
+	scopes := map[bool][]string{false: {}, true: {}}
+	since := map[bool]map[string]time.Time{false: {}, true: {}}
 	for _, t := range targets {
-		if room-len(records) <= 0 {
-			return records, "Error forwarding backlog is full; collection paused until delivery succeeds"
-		}
 		a, err := m.nativeApp(t.id)
 		if err != nil {
 			warning = "Native service bindings changed; review the application before collection resumes"
 			continue
 		}
+		user := !m.nativeCreatedSystemUnits(t.id)
 		secrets := m.nativeSecretsFor(a)
 		for _, unit := range a.Services {
-			key := cfg.Apps[t.id] + ":" + unit
-			active[key] = true
-			cursor := cursors[key]
-			if cursor.Time.IsZero() {
-				cursor.Time = time.Now().UTC().Add(-15 * time.Minute)
-			}
-			readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			logs, err := m.nativeConsoleLogs(readCtx, t.id, unit, cursor.Time)
-			cancel()
-			if err != nil {
-				warning = "Native service log collection failed; existing reports remain available"
+			if !nativeUnitPattern.MatchString(unit) || slices.Contains(scopes[user], unit) {
 				continue
 			}
-			logs, limited := boundConsoleRead(logs)
-			if limited {
-				warning = "Service log read reached its size limit; some output may be missing"
-			}
+			key := cfg.Apps[t.id] + ":" + unit
+			active[key] = true
 			release := t.release
 			release.Container = unit
-			parsed, next := parseConsoleLines(logs, t.id, secrets, release, cfg.Apps[t.id], cursor, room-len(records))
-			records = append(records, parsed...)
-			cursors[key] = next
+			units = append(units, nativeConsoleUnit{key: key, unit: unit, user: user, app: t.id, secrets: secrets, release: release})
+			scopes[user] = append(scopes[user], unit)
+			since[user][unit] = cursors[key].Time
+		}
+	}
+	streams := map[bool]*journalStream{}
+	for _, user := range []bool{false, true} {
+		slices.Sort(scopes[user])
+		saved := journals[journalScopeKey(user)]
+		stream, err := m.ensureJournal(ctx, user, scopes[user], since[user], &saved)
+		if err == nil && stream != nil {
+			err = stream.failure()
+		}
+		if err != nil {
+			warning = "Native service log collection failed; existing reports remain available"
+		}
+		if saved.Cursor == "" {
+			delete(journals, journalScopeKey(user))
+		} else {
+			journals[journalScopeKey(user)] = saved
+		}
+		streams[user] = stream
+	}
+	for _, u := range units {
+		if room-len(records) <= 0 {
+			warning = "Error forwarding backlog is full; collection paused until delivery succeeds"
+			break
+		}
+		stream := streams[u.user]
+		if stream == nil {
+			continue
+		}
+		cursor := cursors[u.key]
+		if cursor.Time.IsZero() {
+			cursor.Time = time.Now().UTC().Add(-journalLookback)
+		}
+		logs, limited := stream.take(u.unit)
+		logs, bounded := boundConsoleRead(logs)
+		if limited || bounded {
+			warning = "Service log read reached its size limit; some output may be missing"
+		}
+		parsed, next := parseConsoleLines(logs, u.app, u.secrets, u.release, cfg.Apps[u.app], cursor, room-len(records))
+		records = append(records, parsed...)
+		cursors[u.key] = next
+		stream.consumed(u.unit, next.Time)
+	}
+	for _, user := range []bool{false, true} {
+		if stream := streams[user]; stream != nil {
+			if cursor, ok := stream.resumeCursor(); ok {
+				journals[journalScopeKey(user)] = JournalCursor{Cursor: cursor, Units: slices.Clone(stream.units)}
+			}
 		}
 	}
 	return records, warning

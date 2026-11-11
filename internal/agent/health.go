@@ -151,6 +151,11 @@ func (m *Manager) serverHealth(parent context.Context) ServerHealth {
 	out.Notes = append(out.Notes, notes...)
 	out.ClickHouseSystemLogs = m.clickhouseLogSizes()
 	out.Warnings = append(out.Warnings, clickhouseLogWarnings(out.ClickHouseSystemLogs)...)
+	warnings, notes = m.journalPolicyHealth()
+	out.Warnings = append(out.Warnings, warnings...)
+	out.Warnings = append(out.Warnings, m.backupToolHealth()...)
+	out.Warnings = append(out.Warnings, m.databaseConfigHealth()...)
+	out.Notes = append(out.Notes, notes...)
 	return out
 }
 func (m *Manager) healthRoute(w http.ResponseWriter, r *http.Request) {

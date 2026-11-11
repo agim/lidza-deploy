@@ -271,6 +271,8 @@ func deploymentVerb(kind string) (running, done string) {
 	switch kind {
 	case "reload":
 		return "Reloading", "Reloaded"
+	case "restart":
+		return "Restarting", "Restarted"
 	case "rollback":
 		return "Rolling back", "Rolled back"
 	case "start":

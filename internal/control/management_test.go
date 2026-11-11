@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/agim/lidza-deploy/internal/agent"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,11 @@ func TestManagementPersistenceAndAgentSettings(t *testing.T) {
 	c, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// A branch change deploys after the save with the deploy route's
+	// credentials; this agent has no runtime, so none are available.
+	c.credentialsFixture = func(context.Context, Application, string) (agent.DeployRequest, error) {
+		return agent.DeployRequest{}, errors.New("no repository access in this test")
 	}
 	call := func(fn http.HandlerFunc, method, id, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, "/", strings.NewReader(body))

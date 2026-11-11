@@ -139,7 +139,7 @@ export function defaultsKind(draft: WizardDraft): DefaultsRuntime {
 const credentialName = /(KEY|SECRET|TOKEN|PASSWORD|PASS|CREDENTIALS?)$/;
 
 // mergeDefaults drops untouched defaults of another runtime and adds the
-// workspace defaults that are not set yet.
+// application defaults that are not set yet.
 export function mergeDefaults(rows: EnvRow[], values: Record<string, string>): EnvRow[] {
   const kept = rows.filter(row => row.origin !== 'default' || row.edited);
   const present = new Set(kept.map(row => row.name));
@@ -292,7 +292,7 @@ export function containerRequest(draft: WizardDraft) {
 // A detection for the ?demo=1 preview, without a GitHub connection.
 export function demoDetection(repository: string, branch = 'main'): RepositoryDetection {
   const base = { repository, branch, default_branch: 'main', branches: ['main', 'release'], commit: 'a6b92fe', installation_id: 1, detected: true };
-  if (repository.endsWith('workspace')) {
+  if (repository.endsWith('collaboration')) {
     return { ...base, mode: 'container', needs_postgres: false, needs_redis: false, compose_file: 'compose.yaml', services: [{ name: 'synapse', image: 'ghcr.io/element-hq/synapse', role: 'image' }, { name: 'postfix', image: 'boky/postfix', role: 'image' }, { name: 'livekit', image: 'livekit/livekit-server', role: 'image' }, { name: 'collabora', image: 'collabora/code', role: 'image' }, { name: 'app', build: true, role: 'source' }], reasons: ['compose.yaml defines 5 services (synapse, postfix, livekit, collabora, app) using third-party images: container'] };
   }
   return { ...base, mode: 'native', runtime: 'rails', framework: 'rails', framework_version: '8.0.1', processes: [{ name: 'web', command: 'bin/rails server', web: true }, { name: 'worker', command: 'bundle exec sidekiq' }], needs_postgres: true, needs_redis: true, pins: { ruby: '3.4.1', bundler: '2.6.2' }, health_path: '/up', reasons: ['Gemfile and config/application.rb: Ruby on Rails 8.0', 'Readiness check: /up (Rails health check)', 'sidekiq gem: a worker process runs bundle exec sidekiq', 'pg gem: PostgreSQL', 'sidekiq gem: Redis', 'Builds and runs natively under systemd'] };

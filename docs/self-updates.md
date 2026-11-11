@@ -18,7 +18,7 @@ revalidates each file: an unchanged file can return 304, while a changed file
 returns its new bytes. Cache invalidation does not clear cookies or browser
 storage, and does not disable OAuth or discard settings.
 
-The regular workspace status response includes the running control-panel version.
+The regular control panel status response (`GET /api/control/status`) includes the running control-panel version, shown under the panel's hostname (`hostname`) at the top of the sidebar, and the signed-in person (`user`: subject, email, name) with their `roles`.
 After a version change in an open tab, a **Reload interface** notice appears.
 Reload keeps the current URL; unsaved edits require confirmation before they are
 discarded. The interface does not automatically reload or redraw forms during an

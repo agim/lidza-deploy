@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { href } from '../lib/router';
 import { Clock, Database, HardDrive, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
 import { get, patch, post } from '../lib/api';
 import { formatDate } from '../lib/format';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
-import { ActionForm, Badge, Button, Card, ConfirmAction, CopyButton, ErrorBanner, Field, Loading, Notice, PageHeader, SectionHeader } from '../components/ui';
+import { ActionForm, Badge, Button, Card, ConfirmAction, CopyButton, ErrorBanner, Field, Loading, Notice, SectionHeader } from '../components/ui';
+import { Cluster } from '../components/layout';
 import { Input } from '../components/primitives/input';
 import { Switch } from '../components/primitives/switch';
 import { BundlerCleanupCard, CleanupPreviewCard } from '../components/ServerHygiene';
@@ -14,7 +14,8 @@ interface Policy { enabled: boolean; interval_hours: number; build_cache: boolea
 interface Status { policy: Policy; running: boolean; next_run?: string; next_backup_cleanup?: string; last_run?: string; messages?: string[]; error?: string }
 const date = (value?: string) => value && !value.startsWith('0001-') ? formatDate(value) : 'On the next agent maintenance check';
 
-export function ServerCleanupPage({ serverID }: { serverID: string }) {
+/** ServerCleanup: the Disk cleanup tab of a server. */
+export function ServerCleanup({ serverID }: { serverID: string }) {
  const { servers } = useWorkspace();
  const notify = useToast();
  const [status, setStatus] = useState<Status>();
@@ -35,8 +36,7 @@ export function ServerCleanupPage({ serverID }: { serverID: string }) {
  const save = async () => { if (!policy) return;try { const value = await patch<Status>(`control/servers/${encodeURIComponent(serverID)}/maintenance`, policy);setStatus(value);setPolicy(value.policy);setError('');notify('Server cleanup schedule saved.'); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } };
  const run = async () => { const value = await post<Status>(`control/servers/${encodeURIComponent(serverID)}/maintenance/run`, selected);setStatus(value);notify('Cleanup started. Results appear here when it finishes.'); };
  const change = (value: Partial<Policy>) => setPolicy(current => current ? { ...current, ...value } : current);
- const title = `${servers.find(server => server.id === serverID)?.name || serverID} cleanup`;
- return <><PageHeader eyebrow="Server maintenance" title={title} description="Reclaim disk space with bounded cleanup and automatic retention." back={href('servers')} actions={<Button onClick={refresh}><RefreshCw size={16} />Refresh</Button>} />{error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}{!status || !policy ? !error && <Loading label="Loading cleanup policy…" /> : <div className="settings-stack">
+ return <div className="settings-stack"><Cluster><Button onClick={refresh}><RefreshCw size={16} />Refresh</Button></Cluster>{error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}{!status || !policy ? !error && <Loading label="Loading cleanup policy…" /> : <div className="settings-stack">
   <Notice><ShieldCheck size={18} /><span>Containers, images any container uses, the current and previous release of every application, named volumes, databases, application files and Valkey data are preserved. Active Docker log files are never truncated. S3 objects are unchanged.</span></Notice>
   <Card className="form-card"><SectionHeader title="Clean up now" description={`Build cache and archived system journals must be at least ${status.policy.older_than_days} days old. The job waits for active deployments and database operations.`} actions={<Badge tone={status.running ? 'warning' : 'neutral'}>{status.running ? 'Cleanup running' : 'Ready'}</Badge>} />
    <div className="maintenance-options">{([{ key: 'backups', title: 'Older local backups', description: 'Keep only the newest usable dump per database, including retained databases.', icon: Database }, { key: 'build_cache', title: 'Unused build data and caches', description: 'Docker (when installed): old build layers, release images older than the previous release, builders stopped for a week, anonymous volumes. Native apps: releases beyond the keep count, stale cache and scratch files, oversized package caches, unused toolchains, rotated logs and core dumps. Also the apt package cache. Stored data is untouched.', icon: HardDrive }, { key: 'logs', title: 'Archived system journal logs', description: 'Rotate and vacuum journald archives using the selected age threshold.', icon: Trash2 }] as const).map(item => <label className="check-row" key={item.key}><Input type="checkbox" checked={selected[item.key]} disabled={status.running} onChange={event => setSelected(current => ({ ...current, [item.key]: event.target.checked }))} /><item.icon size={18} /><span><strong>{item.title}</strong><small>{item.description}</small></span></label>)}</div>
@@ -52,5 +52,5 @@ export function ServerCleanupPage({ serverID }: { serverID: string }) {
   </ActionForm><p className="muted-copy maintenance-next"><Clock size={15} />Next cache/log cleanup: {policy.enabled ? date(status.next_run) : 'Disabled'}</p></Card>
   <Card><SectionHeader title="Hourly local backup retention" description="Always enabled: one newest usable local backup per database. S3 history follows the bucket lifecycle policy." /><p className="muted-copy">Next backup cleanup: {date(status.next_backup_cleanup)}</p></Card>
   <Card><SectionHeader title="Last cleanup" description={status.last_run && !status.last_run.startsWith('0001-') ? date(status.last_run) : 'No cleanup has completed yet.'} actions={<CopyButton value={[...(status.messages || []), status.error || ''].filter(Boolean).join('\n')} label="Copy cleanup report" />} />{status.error && <ErrorBanner>{status.error}</ErrorBanner>}{status.running && <Loading label="Cleanup is running on the server…" />}<pre className="maintenance-report">{status.messages?.join('\n\n') || 'Cleanup results will appear here.'}</pre></Card>
- </div>}</>;
+ </div>}</div>;
 }

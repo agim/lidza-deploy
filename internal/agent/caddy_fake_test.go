@@ -49,6 +49,9 @@ type fakeCaddyAdmin struct {
 	config map[string]any
 	calls  []string
 	srv    *httptest.Server
+	// refuse lists writes ("PATCH /config/...") answered with a 400, as a
+	// Caddy that rejects the change would.
+	refuse map[string]bool
 }
 
 func newFakeCaddyAdmin(t *testing.T, config map[string]any) *fakeCaddyAdmin {
@@ -143,10 +146,60 @@ func findCaddyID(node any, id string, path []string) ([]string, bool) {
 	return nil, false
 }
 
+// serve applies a request and, like Caddy, refuses (500) and rolls back a
+// write after which two TLS automation policies list the same subject.
 func (f *fakeCaddyAdmin) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+	if r.Method == http.MethodGet {
+		f.apply(w, r)
+		return
+	}
+	if f.refuse[r.Method+" "+r.URL.Path] {
+		http.Error(w, "loading config: refused by the test", 400)
+		return
+	}
+	raw, _ := json.Marshal(f.config)
+	var backup map[string]any
+	_ = json.Unmarshal(raw, &backup)
+	recorder := httptest.NewRecorder()
+	f.apply(recorder, r)
+	if subject := duplicateCaddySubject(f.config); subject != "" {
+		f.config = backup
+		http.Error(w, "loading new config: tls: automation policy: subject "+subject+" is already used by another policy", 500)
+		return
+	}
+	for key, values := range recorder.Header() {
+		w.Header()[key] = values
+	}
+	w.WriteHeader(recorder.Code)
+	_, _ = w.Write(recorder.Body.Bytes())
+}
+
+// duplicateCaddySubject returns a subject listed by two automation
+// policies; "" when there is none.
+func duplicateCaddySubject(config map[string]any) string {
+	apps, _ := config["apps"].(map[string]any)
+	tls, _ := apps["tls"].(map[string]any)
+	automation, _ := tls["automation"].(map[string]any)
+	policies, _ := automation["policies"].([]any)
+	seen := map[string]bool{}
+	for _, policy := range policies {
+		p, _ := policy.(map[string]any)
+		subjects, _ := p["subjects"].([]any)
+		for _, subject := range subjects {
+			s, _ := subject.(string)
+			if seen[s] {
+				return s
+			}
+			seen[s] = true
+		}
+	}
+	return ""
+}
+
+func (f *fakeCaddyAdmin) apply(w http.ResponseWriter, r *http.Request) {
 	var body any
 	if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {

@@ -1,12 +1,16 @@
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
+import { SummaryList } from '../components/SummaryList';
 import { type FormEvent, useCallback, useEffect, useId, useState } from 'react';
 import { AlertTriangle, ArchiveRestore, LoaderCircle, RefreshCw, Trash2, Undo2 } from 'lucide-react';
 import { del, get, post } from '../lib/api';
 import { formatBytes } from '../lib/format';
 import { type ArchiveRow, type ArchivesResponse, type RestoreResponse, formatDay, itemLabel } from '../lib/archive';
 import { useToast } from '../components/ToastProvider';
-import { ActionForm, Badge, Button, Card, EmptyState, ErrorBanner, Loading, PageHeader, SectionHeader } from '../components/ui';
-import { ResourceList, type Column } from '../components/ResourceList';
+import { ActionForm, Badge, Button, Card, EmptyState, ErrorBanner, Loading, SectionHeader } from '../components/ui';
+import { DangerZone, DangerZoneRow, ResourceDetailPage, ResourceIndexPage, ResourceName } from '../components/resource';
+import { Cluster } from '../components/layout';
+import { indexHref, resourceHref, withSticky } from '../lib/router';
+import type { Column } from '../components/ResourceList';
 
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 
@@ -98,12 +102,10 @@ function PurgeDialog({ row, onClose, onDone }: { row?: ArchiveRow; onClose: () =
   </AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
 }
 
-/** DeletedAppsPage lists deleted applications that can still be restored. */
-export function DeletedAppsPage() {
+/** useArchives loads the deleted applications and polls while one is measured, restored or purged. */
+function useArchives() {
   const [data, setData] = useState<ArchivesResponse>();
   const [error, setError] = useState('');
-  const [restoring, setRestoring] = useState<ArchiveRow>();
-  const [purging, setPurging] = useState<ArchiveRow>();
   const load = useCallback(async () => {
     try { setData(await get<ArchivesResponse>('control/archives')); setError(''); } catch (reason) { setError(message(reason)); }
   }, []);
@@ -114,26 +116,66 @@ export function DeletedAppsPage() {
     const timer = setInterval(() => { void load(); }, 5000);
     return () => clearInterval(timer);
   }, [pending, load]);
+  return { data, error, load };
+}
+
+function kindLabel(row: ArchiveRow) { return row.kind === 'native' ? `native ${row.runtime || ''}`.trim() : row.kind; }
+
+/** DeletedAppsPage: the index of deleted applications that can still be restored. */
+export function DeletedAppsPage() {
+  const { data, error, load } = useArchives();
   const columns: Column<ArchiveRow>[] = [
-    { id: 'app', label: 'Application', render: row => <div className="retained-name"><strong>{row.app_id}</strong><small>{row.repository}{row.branch ? ` · ${row.branch}` : ''}</small><small>{row.server_name} · {row.kind === 'native' ? `native ${row.runtime || ''}`.trim() : row.kind}</small></div> },
-    { id: 'deleted', label: 'Deleted', render: row => <div className="retained-name"><span title={new Date(row.deleted_at).toLocaleString()}>{formatDay(row.deleted_at)}</span>{row.deleted_by && <small>by {row.deleted_by}</small>}{row.reason && <small>“{row.reason}”</small>}</div> },
-    { id: 'left', label: 'Restorable', render: row => <div className="retained-name">{phaseBadge(row)}<small>until {formatDay(row.expires_at)}</small>{row.error && <small className="field-error">{row.error}</small>}</div> },
-    { id: 'kept', label: 'Kept', render: row => <div className="retained-name"><strong>{keptSize(row)}</strong>{row.kept.filter(item => item.kind !== 'settings').map(item => <small key={`${item.kind}/${item.name}`} title={item.name}>{itemLabel(item)}: {item.detail || item.name}{item.measured ? ` · ${formatBytes(item.size_bytes)}` : ''}</small>)}</div> },
-    { id: 'removed', label: 'Deleted with it', render: row => <div className="retained-name">{row.deleted.map(item => <small key={`${item.kind}/${item.name}`}>{itemLabel(item)}{item.count ? ` (${item.count})` : ''}: {item.detail || item.name}</small>)}</div> },
-    { id: 'actions', label: 'Actions', render: row => <div className="row-actions nowrap-actions"><Button size="sm" onClick={() => setRestoring(row)} disabled={row.phase === 'deleting' || row.phase === 'purging'}><Undo2 size={15} />Restore</Button><Button size="sm" variant="danger" onClick={() => setPurging(row)} disabled={row.phase === 'restoring' || row.phase === 'deleting'}><Trash2 size={15} />Delete now</Button></div> },
+    { id: 'app', label: 'Application', render: row => <ResourceName href={withSticky(resourceHref('deleted-apps', row.id))} name={row.app_id} detail={`${row.repository || ''}${row.branch ? ` · ${row.branch}` : ''}`} /> },
+    { id: 'left', label: 'Status', render: row => <div className="retained-name">{phaseBadge(row)}<small>until {formatDay(row.expires_at)}</small>{row.error && <small className="field-error">{row.error}</small>}</div> },
+    { id: 'server', label: 'Server', render: row => <div className="retained-name"><span>{row.server_name}</span><small>{kindLabel(row)}</small></div> },
+    { id: 'kept', label: 'Kept', render: row => keptSize(row) },
+    { id: 'deleted', label: 'Deleted', render: row => <div className="retained-name"><span title={new Date(row.deleted_at).toLocaleString()}>{formatDay(row.deleted_at)}</span>{row.deleted_by && <small>by {row.deleted_by}</small>}</div> },
   ];
-  return <>
-    <PageHeader eyebrow="Workspace" title="Deleted apps" description={`A deleted application can be restored for ${data?.retention_days || 90} days: its settings, files and databases are kept with their logins disabled. After that the server deletes it permanently, databases included.`} actions={<Button size="sm" onClick={() => { void load(); }}><RefreshCw size={15} />Refresh</Button>} />
-    {error && <ErrorBanner>{error}</ErrorBanner>}
-    {data?.unavailable_servers.length ? <ErrorBanner>Not answering: {data.unavailable_servers.join(', ')}. Their deleted applications show the panel's last copy.</ErrorBanner> : null}
-    <Card data-deleted-apps>
-      {!data && !error ? <Loading label="Loading deleted applications…" /> : data && <ResourceList rows={data.archives} columns={columns} rowKey={row => `${row.server_id}/${row.id}`} empty={<EmptyState icon={<ArchiveRestore />} title="No deleted applications" description="Deleted applications appear here while they can be restored." />} />}
-    </Card>
+  return <ResourceIndexPage resource="deleted-apps" title="Deleted apps" description={`A deleted application can be restored for ${data?.retention_days || 90} days, with its settings, files and databases.`} count={data?.archives.length}
+    actions={<Button onClick={() => { void load(); }}><RefreshCw size={15} />Refresh</Button>} loading={!data && !error}
+    notices={<>{error && <ErrorBanner>{error}</ErrorBanner>}{data?.unavailable_servers.length ? <ErrorBanner>Not answering: {data.unavailable_servers.join(', ')}. Their deleted applications show the panel's last copy.</ErrorBanner> : null}</>}
+    rows={data?.archives || []} columns={columns} rowKey={row => `${row.server_id}/${row.id}`}
+    empty={<EmptyState icon={<ArchiveRestore />} title="No deleted applications" description="Deleted applications appear here while they can be restored." />}>
     {data && data.purged.length > 0 && <Card>
       <SectionHeader title="Permanently deleted" description="The latest applications the servers deleted for good, on expiry or on request." />
       <ul className="plain-list">{data.purged.map(p => <li key={`${p.server_id}/${p.archive_id}`}><strong>{p.app_id}</strong> on {p.server_name} · {formatDay(p.at)} · {p.trigger === 'expiry' ? 'expired' : `deleted${p.by ? ` by ${p.by}` : ''}`}</li>)}</ul>
     </Card>}
-    <RestoreDialog row={restoring} onClose={() => setRestoring(undefined)} onDone={load} />
-    <PurgeDialog row={purging} onClose={() => setPurging(undefined)} onDone={load} />
-  </>;
+  </ResourceIndexPage>;
+}
+
+/** DeletedAppDetailPage: one deleted application; Overview and Settings (restore, Danger zone). */
+export function DeletedAppDetailPage({ id, tab }: { id: string; tab: string }) {
+  const { data, error, load } = useArchives();
+  const row = data?.archives.find(item => item.id === id);
+  const [restoring, setRestoring] = useState<ArchiveRow>();
+  const [purging, setPurging] = useState<ArchiveRow>();
+  const restoreBlocked = !row || row.phase === 'deleting' || row.phase === 'purging';
+  const done = async () => { await load(); };
+  return <ResourceDetailPage resource="deleted-apps" id={id} tab={tab} title={row?.app_id || id}
+    status={row && phaseBadge(row)}
+    facts={row ? [row.server_name, kindLabel(row), `deleted ${formatDay(row.deleted_at)}`] : undefined}
+    actions={row ? <Button variant="primary" onClick={() => setRestoring(row)} disabled={restoreBlocked}><Undo2 size={15} />Restore</Button> : undefined}
+    notices={error ? <ErrorBanner>{error}</ErrorBanner> : undefined}
+    missing={!data && !error ? <Loading label="Loading deleted application…" /> : !row ? <EmptyState icon={<ArchiveRestore />} title="Not in deleted apps" description="It was restored or deleted permanently." action={<a className="button button-secondary button-md" href={withSticky(indexHref('deleted-apps'))}>Open deleted apps</a>} /> : undefined}>
+    {row && tab === 'overview' && <div className="settings-stack">
+      <Card><SectionHeader title="Summary" /><SummaryList items={[
+        { label: 'Repository', value: `${row.repository || '—'}${row.branch ? ` · ${row.branch}` : ''}` },
+        { label: 'Server', value: <a href={withSticky(resourceHref('servers', row.server_id))}>{row.server_name}</a> },
+        { label: 'Hostnames', value: row.hostnames.join(', ') || 'None' },
+        { label: 'Deleted', value: `${formatDay(row.deleted_at)}${row.deleted_by ? ` by ${row.deleted_by}` : ''}` },
+        row.reason && { label: 'Reason', value: row.reason },
+        { label: 'Restorable until', value: formatDay(row.expires_at) },
+        { label: 'Kept', value: keptSize(row) },
+        row.error && { label: 'Problem', value: row.error },
+      ]} /></Card>
+      <Card><SectionHeader title="Kept for restoring" /><ul className="plain-list">{row.kept.filter(item => item.kind !== 'settings').map(item => <li key={`${item.kind}/${item.name}`} title={item.name}>{itemLabel(item)}: {item.detail || item.name}{item.measured ? ` · ${formatBytes(item.size_bytes)}` : ''}</li>)}</ul></Card>
+      <Card><SectionHeader title="Deleted with it" /><ul className="plain-list">{row.deleted.map(item => <li key={`${item.kind}/${item.name}`}>{itemLabel(item)}{item.count ? ` (${item.count})` : ''}: {item.detail || item.name}</li>)}</ul></Card>
+    </div>}
+    {row && tab === 'settings' && <div className="settings-stack">
+      <Card className="form-card"><SectionHeader title="Restore" description="Brings the application back with its settings, files and databases, under its own or a new name." /><Cluster><Button variant="primary" onClick={() => setRestoring(row)} disabled={restoreBlocked}><Undo2 size={15} />Restore application</Button></Cluster></Card>
+      <DangerZone id={row.id} description="Deleting now cannot be undone."><DangerZoneRow title="Delete permanently" description="The server deletes the kept files and databases now instead of on expiry." action={<Button variant="danger" onClick={() => setPurging(row)} disabled={row.phase === 'restoring' || row.phase === 'deleting'}><Trash2 size={15} />Delete now</Button>} /></DangerZone>
+    </div>}
+    <RestoreDialog row={restoring} onClose={() => setRestoring(undefined)} onDone={done} />
+    <PurgeDialog row={purging} onClose={() => setPurging(undefined)} onDone={done} />
+  </ResourceDetailPage>;
 }

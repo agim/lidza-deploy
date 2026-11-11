@@ -3,6 +3,7 @@ package control
 import (
 	"errors"
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/agentlink"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -19,7 +20,13 @@ func validateServers(servers []Server) error {
 		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || len(s.Token) < 32 || !regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`).MatchString(s.ID) || len(s.Name) > 100 || ids[s.ID] || urls[s.URL] {
 			return errors.New("invalid or duplicate agent configuration")
 		}
-		if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost")) {
+		// A link server's calls ride the agent's own outbound HTTPS
+		// connection to the panel (agent_link.go).
+		_, linked := agentlink.ServerOf(u.Host)
+		if linked && s.URL != agentlink.URL(s.ID) {
+			return errors.New("invalid or duplicate agent configuration")
+		}
+		if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || linked)) {
 			return errors.New("remote agents require HTTPS")
 		}
 		ids[s.ID], urls[s.URL] = true, true

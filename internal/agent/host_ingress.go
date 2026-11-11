@@ -64,6 +64,10 @@ type HostIngressStatus struct {
 	// directories of a fronting Caddy (error_pages.go); nil for the agent
 	// proxy and in cached detections.
 	ErrorPages *HostErrorPages `json:"error_pages,omitempty"`
+	// TLS is the latest TLS automation upkeep of a fronting Caddy: the
+	// policies with an HTTP fallback, moved and uncertified hostnames
+	// (caddy_tls_failover.go); nil for the agent proxy.
+	TLS *CaddyTLSReport `json:"tls,omitempty"`
 	// adminServer is the HTTPS server of a detected admin-API Caddy in
 	// either mode; the automatic gateway publishes protected routes there
 	// (gateway_auto.go).
@@ -371,6 +375,7 @@ func (m *Manager) hostIngressReport(ctx context.Context, refresh bool) HostIngre
 		bounded, cancel := context.WithTimeout(ctx, 2*hostIngressProbeTimeout)
 		status.ErrorPages = m.hostErrorPages(bounded)
 		cancel()
+		status.TLS = m.caddyTLSReport()
 	}
 	return status
 }

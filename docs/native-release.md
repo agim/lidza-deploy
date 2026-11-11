@@ -95,6 +95,16 @@ are read as root; the units of an adopted application through the owner's
 `systemctl --user` and `journalctl --user`. Values from the application's
 environment files are masked in this output as in the application's log view.
 
+Saving an environment variable from the panel rewrites the policy's
+environment files and then restarts the application with them: a `restart`
+job (listed with the deployments) restarts the policy's units in order the way
+a deploy does after publishing (`release.Restart`; each must be running again,
+socket-activated servers keep their socket) and runs the health check, with no
+build and no rollback. An adopted application needs the server's service
+control for that; with it off, the change is saved and the save says the
+application must be restarted (`saved_restart_required`). A branch or
+toolchains change starts a deploy instead; see `internal/agent/settings_apply.go`.
+
 ```
 ==> checking health
 ==> last health response: HTTP 503
@@ -254,8 +264,8 @@ managed Ruby as well.
 Policies with `toolchains: account` keep using the account's version manager
 (asdf), unchanged. To move such an application to a managed Ruby, set
 Toolchains to managed in its settings (or `toolchains: managed` in its
-policy). Nothing changes until the next deploy, which installs the pinned
-Ruby and builds the release with it; rollbacks to earlier releases keep the
+policy). Saving it from the settings starts a deploy (a build-affecting
+change), which installs the pinned Ruby and builds the release with it; rollbacks to earlier releases keep the
 Ruby they were built with. Service units that the operator maintains keep
 their own `PATH`: point them at `<root>/current/.lidza-toolchain/ruby/bin`
 when the processes should run the managed Ruby too. No application is

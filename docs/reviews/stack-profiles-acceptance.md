@@ -97,17 +97,16 @@ npm run test:ui
 npm run build
 ```
 
-Serve `web/static` locally and set TEST_WEB_URL for browser checks:
+Browser checks (they serve `web/static` themselves):
 
 ```sh
-node tests/browser/stack-profiles.cjs
-node tests/browser/template-redesign.cjs
-node tests/browser/template-workflows.cjs
+npm run test:browser -- applications layout-spacing
 ```
 
-The profile browser test checks creation with managed PostgreSQL and retention of
-profile edits across settings tabs at 390 and 1440 px. The broad browser sweep
-checks 27 routes at 320, 390, 768 and 1440 px, including spacing and overflow.
+The `applications` suite checks creation with a runtime profile and managed
+PostgreSQL, and saving a profile change in the Settings tab, at phone and
+desktop widths. `layout-spacing` checks every view at 390 and 1440 px,
+including spacing and overflow.
 
 A nominal 4 GiB VM can expose less RAM through Docker's MemTotal. Kernel-reserved
 RAM is charged to the existing host allowance within the documented bound;

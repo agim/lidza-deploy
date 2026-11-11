@@ -38,4 +38,4 @@ Public apps use **Connect repository** after the repository is selected in GitHu
 
 Upgrade both the control panel and hosting agents together: older agents reject the new checkout-ticket fields. No centralized authorization broker is needed. The owner can register one private App per control panel; additional account ownership requires a separate control panel in this first implementation.
 
-Run `node tests/browser/github-app.cjs` in the prepared development environment for the manifest form/CSP/organization/repository-selection UI fixture. Protocol tests cover one-use state, wrong installation, encrypted persistence, selected repository listing, expired/revoked tokens, signed/deduplicated events and agent checkout tickets.
+Protocol tests cover one-use state, wrong installation, encrypted persistence, selected repository listing, expired/revoked tokens, signed/deduplicated events and agent checkout tickets.

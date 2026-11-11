@@ -2,6 +2,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, expect, it, vi } from 'vitest';
 import { DefaultsPage } from './WorkspacePages';
 import { ApplyDefaultsButton } from '../components/ApplyDefaults';
+import { useRoute } from '../lib/router';
+
+// The page shows the tab the URL names, as App does.
+function Routed() { const route = useRoute(); return <DefaultsPage tab={route.tab} />; }
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -15,7 +19,7 @@ const profile = {
   },
 };
 
-it('edits and saves workspace defaults per runtime and shows API validation messages', { timeout: 15000 }, async () => {
+it('edits and saves application defaults per runtime and shows API validation messages', { timeout: 15000 }, async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     requests.push({ url: String(input), init });
@@ -26,10 +30,12 @@ it('edits and saves workspace defaults per runtime and shows API validation mess
     }
     return { ok: true, status: 200, json: async () => profile } as Response;
   }));
-  render(<DefaultsPage />);
+  history.replaceState(null, '', '/console/defaults');
+  render(<Routed />);
   for (const label of ['Līdza (Go)', 'Ruby on Rails', 'Astro', 'Node.js']) expect(await screen.findByRole('tab', { name: label })).toBeInTheDocument();
   expect(await screen.findByLabelText('DB_MIGRATE value')).toHaveValue('true');
   fireEvent.mouseDown(screen.getByRole('tab', { name: 'Ruby on Rails' }), { button: 0, ctrlKey: false });
+  expect(location.pathname).toBe('/console/defaults/rails');
   expect(await screen.findByLabelText('RAILS_ENV value')).toHaveValue('production');
   fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
   const names = screen.getAllByRole('textbox', { name: 'Variable name' });
@@ -54,7 +60,7 @@ it('reviews the application runtime set before applying defaults', async () => {
   }));
   const applied = vi.fn();
   render(<ApplyDefaultsButton appID="api" runtime="node" presentKeys={['NODE_ENV']} onApplied={applied} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Apply workspace defaults' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Apply application defaults' }));
   expect(await screen.findByRole('heading', { name: 'Apply Node.js defaults' })).toBeInTheDocument();
   expect(await screen.findByRole('checkbox', { name: 'TZ' })).toBeChecked();
   expect(screen.getByRole('checkbox', { name: 'NODE_ENV' })).not.toBeChecked();

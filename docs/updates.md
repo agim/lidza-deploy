@@ -85,6 +85,39 @@ here rather than on a host. Publish `dist/signed/*` as a GitHub Release with
 the same tag on the channel repository. `LIDZA_BUNDLE_SIGNING_KEY` (PEM
 contents) can replace the key file in CI.
 
+Before tagging, `scripts/release-check.sh [VERSION]` runs the release
+validation locally: `npm ci`, `npm run typecheck`, `npm run test:ui`,
+`npm run build` with a check that the build reproduces the committed console
+assets, `go vet ./...`, the full `go test -race ./...` and
+`tests/upgrade-signed-bundle.sh`. Independent checks run at the same time
+(the Go checks start once the build has rewritten the embedded assets); each
+writes its own log, and the summary lists every check with its time and
+shows the end of the log of each one that failed. It needs a clean working
+tree. A release is only tagged when it passes; a bundle built locally after
+only a few targeted tests is not a substitute. `--browser` also runs
+`npm run test:browser` (tests/browser/run.cjs) against the fresh build, as
+the release workflow's browser job does; use it when the console changed.
+
+`go test` reuses cached results of packages whose sources, test files and
+read inputs are unchanged; `GOFLAGS=-count=1` forces a full rerun.
+On WSL with `node_modules` linked from the Windows drive (`/mnt/c`), the
+checks are bound by that file system: vitest sets up jsdom for every test
+file from there, and `npm run test:ui` takes about six minutes instead of
+about fifteen seconds. Linking a copy on the Linux file system avoids it;
+the copy must itself be named `node_modules` so Node resolves packages
+inside it:
+
+```sh
+mkdir -p ~/.cache/lidza-deps
+cp -a /mnt/c/.../node_modules ~/.cache/lidza-deps/   # again after dependency changes
+ln -sfn ~/.cache/lidza-deps/node_modules node_modules
+```
+
+The Go tests run as any regular (non-root) account: the native fixtures use
+the account running the suite as the deployment user and fake its systemd
+user manager and crontab, so they do not depend on the machine's accounts
+or services.
+
 Version rules: channel versions are semantic versions with the `private.N`
 pre-release identifier. Agents refuse anything that is not strictly newer
 than their running version, so a distribution line must be numbered above

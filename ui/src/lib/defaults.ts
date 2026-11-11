@@ -1,4 +1,4 @@
-// Workspace defaults per application runtime. The control panel returns the
+// Application defaults per runtime. The control panel returns the
 // Līdza (Go) set at the top level, as before, and every set under `runtimes`.
 export type DefaultsRuntime = 'go' | 'rails' | 'astro' | 'node';
 export interface DefaultsProfile { values?: Record<string, string>; revision?: string }

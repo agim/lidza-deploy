@@ -114,6 +114,9 @@ type DatabaseView struct {
 	// Removed is when the database's data was removed; only its backups
 	// remain.
 	Removed time.Time `json:"removed,omitzero"`
+	// Warnings are conditions that stop this database's backups, such as a
+	// pinned backup tool that changed and could not be re-approved.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func (p BackupPolicy) Validate() error {
@@ -221,6 +224,14 @@ func (m *Manager) databaseViews() []DatabaseView {
 		}
 		if d.Operation != "" {
 			view.Progress = m.progress.snapshot(databaseProgressKey(id))
+		}
+		if binding, native := m.data.NativeDatabases[id]; native && live {
+			if warning := m.backupToolWarningLocked(binding.Policy); warning != "" {
+				view.Warnings = append(view.Warnings, warning)
+			}
+			if warning := m.databaseConfigWarningLocked(binding.Policy); warning != "" {
+				view.Warnings = append(view.Warnings, warning)
+			}
 		}
 		out = append(out, view)
 	}

@@ -10,34 +10,34 @@ vi.mock('./WorkspaceContext', () => ({ useWorkspace: () => ({ apps:fixture.apps,
 vi.mock('../components/ToastProvider', () => ({ useToast:()=>vi.fn() }));
 afterEach(() => { cleanup(); fixture.error=''; });
 
-it('hydrates before showing the list and retains view/search and DOM identity through inventory outages/recovery', async () => {
+it('hydrates before showing the list and retains the search and DOM identity through inventory outages/recovery', async () => {
   let resolve!: (v:{subject:string;values:Record<string,unknown>})=>void;
-  let values: Record<string,unknown> = { 'deploy.apps.view':'list', 'deploy.apps.query':'portal' };
+  let values: Record<string,unknown> = { 'deploy.apps.query':'portal' };
   const store = new DisplayPreferences({ read:()=>new Promise(done=>{resolve=done;}), write:async (subject,patch)=>({subject,values:{...values,...patch}}) });
-  const tree = <PreferencesProvider store={store}><AppShell route={{page:'applications'}}><ApplicationsPage/></AppShell></PreferencesProvider>;
+  const tree = <PreferencesProvider store={store}><AppShell route={{view:'index',collection:'applications'}}><ApplicationsPage/></AppShell></PreferencesProvider>;
   const page=render(tree);
-  expect(screen.queryByRole('button',{name:'Grid view'})).toBeNull();
+  expect(screen.queryByRole('searchbox')).toBeNull();
   await act(async()=>{resolve({subject:'alice',values});});
-  const list=await screen.findByRole('button',{name:'List view'}), search=screen.getByRole('searchbox');
-  expect(list).toHaveAttribute('aria-pressed','true'); expect(search).toHaveValue('portal');
+  const search=await screen.findByRole('searchbox'), list=document.querySelector('[data-resource-list]');
+  expect(search).toHaveValue('portal'); expect(list).not.toBeNull();
   fireEvent.change(search,{target:{value:'port'}});
   fixture.error='Inventory temporarily unavailable';
-  page.rerender(<PreferencesProvider store={store}><AppShell route={{page:'applications'}}><ApplicationsPage/></AppShell></PreferencesProvider>);
-  expect(screen.getByRole('searchbox')).toBe(search); expect(search).toHaveValue('port'); expect(screen.getByRole('button',{name:'List view'})).toBe(list);
+  page.rerender(<PreferencesProvider store={store}><AppShell route={{view:'index',collection:'applications'}}><ApplicationsPage/></AppShell></PreferencesProvider>);
+  expect(screen.getByRole('searchbox')).toBe(search); expect(search).toHaveValue('port'); expect(document.querySelector('[data-resource-list]')).toBe(list);
   fixture.error=''; fixture.apps=[...fixture.apps];
-  page.rerender(<PreferencesProvider store={store}><AppShell route={{page:'applications'}}><ApplicationsPage/></AppShell></PreferencesProvider>);
-  expect(list).toHaveAttribute('aria-pressed','true'); expect(search).toHaveValue('port');
+  page.rerender(<PreferencesProvider store={store}><AppShell route={{view:'index',collection:'applications'}}><ApplicationsPage/></AppShell></PreferencesProvider>);
+  expect(document.querySelector('[data-resource-list]')).toBe(list); expect(search).toHaveValue('port');
   await act(async()=>{await store.flush();});
 });
 
-it('retries a failed preference connection on browser reconnection while preserving the chosen layout', async () => {
+it('retries a failed preference connection on browser reconnection while preserving the chosen filter', async () => {
   let offline=true;
   const store=new DisplayPreferences({read:async()=>{if(offline)throw new Error('offline');return {subject:'alice',values:{}};},write:async(subject,values)=>({subject,values})});
-  render(<PreferencesProvider store={store}><AppShell route={{page:'applications'}}><ApplicationsPage/></AppShell></PreferencesProvider>);
+  render(<PreferencesProvider store={store}><AppShell route={{view:'index',collection:'applications'}}><ApplicationsPage/></AppShell></PreferencesProvider>);
   await screen.findByText(/Display choices could not sync/);
-  fireEvent.click(screen.getByRole('button',{name:'List view'}));
+  fireEvent.change(screen.getByRole('searchbox'),{target:{value:'port'}});
   offline=false;
   await act(async()=>{fireEvent(window,new Event('online'));});
   await waitFor(()=>expect(screen.queryByText(/Display choices could not sync/)).toBeNull());
-  expect(screen.getByRole('button',{name:'List view'})).toHaveAttribute('aria-pressed','true');
+  expect(screen.getByRole('searchbox')).toHaveValue('port');
 });

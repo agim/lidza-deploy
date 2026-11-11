@@ -1,6 +1,6 @@
 # Līdza Deploy
 
-A deployment agent and a separate web control panel built with Līdza v0.1.132. One agent hosts multiple Līdza (Go), Ruby on Rails, Node and Astro applications, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
+A deployment agent and a separate web control panel built with Līdza v0.1.139. One agent hosts multiple Līdza (Go), Ruby on Rails, Node and Astro applications, each on its own FQDN with automatic HTTPS through Caddy. The control panel can run on that server or on another host.
 
 The MonolithCMS agent was copied/adapted into this repository; the original repository was not changed. See [provenance](docs/provenance.md).
 
@@ -17,21 +17,27 @@ See [Remote backups](docs/remote-backups.md) for saved credential indicators, of
 - **Native releases for every runtime.** Līdza (Go), Rails, Node and Astro applications build into `releases/<timestamp>`, switch a `current` link and keep `shared/` files, then run as hardened systemd services under a dedicated system user per application. Static Astro sites are served directly by Caddy. Rollback re-links the previous release. See [native releases](docs/native-release.md), [application runtimes](docs/application-runtimes.md) and [Rails applications](docs/rails-applications.md).
 - **Repository detection.** The new-application wizard asks for a name and repository, then detects the runtime, processes, database and Redis needs, branch and toolchain pins, explains the choice and lets you override it. Multi-service compose projects and unrecognized Dockerfiles stay on the container runtime; the agent installs Docker on a server only when such an app needs it.
 - **Host data services.** New native apps can get their own PostgreSQL database and non-superuser role, their own Redis instance and their own [ClickHouse](docs/clickhouse.md) database on the server, with scheduled and pre-deployment backups. ClickHouse is detected from the repository and offered in the wizard like PostgreSQL and Redis.
-- **Backups you can tune from the panel.** Off-site backups keep 7 daily and 4 weekly copies by default, configurable per workspace and per database with a reviewed cleanup plan. Each database has a **Before deploys** policy (fresh backup, reuse a recent verified backup, or scheduled backups only for secondary databases) and a list of tables whose data backups skip. See [databases and backups](docs/databases-backups.md).
+- **Backups you can tune from the panel.** Off-site backups keep 7 daily and 4 weekly copies by default, configurable for the control panel and per database with a reviewed cleanup plan. Each database has a **Before deploys** policy (fresh backup, reuse a recent verified backup, or scheduled backups only for secondary databases) and a list of tables whose data backups skip. See [databases and backups](docs/databases-backups.md).
 - **Runtime defaults** per runtime seed environment values for new applications.
 - **Adaptive builds.** Builds run one at a time per server with a memory cap derived from what the host has free, learn each step's peak, retry once after running out of memory, and use the host's cores at low priority. Ruby versions a Rails app pins are installed on demand into the managed toolchain root; unused Go, Node, Rust and Ruby versions are removed by server cleanup.
 - **Host care.** Each server shows pending OS, Caddy, PostgreSQL and Redis updates and applies security updates; disruptive upgrades (container runtime, databases, Caddy, kernel, systemd) wait for confirmation or the maintenance window. A managed host firewall can be reviewed and applied with automatic rollback if the panel loses contact. Runtime-aware server cleanup prunes old releases, caches, toolchains, images and logs with a preview of what would be freed, and a disk reserve guards transfers, backups and builds. See [operating-system updates](docs/host-updates.md).
 - **Moving applications** between servers from the panel. The application stays live while data copies in the background; PostgreSQL databases replicate continuously (carried through the control panel, so no extra ports are opened), ClickHouse and append-only tables copy only what changed at the final sync, and the cutover can run the final sync and finish on its own once authoritative DNS points to the destination. Redirect domains move with the application. The plan checks published ports and, for applications that send mail from the server, SPF, MX and (optional) reverse DNS; applications sending through a mail provider skip the reverse-DNS check. Steps retry transient failures and resume transfers by byte offset, and copies are verified by digest and row counts. See [moving applications](docs/moving-applications.md).
 - **Redirect domains** for every runtime: hostnames that redirect (301/302/307/308, keeping path and query or not) to the application, answered by the web server even while the application is stopped, with HTTPS and fleet-wide conflict checks. See [redirect domains](docs/redirect-domains.md).
 - **Delete into a restorable archive.** Deleting an application keeps its settings, files and databases (logins disabled) for 90 days and frees its hostnames at once; **Deleted apps** restores it with a fresh deployment, and the archive is purged after 90 days or on request. Adopted applications are archived with exactly what belongs to them. See [deleting and restoring applications](docs/deleting-applications.md).
-- **Application controls.** Restart, Stop/Start and Delete for container, stack and native applications from the card menu and a Danger zone in the settings; stopped native apps stay down across reboots. See [stop, start and restart](docs/application-state.md).
+- **Application controls.** Restart, Stop/Start and Delete for container, stack and native applications from the application's actions menu and the Danger zone of its Settings tab; stopped native apps stay down across reboots. See [stop, start and restart](docs/application-state.md).
 - **Resource tuning.** Each server sizes PostgreSQL (with per-application connection caps from observed peaks), Redis and ClickHouse from its CPUs, memory, disk and application count at start and hourly, with dry runs, overrides, a pause switch, restart-only settings held for the maintenance window and a move to a private Redis. See [resource tuning](docs/resource-tuning.md).
-- **Control panel move.** A guided, resumable move of the control panel to another server: standby install, data and database copy, certificate and route, a read-only cutover and the DNS wait. See [moving the control panel](docs/control-panel-move.md).
+- **Control panel move.** A guided, resumable move of the control panel to another server: standby install, data and database copy, certificate and route, a read-only cutover and the DNS wait, which also waits for public resolvers' cached answers to expire. The old server stays in the server list by default; when the new panel cannot reach its agent, the agent connects out to the panel over HTTPS (an agent link), so no port is opened. A retired panel's hostname is forwarded to the new panel for 7 days. See [moving the control panel](docs/control-panel-move.md).
 - **Mail TLS checks.** Releases that publish a mail port without `public_tls` are warned about, and published mail ports are probed for a working STARTTLS handshake after each deployment and every 15 minutes.
 - **Activity drawer.** A bell in the console header lists running, waiting and recently finished moves, deployments, update rollouts and retrying jobs, with progress, what each waits for and a link to its page.
 - **Protected gateway on demand.** Container releases with gateway transport get the host's mTLS gateway and their Caddy routes set up automatically on hosts whose Caddy has its admin API. See [gateway transport](docs/gateway-transport.md).
 - **Native parity.** Native applications have per-process usage and restart, runtime logs for every unit, data services in Data & storage, error collection from their service journals, and removal that keeps their data as a retained resource that can be removed later from the panel.
 - **Managed error pages and TLS automation.** On hosts whose web ports belong to an existing Caddy, the agent keeps neutral error and maintenance pages, publishes TLS automation subjects for created apps, and shows the detected ingress on the server page. See [domains and HTTPS](docs/domains-ssl.md).
+- **Settings apply on save.** Saving an application's settings restarts it for runtime changes (container apps reload their image with readiness checks; native apps rewrite their environment and restart their units in order) and starts a deployment for build changes such as the branch, build directory, toolchains or a static site's variables; the button then reads **Save and deploy** and the result links to the deployment. Hostnames and backup policy apply immediately.
+- **Certificates that do not get stuck.** Hostnames the agent adds always go to a Caddy TLS policy that validates over HTTP, and policies that validate only through a DNS provider get an HTTP fallback, so a hostname whose zone the DNS provider does not host still gets a certificate. The server's Web ingress tab lists hostnames without certificates and why.
+- **Backups that survive package updates.** A distribution update of a pinned `sqlite3` or `pg_dump` is re-approved by the agent when the package manager vouches for the new binary (owning package, checksums, a distribution-archive origin), and a Rails `config/database.yml` change that keeps every database's identity (only pool or timeout settings changed) is re-approved too; anything else is refused with the reason as a server and database warning.
+- **Journal care.** The agent sizes the systemd journal to the disk (1% of the filesystem within 1–4 GiB, adjustable in the server's Tuning tab) with its own drop-in, and the error collector reads every native unit through one long-lived journal stream that resumes from its cursor.
+- **Server settings in the panel.** Service control of adopted applications and system log access for the shared deployment account are switches on the server's Agent tab. See [SSH access](docs/ssh-access.md#reading-service-logs-of-adopted-applications).
+- **Consistent console structure.** Every resource has an index table and a detail page with tabs (one URL per tab, linked breadcrumbs, old links redirected); servers have Overview, Web ingress, Updates, Tuning, Firewall and more as tabs. See [console structure](docs/console-structure.md).
 - **Signed update channel** for distributions that publish their own builds; the public build updates from this project's releases. See [updates](docs/updates.md).
 
 Hostnames served by other web server routes on a host can be [reserved](docs/reserved-hostnames.md) so no application claims them.
@@ -49,10 +55,10 @@ An optional [independent application ingress](docs/independent-ingress.md) can k
 - Application Errors dashboard: automatic agent console collection, central storage, grouping/search and masked stack details; optional framework analytics reports.
 - Classified application environment: ordinary settings remain editable, credentials are masked with a short preview and require a fresh purpose-bound two-factor check to reveal.
 - A per-server root console requires administrator access, enrolled two-factor authentication and a renewable 15-minute just-in-time unlock for that specific server; executions are audited without storing commands or output in the audit log.
-- The selected **Signal** interface uses Līdza’s released dark brand palette. Standalone HTML previews remain available.
+- The selected **Signal** interface uses Līdza’s released dark brand palette.
 - GUI server inventory, branch/domain settings, write-only environment edits, and deletion into a 90-day restorable archive.
 
-This supports one fleet team with admin, deployer and viewer roles, with one active control-panel process and one agent process per deployment host. Server inventory is managed in the GUI and stored encrypted; a private JSON file can seed initial setup. [Create applications](docs/new-application.md) on a dedicated page with repository, branch, hosting, database and environment guidance. New applications default to `DB_MIGRATE=true` to apply committed migrations before startup; explicit opt-outs and existing applications' policies are preserved. Workspace [Application defaults](docs/application-defaults.md) can seed a shared admin allowlist, migration policy, mail settings, and log level once at first deployment; existing apps require an explicit review before defaults are applied. Apps can opt into [customer hostnames with automatic HTTPS](docs/customer-hostnames.md) using Līdza’s `App.TLSHosts` policy. Apps can be [restarted, stopped and started](docs/application-state.md) from the card menu or the Danger zone, retaining data and configuration while pausing app processes and automatic deployments. The GUI's searchable Help section has articles on first-admin setup, migrations, environment variables, backups, DNS/HTTPS, redirect domains, stopping and deleting applications, restoring deleted ones, database and cache sizing, moving applications and the control panel, Activity, mail ports, Docker on demand, the protected gateway and server updates. Cloud-server provisioning, scaling, and zero-downtime database migrations are future product work.
+This supports one fleet team with admin, deployer and viewer roles, with one active control-panel process and one agent process per deployment host. Server inventory is managed in the GUI and stored encrypted; a private JSON file can seed initial setup. [Create applications](docs/new-application.md) on a dedicated page with repository, branch, hosting, database and environment guidance. New applications default to `DB_MIGRATE=true` to apply committed migrations before startup; explicit opt-outs and existing applications' policies are preserved. [Application defaults](docs/application-defaults.md) can seed a shared admin allowlist, migration policy, mail settings, and log level once at first deployment; existing apps require an explicit review before defaults are applied. Apps can opt into [customer hostnames with automatic HTTPS](docs/customer-hostnames.md) using Līdza’s `App.TLSHosts` policy. Apps can be [restarted, stopped and started](docs/application-state.md) from the application's actions menu or the Danger zone, retaining data and configuration while pausing app processes and automatic deployments. The GUI's searchable Help section has articles on first-admin setup, migrations, environment variables, backups, DNS/HTTPS, redirect domains, stopping and deleting applications, restoring deleted ones, database and cache sizing, moving applications and the control panel, Activity, mail ports, Docker on demand, the protected gateway and server updates. Cloud-server provisioning, scaling, and zero-downtime database migrations are future product work.
 
 ## Installation and first startup
 
@@ -123,7 +129,6 @@ Paste it into **Unlock setup**. Keep this key private. The wizard configures:
 
 Choose **Validate and finish setup**, then sign in at your public control-panel URL. Setup checks the database, agent and public HTTPS before completion; failed attempts can be retried. Settings are encrypted, and completed setup stays closed after restart. No database or GitHub environment-file editing is required for this installation path.
 
-[View the setup wizard](design-previews/setup-wizard.png).
 
 ### 4. Deploy your first application
 
@@ -273,7 +278,7 @@ Requires Go 1.27.3+, Git, Docker Engine, and Python 3 for the local setup helper
 
 The helper creates private local configuration in `.local/`, builds both binaries, and starts a PostgreSQL development container on loopback port 55432. It preserves existing local values. The operator email/password are in `.local/dev.env`; do not commit or share that file. The development database uses trust authentication on a loopback-only port; use authenticated PostgreSQL in production.
 
-The web process listens on port 3000. Its root page opens the selected Signal workspace at `/console/applications`; every workspace view has its own path under `/console/` (for example `/console/applications/<app>/settings/environment`, `/console/servers/<server>/console`), and the server answers each with `console.html` so links and reloads work. Old `/console.html#…` bookmarks are redirected in the browser to the matching path. `/designs.html` retains the design gallery and `/login.html` signs in through Līdza. Preview URLs use `/console/applications?demo=1&design=studio`, `terminal`, or `fleet`; the preview parameters follow every in-panel link. Preview actions never make deployment API calls. Agent API: port 9090. Internal application ingress: port 8081.
+The web process listens on port 3000. Its root page opens the console at `/console/applications`; every console view has its own path under `/console/` (for example `/console/applications/<app>/environment`, `/console/servers/<server>/console`), and the server answers each with `console.html` so links and reloads work. Old `/console.html#…` bookmarks are redirected in the browser to the matching path. `/login.html` signs in through Līdza. Agent API: port 9090. Internal application ingress: port 8081.
 
 GitHub and public DNS are optional for local development. Configure them using the [production runbook](docs/deployment.md) before enabling private repository access and external push webhooks.
 
@@ -286,20 +291,16 @@ source scripts/env.sh  # activates the prepared cloud toolchain, when present
 
 This runs race-enabled Go tests, PostgreSQL auth/queue integration, real Docker deployments of two Līdza apps, local Caddy certificate issuance with full TLS verification, database backup/restore, S3 streaming, alert queue persistence, and `go vet`. The test database is separate from the development database.
 
-With the development agent and web process running:
+Browser suites run against the built console with fixture API responses (no agent or database needed):
 
 ```sh
+npm run build
 npm ci --prefix tests/browser
-npm test --prefix tests/browser
-node tests/browser/databases.cjs
-node tests/browser/features.cjs
-node tests/browser/teams.cjs
-node tests/browser/errors.cjs
+npx --prefix tests/browser playwright install chromium
+npm run test:browser
 ```
 
-The console's spacing is enforced: `npm run lint` (also part of `npm run typecheck` and the UI suite) fails on raw pixel values in margins, paddings and gaps, and `npm run test:console` starts with `tests/browser/layout-spacing.cjs`, which measures every route at 1440 and 390 pixels. See [console design](docs/console-design.md).
-
-Browser checks need Chromium (`CHROMIUM_BIN`, defaults to `/usr/bin/chromium`). They cover all designs, demo create/deploy/logs, mobile overflow, real login, partial fleet history, and real app create/edit/remove through the local agent. Screenshots are saved under `.local/screenshots/`.
+`TEST_CHROMIUM_PATH` selects another Chromium; `TEST_WEB_URL` points the suites at a running console. The suites and the rule for adding checks are in [console design](docs/console-design.md#browser-suites).
 
 The Docker smoke test uses a local Git fixture, then real Docker build/run and real Līdza readiness checks. Private token transport and webhook APIs use fake Git/GitHub endpoints. Local TLS uses Caddy's test CA and verifies its chain and hostname; it does not prove public ACME/DNS configuration or future renewal. Live GitHub consent, a real private-repository deployment, and public ACME issuance require production configuration and remain external acceptance checks.
 
@@ -313,8 +314,6 @@ The Docker smoke test uses a local Git fixture, then real Docker build/run and r
 - `deploy`: example configuration, Caddyfile, and systemd units.
 
 [Framework-first rule](AGENTS.md): reuse Līdza; file reusable gaps upstream and wait for a released capability. [Issue #23](https://github.com/agim/lidza/issues/23) shipped in v0.1.61 and is integrated here.
-
-Database GUI check (with the development agent/control running): `node tests/browser/databases.cjs`. It creates and cleans up an isolated hosting agent and database.
 
 Manage public keys for a dedicated `deploy` login from **Servers → SSH access**. See [SSH access](docs/ssh-access.md) for permissions, sudo and connection instructions.
 

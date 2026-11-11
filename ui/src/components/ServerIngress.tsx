@@ -1,10 +1,12 @@
 import { type FormEvent, useEffect, useState } from 'react';
 import { FileCheck2, RefreshCw, Save, Undo2 } from 'lucide-react';
 import { get, post, put } from '../lib/api';
-import type { HostErrorPages, HostIngressStatus } from '../lib/types';
+import type { CaddyTLSFallback, CaddyTLSReport, HostErrorPages, HostIngressStatus } from '../lib/types';
 import { useToast } from './ToastProvider';
 import { Badge, Button, Card, ErrorBanner, Field, Loading, Notice, SectionHeader } from './ui';
 import { Input } from './primitives/input';
+import { SummaryList } from './SummaryList';
+import { Cluster, Stack } from './layout';
 
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 const hostOf = (admin?: string) => (admin || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -19,18 +21,37 @@ const sourceLabel: Record<HostIngressStatus['source'], string> = { detected: 'De
 
 /** ErrorPagesFacts shows the managed error pages of a Caddy-fronted host. */
 function ErrorPagesFacts({ pages, busy, onAdopt }: { pages: HostErrorPages; busy: boolean; onAdopt: () => void }) {
-  return <div className="error-pages" data-error-pages>
-    <dl className="move-facts">
-      <dt>Error pages</dt><dd>{pages.ready ? <>Served from <code>{pages.dir}</code>{pages.caddy_user ? ` · readable by ${pages.caddy_user}` : ''}</> : pages.problem || 'Not written yet'}</dd>
-      <dt>Error routes</dt><dd>{pages.managed} use the managed pages{pages.unmanaged_hosts ? ` · ${pages.unmanaged_hosts} hostname${pages.unmanaged_hosts === 1 ? '' : 's'} elsewhere` : ''}</dd>
-    </dl>
+  return <Stack gap="md" className="error-pages" data-error-pages>
+    <SummaryList items={[
+      { label: 'Error pages', value: pages.ready ? <>Served from <code>{pages.dir}</code>{pages.caddy_user ? ` · readable by ${pages.caddy_user}` : ''}</> : pages.problem || 'Not written yet' },
+      { label: 'Error routes', value: `${pages.managed} use the managed pages${pages.unmanaged_hosts ? ` · ${pages.unmanaged_hosts} hostname${pages.unmanaged_hosts === 1 ? '' : 's'} elsewhere` : ''}` },
+    ]} />
     {pages.ready && pages.problem && <Notice>{pages.problem}</Notice>}
-    {Boolean(pages.unmanaged?.length) && <div className="error-pages-unmanaged">
+    {Boolean(pages.unmanaged?.length) && <Stack gap="sm" className="error-pages-unmanaged">
       <Notice>{pages.detail ? pages.detail.charAt(0).toUpperCase() + pages.detail.slice(1) + '.' : 'Some error pages are served from an unmanaged directory.'}</Notice>
       <ul className="muted-copy">{pages.unmanaged?.map(root => <li key={`${root.server}/${root.root}`}><code>{root.root}</code>{root.exists ? '' : ' (missing)'} · {root.hosts.length ? root.hosts.join(', ') : 'every hostname'}</li>)}</ul>
       <Button size="sm" variant="primary" disabled={busy || !pages.ready} onClick={onAdopt}><FileCheck2 size={15} />Use Līdza error pages</Button>
-    </div>}
-  </div>;
+    </Stack>}
+  </Stack>;
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/** fallbackLine describes one DNS-validated policy and its HTTP fallback. */
+export function fallbackLine(fallback: CaddyTLSFallback) {
+  const examples = fallback.examples?.length ? ` (${fallback.examples.join(', ')}${fallback.subjects > fallback.examples.length ? ', …' : ''})` : '';
+  const hosts = fallback.subjects ? ` · ${plural(fallback.subjects, 'hostname')}${examples}` : ' · every hostname';
+  return `Policy ${fallback.policy + 1}: ${fallback.provider || 'DNS provider'} DNS validation, then HTTP${hosts}${fallback.added ? ' · fallback added by the agent' : ''}`;
+}
+
+/** tlsItems are the TLS automation facts of a Caddy-fronted host. */
+function tlsItems(tls: CaddyTLSReport) {
+  return [
+    Boolean(tls.fallbacks?.length) && { label: 'HTTP fallback', value: <ul className="muted-copy">{tls.fallbacks?.map(item => <li key={item.policy}>{fallbackLine(item)}</li>)}</ul> },
+    Boolean(tls.moved?.length) && { label: 'Moved to HTTP validation', value: tls.moved?.join(', ') },
+    Boolean(tls.not_issued?.length) && { label: 'Certificates not issued', value: tls.not_issued?.join(', ') },
+    tls.error && { label: 'TLS automation', value: tls.error },
+  ];
 }
 
 export function ServerIngress({ serverID }: { serverID: string }) {
@@ -65,14 +86,15 @@ export function ServerIngress({ serverID }: { serverID: string }) {
   return <Card className="form-card" data-server-ingress={serverID}>
     {header}
     {error && <ErrorBanner>{error}</ErrorBanner>}
-    <dl className="move-facts">
-      <dt>Web ingress</dt><dd><strong>{ingressLabel(status)}</strong> <Badge tone={status.source === 'detected' ? 'neutral' : 'accent'}>{sourceLabel[status.source]}</Badge></dd>
-      {status.mode === 'caddy' && status.caddy_server && <><dt>Caddy server</dt><dd><code>{status.caddy_server}</code></dd></>}
-      {status.detail && <><dt>Detection</dt><dd>{status.detail}{status.web_ports?.length ? ` · listening on ${status.web_ports.join(', ')}` : ''}</dd></>}
-    </dl>
     {status.mode === 'caddy'
-      ? <p className="muted-copy">Each created application gets its own Caddy route to the agent proxy, and its hostnames are added to Caddy's TLS automation. Certificates are issued once DNS points here.</p>
+      ? <p className="muted-copy">Each created application gets its own Caddy route to the agent proxy, and its hostnames are added to a Caddy TLS policy that validates over HTTP. Certificates are issued once DNS points here. Policies that validate only through a DNS provider fall back to HTTP validation.</p>
       : <p className="muted-copy">The web server forwards every hostname to the agent proxy and issues certificates on demand once DNS points here.</p>}
+    <SummaryList items={[
+      { label: 'Web ingress', value: <Cluster><strong>{ingressLabel(status)}</strong><Badge tone={status.source === 'detected' ? 'neutral' : 'accent'}>{sourceLabel[status.source]}</Badge></Cluster> },
+      status.mode === 'caddy' && status.caddy_server && { label: 'Caddy server', value: <code>{status.caddy_server}</code> },
+      status.detail && { label: 'Detection', value: `${status.detail}${status.web_ports?.length ? ` · listening on ${status.web_ports.join(', ')}` : ''}` },
+      ...(status.mode === 'caddy' && status.tls ? tlsItems(status.tls) : []),
+    ]} />
     {status.mode === 'caddy' && status.error_pages && <ErrorPagesFacts pages={status.error_pages} busy={busy} onAdopt={() => { void adoptPages(); }} />}
     {status.configured
       ? <Notice>The agent configuration file sets <code>native.caddy</code>; change it on the server.</Notice>

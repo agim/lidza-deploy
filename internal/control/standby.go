@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/agim/lidza-deploy/internal/agent"
+	"github.com/agim/lidza-deploy/internal/agentlink"
 )
 
 // A control panel that is not the active one serves only a notice: the
@@ -41,8 +42,23 @@ func noticeHandler(title, body string) http.Handler {
 	})
 }
 
-// StandbyHandler is the page of a standby control panel.
-func StandbyHandler() http.Handler {
+// StandbyHandler is the page of a standby control panel. It also accepts
+// agent links from the servers in serversFile (agent_link.go), so the move
+// verifies them before its cutover; empty accepts none.
+func StandbyHandler(serversFile string) http.Handler {
+	notice := standbyNotice()
+	if serversFile == "" {
+		return notice
+	}
+	link, probe := standbyLinks(serversFile)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+agentlink.Path, link)
+	mux.HandleFunc("POST "+agentlink.ProbePath, probe)
+	mux.Handle("/", notice)
+	return mux
+}
+
+func standbyNotice() http.Handler {
 	return noticeHandler("This control panel is standing by", "<p>A copy of the control panel is being moved to this server. It takes over when the move's cutover runs on the current panel.</p><p>Until then, use the current control panel.</p>")
 }
 

@@ -309,6 +309,7 @@ func TestMoveReplicationTunnelCarriesBytesBothWaysThroughThePanel(t *testing.T) 
 
 	// Teardown: the subscription's removal closes the listener and the leg;
 	// the publication's removal ends the source's streams.
+	listener := runningTunnelListener(t, m, "shopdb")
 	w := moveRequest(t, Handler(m), "DELETE", "/v1/move/databases/shopdb/subscription?move=m1", nil, nil)
 	if w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
@@ -324,10 +325,7 @@ func TestMoveReplicationTunnelCarriesBytesBothWaysThroughThePanel(t *testing.T) 
 	case <-time.After(3 * time.Second):
 		t.Fatal("the idle leg is closed at the teardown")
 	}
-	if c, err := net.DialTimeout("tcp", net.JoinHostPort(tunnel.Host, strconv.Itoa(tunnel.Port)), 300*time.Millisecond); err == nil {
-		c.Close()
-		t.Fatal("the listener stops")
-	}
+	assertTunnelListenerClosed(t, m, "shopdb", listener)
 	if w := moveRequest(t, Handler(m), "DELETE", "/v1/move/databases/shopdb/replication", nil, nil); w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
@@ -346,14 +344,12 @@ func TestMoveTunnelSweepClosesExpiredListeners(t *testing.T) {
 	if _, found := m.moveTunnelRecord("shopdb"); !found {
 		t.Fatal("a live tunnel stays")
 	}
+	listener := runningTunnelListener(t, m, "shopdb")
 	m.moveReplicationSweep(time.Now().Add(moveReplicationLifetime + time.Hour))
 	if _, found := m.moveTunnelRecord("shopdb"); found {
 		t.Fatal("an expired tunnel goes")
 	}
-	if c, err := net.DialTimeout("tcp", net.JoinHostPort(tunnel.Host, strconv.Itoa(tunnel.Port)), 300*time.Millisecond); err == nil {
-		c.Close()
-		t.Fatal("its listener stops")
-	}
+	assertTunnelListenerClosed(t, m, "shopdb", listener)
 }
 
 func TestMoveTunnelReachProbesAPortWithAShortTimeout(t *testing.T) {
@@ -387,5 +383,39 @@ func TestMoveTunnelReachProbesAPortWithAShortTimeout(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &host)
 	if !host.Tunnel || !slices.Equal(host.PrivateNetworks, []string{"10.30.0.2/16"}) {
 		t.Fatalf("%+v", host)
+	}
+}
+
+// runningTunnelListener is the listener a database's tunnel runs.
+func runningTunnelListener(t *testing.T, m *Manager, id string) *moveTunnelListener {
+	t.Helper()
+	set := m.moveTunnels()
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	listener := set.tunnels[id]
+	if listener == nil {
+		t.Fatalf("no tunnel listener runs for %s", id)
+	}
+	return listener
+}
+
+// assertTunnelListenerClosed checks that the tunnel's listener was closed
+// and dropped. It asks the listener itself rather than dialling its port:
+// once freed, an ephemeral port can be taken by another listener or answer
+// a TCP self-connect, so a successful dial proves nothing.
+func assertTunnelListenerClosed(t *testing.T, m *Manager, id string, listener *moveTunnelListener) {
+	t.Helper()
+	set := m.moveTunnels()
+	set.mu.Lock()
+	running := set.tunnels[id]
+	set.mu.Unlock()
+	if running != nil {
+		t.Fatal("the tunnel listener is still registered")
+	}
+	if conn, err := listener.listener.Accept(); !errors.Is(err, net.ErrClosed) {
+		if conn != nil {
+			conn.Close()
+		}
+		t.Fatalf("the tunnel listener still accepts: %v", err)
 	}
 }

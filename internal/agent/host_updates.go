@@ -628,6 +628,13 @@ func (m *Manager) startHostJob(kind, trigger string, run func(context.Context) (
 		defer m.wg.Done()
 		ctx, cancel := context.WithTimeout(m.ctx, 45*time.Minute)
 		output, err := run(ctx)
+		if hostJobInstallsPackages(kind) {
+			// A package update may have replaced a pinned backup tool:
+			// re-approve it now, so the next backup does not fail on it.
+			if lines := m.checkNativeBackupTools(ctx); len(lines) > 0 {
+				output = strings.TrimRight(output, "\n") + "\nBackup tools:\n" + strings.Join(lines, "\n") + "\n"
+			}
+		}
 		cancel()
 		finished := time.Now().UTC()
 		job.Finished = &finished
@@ -659,6 +666,11 @@ func (m *Manager) startHostJob(kind, trigger string, run func(context.Context) (
 		}
 	}()
 	return nil
+}
+
+// hostJobInstallsPackages reports whether a job kind installs packages.
+func hostJobInstallsPackages(kind string) bool {
+	return kind == "security-updates" || kind == "all-updates" || kind == "disruptive-updates"
 }
 
 // hostJobSummary is the one-line result of a job: the last "Summary:" line a

@@ -29,6 +29,9 @@ var (
 	// errMoveStopped ends an attempt without a failure: the control panel
 	// shuts down (the tick resumes the step) or the move's state changed.
 	errMoveStopped = errors.New("the attempt stopped")
+	// errMoveWaiting ends an attempt that waits for something outside the
+	// move (cached DNS before the source retires); the tick resumes it.
+	errMoveWaiting = errors.New("the attempt waits")
 )
 
 func (c *Control) startMoveRunner(ctx context.Context, id string) {
@@ -193,7 +196,7 @@ func (c *Control) moveAttempt(ctx context.Context, id, step, state string, run f
 			})
 			return progress, nil, nil
 		}
-		if ctx.Err() != nil || errors.Is(cause, errMoveInterrupted) {
+		if ctx.Err() != nil || errors.Is(cause, errMoveInterrupted) || errors.Is(err, errMoveWaiting) {
 			return progress, nil, errMoveStopped
 		}
 		if errors.Is(cause, errMoveStalled) {
@@ -1383,6 +1386,10 @@ func (c *Control) moveFinishOnce(ctx context.Context, id string) error {
 		moveAudit(ctx, job, "switch", false)
 	}
 	c.moveCleanupEngines(ctx, id, moveStepFinish)
+	if !c.moveSourceReleased(ctx, id) {
+		return errMoveWaiting
+	}
+	job, _ = c.moveJob(id)
 	var retireErr error
 	// The source's data is the application's own: its retained resource
 	// records the move as switched, so it is never treated as a copy.
@@ -1404,6 +1411,42 @@ func (c *Control) moveFinishOnce(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// moveSourceReleased reports that the source may stop serving: cached DNS
+// no longer sends visitors there (move_propagation.go). Until then the
+// finish waits after the switch, with the source still serving, and logs
+// the expected wait every few minutes; the tick resumes it.
+func (c *Control) moveSourceReleased(ctx context.Context, id string) bool {
+	job, ok := c.moveJob(id)
+	if !ok {
+		return false
+	}
+	if job.Propagation != nil && job.Propagation.Complete {
+		return true
+	}
+	// The finish follows a ready DNS check (or the operator's override):
+	// the zone's nameservers returned the destination.
+	now := time.Now().UTC()
+	propagation := c.trackPropagation(ctx, job.Propagation, moveAllHostnames(job), job.Addresses, true, now)
+	updated, err := c.updateMove(id, func(job *MoveJob) error {
+		previous := job.Propagation
+		job.Propagation = propagation
+		switch {
+		case propagation.Complete:
+			job.logf(moveStepFinish, "Cached DNS: %s Retiring the source.", propagation.Detail)
+		case previous == nil || previous.Logged == nil || now.Sub(*previous.Logged) >= movePropagationLogEvery:
+			job.Propagation.Logged = &now
+			job.logf(moveStepFinish, "%s %s keeps serving until then.", propagation.Detail, job.SourceServer)
+		default:
+			job.Propagation.Logged = previous.Logged
+		}
+		return nil
+	})
+	return err == nil && updated.Propagation != nil && updated.Propagation.Complete
+}
+
+// movePropagationLogEvery spaces the finish's waiting lines.
+const movePropagationLogEvery = 10 * time.Minute
 
 // moveCleanupEngines removes every engine's temporary artifacts.
 func (c *Control) moveCleanupEngines(ctx context.Context, id, step string) {

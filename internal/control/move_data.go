@@ -551,12 +551,13 @@ func (c *Control) checkMoveDNS(ctx context.Context, id string, explicit bool) {
 		}
 	}
 	now := time.Now().UTC()
+	propagation := c.trackPropagation(ctx, job.Propagation, moveAllHostnames(job), job.Addresses, all, now)
 	updated, err := c.updateMove(id, func(job *MoveJob) error {
 		if job.State != moveStateCutover && job.State != moveStateReady {
 			return errors.New("state changed")
 		}
 		wasReady := job.State == moveStateReady
-		job.DNS, job.DNSChecked, job.TLSReady, job.TLSDetail = statuses, &now, tlsReady, tlsDetail
+		job.DNS, job.DNSChecked, job.TLSReady, job.TLSDetail, job.Propagation = statuses, &now, tlsReady, tlsDetail, propagation
 		if ptr != nil && (explicit || movePTRChanged(job.PTR, ptr)) {
 			for _, line := range movePTRLogLines(ptr) {
 				job.logf(moveStepCutover, "%s", line)
@@ -587,13 +588,18 @@ func (c *Control) checkMoveDNS(ctx context.Context, id string, explicit bool) {
 	}
 }
 
+// moveAllHostnames are a move's hostnames and redirect domains.
+func moveAllHostnames(job MoveJob) []string {
+	return append(slices.Clone(job.Hostnames), job.RedirectHostnames...)
+}
+
 // resolveMoveHostnames resolves every hostname of a move; all reports that
 // each one resolves only to the destination's addresses.
 func (c *Control) resolveMoveHostnames(ctx context.Context, job MoveJob) (statuses []MoveDNSStatus, all bool) {
 	resolver := c.resolver()
 	statuses = []MoveDNSStatus{}
 	all = len(job.Hostnames) > 0
-	for i, host := range append(slices.Clone(job.Hostnames), job.RedirectHostnames...) {
+	for i, host := range moveAllHostnames(job) {
 		status := MoveDNSStatus{Hostname: host, Addresses: []string{}, Redirect: i >= len(job.Hostnames)}
 		lookup, cancel := context.WithTimeout(ctx, 8*time.Second)
 		var addresses []net.IPAddr

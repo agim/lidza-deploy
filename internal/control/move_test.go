@@ -736,18 +736,23 @@ func (fx *moveFixture) containerSource() {
 	fx.a.dumps["shop"] = []byte("PGDMP container archive with rows")
 }
 
+// moveSnapshot reads a job and whether a runner holds it under one lock. Read
+// separately, a job copied while the runner is still writing can be paired
+// with the "not running" of the moment after the runner finished, and the
+// caller sees a finished state without the runner's last update.
+func moveSnapshot(c *Control, id string) (job MoveJob, ok, running bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	stored, ok := c.data.Moves[id]
+	return cloneMoveJob(stored), ok, c.moveRunning[id]
+}
+
 func waitMove(t *testing.T, c *Control, id string, states ...string) MoveJob {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		job, ok := c.moveJob(id)
-		if ok && slices.Contains(states, job.State) {
-			c.mu.Lock()
-			running := c.moveRunning[id]
-			c.mu.Unlock()
-			if !running {
-				return job
-			}
+		if job, ok, running := moveSnapshot(c, id); ok && !running && slices.Contains(states, job.State) {
+			return job
 		}
 		time.Sleep(2 * time.Millisecond)
 	}

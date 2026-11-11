@@ -1,16 +1,39 @@
-import { Boxes, Trash2, KeyRound, Plus, Server as ServerIcon, Settings, RefreshCw, ShieldCheck, TerminalSquare, UploadCloud } from 'lucide-react';
-import { detailHref, href, navigate, withSticky } from '../lib/router';
-import { ServerResources, useServerHealth } from '../components/ServerResources';
-import { HostUpdateBadges } from '../components/ServerUpdates';
+import { Plus, RefreshCw, Server as ServerIcon } from 'lucide-react';
+import { createHref, navigate, resourceHref, withSticky } from '../lib/router';
+import { formatBytes } from '../lib/format';
+import type { Server, ServerHealth } from '../lib/types';
+import { useServerHealth } from '../components/ServerResources';
 import { useWorkspace } from '../state/WorkspaceContext';
-import { ActionMenu, Badge, Button, Card, EmptyState, MenuLink, MenuLabel, PageHeader, SectionHeader } from '../components/ui';
+import { Button, EmptyState, ErrorBanner, StatusBadge } from '../components/ui';
+import type { Column } from '../components/ResourceList';
+import { ResourceIndexPage, ResourceName } from '../components/resource';
 
+/** serverStatus: online when the agent answered the latest health check. */
+export function serverStatus(server: Server, health: ServerHealth | undefined, unavailable: string[], loading: boolean) {
+  if (unavailable.includes(server.id) || unavailable.includes(server.name)) return 'offline';
+  if (health) return health.disk_low ? 'disk low' : 'online';
+  return loading ? 'checking' : 'unknown';
+}
+
+function percent(value?: number | null) { return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)}%` : '—'; }
+
+/** ServersPage: the index of servers with their live usage. */
 export function ServersPage() {
   const { servers, apps } = useWorkspace();
   const metrics = useServerHealth(servers.map(server => server.id).join(','));
-  return <><PageHeader eyebrow="Infrastructure" title="Servers" description="Hosts, capacity, processes, and secure operator access." actions={<><Button onClick={metrics.refresh} pending={metrics.busy} feedback disabled={metrics.busy} aria-label="Refresh resources"><RefreshCw size={16} className={metrics.busy ? 'spin' : ''} />Refresh</Button><Button variant="primary" onClick={() => { navigate(detailHref('server', 'new')); }}><Plus size={17} />Connect server</Button></>} />
-    <SectionHeader title="Connected hosts" actions={<Badge>{servers.length} configured</Badge>} />
-    <div className="server-grid">{servers.map(server => { const hosted = apps.filter(app => app.server_id === server.id); return <Card className="server-card" key={server.id} data-server-card={server.id}><div className="server-card-heading"><span className="server-mark"><ServerIcon size={22} /></span><div><h2>{server.name}</h2><code>{server.url}</code></div></div><p className="server-count">{hosted.length} application{hosted.length === 1 ? '' : 's'} · dedicated agent</p><HostUpdateBadges serverID={server.id} /><div className="server-app-list">{hosted.slice(0, 4).map(app => <span key={app.id}>{app.domain}</span>)}{hosted.length > 4 && <small>+ {hosted.length - 4} more</small>}</div><ServerResources health={metrics.health.find(row => row.server_id === server.id)} loading={metrics.busy} unavailable={metrics.error || (metrics.unavailable.includes(server.name) || metrics.unavailable.includes(server.id) ? 'Hosting agent unavailable.' : undefined)} /><div className="server-actions"><Button variant="primary" size="sm" onClick={() => { navigate(href('new-application', server.id)); }}><Plus size={15} />Add application</Button><Button size="sm" onClick={() => { navigate(detailHref('containers', server.id)); }}><Boxes size={15} />Processes</Button><ActionMenu><MenuLabel>Server management</MenuLabel><MenuLink icon={<Trash2 size={16} />} href={withSticky(detailHref('cleanup', server.id))}>Disk cleanup & retention</MenuLink><MenuLink icon={<Settings size={16} />} href={withSticky(detailHref('server', server.id))}>Connection, updates & firewall</MenuLink><MenuLink icon={<TerminalSquare size={16} />} href={withSticky(detailHref('console', server.id))}>Server console</MenuLink><MenuLink icon={<KeyRound size={16} />} href={withSticky(detailHref('ssh', server.id))}>SSH access</MenuLink><MenuLink icon={<UploadCloud size={16} />} href={withSticky(detailHref('upgrade', server.id))}>Agent upgrade</MenuLink></ActionMenu></div></Card>; })}{!servers.length && <EmptyState icon={<ServerIcon />} title="Connect your first server" description="Install a Līdza agent, then add its secure connection here." action={<Button variant="primary" onClick={() => { navigate(detailHref('server', 'new')); }}>Connect server</Button>} />}</div>
-    <Card className="guidance-card"><ShieldCheck size={24} /><div><h2>One server, many isolated apps</h2><p>Each application keeps its own hostname and runtime. Native applications run as systemd services; container applications run on Docker, which is installed only when a server needs it.</p></div></Card>
-  </>;
+  const healthOf = (id: string) => metrics.health.find(row => row.server_id === id);
+  const columns: Column<Server>[] = [
+    { id: 'name', label: 'Name', render: server => <ResourceName href={withSticky(resourceHref('servers', server.id))} name={server.name || server.id} detail={server.url} /> },
+    { id: 'status', label: 'Status', render: server => <StatusBadge status={serverStatus(server, healthOf(server.id), metrics.unavailable, metrics.busy)} /> },
+    { id: 'apps', label: 'Applications', render: server => { const count = apps.filter(app => app.server_id === server.id).length; return <a href={withSticky(resourceHref('servers', server.id, 'applications'))}>{count} application{count === 1 ? '' : 's'}</a>; } },
+    { id: 'cpu', label: 'CPU', render: server => percent(healthOf(server.id)?.cpu_percent) },
+    { id: 'memory', label: 'Memory', render: server => { const health = healthOf(server.id); return health?.memory_total ? `${formatBytes((health.memory_total || 0) - (health.memory_available || 0))} of ${formatBytes(health.memory_total)}` : '—'; } },
+    { id: 'disk', label: 'Disk', render: server => { const disk = healthOf(server.id)?.disks?.[0]; return disk ? `${percent(disk.used_percent)} used` : '—'; } },
+  ];
+  return <ResourceIndexPage resource="servers" title="Servers" description="The hosts that run your applications, each with its own agent." count={servers.length}
+    actions={<Button onClick={metrics.refresh} pending={metrics.busy} feedback disabled={metrics.busy} aria-label="Refresh resources"><RefreshCw size={16} className={metrics.busy ? 'spin' : ''} />Refresh</Button>}
+    primaryAction={<Button variant="primary" onClick={() => { navigate(createHref('servers')); }}><Plus size={17} />Connect server</Button>}
+    notices={metrics.error ? <ErrorBanner>{metrics.error}</ErrorBanner> : undefined}
+    rows={servers} columns={columns} rowKey={server => server.id}
+    empty={<EmptyState icon={<ServerIcon />} title="Connect your first server" description="Install a Līdza agent, then add its secure connection here." action={<Button variant="primary" onClick={() => { navigate(createHref('servers')); }}>Connect server</Button>} />} />;
 }

@@ -206,7 +206,11 @@ type ControlHostStatus struct {
 	// into; empty when it cannot be found.
 	CertificateStorage string `json:"certificate_storage,omitempty"`
 	Reserved           bool   `json:"reserved,omitempty"`
-	Docker             bool   `json:"docker"`
+	// Links: this agent can connect out to a panel (control_link.go);
+	// Link is where it does.
+	Links  bool         `json:"links,omitempty"`
+	Link   *ControlLink `json:"link,omitempty"`
+	Docker bool         `json:"docker"`
 }
 
 type controlHost struct {
@@ -807,7 +811,8 @@ func (m *Manager) publishControlRoute(ctx context.Context, host string, tls bool
 }
 
 // controlRouteLoop keeps an admin-API route in place: a Caddy reloaded
-// from its own configuration file loses routes added through the API.
+// from its own configuration file loses routes added through the API. It
+// also keeps and expires a retired panel's forward (control_forward.go).
 func (m *Manager) controlRouteLoop() {
 	defer m.wg.Done()
 	ticker := time.NewTicker(time.Minute)
@@ -818,6 +823,9 @@ func (m *Manager) controlRouteLoop() {
 			return
 		case <-ticker.C:
 		}
+		forwardCtx, cancelForward := context.WithTimeout(m.ctx, controlHelperWait+time.Minute)
+		m.controlForwardTick(forwardCtx)
+		cancelForward()
 		s := m.controlState()
 		if s == nil || s.Route != "caddy" || s.Phase == "" {
 			continue
@@ -831,6 +839,9 @@ func (m *Manager) controlRouteLoop() {
 // serveControlPanel forwards the moved-in panel's hostname through this
 // agent's proxy, for hosts whose web server forwards every hostname here.
 func (m *Manager) serveControlPanel(w http.ResponseWriter, r *http.Request, host string) bool {
+	if m.serveControlForward(w, r, host) {
+		return true
+	}
 	s := m.controlState()
 	if s == nil || s.Phase == "" || s.Route != "agent" || !strings.EqualFold(s.Hostname, host) {
 		return false
@@ -847,8 +858,12 @@ func (m *Manager) serveControlPanel(w http.ResponseWriter, r *http.Request, host
 	return true
 }
 
-// controlDomainAllowed lets on-demand TLS issue for the moved-in panel.
+// controlDomainAllowed lets on-demand TLS issue for the moved-in panel and
+// for a retired panel's hostname while it is forwarded.
 func (m *Manager) controlDomainAllowed(domain string) bool {
+	if f := m.activeControlForward(domain); f != nil && f.Route == "agent" {
+		return true
+	}
 	s := m.controlState()
 	return s != nil && s.Phase != "" && strings.EqualFold(s.Hostname, domain)
 }
@@ -927,7 +942,7 @@ func controlAgentURL(listen string) string {
 }
 
 func (m *Manager) controlHostStatus(ctx context.Context, host string) ControlHostStatus {
-	s := ControlHostStatus{Supported: controlHelperSupported(), Version: upgradeInstalled(), Arch: runtime.GOARCH, MachineID: controlMachineID(), AgentURL: controlAgentURL(m.cfg.Listen), Listen: ControlListen, State: m.controlState(), Helper: m.controlHelperStatus()}
+	s := ControlHostStatus{Links: true, Link: m.controlLink(), Supported: controlHelperSupported(), Version: upgradeInstalled(), Arch: runtime.GOARCH, MachineID: controlMachineID(), AgentURL: controlAgentURL(m.cfg.Listen), Listen: ControlListen, State: m.controlState(), Helper: m.controlHelperStatus()}
 	if !s.Supported {
 		s.Detail = "This server's upgrade helper predates control panel moves; update the server first."
 	}
@@ -1126,10 +1141,14 @@ func (m *Manager) controlRoutes(mux *http.ServeMux) {
 		}
 		JSON(w, 200, map[string]any{"reachable": true})
 	})
+	m.controlLinkRoutes(mux)
 	mux.HandleFunc("POST /v1/host/control/retire", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Hostname string `json:"hostname"`
 			MovedTo  string `json:"moved_to"`
+			// ForwardTo is the destination's public address; visitors whose
+			// DNS still returns this host are forwarded there.
+			ForwardTo string `json:"forward_to,omitempty"`
 		}
 		if err := Decode(w, r, &in); err != nil {
 			Fail(w, 400, err)
@@ -1137,7 +1156,7 @@ func (m *Manager) controlRoutes(mux *http.ServeMux) {
 		}
 		controlHostOps.mu.Lock()
 		defer controlHostOps.mu.Unlock()
-		notes, err := m.retireControl(r.Context(), strings.ToLower(in.Hostname))
+		notes, err := m.retireControl(r.Context(), strings.ToLower(in.Hostname), in.ForwardTo)
 		if err != nil {
 			Fail(w, 409, err)
 			return
@@ -1241,16 +1260,35 @@ func (m *Manager) removeControl(ctx context.Context) error {
 	return os.RemoveAll(m.controlDir())
 }
 
-// retireControl runs on the old panel host once DNS points to the new one:
-// a Caddyfile site for the hostname is replaced by a notice, an admin-API
-// route is withdrawn, and the panel unit is stopped and disabled.
-func (m *Manager) retireControl(ctx context.Context, host string) ([]string, error) {
+// retireControl runs on the old panel host once DNS points to the new one.
+// The hostname's routes are replaced by a forward to the destination
+// (control_forward.go), so visitors whose resolvers still cache this host's
+// address reach the new panel; without a usable destination address a
+// Caddyfile site answers with a notice and an admin-API route is withdrawn.
+// Then the panel unit is stopped and disabled.
+func (m *Manager) retireControl(ctx context.Context, host, forwardTo string) ([]string, error) {
 	if !controlHostnamePattern.MatchString(host) {
 		return nil, errors.New("invalid hostname")
 	}
 	if _, err := os.Stat(filepath.Join(ControlDataDir, ControlMovedFile)); err != nil {
 		return nil, errors.New("the control panel on this server has not handed over; it must write its moved marker first")
 	}
+	notes := []string{}
+	forward, err := m.installControlForward(ctx, host, forwardTo)
+	if err == nil {
+		notes = append(notes, controlForwardNote(forward))
+	} else {
+		notes = append(notes, "Visitors whose DNS still returns this server are not forwarded: "+err.Error()+".")
+		notes = append(notes, m.withdrawControlSite(ctx, host)...)
+	}
+	if err := m.controlHelper(ctx, controlActionStop); err != nil {
+		return notes, err
+	}
+	return append(notes, "The control panel unit is stopped and disabled."), nil
+}
+
+// withdrawControlSite is the retirement without a forward.
+func (m *Manager) withdrawControlSite(ctx context.Context, host string) []string {
 	notes := []string{}
 	if raw, err := os.ReadFile(controlCaddyfileAt); err == nil {
 		notice := "\trespond \"This control panel has moved to another server. Your DNS resolver still points to the old one; try again shortly.\" 503\n"
@@ -1269,8 +1307,5 @@ func (m *Manager) retireControl(ctx context.Context, host string) ([]string, err
 			notes = append(notes, "The admin-API route was withdrawn.")
 		}
 	}
-	if err := m.controlHelper(ctx, controlActionStop); err != nil {
-		return notes, err
-	}
-	return append(notes, "The control panel unit is stopped and disabled."), nil
+	return notes
 }

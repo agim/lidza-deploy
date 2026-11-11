@@ -1,13 +1,11 @@
 import { useMemo, useSyncExternalStore } from 'react';
-import type { PageKey, Route } from './types';
 
 // The console lives under one base path. Every view has a readable,
 // reloadable URL; the server returns console.html for any path below it.
-export const BASE = '/console';
-export const HOME = `${BASE}/applications`;
+// The route tree (resources, tabs, redirects, breadcrumbs) is lib/resources.ts.
+import { BASE, HOME, type Route, buildPath, parsePath, redirectPath } from './resources';
+export { BASE, HOME, buildPath, createHref, indexHref, parsePath, redirectPath, resourceHref, routeTitle, singletonHref } from './resources';
 
-const pages = new Set<PageKey>(['applications', 'deployments', 'errors', 'security', 'servers', 'databases', 'remote-backups', 'integrations', 'defaults', 'updates', 'team', 'audit', 'help', 'control-panel', 'new-application', 'deleted-apps']);
-const serverDetails = new Set(['cleanup', 'containers', 'console', 'ssh', 'upgrade']);
 // Preview parameters follow the visitor through the panel.
 const sticky = ['demo', 'design'];
 
@@ -18,63 +16,17 @@ export function isPanelPath(pathname: string) {
   return pathname === BASE || pathname.startsWith(`${BASE}/`) || pathname === '/console.html';
 }
 
-/** parsePath maps a console URL to the view it shows. */
-export function parsePath(pathname: string, search = ''): Route {
-  const params = new URLSearchParams(search);
-  const rest = pathname.startsWith(`${BASE}/`) ? pathname.slice(BASE.length + 1) : '';
-  const parts = rest.split('/').filter(Boolean).map(dec);
-  const [section, id, detail, tab] = parts;
-  if (!section) return { page: 'applications' };
-  if (section === 'applications' && id) {
-    if (!detail || detail === 'settings') return parts.length <= 4 ? { page: 'detail', detail: 'settings', id, ...(tab ? { tab } : {}) } : notFound;
-    if (parts.length > 3) return notFound;
-    if (detail === 'logs') return { page: 'detail', detail: 'runtime-logs', id };
-    if (detail === 'cache') return { page: 'detail', detail: 'cache', id };
-    return notFound;
-  }
-  if (section === 'deployments' && id) return parts.length === 2 ? { page: 'detail', detail: 'build-logs', id } : notFound;
-  if (section === 'databases' && id) return parts.length === 2 ? { page: 'detail', detail: 'database', id } : notFound;
-  if (section === 'servers' && id) {
-    if (!detail) return { page: 'detail', detail: 'server', id };
-    return parts.length === 3 && serverDetails.has(detail) ? { page: 'detail', detail, id } : notFound;
-  }
-  if (section === 'account' && id === 'two-factor' && parts.length === 2) return { page: 'detail', detail: 'two-factor', id: 'account' };
-  if (section === 'new-application' && parts.length === 1) return { page: 'new-application', id: params.get('server') || undefined };
-  if ((section === 'errors' || section === 'security') && parts.length <= 2) return { page: section, id };
-  if (pages.has(section as PageKey) && parts.length === 1) return { page: section as PageKey };
-  return notFound;
-}
-const notFound: Route = { page: 'not-found' };
-
-/** buildPath is the inverse of parsePath (without preview parameters). */
-export function buildPath(route: Route): string {
-  const id = route.id ? enc(route.id) : '';
-  if (route.page === 'detail') {
-    switch (route.detail) {
-      case 'settings': return `${BASE}/applications/${id}/settings${route.tab ? `/${enc(route.tab)}` : ''}`;
-      case 'runtime-logs': return `${BASE}/applications/${id}/logs`;
-      case 'cache': return `${BASE}/applications/${id}/cache`;
-      case 'build-logs': return `${BASE}/deployments/${id}`;
-      case 'database': return `${BASE}/databases/${id}`;
-      case 'server': return `${BASE}/servers/${id}`;
-      case 'two-factor': return `${BASE}/account/two-factor`;
-      default: return route.detail && serverDetails.has(route.detail) ? `${BASE}/servers/${id}/${route.detail}` : HOME;
-    }
-  }
-  if (route.page === 'new-application') return `${BASE}/new-application${route.id ? `?server=${enc(route.id)}` : ''}`;
-  if (route.page === 'not-found') return HOME;
-  return `${BASE}/${route.page}${id ? `/${id}` : ''}`;
-}
-
-/** href links a workspace section, optionally with one selected item. */
-export function href(page: PageKey, id?: string) {
-  return buildPath({ page, id });
-}
-
-/** detailHref links a full-page resource view. */
-export function detailHref(detail: string, id: string, tab?: string) {
-  return buildPath({ page: 'detail', detail, id, tab });
-}
+// Hash routes of the first console (`console.html#page/settings/x`) and the
+// path each one shows now.
+const legacyDetails: Record<string, (id: string) => string> = {
+  settings: id => `${BASE}/applications/${enc(id)}/settings`, 'runtime-logs': id => `${BASE}/applications/${enc(id)}/logs`,
+  cache: id => `${BASE}/applications/${enc(id)}/data`, 'build-logs': id => `${BASE}/deployments/${enc(id)}`,
+  database: id => `${BASE}/databases/${enc(id)}`, server: id => `${BASE}/servers/${enc(id)}`,
+  console: id => `${BASE}/servers/${enc(id)}/console`, containers: id => `${BASE}/servers/${enc(id)}/processes`,
+  cleanup: id => `${BASE}/servers/${enc(id)}/cleanup`, ssh: id => `${BASE}/servers/${enc(id)}/ssh`,
+  upgrade: id => `${BASE}/servers/${enc(id)}/agent`, 'two-factor': () => `${BASE}/account`,
+};
+const legacySections = new Set(['applications', 'deployments', 'errors', 'security', 'servers', 'databases', 'remote-backups', 'integrations', 'defaults', 'updates', 'team', 'audit', 'help', 'control-panel', 'new-application', 'deleted-apps']);
 
 /** legacyHashPath maps an old `console.html#…` route to its path, or null. */
 export function legacyHashPath(hash: string): string | null {
@@ -83,14 +35,16 @@ export function legacyHashPath(hash: string): string | null {
   const parts = clean.split('/');
   if (parts[0] === 'page') {
     const detail = parts[1], id = dec(parts.slice(2).join('/'));
-    if (!detail || !id || !['settings', 'runtime-logs', 'cache', 'build-logs', 'database', 'server', 'two-factor', ...serverDetails].includes(detail)) return null;
-    return detailHref(detail, id);
+    if (!detail || !id || !legacyDetails[detail]) return null;
+    return legacyDetails[detail](id);
   }
-  const page = parts[0] as PageKey;
-  if (!pages.has(page)) return null;
+  const page = parts[0];
+  if (!legacySections.has(page)) return null;
   const id = parts.length > 1 ? dec(parts.slice(1).join('/')) : undefined;
+  if (page === 'new-application') return `${BASE}/applications/new${id ? `?server=${enc(id)}` : ''}`;
+  if ((page === 'errors' || page === 'security') && id) return `${BASE}/${page}?app=${enc(id)}`;
   // Help and the other sections never had selectable items; keep only the section.
-  return buildPath({ page, id: page === 'new-application' || page === 'errors' || page === 'security' ? id : undefined });
+  return `${BASE}/${page}`;
 }
 
 /** withSticky carries preview parameters (demo, design) onto a panel path. */
@@ -120,7 +74,10 @@ export function canGoBack() { return historyIndex() > 0; }
 export function previousEntry() { const idx = historyIndex(); return idx > 0 ? entries[idx - 1] : undefined; }
 
 export function navigate(to: string, { replace = false }: { replace?: boolean } = {}) {
-  const url = withSticky(to);
+  // An earlier URL followed inside the panel opens its current view.
+  const [path, query = ''] = to.split('?');
+  const current = redirectPath(path, query ? `?${query}` : '');
+  const url = withSticky(current || to);
   // Following a link to the view already shown adds no history entry.
   if (url === here()) replace = true;
   const idx = replace ? historyIndex() : historyIndex() + 1;
@@ -149,19 +106,21 @@ export function setSearchParams(values: Record<string, string | undefined>, { re
   navigate(searchHref(values), { replace });
 }
 
-/** normalizeLocation redirects legacy hash routes and bare entry URLs in place. */
+/** normalizeLocation redirects legacy hash routes, bare entry URLs and earlier paths in place. */
 export function normalizeLocation() {
   const legacy = legacyHashPath(location.hash);
   const entry = location.pathname === '/console.html' || location.pathname === BASE || location.pathname === `${BASE}/` || location.pathname === '/';
   let target: string | undefined;
   if (legacy && (entry || isPanelPath(location.pathname))) target = legacy;
   else if (entry) target = HOME;
+  else if (isPanelPath(location.pathname)) target = redirectPath(location.pathname, location.search) || undefined;
   if (target) {
     const [path, query = ''] = target.split('?');
-    const merged = new URLSearchParams(location.search);
+    const merged = new URLSearchParams(target === legacy || target === HOME ? location.search : '');
     for (const [key, value] of new URLSearchParams(query)) merged.set(key, value);
     const search = merged.toString();
-    history.replaceState({ lidza: 1, idx: historyIndex() }, '', `${path}${search ? `?${search}` : ''}`);
+    const redirected = redirectPath(path, search ? `?${search}` : '');
+    history.replaceState({ lidza: 1, idx: historyIndex() }, '', redirected || `${path}${search ? `?${search}` : ''}`);
   } else if (!panelState(history.state)) history.replaceState({ lidza: 1, idx: 0 }, '', here());
   record(historyIndex(), here(), false);
 }
@@ -221,33 +180,3 @@ export function useSearchParam(name: string) {
   return new URLSearchParams(search).get(name) ?? undefined;
 }
 
-// ---- Titles -----------------------------------------------------------------
-
-const sectionTitles: Partial<Record<PageKey, string>> = { applications: 'Applications', deployments: 'Deployments', errors: 'Errors', security: 'Security activity', servers: 'Servers', databases: 'Databases & backups', 'remote-backups': 'Remote backups', integrations: 'Integrations', defaults: 'Application defaults', updates: 'Updates', team: 'Team', 'control-panel': 'Control panel', audit: 'Audit log', help: 'Help', 'new-application': 'New application', 'deleted-apps': 'Deleted apps', 'not-found': 'Not found' };
-const detailTitles: Record<string, (id: string) => string> = {
-  settings: id => `${id} settings`, 'runtime-logs': id => `${id} runtime logs`, cache: id => `${id} cache`, 'build-logs': id => `Build ${id.slice(0, 12)}`,
-  database: id => `${id} database`, server: id => id === 'new' ? 'Connect server' : `${id} server`, cleanup: id => `${id} cleanup`, containers: id => `${id} processes`,
-  console: id => `${id} console`, ssh: id => `${id} SSH access`, upgrade: id => `${id} upgrade`, 'two-factor': () => 'Two-factor authentication',
-};
-
-/** routeLabel names the view for the breadcrumb. */
-export function routeLabel(route: Route) {
-  if (route.page === 'detail') return route.detail && route.id && detailTitles[route.detail] ? detailTitles[route.detail](route.id) : route.id || 'Details';
-  return sectionTitles[route.page] || 'Workspace';
-}
-
-export function routeTitle(route: Route) {
-  return `${routeLabel(route)} · Līdza Deploy`;
-}
-
-/** parentPath is where the on-page Back goes without in-panel history. */
-export function parentPath(route: Route): string {
-  if (route.page !== 'detail') return HOME;
-  switch (route.detail) {
-    case 'build-logs': return href('deployments');
-    case 'database': return href('databases');
-    case 'cache': return detailHref('settings', route.id || '');
-    case 'server': case 'cleanup': case 'containers': case 'console': case 'ssh': case 'upgrade': return href('servers');
-    default: return HOME;
-  }
-}

@@ -50,10 +50,13 @@ func (c *Control) generateMasterKey(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	var out agent.EnvironmentEntry
+	var out agent.MasterKeyGenerated
 	if err := c.agentCall(r, a.ServerID, "POST", "/v1/apps/"+url.PathEscape(a.ID)+"/master-key", nil, &out); err != nil {
 		failAgent(w, err)
 		return
+	}
+	if out.Apply.Applied == "" {
+		out.Apply = agent.SettingsApplyResult{Applied: agent.SettingsAppliedRestartRequired, Message: "Master key saved. This server's agent is older; restart the application to use it."}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	agent.JSON(w, 200, out)
@@ -100,12 +103,55 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 		c.updateNativeSettings(w, r, app, input)
 		return
 	}
+	next, apply, ok := c.saveContainerSettings(w, r, input)
+	if !ok {
+		return
+	}
+	agent.JSON(w, 200, SettingsSaved{Application: next, Apply: c.finishSettingsApply(r, next.ID, apply)})
+}
+
+// SettingsSaved answers a settings save: the application and what the
+// save applied (agent/settings_apply.go).
+type SettingsSaved struct {
+	Application
+	Apply agent.SettingsApplyResult `json:"apply"`
+}
+
+// finishSettingsApply starts the deployment a build-affecting save needs,
+// with the deploy route's credentials. An agent from before per-save
+// results answers none.
+func (c *Control) finishSettingsApply(r *http.Request, id string, apply *agent.SettingsApplyResult) agent.SettingsApplyResult {
+	if apply == nil {
+		return agent.SettingsApplyResult{Applied: agent.SettingsAppliedRestartRequired, Message: "Settings saved. This server's agent is older and does not apply them by itself; update it, or restart or deploy the application to apply them."}
+	}
+	result := *apply
+	if result.Applied != agent.SettingsAppliedDeploy || result.DeploymentID != "" {
+		return result
+	}
+	d, err := c.startDeployment(r, id)
+	if err != nil {
+		var call deployAgentError
+		if errors.As(err, &call) {
+			err = call.error
+		}
+		result.Error = err.Error()
+		result.Message = "Settings saved, but the deployment could not start; deploy the application to apply them."
+		return result
+	}
+	result.Deployment, result.DeploymentID = &d, d.ID
+	result.Message = "Settings saved. Deploying them."
+	return result
+}
+
+// saveContainerSettings saves a container application's settings on its
+// agent and in the panel; false when it answered an error.
+func (c *Control) saveContainerSettings(w http.ResponseWriter, r *http.Request, input agent.SettingsPatch) (Application, *agent.SettingsApplyResult, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	old, ok := c.data.Apps[r.PathValue("id")]
 	if !ok || old.Retiring {
 		http.NotFound(w, r)
-		return
+		return Application{}, nil, false
 	}
 	spec := agent.App{Astro: old.Astro, Build: old.Build, Runtime: old.Runtime, Rails: old.Rails, RuntimeProfile: old.RuntimeProfile, ID: old.ID, Repository: old.Repository, Branch: input.Branch, Domain: input.Domain, AdditionalDomains: old.AdditionalDomains}
 	if input.Build != nil {
@@ -122,29 +168,29 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := spec.Validate(); err != nil {
 		agent.Fail(w, 400, err)
-		return
+		return Application{}, nil, false
 	}
 	for id, a := range c.data.Apps {
 		if id != old.ID && spec.DomainsOverlap(agent.App{Domain: a.Domain, AdditionalDomains: a.AdditionalDomains}) {
 			agent.Fail(w, 409, errors.New("domain already registered"))
-			return
+			return Application{}, nil, false
 		}
 	}
 	if owner := redirectedHostOwner(c.data.Apps, spec.Hostnames()); owner != "" {
 		agent.Fail(w, 409, errors.New("domain already registered as a redirect domain of "+owner))
-		return
+		return Application{}, nil, false
 	}
 	if len(input.EnvKindChanges) > 0 {
 		var current agent.Settings
 		if err := c.agentCall(r, old.ServerID, "GET", "/v1/apps/"+old.ID+"/settings", nil, &current); err != nil {
 			agent.Fail(w, 502, errors.New("current environment classifications unavailable"))
-			return
+			return Application{}, nil, false
 		}
 		for _, entry := range current.Environment {
 			if entry.Kind == agent.EnvironmentCredential && input.EnvKindChanges[entry.Key] == agent.EnvironmentSetting {
 				if err := auth.AuthorizeStepUp(r.Context(), r, "credential.reveal", old.ID+"/"+entry.Key); err != nil {
 					router.WriteError(w, r, err)
-					return
+					return Application{}, nil, false
 				}
 			}
 		}
@@ -152,12 +198,15 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 	if c.data.BackupStorage != nil {
 		if err := c.agentCall(r, old.ServerID, "PUT", "/v1/backup-storage", c.data.BackupStorage, nil); err != nil {
 			failAgent(w, err)
-			return
+			return Application{}, nil, false
 		}
 	}
-	if err := c.agentCall(r, old.ServerID, "PATCH", "/v1/apps/"+old.ID+"/settings", input, nil); err != nil {
+	var saved struct {
+		Apply *agent.SettingsApplyResult `json:"apply"`
+	}
+	if err := c.agentCall(r, old.ServerID, "PATCH", "/v1/apps/"+old.ID+"/settings", input, &saved); err != nil {
 		failAgent(w, err)
-		return
+		return Application{}, nil, false
 	}
 	next := old
 	next.Astro, next.Build = spec.Astro, spec.Build
@@ -172,11 +221,11 @@ func (c *Control) updateSettings(w http.ResponseWriter, r *http.Request) {
 	if err := c.save(); err != nil {
 		c.data.Apps[old.ID] = old
 		agent.Fail(w, 500, errors.New("agent settings saved but control metadata could not be saved; retry these settings to synchronize"))
-		return
+		return Application{}, nil, false
 	}
 	next.Secret = ""
 	next.Previews.Env = nil
-	agent.JSON(w, 200, next)
+	return next, saved.Apply, true
 }
 
 // Disabling does not depend on a working GitHub connection. GitHub may continue to

@@ -1,27 +1,126 @@
-import { usePreference } from '../state/PreferencesContext';
-import { detailHref, goBack, href, navigate, withSticky } from '../lib/router';
-import { BuildProgress } from '../components/BuildProgress';
+import { createHref, goBack, indexHref, navigate, resourceHref, withSticky } from '../lib/router';
 import { PortSummary } from '../components/AppPorts';
 import { Input } from '../components/primitives/input';
-import { AlertTriangle, Boxes, Cpu, MemoryStick, Pause, Play, RefreshCw, Server, TerminalSquare } from 'lucide-react';
-import { type FormEvent, useEffect, useRef, useState } from 'react';
+import { Boxes, KeyRound, Plus, RefreshCw, Save, Server, TerminalSquare, Trash2, Unplug, UploadCloud } from 'lucide-react';
+import { type FormEvent, useEffect, useState } from 'react';
 import { del, get, post, put } from '../lib/api';
 import { formatBytes } from '../lib/format';
-import type { ContainerInfo, ContainerInventory, Deployment, Server as ServerType } from '../lib/types';
+import type { Application, ContainerInfo, ContainerInventory, Server as ServerType } from '../lib/types';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { useToast } from '../components/ToastProvider';
-import { ActionForm, Button, Card, ConfirmAction, LogOutputHeader, ErrorBanner, Field, Loading, Notice, PageHeader, ProgressBar, SectionHeader, StatusBadge } from '../components/ui';
+import { ActionForm, ActionMenu, Button, Card, ConfirmAction, EmptyState, ErrorBanner, Field, Loading, MenuLabel, MenuLink, Notice, PageHeader, ProgressBar, SectionHeader, StatusBadge } from '../components/ui';
+import { Cluster, Stack } from '../components/layout';
+import { ServerResources, useServerHealth } from '../components/ServerResources';
+import { HostUpdateBadges, ServerUpdates } from '../components/ServerUpdates';
 import { ResourceList, type Column } from '../components/ResourceList';
-import { ServerUpdates } from '../components/ServerUpdates';
 import { ServerTuning } from '../components/ServerTuning';
 import { ServerFirewall } from '../components/ServerFirewall';
 import { ServerIngress } from '../components/ServerIngress';
+import { ServerServiceControl } from '../components/ServerServiceControl';
+import { ServerLogAccess } from '../components/ServerLogAccess';
 import { RetainedResources } from '../components/RetainedResources';
+import { SummaryList } from '../components/SummaryList';
+import { DangerZone, DangerZoneRow, ResourceDetailPage, ResourceName } from '../components/resource';
+import { ServerCleanup } from './ServerCleanupPage';
+import { ServerConsole } from './ServerConsolePage';
+import { ServerAgentUpgrade, ServerSSHAccess } from './ResourceDetailPages';
+import { serverStatus } from './ServersPage';
+import { appRuntime, appState, releaseLabel, runtimeLabel } from './ApplicationsPage';
 
-export function ServerSettingsPage({ serverID }: { serverID: string }) {
-  const { servers, apps, refresh } = useWorkspace(); const existing = servers.find(item => item.id === serverID); const isNew = serverID === 'new'; const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const notify = useToast();
-  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); setBusy(true); try { const values = Object.fromEntries(new FormData(event.currentTarget)); const body = { id: values.id, name: values.name, url: values.url, token: values.token }; isNew ? await post('control/servers', body) : await put(`control/servers/${encodeURIComponent(serverID)}`, body); notify(isNew ? 'Server connected.' : 'Server connection updated.'); await refresh(); navigate(href('servers')); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); } };
-  return <><ActionForm id="server-form" className="page" onSubmit={submit}><PageHeader eyebrow="Server management" title={isNew ? 'Connect server' : existing?.name || serverID} description={isNew ? 'Add an installed hosting agent to this workspace.' : existing?.url} back={href('servers')} actions={<div className="sticky-actions"><Button type="button" onClick={() => { goBack(href('servers')); }}>Cancel</Button><Button type="submit" variant="primary" disabled={busy}>{busy ? 'Saving…' : 'Save connection'}</Button></div>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card className="form-card narrow-form"><SectionHeader title="Agent connection" description="The token is sent only when you save it and is never returned to the browser." /><div className="form-grid two"><Field label="Server ID" hint="Permanent lowercase identifier."><Input name="id" required readOnly={!isNew} defaultValue={existing?.id} pattern="[a-z][a-z0-9-]{0,47}" placeholder="production-eu" autoComplete="off" spellCheck={false} /></Field><Field label="Display name"><Input name="name" required defaultValue={existing?.name} placeholder="Production · Frankfurt" autoComplete="off" /></Field></div><Field label="Agent URL"><Input name="url" type="url" required defaultValue={existing?.url} placeholder="https://agent.example.com" autoComplete="url" spellCheck={false} /></Field><Field label="Agent token" hint={isNew ? 'Use the token printed by the agent installer.' : 'Leave blank to keep the saved credential.'}><Input name="token" type="password" required={isNew} minLength={32} autoComplete="new-password" placeholder={isNew ? 'Paste agent token' : 'Saved credential'} /></Field></Card>{!isNew && <Card className="danger-zone"><SectionHeader title="Disconnect server" description={apps.some(app => app.server_id === serverID) ? 'Move or remove hosted applications before disconnecting this server.' : 'This removes the control-panel connection, not the agent installation.'} /><ConfirmAction title={`Disconnect ${existing?.name || serverID}?`} description="The control panel will no longer manage this agent." confirmLabel="Disconnect server" destructive onConfirm={async () => { await del(`control/servers/${encodeURIComponent(serverID)}`); notify('Server disconnected.'); await refresh(); navigate(href('servers')); }}><Button type="button" variant="danger" disabled={apps.some(app => app.server_id === serverID)}>Disconnect server</Button></ConfirmAction></Card>}</ActionForm>{!isNew && existing && <div className="settings-stack host-admin"><ServerIngress serverID={serverID} /><ServerUpdates serverID={serverID} /><ServerTuning serverID={serverID} /><ServerFirewall serverID={serverID} /><RetainedResources serverID={serverID} /></div>}</>;
+/** The agent connection fields, shared by connecting a new server and editing an existing one. */
+function ConnectionFields({ server, isNew }: { server?: ServerType; isNew: boolean }) {
+  return <><div className="form-grid two"><Field label="Server ID" hint="Permanent lowercase identifier."><Input name="id" required readOnly={!isNew} defaultValue={server?.id} pattern="[a-z][a-z0-9-]{0,47}" placeholder="production-eu" autoComplete="off" spellCheck={false} /></Field><Field label="Display name"><Input name="name" required defaultValue={server?.name} placeholder="Production · Frankfurt" autoComplete="off" /></Field></div><Field label="Agent URL"><Input name="url" type="url" required defaultValue={server?.url} placeholder="https://agent.example.com" autoComplete="url" spellCheck={false} /></Field><Field label="Agent token" hint={isNew ? 'Use the token printed by the agent installer.' : 'Leave blank to keep the saved credential.'}><Input name="token" type="password" required={isNew} minLength={32} autoComplete="new-password" placeholder={isNew ? 'Paste agent token' : 'Saved credential'} /></Field></>;
+}
+
+function useSaveConnection(serverID: string, isNew: boolean) {
+  const { refresh } = useWorkspace(); const notify = useToast(); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); setBusy(true); try { const values = Object.fromEntries(new FormData(event.currentTarget)); const body = { id: values.id, name: values.name, url: values.url, token: values.token }; isNew ? await post('control/servers', body) : await put(`control/servers/${encodeURIComponent(serverID)}`, body); notify(isNew ? 'Server connected.' : 'Server connection updated.'); await refresh(); navigate(isNew ? resourceHref('servers', String(values.id)) : resourceHref('servers', serverID, 'agent')); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); } };
+  return { submit, error, busy };
+}
+
+/**
+ * ServerDetailPage: one server. Its properties are tabs: overview, the
+ * applications and processes on it, host management (ingress, updates,
+ * tuning, firewall, cleanup, retained data), operator access (console, SSH)
+ * and the agent (release, connection, Danger zone).
+ */
+export function ServerDetailPage({ serverID, tab }: { serverID: string; tab: string }) {
+  const { servers, apps, loading } = useWorkspace();
+  const server = servers.find(item => item.id === serverID);
+  const metrics = useServerHealth(server ? serverID : '');
+  const health = metrics.health.find(row => row.server_id === serverID);
+  const hosted = apps.filter(app => app.server_id === serverID);
+  const link = (next: string) => withSticky(resourceHref('servers', serverID, next));
+  return <ResourceDetailPage resource="servers" id={serverID} tab={tab} title={server?.name || serverID}
+    status={server && <StatusBadge status={serverStatus(server, health, metrics.unavailable, metrics.busy)} />}
+    facts={server ? [<code>{server.url}</code>, <a href={link('applications')}>{hosted.length} application{hosted.length === 1 ? '' : 's'}</a>, health?.cpus ? `${health.cpus} CPUs` : undefined] : undefined}
+    actions={server ? <><ActionMenu label="Actions"><MenuLabel>Operate</MenuLabel><MenuLink icon={<TerminalSquare size={16} />} href={link('console')}>Server console</MenuLink><MenuLink icon={<KeyRound size={16} />} href={link('ssh')}>SSH access</MenuLink><MenuLink icon={<Trash2 size={16} />} href={link('cleanup')}>Disk cleanup</MenuLink><MenuLink icon={<UploadCloud size={16} />} href={link('agent')}>Upgrade agent</MenuLink></ActionMenu><Button variant="primary" onClick={() => { navigate(createHref('applications', { server: serverID })); }}><Plus size={16} />Add application</Button></> : undefined}
+    missing={!loading && !server ? <EmptyState icon={<Server />} title="Server not found" description={`No server called ${serverID} is connected to this control panel.`} action={<Button variant="primary" onClick={() => { navigate(createHref('servers')); }}>Connect server</Button>} /> : undefined}>
+    {server && <>
+      {tab === 'overview' && <ServerOverview server={server} />}
+      {tab === 'applications' && <ServerApplications serverID={serverID} />}
+      {tab === 'processes' && <ServerProcesses serverID={serverID} />}
+      {tab === 'ingress' && <ServerIngress serverID={serverID} />}
+      {tab === 'updates' && <ServerUpdates serverID={serverID} />}
+      {tab === 'tuning' && <ServerTuning serverID={serverID} />}
+      {tab === 'firewall' && <ServerFirewall serverID={serverID} />}
+      {tab === 'cleanup' && <ServerCleanup serverID={serverID} />}
+      {tab === 'retained' && <RetainedResources serverID={serverID} />}
+      {tab === 'console' && <ServerConsole serverID={serverID} />}
+      {tab === 'ssh' && <ServerSSHAccess serverID={serverID} />}
+      {tab === 'agent' && <ServerAgent server={server} />}
+    </>}
+  </ResourceDetailPage>;
+}
+
+/** ConnectServerPage: the create form of a server (/servers/new). */
+export function ConnectServerPage() {
+  const { submit, error, busy } = useSaveConnection('new', true);
+  return <ActionForm id="server-form" className="page" data-template="create" data-resource="servers" onSubmit={submit}><PageHeader title="Connect server" description="Add an installed hosting agent to this control panel." actions={<div className="sticky-actions"><Button type="button" onClick={() => { goBack(indexHref('servers')); }}>Cancel</Button><Button type="submit" variant="primary" disabled={busy}>{busy ? 'Saving…' : 'Save connection'}</Button></div>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card className="form-card narrow-form"><SectionHeader title="Agent connection" description="The token is sent only when you save it and is never returned to the browser." /><ConnectionFields isNew /></Card></ActionForm>;
+}
+
+function ServerConnectionCard({ serverID, server }: { serverID: string; server?: ServerType }) {
+  const { submit, error, busy } = useSaveConnection(serverID, false);
+  return <Card className="form-card" data-server-connection={serverID}><SectionHeader title="Agent connection" description="The token is sent only when you save it and is never returned to the browser." />{error && <ErrorBanner>{error}</ErrorBanner>}<ActionForm id="server-form" onSubmit={submit}><ConnectionFields server={server} isNew={false} /><Cluster><Button type="submit" variant="primary" disabled={busy}><Save size={16} />{busy ? 'Saving…' : 'Save connection'}</Button></Cluster></ActionForm></Card>;
+}
+
+/** Overview tab: live resources and what runs on the server. */
+function ServerOverview({ server }: { server: ServerType }) {
+  const { apps } = useWorkspace();
+  const metrics = useServerHealth(server.id);
+  const hosted = apps.filter(app => app.server_id === server.id);
+  return <Stack gap="page" data-server-overview={server.id}>
+    <Card className="server-health-card" data-server-health={server.id}><ServerResources health={metrics.health.find(row => row.server_id === server.id)} loading={metrics.busy} unavailable={metrics.error || (metrics.unavailable.includes(server.name) || metrics.unavailable.includes(server.id) ? 'Hosting agent unavailable.' : undefined)} /></Card>
+    <Card><SectionHeader title="On this server" actions={<HostUpdateBadges serverID={server.id} />} /><SummaryList items={[{ label: 'Applications', value: <a href={withSticky(resourceHref('servers', server.id, 'applications'))}>{hosted.length ? hosted.map(app => app.id).join(', ') : 'None yet'}</a> }, { label: 'Agent', value: <code>{server.url}</code> }]} /></Card>
+  </Stack>;
+}
+
+/** Applications tab: the applications this server runs. */
+function ServerApplications({ serverID }: { serverID: string }) {
+  const { apps, latestDeployment } = useWorkspace();
+  const rows = apps.filter(app => app.server_id === serverID);
+  const columns: Column<Application>[] = [
+    { id: 'name', label: 'Name', render: app => <ResourceName href={withSticky(resourceHref('applications', app.id))} name={app.id} detail={app.domain} /> },
+    { id: 'status', label: 'Status', render: app => <StatusBadge status={appState(app, latestDeployment(app.id))} /> },
+    { id: 'runtime', label: 'Runtime', render: app => runtimeLabel(appRuntime(app)) },
+    { id: 'release', label: 'Release', render: app => <code>{releaseLabel(app)}</code> },
+  ];
+  return <Card><SectionHeader title="Applications" description="Each keeps its own hostname, runtime and data." actions={<Button size="sm" variant="primary" onClick={() => { navigate(createHref('applications', { server: serverID })); }}><Plus size={15} />Add application</Button>} /><ResourceList rows={rows} columns={columns} rowKey={app => app.id} empty={<EmptyState icon={<Server />} title="No applications yet" description="Add an application to deploy it on this server." />} /></Card>;
+}
+
+/** Agent tab: the agent release, its connection, service control of adopted applications, system log access and the Danger zone. */
+function ServerAgent({ server }: { server: ServerType }) {
+  const { apps, refresh } = useWorkspace(); const notify = useToast();
+  const hosted = apps.filter(app => app.server_id === server.id);
+  return <Stack gap="page">
+    <ServerAgentUpgrade serverID={server.id} />
+    <ServerConnectionCard serverID={server.id} server={server} />
+    <ServerServiceControl serverID={server.id} />
+    <ServerLogAccess serverID={server.id} />
+    <DangerZone id={server.id} description="Disconnecting affects only this control panel.">
+      <DangerZoneRow title="Disconnect this server" description={hosted.length ? 'Move or remove hosted applications before disconnecting this server.' : 'This removes the control-panel connection, not the agent installation.'} action={<ConfirmAction title={`Disconnect ${server.name || server.id}?`} description="The control panel will no longer manage this agent." confirmLabel="Disconnect server" destructive onConfirm={async () => { await del(`control/servers/${encodeURIComponent(server.id)}`); notify('Server disconnected.'); await refresh(); navigate(indexHref('servers')); }}><Button type="button" variant="danger" disabled={hosted.length > 0}><Unplug size={16} />Disconnect server</Button></ConfirmAction>} />
+    </DangerZone>
+  </Stack>;
 }
 
 /** The confirmation text of restarting one process row. */
@@ -30,8 +129,9 @@ function restartDescription(row: ContainerInfo) {
   return row.role?.startsWith('Stack ·') ? 'This queues a coordinated reload of the entire stack, preserving its shared network and persistent data. The application will be briefly unavailable.' : 'Docker will stop and start this container. The application or managed service may be briefly unavailable.';
 }
 
-export function ContainersPage({ serverID }: { serverID: string }) {
-  const { servers, apps } = useWorkspace(); const server = servers.find(item => item.id === serverID); const [containers, setContainers] = useState<ContainerInfo[]>([]); const [checkedAt, setCheckedAt] = useState(''); const [warning, setWarning] = useState(''); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const notify = useToast();
+/** ServerProcesses: the Processes tab, live containers and native services grouped by application. */
+export function ServerProcesses({ serverID }: { serverID: string }) {
+  const { apps } = useWorkspace(); const [containers, setContainers] = useState<ContainerInfo[]>([]); const [checkedAt, setCheckedAt] = useState(''); const [warning, setWarning] = useState(''); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const notify = useToast();
   const load = async () => { try { const value = await get<ContainerInfo[] | ContainerInventory>(`control/servers/${encodeURIComponent(serverID)}/containers`); setContainers(Array.isArray(value) ? value : value.containers || []); setCheckedAt(Array.isArray(value) ? '' : value.checked_at || ''); setWarning(Array.isArray(value) ? '' : value.warning || ''); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } };
   useEffect(() => { load(); const timer = setInterval(load, 10_000); return () => clearInterval(timer); }, [serverID]);
   // Native services restart through the application's service control,
@@ -54,71 +154,8 @@ export function ContainersPage({ serverID }: { serverID: string }) {
   ];
   const groups = [...containers.reduce((groups, row) => { const key = row.app_id || ''; const rows = groups.get(key) || []; rows.push(row); groups.set(key, rows); return groups; }, new Map<string, ContainerInfo[]>())].sort(([a], [b]) => a === '' ? 1 : b === '' ? -1 : a.localeCompare(b));
   const count = (rows: ContainerInfo[]) => { const services = rows.filter(row => row.runtime === 'native').length; const boxes = rows.length - services; return [boxes ? `${boxes} container${boxes === 1 ? '' : 's'}` : '', services ? `${services} service${services === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · '); };
-  return <><PageHeader eyebrow="Server processes" title={server?.name || serverID} description="Live process usage sampled by the hosting agent: containers from Docker, native services from systemd. Rows stay in a stable order while values update." back={href('servers')} actions={<Button onClick={load}><RefreshCw size={16} />Refresh</Button>} />{error && <ErrorBanner>{error}</ErrorBanner>}{warning && <Notice>{warning}</Notice>}<p className="muted-copy">Processes are grouped by application. Persistent volumes and application files are not removed.{checkedAt ? ` Sampled ${new Date(checkedAt).toLocaleTimeString()}.` : ''}</p>{loading ? <Loading label="Loading processes…" /> : <div className="settings-stack">{groups.length ? groups.map(([appID, rows]) => <Card key={appID} data-app-containers={appID || '__unassigned'}><SectionHeader title={appID || 'Unassigned containers'} description={`${count(rows)}${apps.find(app => app.id === appID)?.domain ? ` · ${apps.find(app => app.id === appID)?.domain}` : ''}`} actions={appID && apps.some(app => app.id === appID) ? <a className="button button-secondary" href={withSticky(detailHref('settings', appID))}>App settings</a> : undefined} /><ResourceList rows={rows} columns={columns} rowKey={row => row.id || row.name} /></Card>) : <Card><p>No processes reported by this server.</p></Card>}</div>}</>;
+  return <div className="settings-stack"><Cluster><Button onClick={load}><RefreshCw size={16} />Refresh</Button></Cluster>{error && <ErrorBanner>{error}</ErrorBanner>}{warning && <Notice>{warning}</Notice>}<p className="muted-copy">Live usage sampled by the hosting agent: containers from Docker, native services from systemd, grouped by application. Rows keep their order while values update. Persistent volumes and application files are not removed.{checkedAt ? ` Sampled ${new Date(checkedAt).toLocaleTimeString()}.` : ''}</p>{loading ? <Loading label="Loading processes…" /> : <div className="settings-stack">{groups.length ? groups.map(([appID, rows]) => <Card key={appID} data-app-containers={appID || '__unassigned'}><SectionHeader title={appID || 'Unassigned containers'} description={`${count(rows)}${apps.find(app => app.id === appID)?.domain ? ` · ${apps.find(app => app.id === appID)?.domain}` : ''}`} actions={appID && apps.some(app => app.id === appID) ? <a className="button button-secondary button-sm" href={withSticky(resourceHref('applications', appID))}>Open application</a> : undefined} /><ResourceList rows={rows} columns={columns} rowKey={row => row.id || row.name} /></Card>) : <Card><p>No processes reported by this server.</p></Card>}</div>}</div>;
 }
 
-export { ServerConsolePage } from './ServerConsolePage';
 
-export function LogPage({ kind, id }: { kind: 'build-logs' | 'runtime-logs'; id: string }) {
-  const { deployments } = useWorkspace();
-  const initial = deployments.find(item => item.id === id);
-  const [deployment, setDeployment] = useState<Deployment | undefined>(initial);
-  const [output, setOutput] = useState(initial?.log || initial?.error || '');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [paused, setPaused] = useState(false);
-  const [follow, setFollow] = usePreference<boolean>('deploy.logs.follow', true);
-  const [refreshKey, setRefreshKey] = useState(0);
-  const [manualRefreshing, setManualRefreshing] = useState(false);
-  // Native applications list their services; the log can show one or all.
-  const [units, setUnits] = useState<string[]>([]);
-  const [unit, setUnit] = useState('');
-  const outputRef = useRef<HTMLPreElement>(null);
-  const terminal = kind === 'build-logs' && !!deployment && !['queued', 'building'].includes(deployment.status);
 
-  useEffect(() => {
-    let active = true;
-    let timer: number | undefined;
-    const schedule = (finished = false) => {
-      if (active && !paused && !finished) timer = window.setTimeout(load, 1_500);
-    };
-    const load = async () => {
-      try {
-        if (kind === 'build-logs') {
-          const current = await get<Deployment>(`control/deployments/${encodeURIComponent(id)}`);
-          if (!active) return;
-          setDeployment(current);
-          setOutput(current.log || current.error || '');
-          setError(''); setLoading(false);
-          schedule(!['queued','building'].includes(current.status));
-          return;
-        } else {
-          const value = await get<{ logs?: string; log?: string; units?: string[] }>(`control/apps/${encodeURIComponent(id)}/logs${unit ? `?unit=${encodeURIComponent(unit)}` : ''}`);
-          if (!active) return;
-          const text = value.logs ?? value.log;
-          if (text !== undefined) setOutput(text);
-          setUnits(Array.isArray(value.units) ? value.units : []);
-          setError('');
-        }
-      } catch (reason) {
-        if (!active) return;
-        setError(`Live refresh failed: ${reason instanceof Error ? reason.message : String(reason)}. Retrying…`);
-      } finally { if (active) setManualRefreshing(false); }
-      if (active) setLoading(false);
-      schedule(false);
-    };
-    load();
-    return () => { active = false; if (timer) clearTimeout(timer); };
-  }, [kind, id, paused, refreshKey, unit]);
-
-  useEffect(() => {
-    const element = outputRef.current;
-    if (follow && element) element.scrollTop = element.scrollHeight;
-  }, [output, follow]);
-
-  const failure = kind === 'build-logs' ? deployment?.error : undefined;
-  const visibleOutput = failure && output && !output.includes(failure) ? `${output}\n\nFailure: ${failure}` : output || (terminal ? 'No build output was recorded.' : kind === 'build-logs' ? 'Waiting for build output…' : 'Waiting for runtime output…');
-  const stateLabel = kind === 'runtime-logs' ? `${paused ? 'Paused' : 'Live'} · runtime` : terminal ? `Finished · ${deployment?.status}` : paused ? `Paused · ${deployment?.status || 'waiting'}` : `Live · ${deployment?.status || 'waiting'}`;
-  const status = kind === 'runtime-logs' ? loading ? 'connecting' : 'running' : deployment?.status || (loading ? 'connecting' : 'waiting');
-  return <><PageHeader eyebrow={kind === 'build-logs' ? 'Deployment output' : 'Application output'} title={kind === 'build-logs' ? `Build ${id.slice(0, 12)}` : `${id} runtime logs`} description={terminal ? 'This deployment has finished. Its complete output remains available below.' : 'New output appears here automatically without replacing the page or moving your reading position.'} back={href(kind === 'build-logs' ? 'deployments' : 'applications')} actions={<div className="sticky-actions"><Button id="log-pause" onClick={() => setPaused(value => !value)} disabled={terminal}>{paused ? <Play size={15} /> : <Pause size={15} />}{paused ? 'Resume live output' : 'Pause live output'}</Button><Button size="sm" feedback pending={manualRefreshing} onClick={() => { setManualRefreshing(true); setRefreshKey(value => value + 1); }}><RefreshCw size={15} />Refresh</Button></div>} />{failure && <div id="deployment-failure"><ErrorBanner>{failure}</ErrorBanner></div>}{error && <div id="deployment-refresh-error"><ErrorBanner>{error}</ErrorBanner></div>}{kind === 'build-logs' && <BuildProgress log={output} status={deployment?.status} started={deployment?.started || deployment?.created} updated={deployment?.updated} progress={deployment?.progress} />}<Card className="log-status-card"><div><StatusBadge status={status} /><strong id="deployment-state" aria-live="polite">{stateLabel}</strong>{deployment && <span>{Math.round(deployment.duration_seconds || 0)} seconds</span>}</div>{kind === 'runtime-logs' && units.length > 1 && <label className="log-follow-control"><span>Process</span><select aria-label="Process" value={unit} onChange={event => { setOutput(''); setUnit(event.target.value); }}><option value="">All processes</option>{units.map(name => <option key={name} value={name}>{name}</option>)}</select></label>}<label className="log-follow-control"><Input id="log-follow" type="checkbox" checked={follow} onChange={event => setFollow(event.target.checked)} /><span>Follow latest output</span></label></Card><Card className="log-card"><LogOutputHeader title={kind === 'build-logs' ? 'Build log' : 'Runtime log'} value={visibleOutput} copyLabel={kind === 'build-logs' ? 'Copy build log' : 'Copy runtime log'} />{loading && !output ? <Loading label={`Connecting to live ${kind === 'build-logs' ? 'build' : 'runtime'} output…`} /> : <pre id="deployment-output" ref={outputRef} onScroll={event => { const element = event.currentTarget; if (follow && element.scrollHeight - element.scrollTop - element.clientHeight > 28) setFollow(false); }}>{visibleOutput}</pre>}</Card></>;
-}

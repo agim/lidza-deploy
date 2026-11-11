@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -240,19 +241,6 @@ func TestNativeSystemUnitUsageAndPreservedRestart(t *testing.T) {
 	}
 }
 
-func TestJournalDiskUsage(t *testing.T) {
-	for in, want := range map[string]int64{
-		"Archived and active journals take up 1.5G in the file system.":  1610612736,
-		"Archived and active journals take up 24.0M in the file system.": 25165824,
-		"Journals take up 512B on disk.":                                 0,
-		"no journal":                                                     0,
-	} {
-		if got := journalDiskUsage(in); got != want && !(in == "Journals take up 512B on disk." && got == 512) {
-			t.Fatalf("%q = %d, want %d", in, got, want)
-		}
-	}
-}
-
 // The native health section reports unit states, failed units, the
 // journal and the releases' disk space without Docker.
 func TestNativeHealthSection(t *testing.T) {
@@ -262,7 +250,7 @@ func TestNativeHealthSection(t *testing.T) {
 		switch args[0] {
 		case "journalctl":
 			if slices.Contains(args, "--disk-usage") {
-				return "Archived and active journals take up 2.0M in the file system.", nil
+				t.Error("health read the journal size through journalctl", args)
 			}
 		case "systemctl":
 			if slices.Contains(args, "list-units") {
@@ -275,6 +263,19 @@ func TestNativeHealthSection(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(release, "app.bin"), make([]byte, 4096), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	journals := t.TempDir()
+	machine := filepath.Join(journals, "0123456789abcdef0123456789abcdef")
+	if err := os.MkdirAll(machine, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, size := range map[string]int{"system.journal": 1 << 20, "user-1000@0001.journal~": 1 << 20, "notes.txt": 1 << 20} {
+		if err := os.WriteFile(filepath.Join(machine, name), bytes.Repeat([]byte{1}, size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldJournals := journalDirectories
+	journalDirectories = []string{journals, filepath.Join(journals, "missing")}
+	t.Cleanup(func() { journalDirectories = oldJournals })
 	oldSync := releaseDiskSync
 	releaseDiskSync = true
 	t.Cleanup(func() { releaseDiskSync = oldSync })
@@ -282,7 +283,7 @@ func TestNativeHealthSection(t *testing.T) {
 	if !ok {
 		t.Fatal("native section missing")
 	}
-	if health.Applications != 1 || health.Units != 2 || health.Active != 2 || !slices.Equal(health.FailedHostUnits, []string{"nginx.service"}) || health.JournalBytes != 2<<20 {
+	if health.Applications != 1 || health.Units != 2 || health.Active != 2 || !slices.Equal(health.FailedHostUnits, []string{"nginx.service"}) || health.JournalBytes < 2<<20 || health.JournalBytes >= 3<<20 {
 		t.Fatalf("health = %+v", health)
 	}
 	if len(health.Releases) != 1 || health.Releases[0].AppID != a.ID || health.Releases[0].Releases != 1 || health.Releases[0].Bytes < 4096 {

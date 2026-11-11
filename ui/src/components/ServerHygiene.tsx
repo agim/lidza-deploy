@@ -3,6 +3,7 @@ import { Gem, ScanSearch } from 'lucide-react';
 import { get, post } from '../lib/api';
 import { formatBytes, formatDate } from '../lib/format';
 import { Badge, Button, Card, ConfirmAction, ErrorBanner, Loading, SectionHeader } from './ui';
+import { CheckList } from './CheckList';
 
 export interface CleanupItem { kind: string; name: string; bytes: number; reason?: string }
 export interface CleanupPreview { checked: string; items: CleanupItem[]; bytes: number; notes?: string[] }
@@ -56,7 +57,7 @@ export function BundlerCleanupCard({ serverID }: { serverID: string }) {
  };
  return <Card><SectionHeader title="Unused Bundler versions" description="Old Bundler versions beside a newer RubyGems print warnings on every command. Versions any kept release runs with, and RubyGems' default, always stay." actions={running ? <Badge tone="warning">Removing…</Badge> : undefined} />
   {error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
-  <ul className="maintenance-preview" aria-label="Bundler versions">{status.groups.map(group => <li key={group.user + group.ruby}><Gem size={15} /> Ruby <strong>{group.ruby}</strong> ({group.user}, RubyGems {group.rubygems}, default Bundler {group.default_bundler}) · {group.apps.join(', ')}{group.remove.length > 0 && <div>Removable: <code>{group.remove.join(', ')}</code></div>}{group.keep?.map(kept => <div key={kept.version}><small>Kept {kept.version}: {kept.reason}</small></div>)}</li>)}</ul>
+  <CheckList aria-label="Bundler versions" items={status.groups.map(group => ({ id: group.user + group.ruby, status: group.remove.length > 0 ? 'warning' : 'ok', icon: <Gem size={14} />, children: <span>Ruby <strong>{group.ruby}</strong> ({group.user}, RubyGems {group.rubygems}, default Bundler {group.default_bundler}) · {group.apps.join(', ')}</span>, detail: group.remove.length > 0 || group.keep?.length ? <>{group.remove.length > 0 && <span>Removable: <code>{group.remove.join(', ')}</code></span>}{group.keep?.map(kept => <span key={kept.version}> Kept {kept.version}: {kept.reason}</span>)}</> : undefined }))} />
   {removable.length > 0 && <div className="maintenance-actions"><ConfirmAction title="Remove unused Bundler versions?" description={`This removes ${listing}. Every application on these Rubies first resolves its bundle in a scratch copy of its current release; nothing is removed if one fails, and removed versions are installed again if an application stops resolving afterwards.`} confirmLabel="Remove versions" destructive onConfirm={remove}><Button variant="danger" disabled={running}><Gem size={16} />Remove unused Bundler versions</Button></ConfirmAction></div>}
   {status.job && !running && <><p className="muted-copy">Last removal {formatDate(status.job.started)}: {status.job.status === 'failed' ? 'failed — ' : ''}{status.job.summary}</p>{status.job.output && <pre className="maintenance-report">{status.job.output}</pre>}</>}
  </Card>;

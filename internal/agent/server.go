@@ -65,7 +65,8 @@ func Handler(m *Manager) http.Handler {
 	m.nativeRoutes(private)
 	private.HandleFunc("GET /v1/apps/{id}/migration-plan", m.migrationPlanRoute)
 	private.HandleFunc("POST /v1/apps/{id}/master-key", func(w http.ResponseWriter, r *http.Request) {
-		if err := m.GenerateMasterKey(r.PathValue("id")); err != nil {
+		apply, err := m.GenerateMasterKeyApply(r.PathValue("id"))
+		if err != nil {
 			Fail(w, 409, err)
 			return
 		}
@@ -77,7 +78,7 @@ func Handler(m *Manager) http.Handler {
 		for _, entry := range settings.Environment {
 			if entry.Key == "LIDZA_MASTER_KEY" {
 				w.Header().Set("Cache-Control", "no-store")
-				JSON(w, 200, entry)
+				JSON(w, 200, MasterKeyGenerated{EnvironmentEntry: entry, Apply: apply})
 				return
 			}
 		}
@@ -118,6 +119,8 @@ func Handler(m *Manager) http.Handler {
 	m.maintenanceRoutes(private)
 	m.hostRoutes(private)
 	m.hostIngressRoutes(private)
+	m.serviceControlRoutes(private)
+	m.logAccessRoutes(private)
 	m.redirectRoutes(private)
 	m.controlRoutes(private)
 	m.databaseRoutes(private)
@@ -183,11 +186,12 @@ func Handler(m *Manager) http.Handler {
 			Fail(w, 400, err)
 			return
 		}
-		if err := m.PatchSettings(r.PathValue("id"), p); err != nil {
+		result, err := m.PatchSettingsApply(r.PathValue("id"), p)
+		if err != nil {
 			Fail(w, 409, err)
 			return
 		}
-		JSON(w, 200, map[string]string{"status": "saved"})
+		JSON(w, 200, map[string]any{"status": "saved", "apply": result})
 	})
 	private.HandleFunc("DELETE /v1/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
 		req, err := decodeAppRemoveRequest(w, r)

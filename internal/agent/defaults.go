@@ -83,7 +83,7 @@ func ValidateRuntimeDefaults(runtime string, values map[string]string) error {
 		case !envPattern.MatchString(k) || len(k) > 128:
 			return fmt.Errorf("invalid environment variable name %q", k)
 		case runtimeDefaultsHostKey(k):
-			return fmt.Errorf("%s is managed by the host and cannot be a workspace default", k)
+			return fmt.Errorf("%s is managed by the host and cannot be an application default", k)
 		case runtimeDefaultsCredentialKey(k):
 			return fmt.Errorf("%s looks like a credential or service connection; configure it on each application", k)
 		case len(v) > 2048:

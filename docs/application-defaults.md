@@ -1,9 +1,9 @@
-# Workspace application defaults
+# Application defaults
 
-Open **Workspace → Application defaults** as an administrator. Defaults are
+Open **Settings → Application defaults** as an administrator. Defaults are
 copied once when an app is first queued for deployment, including a first attempt
 that fails. Retries, automatic deployments, reloads and server restarts retain
-that snapshot. Editing the workspace profile affects apps that have not attempted
+that snapshot. Editing the defaults affects apps that have not attempted
 deployment yet. Existing applications are never opted in automatically.
 
 | Variable | Initial profile | Purpose |
@@ -16,7 +16,7 @@ deployment yet. Existing applications are never opted in automatically.
 | `LOG_LEVEL` | `info` | Logging preference for apps that support this variable. |
 
 Empty profile fields are omitted from the app environment. Explicit app values
-take precedence, including empty strings and `false`. A workspace migration policy
+take precedence, including empty strings and `false`. A default migration policy
 can override the built-in `DB_MIGRATE=true` on a newly created app, but cannot
 override an explicit app policy.
 
@@ -43,7 +43,7 @@ operator changes it, reopen the review. Save any pending app-settings edits firs
 
 A deployed app reloads automatically after the confirmed changes. An app that
 has never deployed successfully saves the values for its next deployment.
-Settings show **Workspace default**, **Built-in default**, or **App setting**
+Settings show **Application default**, **Built-in default**, or **App setting**
 next to saved variable names. Explicit app edits remove the inherited origin.
 
 Upgrade the control panel and hosting agents before using this feature.

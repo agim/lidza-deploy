@@ -115,11 +115,7 @@ func waitMoveUntil(t *testing.T, c *Control, id string, done func(MoveJob) bool)
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		job, _ := c.moveJob(id)
-		c.mu.Lock()
-		running := c.moveRunning[id]
-		c.mu.Unlock()
-		if done(job) && !running {
+		if job, _, running := moveSnapshot(c, id); done(job) && !running {
 			return job
 		}
 		time.Sleep(2 * time.Millisecond)

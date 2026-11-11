@@ -9,6 +9,7 @@ import { Badge, Button, Card, ErrorBanner, Field, IconButton, Loading, Notice, S
 import { Input } from './primitives/input';
 import { LiveProgress } from './LiveProgress';
 import { Switch } from './primitives/switch';
+import { Stack } from './layout';
 
 type Phase = 'idle' | 'review' | 'applying' | 'confirming';
 interface Row { rule: HostFirewallRule; index?: number }
@@ -130,7 +131,7 @@ export function ServerFirewall({ serverID }: { serverID: string }) {
       <Button variant="primary" onClick={review} pending={busy} disabled={locked}><ListChecks size={16} />Review changes</Button>
       {dirty && <Button variant="ghost" onClick={() => adopt(view)} disabled={locked}><Undo2 size={16} />Discard edits</Button>}
     </div>
-    {plan && (phase === 'review' || phase === 'applying') && <div className="firewall-plan">
+    {plan && (phase === 'review' || phase === 'applying') && <Stack gap="md" className="firewall-plan">
       <SectionHeader title="Planned changes" description={plan.changes.length ? `${plan.changes.length} command${plan.changes.length === 1 ? '' : 's'} will run on the server.` : 'The server already matches these rules.'} />
       {plan.warnings?.map(warning => <Notice key={warning}>{warning}</Notice>)}
       {!!plan.changes.length && <ol className="firewall-commands">{plan.changes.map((change, index) => <li key={index}><Badge tone={change.action === 'delete' || change.action === 'disable' ? 'danger' : change.action === 'add' ? 'success' : 'warning'}>{change.action}</Badge><code>{change.command}</code></li>)}</ol>}
@@ -139,6 +140,6 @@ export function ServerFirewall({ serverID }: { serverID: string }) {
         <Button variant="primary" onClick={apply} pending={phase === 'applying'} disabled={phase === 'applying' || !plan.changes.length}><ShieldCheck size={16} />Apply firewall</Button>
         <Button onClick={() => { setPlan(undefined); setPhase('idle'); }} disabled={phase === 'applying'}>Cancel</Button>
       </div>
-    </div>}
+    </Stack>}
   </Card>;
 }

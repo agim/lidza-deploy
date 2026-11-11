@@ -39,11 +39,13 @@ type panelAgentFake struct {
 	placed   *agent.ControlCertificate
 	reach    map[string]bool
 	failNext map[string]int
+	retired  []map[string]any
+	link     *agent.ControlLink
 }
 
 func newPanelAgent(t *testing.T, machine string) *panelAgentFake {
 	f := &panelAgentFake{reach: map[string]bool{}, failNext: map[string]int{}}
-	f.status = agent.ControlHostStatus{Supported: true, Version: buildinfo.Version, Arch: "amd64", MachineID: machine, Listen: agent.ControlListen, ListenFree: true, BundleStaged: true, Ingress: "caddy", IngressDetail: "a route through the Caddy admin API", CertificateStorage: "/var/lib/caddy/.local/share/caddy", Docker: true}
+	f.status = agent.ControlHostStatus{Supported: true, Version: buildinfo.Version, Arch: "amd64", MachineID: machine, Listen: agent.ControlListen, ListenFree: true, BundleStaged: true, Ingress: "caddy", IngressDetail: "a route through the Caddy admin API", CertificateStorage: "/var/lib/caddy/.local/share/caddy", Docker: true, Links: true}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	f.status.AgentURL = "http://127.0.0.1:9092"
 	t.Cleanup(f.srv.Close)
@@ -123,7 +125,18 @@ func (f *panelAgentFake) serve(w http.ResponseWriter, r *http.Request) {
 		f.routes = append(f.routes, in)
 		agent.JSON(w, 200, map[string]string{"mode": "caddy", "detail": "a route through the Caddy admin API"})
 	case "POST /v1/host/control/retire":
+		var in map[string]any
+		json.Unmarshal(body, &in)
+		f.retired = append(f.retired, in)
 		agent.JSON(w, 200, map[string]any{"notes": []string{"The control panel unit is stopped and disabled."}})
+	case "PUT /v1/host/control/link":
+		var in agent.ControlLink
+		json.Unmarshal(body, &in)
+		f.link = &in
+		agent.JSON(w, 200, in)
+	case "DELETE /v1/host/control/link":
+		f.link = nil
+		agent.JSON(w, 200, map[string]string{"status": "removed"})
 	case "DELETE /v1/host/control":
 		f.status.Installed, f.status.Owned, f.status.State = false, false, nil
 		agent.JSON(w, 200, map[string]string{"status": "removed"})
@@ -152,6 +165,9 @@ type panelFixture struct {
 	resolver *moveResolverFake
 	probe    *moveProbeFake
 	dumped   int
+	// linkProbes are the checks of the kept server's link; linkErr fails them.
+	linkProbes []string
+	linkErr    error
 }
 
 func newPanelFixture(t *testing.T) *panelFixture {
@@ -175,6 +191,10 @@ func newPanelFixture(t *testing.T) *panelFixture {
 	c.panelMachineID = func() string { return "machine-old" }
 	c.panelPollInterval, c.panelRetryDelays = time.Millisecond, []time.Duration{time.Millisecond}
 	c.moveResolver, c.moveProbe = fx.resolver, fx.probe.probe
+	c.panelLinkProbe = func(_ context.Context, address, hostname string, s Server) error {
+		fx.linkProbes = append(fx.linkProbes, address+" "+hostname+" "+s.URL)
+		return fx.linkErr
+	}
 	c.panelDatabase = func(context.Context) (bool, int64, error) { return true, 4096, nil }
 	c.panelDumpFixture = func(_ context.Context, w io.Writer) error {
 		fx.dumped++
@@ -211,6 +231,21 @@ func waitPanel(t *testing.T, c *Control, states ...string) PanelMove {
 	move, _ := c.panelMove()
 	t.Fatalf("panel move stayed %s (%s), want %v: %+v", move.State, move.Error, states, move.Steps)
 	return move
+}
+
+// waitPanelFirstCheck waits for the runner's first DNS check after the
+// cutover. The runner checks once on entering the DNS wait and then sleeps
+// for panelPollInterval, so a test that makes its own checks starts after
+// that one; otherwise the runner's check can land between the test's
+// changes and act on them first.
+func waitPanelFirstCheck(t *testing.T, c *Control) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if move, _ := c.panelMove(); move.DNSChecked != nil {
+			return
+		}
+	}
+	t.Fatal("the runner did not check DNS after the cutover")
 }
 
 func panelPost(t *testing.T, c *Control, action string, body any) (int, string) {
@@ -298,7 +333,7 @@ func TestStandbyRefusesTicksAndJobs(t *testing.T) {
 	if err := tick(context.Background(), nil); err != nil || ran != 1 {
 		t.Fatalf("read-only tick ran %d", ran)
 	}
-	for _, h := range []http.Handler{StandbyHandler(), MovedHandler("https://deploy.example.com")} {
+	for _, h := range []http.Handler{StandbyHandler(""), MovedHandler("https://deploy.example.com")} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", "/readyz", nil))
 		if w.Code != 200 {
@@ -452,11 +487,41 @@ func TestPanelMovePlanChecksDestinationAndServers(t *testing.T) {
 	if !plan.Ready || plan.Database != "managed" || !plan.CertificateOK || !slices.Equal(plan.Addresses, []string{moveTestTargetIP}) {
 		t.Fatalf("plan %+v", plan)
 	}
+	// Kept by default, also without applications, through an agent link.
+	for _, s := range plan.Servers {
+		if s.ID == "old" && (s.Retire || s.NewURL != "http://old.agent-link.invalid") {
+			t.Fatalf("source not kept: %+v", s)
+		}
+	}
+	if !plan.KeepSource || !plan.SourceLink {
+		t.Fatalf("keep %v link %v", plan.KeepSource, plan.SourceLink)
+	}
+	// Retired only when chosen.
+	retire := false
+	plan, _ = fx.c.panelMovePlan(ctx, PanelMoveInput{Target: "combined", KeepSource: &retire, ServerURLs: map[string]string{"edge": "https://edge-agent.example.org"}})
 	for _, s := range plan.Servers {
 		if s.ID == "old" && !s.Retire {
 			t.Fatalf("source not retired: %+v", s)
 		}
 	}
+	if !plan.Ready || plan.KeepSource || plan.SourceLink {
+		t.Fatalf("retire plan %+v", plan.Blockers)
+	}
+	// Retiring a server that still holds applications is refused.
+	fx.c.mu.Lock()
+	fx.c.data.Apps["blog"] = Application{ID: "blog", ServerID: "old", Repository: "acme/blog", Branch: "main", Domain: "blog.example.com"}
+	fx.c.mu.Unlock()
+	plan, _ = fx.c.panelMovePlan(ctx, PanelMoveInput{Target: "combined", KeepSource: &retire, ServerURLs: map[string]string{"edge": "https://edge-agent.example.org"}})
+	if plan.Ready {
+		t.Fatal("a server with applications was retired")
+	}
+	plan, _ = fx.c.panelMovePlan(ctx, PanelMoveInput{Target: "combined", ServerURLs: map[string]string{"edge": "https://edge-agent.example.org"}})
+	if !plan.Ready || !plan.SourceLink {
+		t.Fatalf("kept with applications: %v", plan.Blockers)
+	}
+	fx.c.mu.Lock()
+	delete(fx.c.data.Apps, "blog")
+	fx.c.mu.Unlock()
 	fx.dest.status.Version = "v0.0.1-private.1"
 	fx.dest.status.ListenFree = false
 	plan, _ = fx.c.panelMovePlan(ctx, PanelMoveInput{Target: "combined", ServerURLs: map[string]string{"edge": "https://edge-agent.example.org"}})
@@ -508,8 +573,16 @@ func TestPanelMoveRunsPrepareCutoverAndDNS(t *testing.T) {
 	}
 	var copied saved
 	json.Unmarshal(plain, &copied)
-	if copied.Servers[0].ID != "combined" || copied.Servers[0].URL != "http://127.0.0.1:9092" || copied.PanelMove != nil || copied.PanelArrival == nil {
+	// The old host is kept by default, reached through its agent link.
+	if len(copied.Servers) != 3 || copied.Servers[0].ID != "old" || copied.Servers[0].URL != "http://old.agent-link.invalid" || copied.Servers[1].ID != "combined" || copied.Servers[1].URL != "http://127.0.0.1:9092" ||
+		copied.PanelMove != nil || copied.PanelArrival == nil || len(copied.PanelArrival.Retired) != 0 {
 		t.Fatalf("copied servers %+v arrival %+v", copied.Servers, copied.PanelArrival)
+	}
+	if fx.source.link == nil || fx.source.link.URL != "https://deploy.example.com" || fx.source.link.Address != moveTestTargetIP || fx.source.link.Server != "old" {
+		t.Fatalf("link %+v", fx.source.link)
+	}
+	if len(fx.linkProbes) == 0 || fx.linkProbes[0] != moveTestTargetIP+" deploy.example.com http://old.agent-link.invalid" || move.step(panelStepLink).Status != "done" {
+		t.Fatalf("link probes %v step %+v", fx.linkProbes, move.step(panelStepLink))
 	}
 	env := fx.dest.applied[0]["env"].(map[string]any)
 	if _, ok := env["LIDZA_ADDR"]; ok {
@@ -561,7 +634,8 @@ func TestPanelMoveDNSRequestsCertificateOnlyOncePointed(t *testing.T) {
 	fx := newPanelFixture(t)
 	c := fx.c
 	fx.source.cert = nil // nothing to copy: Caddy issues once DNS points
-	if code, body := panelPost(t, c, "", PanelMoveInput{Target: "combined"}); code != 202 {
+	retire := false
+	if code, body := panelPost(t, c, "", PanelMoveInput{Target: "combined", KeepSource: &retire}); code != 202 {
 		t.Fatal(code, body)
 	}
 	move := waitPanel(t, c, panelMoveStandby, panelMoveFailed)
@@ -571,11 +645,7 @@ func TestPanelMoveDNSRequestsCertificateOnlyOncePointed(t *testing.T) {
 	c.panelPollInterval = time.Hour // checks run only when asked
 	panelPost(t, c, "cutover", nil)
 	waitPanel(t, c, panelMoveDNS)
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-		if move, _ := c.panelMove(); move.DNSChecked != nil {
-			break // the runner's first check ran; it now waits an hour
-		}
-	}
+	waitPanelFirstCheck(t, c)
 	c.panelCheckDNS(context.Background(), false)
 	if len(fx.dest.routes) != 1 {
 		t.Fatal("the certificate was requested before DNS pointed to the destination")

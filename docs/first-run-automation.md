@@ -21,7 +21,7 @@ Both issues are closed. [#24](https://github.com/agim/lidza/issues/24) assigns s
 3. Choose managed PostgreSQL on the installation host or connect an existing PostgreSQL server. Provision/test the selected database, persist credentials securely, and recover cleanly after interrupted setup.
 4. Set the control-panel hostname and contact email. Offer authorized DNS-provider integration where supported, otherwise display the exact required records and verify resolution before enabling public HTTPS. A hostname alone does not authorize editing a DNS zone.
 5. Show GitHub connection guidance. After local login, Integrations posts a prefilled GitHub App manifest and opens repository selection. App credentials are saved through framework encryption without copying keys or secrets. See [Guided GitHub connection](github-app-plan.md).
-6. Pair the local or remote agent and verify its authenticated API. Finish setup only after required checks pass, then permanently close the bootstrap entry point and open the approved Signal workspace.
+6. Pair the local or remote agent and verify its authenticated API. Finish setup only after required checks pass, then permanently close the bootstrap entry point and open the console.
 
 Provisioning Docker/PostgreSQL and DNS-provider actions are deployment-product hooks; framework bootstrap handles lifecycle, ownership, validation and secure persistence. Subsequent settings changes must remain in the GUI rather than requiring env-file edits.
 

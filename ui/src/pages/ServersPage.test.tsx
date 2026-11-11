@@ -24,7 +24,7 @@ const health = {
 };
 
 describe('ServersPage resources', () => {
-  it('restores host metrics and retains the same server card with stale values during outages', async () => {
+  it('lists servers with live usage and keeps the same row with stale values during outages', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ servers: [health], unavailable_servers: [] }) })
       .mockRejectedValueOnce(new Error('Agent connection failed'))
@@ -33,27 +33,20 @@ describe('ServersPage resources', () => {
     const { container } = render(<ServersPage />);
     expect(await screen.findByText('16.3%')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/control/server-health', expect.any(Object));
-    expect(screen.getByText('2.0 GiB used')).toBeInTheDocument();
+    expect(screen.getByText('2.0 GiB of 8.0 GiB')).toBeInTheDocument();
     expect(screen.getByText('70.0% used')).toBeInTheDocument();
-    expect(screen.getByText('1.0 GiB used / 4.0 GiB')).toBeInTheDocument();
-    expect(screen.getByText('20.0 MiB')).toBeInTheDocument();
-    const card = container.querySelector('[data-server-card="local"]');
+    expect(screen.getByRole('link', { name: 'This server' })).toHaveAttribute('href', '/console/servers/local');
+    expect(screen.getByRole('link', { name: '1 application' })).toHaveAttribute('href', '/console/servers/local/applications');
+    expect(screen.getByText('online')).toBeInTheDocument();
+    const row = container.querySelector('.resource-row');
     fireEvent.click(screen.getByRole('button', { name: 'Refresh resources' }));
-    expect(await screen.findByText(/These measurements are stale/)).toBeInTheDocument();
+    expect(await screen.findByText(/Agent connection failed/)).toBeInTheDocument();
     expect(screen.getByText('16.3%')).toBeInTheDocument();
-    expect(container.querySelector('[data-server-card="local"]')).toBe(card);
+    expect(container.querySelector('.resource-row')).toBe(row);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh resources' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Refresh resources' }));
     expect(await screen.findByText('0.0%')).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText(/These measurements are stale/)).not.toBeInTheDocument());
-  });
-
-  it('labels unavailable and unsampled measurements without inventing zero usage', () => {
-    render(<ServerResources health={{ server_id: 'local', cpu_percent: null }} loading={false} />);
-    expect(screen.getByText('Sampling…')).toBeInTheDocument();
-    expect(screen.queryByText('0.0%')).not.toBeInTheDocument();
-    expect(screen.queryByText('0 B used')).not.toBeInTheDocument();
-    expect(screen.getByText('Disk measurements unavailable.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/Agent connection failed/)).not.toBeInTheDocument());
   });
 
   it('refreshes host measurements automatically without overlapping requests', async () => {

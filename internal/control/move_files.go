@@ -163,7 +163,7 @@ func (c *Control) moveCopyFileSet(ctx context.Context, run moveRun, i int, share
 		shared.checked = true
 		shared.storage = c.moveFileStorage(ctx, job)
 		if !shared.storage {
-			c.moveLog(id, step, "Workspace storage could not be sent to %s; archives stream through the control panel instead.", job.TargetServer)
+			c.moveLog(id, step, "Backup storage could not be sent to %s; archives stream through the control panel instead.", job.TargetServer)
 		}
 	}
 	upload := shared.storage && set.Method == moveFileMethodS3
@@ -208,21 +208,21 @@ func (c *Control) moveCopyFileSet(ctx context.Context, run moveRun, i int, share
 		var restored agent.MoveFileRestore
 		switch {
 		case archive.Key != "":
-			c.moveStage(id, fmt.Sprintf("receiving %s on %s from workspace storage", set.Source, job.TargetServer), 0, nil)
+			c.moveStage(id, fmt.Sprintf("receiving %s on %s from backup storage", set.Source, job.TargetServer), 0, nil)
 			stopWatch := c.moveWatchFiles(ctx, job, job.TargetServer, set.ID, set.Source)
 			err := c.moveCall(ctx, 6*time.Hour, job.TargetServer, http.MethodPost, appPath+url.PathEscape(set.ID)+"/fetch", agent.MoveFileFetchRequest{Move: job.ID, Key: archive.Key, Size: archive.Size, SHA256: archive.SHA256}, &restored)
 			stopWatch()
 			if err == nil {
 				used = moveFileMethodS3
 			} else {
-				c.moveLog(id, step, "%s could not restore %s from workspace storage (%s); streaming the archive directly instead.", job.TargetServer, set.Source, moveAgentError(err))
+				c.moveLog(id, step, "%s could not restore %s from backup storage (%s); streaming the archive directly instead.", job.TargetServer, set.Source, moveAgentError(err))
 			}
 		case upload && !reused:
 			reason := archive.UploadError
 			if reason == "" {
 				reason = "no object was reported"
 			}
-			c.moveLog(id, step, "The source could not upload %s to workspace storage (%s); streaming the archive directly instead.", set.Source, reason)
+			c.moveLog(id, step, "The source could not upload %s to backup storage (%s); streaming the archive directly instead.", set.Source, reason)
 		}
 		if used == moveFileMethodDirect {
 			if err := c.moveTransferFiles(ctx, job, set, archive, &restored, moveUploadID(job, cp.key, archive.SHA256)); err != nil {
@@ -240,7 +240,7 @@ func (c *Control) moveCopyFileSet(ctx context.Context, run moveRun, i int, share
 			f.Copied, f.ArchiveBytes, f.Used, f.Files, f.Bytes, f.Skipped = archive.SHA256, archive.Size, used, archive.Files, archive.Bytes, ""
 			how := "through the control panel"
 			if used == moveFileMethodS3 {
-				how = "through workspace storage"
+				how = "through backup storage"
 			}
 			where := restored.Path
 			if where == "" {
@@ -265,14 +265,14 @@ func (c *Control) moveTransferFiles(ctx context.Context, job MoveJob, set MoveFi
 }
 
 // moveCleanupFiles removes the move's archives from both agents' spools and
-// from workspace storage. Failures are logged; they never fail the move.
+// from backup storage. Failures are logged; they never fail the move.
 func (c *Control) moveCleanupFiles(ctx context.Context, job MoveJob, step string) {
 	if !moveHasFiles(job) {
 		return
 	}
 	for _, server := range []string{job.SourceServer, job.TargetServer} {
 		if err := c.moveCall(ctx, 3*time.Minute, server, http.MethodDelete, "/v1/move/files/"+url.PathEscape(job.ID), nil, nil); err != nil {
-			c.moveLog(job.ID, step, "The move's temporary file archives could not be removed on %s (%s); remove moves/%s/ from workspace storage if it remains.", server, moveAgentError(err), job.ID)
+			c.moveLog(job.ID, step, "The move's temporary file archives could not be removed on %s (%s); remove moves/%s/ from backup storage if it remains.", server, moveAgentError(err), job.ID)
 		}
 	}
 }

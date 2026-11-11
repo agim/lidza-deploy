@@ -8,6 +8,7 @@ import { Badge, Button, Card, ConfirmAction, ErrorBanner, Field, Loading, Notice
 import { Input } from './primitives/input';
 import { LiveProgress } from './LiveProgress';
 import { Switch } from './primitives/switch';
+import { Cluster, Stack } from './layout';
 
 const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const durations = [30, 60, 120, 180, 240, 360];
@@ -40,7 +41,7 @@ export function HostUpdateBadges({ serverID }: { serverID: string }) {
 
 function JobList({ jobs }: { jobs: HostJob[] }) {
   if (!jobs.length) return <p className="muted-copy">No host operations have run yet.</p>;
-  return <ul className="host-jobs">{jobs.slice(0, 6).map(job => <li key={job.id}><div className="host-job-heading"><StatusBadge status={job.status === 'succeeded' ? 'done' : job.status} /><strong>{jobLabels[job.kind] || job.kind}</strong><small>{formatDate(job.started)} · {job.trigger}</small></div>{job.summary && <p className="muted-copy">{job.summary}</p>}{job.output && <details><summary>Output</summary><pre className="maintenance-report">{job.output}</pre></details>}</li>)}</ul>;
+  return <ul className="host-jobs">{jobs.slice(0, 6).map(job => <li key={job.id}><Stack gap="sm"><div className="host-job-heading"><StatusBadge status={job.status === 'succeeded' ? 'done' : job.status} /><strong>{jobLabels[job.kind] || job.kind}</strong><small>{formatDate(job.started)} · {job.trigger}</small></div>{job.summary && <p className="muted-copy">{job.summary}</p>}{job.output && <details className="host-job-output"><summary>Output</summary><pre className="maintenance-report">{job.output}</pre></details>}</Stack></li>)}</ul>;
 }
 
 export function ServerUpdates({ serverID }: { serverID: string }) {
@@ -78,7 +79,7 @@ export function ServerUpdates({ serverID }: { serverID: string }) {
   const disruptive = status.disruptive_packages || [];
   const deferred = status.policy.disruptive_in_window !== false;
   const windowNote = deferred && status.next_disruptive_window ? `They install in the maintenance window starting ${formatDate(status.next_disruptive_window)}, then the server reboots there if needed.` : 'They install only when you include them in a run below.';
-  return <Card className="form-card" data-host-updates={serverID}>
+  return <Stack gap="page" data-host-updates={serverID}><Card className="form-card" aria-label="Operating system updates">
     <SectionHeader title="Operating system updates" description={status.checked_at ? `Checked ${formatDate(status.checked_at)}. Package lists refresh daily on the server.` : undefined} actions={<Button size="sm" onClick={check} pending={checking} disabled={checking || busy}><RefreshCw size={15} />Check now</Button>} />
     {error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
     {status.error && <Notice>{status.error}</Notice>}
@@ -95,15 +96,17 @@ export function ServerUpdates({ serverID }: { serverID: string }) {
     {status.reboot_deferred && <Notice>{status.reboot_deferred}</Notice>}
     {status.unattended_last_run && <p className="muted-copy">Unattended upgrades last ran {formatDate(status.unattended_last_run)}.</p>}
     {status.docker?.warning && <div className="alert alert-warning" role="status"><TriangleAlert size={16} /><span>{status.docker.warning}</span></div>}
-    {disruptive.length > 0 && <div className="host-disruptive-block"><strong>Disruptive updates</strong><p className="muted-copy">These restart shared services or need a reboot. {windowNote}</p><DisruptiveList packages={disruptive} /></div>}
+    {disruptive.length > 0 && <div className="host-disruptive-block"><Stack gap="sm"><strong>Disruptive updates</strong><p className="muted-copy">These restart shared services or need a reboot. {windowNote}</p><DisruptiveList packages={disruptive} /></Stack></div>}
     {!!status.packages?.length && <details className="host-packages"><summary>Pending packages</summary><ul>{status.packages.map(item => <li key={item.name}><code>{item.name}</code> {item.current ? `${item.current} → ` : 'new '}{item.candidate}{item.security && <Badge tone="warning">security</Badge>}</li>)}</ul></details>}
-    <div className="maintenance-actions">
+    {!!status.components?.length && <div className="host-components">{status.components.map(item => <div key={item.name}><strong>{item.name}</strong><span>{item.source === 'absent' ? 'Not installed' : item.installed || 'Unknown version'}{item.upgrade_available && item.candidate ? ` → ${item.candidate}` : ''}</span><small>{item.source === 'binary' ? 'Standalone binary; package updates do not apply' : item.source === 'package' ? item.automatic === 'all' ? 'Updates install automatically' : item.automatic === 'security' ? 'Security updates install automatically' : 'Updates install manually' : ''}</small></div>)}</div>}
+    <Cluster className="maintenance-actions">
       <ConfirmAction title="Install security updates now?" description={<>{securityRule} Disruptive security updates{disruptive.some(item => item.security) ? ` (${disruptive.filter(item => item.security).map(item => item.name).join(', ')})` : ''} are left for the maintenance window. A reboot may be required afterwards.</>} confirmLabel="Install security updates" onConfirm={() => run('security')}><Button variant="primary" disabled={busy}><ShieldAlert size={16} />Install security updates now</Button></ConfirmAction>
       <ConfirmAction title="Install all pending updates?" description={disruptive.length ? <>Every pending update is installed except these disruptive ones, which stay pending: {disruptive.map(item => item.name).join(', ')}. {windowNote}</> : 'Every pending package update is installed. None of them restarts shared services.'} confirmLabel="Install all updates" onConfirm={() => run('all')}><Button disabled={busy || !status.pending}><Download size={16} />Install all updates</Button></ConfirmAction>
       {disruptive.length > 0 && <ConfirmAction title="Install all updates, including disruptive ones?" description={`Installing these now interrupts hosted applications. ${disruptive.map(item => `${item.name} ${item.effect}`).join('. ')}. The run cannot be stopped once it starts.`} confirmLabel="Install including disruptive" destructive onConfirm={() => run('all', true)}><Button variant="danger" disabled={busy}><TriangleAlert size={16} />Include disruptive updates</Button></ConfirmAction>}
       <ConfirmAction title="Reboot this server now?" description="Every application on this server is unavailable until the host is back, usually a few minutes. The reboot is refused while deployments, backups or package updates are running." confirmLabel="Reboot now" destructive onConfirm={reboot}><Button variant="danger" disabled={busy}><Power size={16} />Reboot now</Button></ConfirmAction>
-    </div>
-    {!!status.components?.length && <div className="host-components">{status.components.map(item => <div key={item.name}><strong>{item.name}</strong><span>{item.source === 'absent' ? 'Not installed' : item.installed || 'Unknown version'}{item.upgrade_available && item.candidate ? ` → ${item.candidate}` : ''}</span><small>{item.source === 'binary' ? 'Standalone binary; package updates do not apply' : item.source === 'package' ? item.automatic === 'all' ? 'Updates install automatically' : item.automatic === 'security' ? 'Security updates install automatically' : 'Updates install manually' : ''}</small></div>)}</div>}
+    </Cluster>
+  </Card>
+  <Card className="form-card" aria-label="Update policy">
     <SectionHeader title="Update policy" description="Runs on the server itself, even while the control panel is offline." />
     <label className="check-row switch-row"><Switch aria-label="Automatic security updates" checked={policy.auto_security} onCheckedChange={auto_security => change({ auto_security, manage_package_sources: auto_security && policy.manage_package_sources })} /><span><strong>Automatic security updates</strong><small>Installs and enables unattended-upgrades for the distribution's security updates.</small></span></label>
     <label className="check-row switch-row"><Switch aria-label="Include official package repositories" checked={policy.manage_package_sources} disabled={!policy.auto_security} onCheckedChange={manage_package_sources => change({ manage_package_sources })} /><span><strong>Include official Caddy, PostgreSQL and Docker repositories</strong><small>{status.managed_origins?.length ? `Configured here: ${status.managed_origins.join('; ')}.` : 'None of these repositories is configured on this server.'}</small></span></label>
@@ -115,9 +118,11 @@ export function ServerUpdates({ serverID }: { serverID: string }) {
       <div className="form-grid two"><Field label="Start hour (UTC)"><select aria-label="Start hour (UTC)" value={policy.reboot_window.hour} onChange={event => changeWindow({ hour: Number(event.target.value) })}>{Array.from({ length: 24 }, (_, hour) => <option key={hour} value={hour}>{String(hour).padStart(2, '0')}:00</option>)}</select></Field><Field label="Window length"><select aria-label="Window length" value={policy.reboot_window.duration_minutes} onChange={event => changeWindow({ duration_minutes: Number(event.target.value) })}>{durations.map(minutes => <option key={minutes} value={minutes}>{minutes >= 60 ? `${minutes / 60} hour${minutes === 60 ? '' : 's'}` : `${minutes} minutes`}</option>)}</select></Field></div>
       <p className="muted-copy">{windowLabel(policy)}. No day selected means every day.</p>
     </fieldset>
-    <div className="maintenance-actions"><Button variant="primary" onClick={save}><Save size={16} />Save update policy</Button></div>
     <p className="muted-copy">{status.policy.auto_reboot && status.next_reboot_window ? `Next reboot window: ${formatDate(status.next_reboot_window)}.` : 'Automatic reboots are off.'}{status.last_reboot ? ` Last reboot by the agent: ${formatDate(status.last_reboot)}.` : ''}</p>
+    <Cluster><Button variant="primary" onClick={save}><Save size={16} />Save update policy</Button></Cluster>
+  </Card>
+  <Card className="form-card" aria-label="Recent host operations">
     <SectionHeader title="Recent host operations" />
     <JobList jobs={status.jobs || []} />
-  </Card>;
+  </Card></Stack>;
 }

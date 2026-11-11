@@ -212,10 +212,10 @@ func (m *Manager) nativeLifecycleAllowed(id string) string {
 	if m.cfg.Native == nil {
 		return "Native management is not configured on this server."
 	}
-	if _, created := m.nativeCreatedPolicy(id); created || m.cfg.Native.ServiceControl {
+	if m.nativeServiceControlFor(id) {
 		return ""
 	}
-	return "Service control of applications adopted from the existing host setup is not enabled on this server (native.service_control in the agent configuration)."
+	return serviceControlOffReason
 }
 
 // nativeLifecycleUnits returns the registration and the units an

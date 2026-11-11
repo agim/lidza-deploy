@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -141,7 +142,6 @@ func urlForNativeDump(raw string) (string, error) {
 }
 
 func (m *Manager) nativeDatabaseDumpPolicy(ctx context.Context, d Database) (*NativeDatabasePolicy, error) {
-	m.refreshNativeHostDataTool(ctx, d.AppID) // follow verified pg_dump package updates
 	m.mu.Lock()
 	binding, native := m.data.NativeDatabases[d.AppID]
 	if !native {
@@ -160,16 +160,37 @@ func (m *Manager) nativeDatabaseDumpPolicy(ctx context.Context, d Database) (*Na
 		return nil, errors.New("native release backups require the complete database; exclusions refused")
 	}
 	raw, err := m.nativeDatabaseSource(binding.Policy)
-	if err != nil || raw != d.URL {
-		return nil, errors.New("native database source changed; existing backup retained")
+	if err != nil {
+		return nil, fmt.Errorf("%s; existing backup retained", strings.TrimSuffix(err.Error(), "."))
+	}
+	if raw != d.URL {
+		return nil, errors.New(nativeSourceDriftMessage(binding.Policy) + "; existing backup retained")
+	}
+	// The tool pin follows verified package updates (native_backup_tool.go).
+	p := binding.Policy
+	if p.DumpSHA256, _, err = m.nativeBackupToolPin(ctx, p); err != nil {
+		return nil, err
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err = checkNativeBackupSource(probeCtx, raw, binding.Policy); err != nil {
+	if err = checkNativeBackupSource(probeCtx, raw, p); err != nil {
 		return nil, err
 	}
-	p := binding.Policy
 	return &p, nil
+}
+
+// nativeSourceDriftMessage says which connection no longer matches the one
+// recorded at adoption.
+func nativeSourceDriftMessage(p NativeDatabasePolicy) string {
+	switch {
+	case p.ArchiveDatabase != "":
+		return "standalone native database connection differs from the adopted one"
+	case p.SQLitePath != "":
+		return "native SQLite source differs from the adopted file " + p.SQLitePath
+	case p.EnvironmentKey != "":
+		return p.EnvironmentKey + " now holds a different connection than the adopted database"
+	}
+	return "native database connection differs from the adopted one"
 }
 
 func (m *Manager) dumpNativeDatabase(ctx context.Context, d Database, p NativeDatabasePolicy, output io.Writer) error {

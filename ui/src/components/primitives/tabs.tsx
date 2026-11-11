@@ -23,8 +23,10 @@ function Tabs({
   )
 }
 
+// A tab list that scrolls never shows a scrollbar (touch, wheel and keyboard
+// still scroll it; console.css fades the edge that has more tabs).
 const tabsListVariants = cva(
-  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-(--space-hairline) text-muted-foreground group-data-[orientation=horizontal]/tabs:h-8 group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col data-[variant=line]:rounded-none",
+  "group/tabs-list [scrollbar-width:none] [&::-webkit-scrollbar]:hidden inline-flex w-fit items-center justify-center rounded-lg p-(--space-hairline) text-muted-foreground group-data-[orientation=horizontal]/tabs:h-8 group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col data-[variant=line]:rounded-none",
   {
     variants: {
       variant: {

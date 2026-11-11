@@ -111,6 +111,9 @@ type MoveJob struct {
 	Addresses         []string        `json:"addresses"`
 	DNS               []MoveDNSStatus `json:"dns"`
 	DNSChecked        *time.Time      `json:"dns_checked,omitempty"`
+	// Propagation holds the source's retirement until cached DNS no longer
+	// sends visitors there (move_propagation.go).
+	Propagation *MoveDNSPropagation `json:"propagation,omitempty"`
 	// PTR is the reverse DNS of the destination's addresses, checked at the
 	// cutover of a mail-sending application (move_mail.go); it warns only.
 	PTR []MovePTRStatus `json:"ptr,omitempty"`
@@ -956,6 +959,10 @@ func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
 			case job.State == moveStateCutover && in.OverrideDNS && in.Confirm == job.AppID && job.TLSReady:
 				job.logf(moveStepCutover, "Finishing on the operator's confirmation: HTTPS on the destination works, but DNS does not resolve to its addresses (for example behind a CDN or proxy).")
 				job.setStep(moveStepCutover, "done")
+				// Cached DNS cannot be measured against addresses DNS
+				// does not return; the operator confirmed the switch.
+				now := time.Now().UTC()
+				job.Propagation = &MoveDNSPropagation{Changed: &now, Complete: true, Detail: "Not measured: finished on the operator's confirmation."}
 			case job.State == moveStateCutover && in.OverrideDNS:
 				return errors.New("confirm the application id, and wait until HTTPS works on the destination")
 			default:

@@ -170,7 +170,7 @@ it('lists file sets with size and transfer method, and warns not to change DNS e
   const files = await screen.findByText('Files');
   const list = files.nextElementSibling as HTMLElement;
   expect(within(list).getAllByRole('listitem').map(item => item.textContent)).toEqual([
-    'storage volume lidza-storage-shop (storage) (1,240 files, 3.0 GiB) · copied through workspace storage',
+    'storage volume lidza-storage-shop (storage) (1,240 files, 3.0 GiB) · copied through backup storage',
     'public/uploads volume lidza-storage-shop (public-uploads) (12 files, 5.0 MiB) · copied directly through the control panel',
     'public/system volume lidza-storage-shop (public-system) (0 files, 0.0 KiB) · skipped: no files',
   ]);
@@ -199,8 +199,8 @@ it('notes skipped runtime sockets on a file set without blocking the move', asyn
   fireEvent.click(await screen.findByRole('button', { name: 'Review move' }));
   const list = (await screen.findByText('Files')).nextElementSibling as HTMLElement;
   expect(within(list).getAllByRole('listitem').map(item => item.textContent)).toEqual([
-    'stack/postfix-queue stack volume lidza-stack-shop-postfix-queue (48 files, 2.0 MiB) · copied through workspace storage · 21 runtime sockets skipped',
-    'stack/rspamd-state stack volume lidza-stack-shop-rspamd-state (3 files, 1.0 MiB) · copied through workspace storage · 1 runtime socket skipped',
+    'stack/postfix-queue stack volume lidza-stack-shop-postfix-queue (48 files, 2.0 MiB) · copied through backup storage · 21 runtime sockets skipped',
+    'stack/rspamd-state stack volume lidza-stack-shop-rspamd-state (3 files, 1.0 MiB) · copied through backup storage · 1 runtime socket skipped',
   ]);
   expect(screen.getByText(/runtime state that the services recreate/)).toBeInTheDocument();
   // Runtime files are not blockers: nothing to resolve, nothing to acknowledge.

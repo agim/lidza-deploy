@@ -70,6 +70,10 @@ type aptPackagePolicy struct {
 	// pocket a candidate comes from can be told apart on a mirror that
 	// serves several.
 	CandidateSources []aptSource
+	// InstalledSources are the repositories offering the installed
+	// version; empty when only /var/lib/dpkg/status knows it (a local
+	// package or one no configured repository carries any more).
+	InstalledSources []aptSource
 }
 
 // parseAptPolicy reads `apt-cache policy <packages...>`.
@@ -77,7 +81,7 @@ func parseAptPolicy(out string) map[string]aptPackagePolicy {
 	result := map[string]aptPackagePolicy{}
 	var name string
 	var current aptPackagePolicy
-	inCandidate := false
+	inCandidate, inInstalled := false, false
 	flush := func() {
 		if name != "" {
 			result[name] = current
@@ -91,7 +95,7 @@ func parseAptPolicy(out string) map[string]aptPackagePolicy {
 			flush()
 			name = strings.TrimSuffix(raw, ":")
 			current = aptPackagePolicy{}
-			inCandidate = false
+			inCandidate, inInstalled = false, false
 			continue
 		}
 		line := strings.TrimSpace(raw)
@@ -109,19 +113,25 @@ func parseAptPolicy(out string) map[string]aptPackagePolicy {
 			// Version rows are indented five spaces ("     2.9.1 500" or " *** 2.8.4 100");
 			// source rows under them are indented eight ("        500 https://... ").
 			if strings.HasPrefix(raw, "        ") {
-				if inCandidate && len(fields) >= 2 && strings.Contains(fields[1], "://") {
-					current.Sources = append(current.Sources, fields[1])
+				if len(fields) >= 2 && strings.Contains(fields[1], "://") {
 					source := aptSource{URL: fields[1]}
 					if len(fields) >= 3 {
 						source.Suite = fields[2]
 					}
-					current.CandidateSources = append(current.CandidateSources, source)
+					if inCandidate {
+						current.Sources = append(current.Sources, fields[1])
+						current.CandidateSources = append(current.CandidateSources, source)
+					}
+					if inInstalled {
+						current.InstalledSources = append(current.InstalledSources, source)
+					}
 				}
 				continue
 			}
 			if len(fields) >= 2 {
 				if _, err := strconv.Atoi(fields[1]); err == nil {
 					inCandidate = fields[0] == current.Candidate
+					inInstalled = fields[0] == current.Installed
 				}
 			}
 		}

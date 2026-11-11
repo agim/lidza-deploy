@@ -58,13 +58,13 @@ a:focus-visible {
   color: var(--muted-foreground);
   font-size: 13px;
 }
-.workspace {
+.panel-identity {
   display: flex;
   gap: var(--space-2);
   align-items: center;
   margin: var(--space-5) var(--space-4) var(--space-6);
 }
-.workspace-avatar,
+.panel-avatar,
 .user-avatar {
   display: grid;
   place-items: center;
@@ -76,23 +76,19 @@ a:focus-visible {
   font-weight: 600;
   font-size: 12px;
 }
-.workspace > div:nth-child(2),
-.workspace-user > div:nth-child(2) {
+.sidebar-identity-text {
   display: flex;
   flex: 1;
   flex-direction: column;
   gap: var(--space-1);
+  min-width: 0;
 }
-.workspace strong {
+.panel-identity strong {
   font-size: 12px;
   font-weight: 550;
 }
-.workspace span,
-.workspace-user span {
+.sidebar-identity-text > span {
   font-size: 10px;
-  color: var(--muted-foreground);
-}
-.workspace > svg {
   color: var(--muted-foreground);
 }
 .nav-group {
@@ -149,18 +145,18 @@ a:focus-visible {
 .agent-status svg {
   margin-left: auto;
 }
-.workspace-user {
+.sidebar-user {
   display: flex;
   gap: var(--space-2);
   align-items: center;
   padding-top: var(--space-4);
   border-top: 1px solid var(--border);
 }
-.workspace-user strong {
+.sidebar-user strong {
   font-size: 10px;
   font-weight: 500;
 }
-.workspace-user > svg {
+.sidebar-user > svg {
   color: var(--muted-foreground);
 }
 .app-body {
@@ -561,7 +557,7 @@ h2 {
 }
 .section-title {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-3);
 }
 .section-title > svg {
@@ -643,32 +639,6 @@ h2 {
 .env-row input {
   font-size: 11px;
   font-family: monospace;
-}
-.review-box {
-  background: #070b08;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: var(--space-4);
-  margin: var(--space-5) 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-4);
-}
-.review-box > div {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.review-box span {
-  font-size: 8px;
-  color: #8fa395;
-  letter-spacing: 1px;
-}
-.review-box strong {
-  font-size: 11px;
-  font-weight: 450;
-  overflow-wrap: anywhere;
 }
 .settings-form {
   padding: 0 var(--space-5) var(--space-5);
@@ -862,9 +832,6 @@ h2 {
   }
   .form-reassurance {
     font-size: 8px;
-  }
-  .review-box {
-    grid-template-columns: 1fr;
   }
   .help-grid {
     grid-template-columns: 1fr;

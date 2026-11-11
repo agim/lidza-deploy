@@ -21,7 +21,7 @@ import (
 // reboot).
 type HostJob struct {
 	ID       string     `json:"id"`
-	Kind     string     `json:"kind"`    // security-updates, all-updates, disruptive-updates, configure, reboot, docker-live-restore, docker-restart, docker-buildx, bundler-cleanup, firewall, host-mail-loopback, gateway-setup
+	Kind     string     `json:"kind"`    // security-updates, all-updates, disruptive-updates, configure, reboot, docker-live-restore, docker-restart, docker-buildx, bundler-cleanup, firewall, host-mail-loopback, gateway-setup, resource-tuning, journal-policy, log-access
 	Trigger  string     `json:"trigger"` // manual, schedule or move
 	Status   string     `json:"status"`  // running, succeeded, failed
 	Started  time.Time  `json:"started"`
@@ -173,7 +173,11 @@ func newHostJob(kind, trigger string, now time.Time) HostJob {
 
 // hostTick runs from the agent's maintenance loop once a minute: it refreshes
 // the cached update status, keeps Docker live-restore on, applies disruptive
-// upgrades and reboots inside the maintenance window, and recovers a firewall
+// upgrades and reboots inside the maintenance window, keeps the journal size
+// policy (journal_policy.go), keeps the deployment account's system log
+// access (native_log_access.go), re-checks pinned backup tools after package
+// changes (native_backup_tool.go), re-checks adopted Rails database.yml
+// files (native_database_config.go), and recovers a firewall
 // change whose confirmation window expired while the agent was down.
 func (m *Manager) hostTick(now time.Time) {
 	if m.hostOperationsAllowed() != nil {
@@ -183,6 +187,10 @@ func (m *Manager) hostTick(now time.Time) {
 	m.configureTick()
 	m.refreshHostUpdatesIfStale(now)
 	m.dockerTick(now)
+	m.journalPolicyTick(now)
+	m.logAccessTick(now)
 	m.disruptiveTick(now)
+	m.backupToolTick(now)
+	m.databaseConfigTick(now)
 	m.rebootTick(now)
 }

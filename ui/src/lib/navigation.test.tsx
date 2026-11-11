@@ -1,11 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BackLink, PageHeader } from '../components/ui';
-import { canGoBack, goBack, historyIndex, navigate, normalizeLocation, previousEntry, routeLabel, setSearchParams, startRouter, useRoute } from './router';
+import { canGoBack, goBack, historyIndex, navigate, normalizeLocation, previousEntry, setSearchParams, startRouter, useRoute } from './router';
+import { breadcrumbs } from './resources';
 
 function CurrentRoute() {
   const route = useRoute();
-  return <p data-testid="route">{routeLabel(route)}</p>;
+  return <p data-testid="route">{breadcrumbs(route).map(crumb => crumb.label).join(' › ')}</p>;
 }
 const here = () => location.pathname + location.search;
 
@@ -41,11 +42,11 @@ describe('history navigation', () => {
     render(<CurrentRoute />);
     expect(screen.getByTestId('route')).toHaveTextContent('Applications');
     act(() => navigate('/console/applications/portal/settings'));
-    expect(screen.getByTestId('route')).toHaveTextContent('portal settings');
+    expect(screen.getByTestId('route')).toHaveTextContent('portal › Settings');
     act(() => history.back());
     await waitFor(() => expect(screen.getByTestId('route')).toHaveTextContent('Applications'));
     act(() => history.forward());
-    await waitFor(() => expect(screen.getByTestId('route')).toHaveTextContent('portal settings'));
+    await waitFor(() => expect(screen.getByTestId('route')).toHaveTextContent('portal › Settings'));
   });
 });
 
@@ -126,7 +127,7 @@ describe('link interception', () => {
     act(() => { location.hash = 'page/settings/portal'; });
     await waitFor(() => expect(here()).toBe('/console/applications/portal/settings'));
     expect(location.hash).toBe('');
-    expect(screen.getByTestId('route')).toHaveTextContent('portal settings');
+    expect(screen.getByTestId('route')).toHaveTextContent('portal › Settings');
     expect(canGoBack()).toBe(true);
   });
 });

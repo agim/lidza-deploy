@@ -99,6 +99,9 @@ type TuningOverrides struct {
 	RedisUse map[string]string `json:"redis_use,omitempty"`
 	// ClickHouseMemoryRatio overrides the native server's memory ratio.
 	ClickHouseMemoryRatio float64 `json:"clickhouse_memory_ratio,omitempty"`
+	// JournalMaxUseMiB overrides the systemd journal's SystemMaxUse
+	// (journal_policy.go).
+	JournalMaxUseMiB int `json:"journal_max_use_mib,omitempty"`
 }
 
 // tunablePostgres lists the host cluster settings the tuner manages, with
@@ -156,6 +159,9 @@ func (o TuningOverrides) Validate() error {
 	if o.ClickHouseMemoryRatio != 0 && (o.ClickHouseMemoryRatio < 0.05 || o.ClickHouseMemoryRatio > 0.9) {
 		return errors.New("the ClickHouse memory ratio must be between 0.05 and 0.9")
 	}
+	if o.JournalMaxUseMiB != 0 && (o.JournalMaxUseMiB < journalOverrideMinMiB || o.JournalMaxUseMiB > journalOverrideMaxMiB) {
+		return fmt.Errorf("the system log size must be between %d MiB and %d GiB", journalOverrideMinMiB, journalOverrideMaxMiB>>10)
+	}
 	return nil
 }
 
@@ -200,6 +206,10 @@ type pgTuningInput struct {
 	SliceMiB int     // this cluster's part of the postgres budget
 	Share    float64 // this cluster's share of the applications (0–1]
 	Apps     int     // applications using this cluster
+	// PeakConnections is the most sessions this cluster has been seen to
+	// need (observed per-role peaks summed, or sessions in use now, whichever
+	// is larger). max_connections never drops below it plus headroom.
+	PeakConnections int
 }
 
 // PGTuning is the computed configuration of one cluster.
@@ -237,6 +247,19 @@ func computePostgresTuning(in pgTuningInput) PGTuning {
 	mc := max(40, min(1000, max(100, 25*apps+50), ramCap))
 	sr := clampInt(mc/100, 3, 10)
 	headroom := min(50, max(10, mc/5))
+	if in.PeakConnections > 0 {
+		// Observed demand wins over the memory estimate: a limit below what
+		// the applications already use refuses connections after a restart.
+		need := (in.PeakConnections*5 + 3) / 4
+		for range 3 {
+			if mc >= need+sr+headroom {
+				break
+			}
+			mc = min(1000, need+sr+headroom)
+			sr = clampInt(mc/100, 3, 10)
+			headroom = min(50, max(10, mc/5))
+		}
+	}
 	work := clampInt((rs-sb)/(3*mc), 4, 64)
 	mwm := clampInt(r/16, 64, 2048)
 	avwm := clampInt(r/64, 64, 1024)

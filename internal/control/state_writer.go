@@ -80,8 +80,22 @@ func (w *stateWriter) loop() {
 	}
 }
 
-// flush waits until every submitted snapshot is on disk or ctx ends.
+// idle reports that nothing is pending or being written, with the last
+// write's outcome.
+func (w *stateWriter) idle() (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return !w.running && w.pending == nil, w.lastErr
+}
+
+// flush waits until every submitted snapshot is on disk or ctx ends. A
+// writer with nothing to write reports its last outcome even when ctx has
+// already ended, so a shutdown whose deadline was used up elsewhere does
+// not report a write that never was due.
 func (w *stateWriter) flush(ctx context.Context) error {
+	if idle, err := w.idle(); idle {
+		return err
+	}
 	done := make(chan struct{})
 	go func() {
 		w.mu.Lock()
@@ -96,19 +110,25 @@ func (w *stateWriter) flush(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		return w.lastErr
+		_, err := w.idle()
+		return err
 	case <-ctx.Done():
+		if idle, err := w.idle(); idle {
+			return err
+		}
 		return ctx.Err()
 	}
 }
 
 // FlushState writes every panel's pending state before the process exits.
+// A panel that handed over to its new server wrote its final state before
+// asking its agent to stop it (panel_move.go), and its state is not read
+// again; anything later is written if it can be, without a failure.
 func FlushState(ctx context.Context) {
 	liveControls.Range(func(key, _ any) bool {
 		if c, ok := key.(*Control); ok {
-			if err := c.stateWriter.flush(ctx); err != nil {
+			err := c.stateWriter.flush(ctx)
+			if err != nil && !c.panelRetired() {
 				log.Printf("control state: final write failed: %v", err)
 			}
 		}

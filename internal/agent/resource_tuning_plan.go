@@ -32,6 +32,8 @@ type ResourceTuningState struct {
 	ClickHouseRatio float64                   `json:"clickhouse_ratio,omitempty"`
 	View            *ResourceTuningView       `json:"view,omitempty"`
 	Migrations      map[string]RedisMigration `json:"migrations,omitempty"`
+	// Journal is the systemd journal size policy (journal_policy.go).
+	Journal *JournalPolicyState `json:"journal,omitempty"`
 }
 
 // TuningPeak is one day's peak of a role's sessions.
@@ -69,6 +71,7 @@ type ResourceTuningView struct {
 	Running        bool                   `json:"running,omitempty"`
 	Migrations     []RedisMigration       `json:"migrations,omitempty"`
 	Jobs           []HostJob              `json:"jobs,omitempty"`
+	Journal        *JournalPolicyState    `json:"journal,omitempty"`
 }
 
 // TuningSettingView is one setting: what runs now, what the formula gives,
@@ -286,6 +289,18 @@ func recordTuningPeaks(peaks map[string][]TuningPeak, sample map[string]int, now
 	return peaks
 }
 
+// tuningPeakTotal sums the observed peaks of every role on one cluster. The
+// peaks happened at different times, so the sum is a safe upper bound.
+func tuningPeakTotal(peaks map[string][]TuningPeak, port int) int {
+	prefix, total := strconv.Itoa(port)+"/", 0
+	for key := range peaks {
+		if strings.HasPrefix(key, prefix) {
+			total += tuningPeak(peaks, key)
+		}
+	}
+	return total
+}
+
 func tuningPeakKey(port int, role string) string { return strconv.Itoa(port) + "/" + role }
 
 // ---- plan --------------------------------------------------------------------
@@ -315,7 +330,11 @@ func planTuning(obs tuningObservation, o TuningOverrides, peaks map[string][]Tun
 		if weights > 0 && hostApps > 0 {
 			share = float64(hostApps) / float64(weights)
 		}
-		t := computePostgresTuning(pgTuningInput{Host: obs.Host, SliceMiB: int(float64(budget.PostgresMiB) * share), Share: share, Apps: hostApps})
+		peak := pg.InUse
+		if total := tuningPeakTotal(peaks, pg.Port); total > peak {
+			peak = total
+		}
+		t := computePostgresTuning(pgTuningInput{Host: obs.Host, SliceMiB: int(float64(budget.PostgresMiB) * share), Share: share, Apps: hostApps, PeakConnections: peak})
 		if pg.Major > 0 && pg.Major < 16 {
 			delete(t.Settings, "reserved_connections")
 		}
@@ -376,7 +395,7 @@ func planTuning(obs tuningObservation, o TuningOverrides, peaks map[string][]Tun
 	requests := []redisTuningRequest{}
 	uses := map[string][]string{}
 	for i, r := range obs.Redis {
-		rv := TuningRedisView{ID: r.ID, Kind: r.Kind, UsedBytes: r.UsedBytes, MaxBytes: r.MaxBytes, Policy: r.Policy, Override: o.RedisMaxMemoryMiB[r.ID], Error: r.Error}
+		rv := TuningRedisView{ID: r.ID, Kind: r.Kind, UsedBytes: r.UsedBytes, MaxBytes: r.MaxBytes, Policy: r.Policy, Override: o.RedisMaxMemoryMiB[r.ID], Error: r.Error, Apps: []TuningRedisApp{}}
 		for _, app := range r.Apps {
 			use, source := tuningRedisUse(app, r, o, probes)
 			ra := TuningRedisApp{AppID: app, DBs: r.AppDBs[app], Use: use, UseSource: source}

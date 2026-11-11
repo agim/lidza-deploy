@@ -2,8 +2,10 @@
 
 An approved native static publisher supports branch, build output directory and
 application environment edits through the common Settings page. Changes are
-sealed in agent state and apply on the next deployment; Save never mutates the
-serving release, imported environment files, services, runtime pins or routing.
+sealed in agent state. Every one is build-time for a static site, so Save
+reads **Save and deploy** and the panel starts a deployment that publishes
+them; the save itself never mutates the serving release, imported environment
+files, services, runtime pins or routing.
 Imported environment values are retained in sealed state before the first native
 publication so a release-local environment file is not lost with the old release.
 Deleted keys remain deleted through explicit tombstones.

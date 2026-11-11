@@ -1,18 +1,19 @@
 import { Page } from './layout';
-import { Activity, AppWindow, Boxes, CircleHelp, CloudCog, DatabaseBackup, ChevronDown, ChevronRight, ArrowUpRight, ArchiveRestore, LayoutGrid, Menu, PackageOpen, RefreshCw, ScrollText, Server, ServerCog, Settings2, ShieldCheck, Users, X } from 'lucide-react';
-import { type ReactNode, useEffect, useState } from 'react';
-import type { PageKey, Route } from '../lib/types';
-import { relativeTime } from '../lib/format';
-import { HOME, detailHref, href, routeLabel, withSticky } from '../lib/router';
+import { SectionBoundary } from './SectionBoundary';
+import { Activity, AppWindow, Boxes, ChevronsUpDown, CircleHelp, CloudCog, DatabaseBackup, ChevronRight, ArrowUpRight, ArchiveRestore, LayoutGrid, LogOut, Menu, PackageOpen, RefreshCw, ScrollText, Server, ServerCog, Settings2, ShieldCheck, UserRound, Users, X } from 'lucide-react';
+import { type ReactElement, type ReactNode, useEffect, useState } from 'react';
+import type { Route } from '../lib/types';
+import { type CollectionKey, breadcrumbs, indexHref, singletonHref } from '../lib/resources';
+import { Breadcrumbs, useResourceName } from './resource';
+import { heldRoleLabel, relativeTime } from '../lib/format';
+import { HOME, withSticky } from '../lib/router';
 import { usePreferences } from '../state/PreferencesContext';
 import { useWorkspace } from '../state/WorkspaceContext';
-import { Button, ErrorBanner, IconButton, Loading } from './ui';
+import { ActionMenu, Button, ErrorBanner, IconButton, Loading, MenuItem, MenuLink } from './ui';
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from './primitives/sheet';
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './primitives/dropdown-menu';
-import { useToast } from './ToastProvider';
 import { ActivityDrawer } from './ActivityDrawer';
 
-const groups: Array<{ label: string; items: Array<{ page: PageKey; label: string; icon: typeof AppWindow }> }> = [
+const groups: Array<{ label: string; items: Array<{ page: CollectionKey; label: string; icon: typeof AppWindow }> }> = [
   { label: 'Applications', items: [
     { page: 'applications', label: 'Applications', icon: LayoutGrid },
     { page: 'deployments', label: 'Deployments', icon: PackageOpen },
@@ -21,11 +22,11 @@ const groups: Array<{ label: string; items: Array<{ page: PageKey; label: string
   ] },
   { label: 'Infrastructure', items: [
     { page: 'servers', label: 'Servers', icon: Server },
-    { page: 'databases', label: 'Databases & backups', icon: DatabaseBackup },
+    { page: 'databases', label: 'Databases', icon: DatabaseBackup },
     { page: 'remote-backups', label: 'Remote backups', icon: Boxes },
     { page: 'updates', label: 'Updates', icon: RefreshCw },
   ] },
-  { label: 'Workspace', items: [
+  { label: 'Settings', items: [
     { page: 'integrations', label: 'Integrations', icon: CloudCog },
     { page: 'defaults', label: 'Application defaults', icon: Settings2 },
     { page: 'team', label: 'Team', icon: Users },
@@ -36,23 +37,66 @@ const groups: Array<{ label: string; items: Array<{ page: PageKey; label: string
   ] },
 ];
 
+/** initial is the first letter of a name, for an avatar. */
+function initial(value = '') {
+  return (value.trim().match(/[\p{L}\p{N}]/u)?.[0] || '·').toUpperCase();
+}
+
+/** signOut ends the session through the framework and opens the sign-in page. */
+async function signOut(flush: () => Promise<unknown>) {
+  await flush().catch(() => {});
+  const response = await fetch('/api/v1/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  if (!response.ok) throw new Error('Sign out failed. Please try again.');
+  location.href = '/login.html';
+}
+
+/** AccountMenu holds the signed-in person's links: their account and signing out. */
+function AccountMenu({ trigger, side }: { trigger: ReactElement; side?: 'top' | 'bottom' }) {
+  const preferences = usePreferences();
+  return <ActionMenu trigger={trigger} side={side} align={side === 'top' ? 'start' : 'end'}>
+    <MenuLink href={withSticky(singletonHref('account'))} icon={<UserRound size={16} />}>Account</MenuLink>
+    <MenuItem icon={<LogOut size={16} />} onSelect={() => signOut(preferences.flush)}>Sign out</MenuItem>
+  </ActionMenu>;
+}
+
+/**
+ * serverStatus names what the sidebar status measures: whether every
+ * connected server's agent answered the last refresh.
+ */
+function serverStatus({ loading, error, servers, unavailable }: { loading: boolean; error: string; servers: Array<{ id: string; name: string }>; unavailable: string[] }) {
+  if (loading) return { label: 'Checking servers…', warning: false, title: '' };
+  if (unavailable.length) {
+    const names = unavailable.map(id => servers.find(server => server.id === id)?.name || id);
+    return { label: `${unavailable.length} ${unavailable.length === 1 ? 'server' : 'servers'} unreachable`, warning: true, title: `Unreachable: ${names.join(', ')}` };
+  }
+  if (error) return { label: 'Server status not refreshed', warning: true, title: error };
+  if (!servers.length) return { label: 'No servers connected', warning: true, title: '' };
+  return { label: 'All servers connected', warning: false, title: servers.map(server => server.name || server.id).join(', ') };
+}
+
 export function AppShell({ route, children }: { route: Route; children: ReactNode }) {
   const [open, setOpen] = useState(false);
-  const { apps, loading, refreshing, updatedAt, error, unavailableServers, status } = useWorkspace();
-  const notify = useToast();
+  const { apps, servers, loading, refreshing, updatedAt, error, unavailableServers, status } = useWorkspace();
   const preferences = usePreferences();
-  useEffect(() => setOpen(false), [route.page, route.detail, route.id]);
-  const activePage = route.page === 'detail' ? (['server', 'containers', 'cleanup', 'console', 'ssh', 'upgrade'].includes(route.detail || '') ? 'servers' : route.detail === 'database' ? 'databases' : 'applications') : route.page;
+  useEffect(() => setOpen(false), [route.view, route.collection, route.id, route.tab]);
+  const name = useResourceName();
+  const trail = breadcrumbs(route, name);
+  const activePage = route.collection;
+  const panel = status.hostname || 'Control panel';
+  const person = status.user?.name || status.user?.email || 'Signed in';
+  const role = heldRoleLabel(status.roles);
+  const connection = serverStatus({ loading, error, servers, unavailable: unavailableServers });
   const navigation = <><a className="brand" href={withSticky(HOME)} aria-label="Līdza Deploy home"><strong>līdza<ArrowUpRight size={20} strokeWidth={1.3} /></strong><span>deploy</span></a>
-    <div className="workspace"><span className="workspace-avatar">L</span><div><strong>Your workspace</strong><span>Deployment control</span></div><ChevronDown size={13} /></div>
-    <nav aria-label="Workspace navigation">{groups.map(group => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map(item => { const Icon = item.icon; const active = activePage === item.page; return <a key={item.page} href={withSticky(href(item.page))} onClick={() => setOpen(false)} className={active ? 'active' : ''} aria-current={active ? 'page' : undefined}><Icon size={17} strokeWidth={1.7} /><span>{item.label}</span>{item.page === 'applications' && <span className="nav-count">{apps.length}</span>}</a>; })}</div>)}</nav>
-    <div className="sidebar-bottom"><div className="agent-status"><span className={`status-dot ${error || unavailableServers.length ? 'warning-dot' : ''}`} />{loading ? 'Connecting to workspace' : error || unavailableServers.length ? 'Some connections need attention' : 'Workspace connected'}<ArrowUpRight size={13} /></div><div className="workspace-user"><span className="user-avatar">A</span><div><strong>{status.roles?.includes('admin') ? 'Workspace admin' : 'Workspace member'}</strong><span>Your infrastructure</span></div><ShieldCheck size={15} /></div></div></>;
+    <a className="panel-identity" href={withSticky(singletonHref('control-panel'))} onClick={() => setOpen(false)}><span className="panel-avatar" aria-hidden="true">{initial(status.hostname || 'L')}</span><span className="sidebar-identity-text"><strong>{panel}</strong><span>{status.control_version ? `Release ${status.control_version}` : 'Control panel'}</span></span></a>
+    <nav aria-label="Main navigation">{groups.map(group => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map(item => { const Icon = item.icon; const active = activePage === item.page; return <a key={item.page} href={withSticky(indexHref(item.page))} onClick={() => setOpen(false)} className={active ? 'active' : ''} aria-current={active ? 'page' : undefined}><Icon size={17} strokeWidth={1.7} /><span>{item.label}</span>{item.page === 'applications' && <span className="nav-count">{apps.length}</span>}</a>; })}</div>)}</nav>
+    <div className="sidebar-bottom"><a className="agent-status" href={withSticky(indexHref('servers'))} onClick={() => setOpen(false)} title={connection.title || undefined}><span className={`status-dot ${connection.warning ? 'warning-dot' : ''}`} aria-hidden="true" />{connection.label}<ChevronRight size={13} aria-hidden="true" /></a>
+      <AccountMenu side="top" trigger={<button type="button" className="sidebar-user" aria-label={`Account menu for ${person}`}><span className="user-avatar" aria-hidden="true">{initial(status.user?.name || status.user?.email || 'A')}</span><span className="sidebar-identity-text"><strong>{person}</strong><span>{[role, status.user?.name ? status.user?.email : ''].filter(Boolean).join(' · ') || 'Account'}</span></span><ChevronsUpDown size={14} aria-hidden="true" /></button>} /></div></>;
   return <div className="app-shell">
     <aside className="sidebar desktop-sidebar">{navigation}</aside>
-    <Sheet open={open} onOpenChange={setOpen}><SheetContent side="left" className="mobile-sidebar" showCloseButton={false}><SheetTitle className="sr-only">Workspace menu</SheetTitle><SheetDescription className="sr-only">Navigate applications, infrastructure and workspace settings.</SheetDescription><IconButton className="mobile-nav-close" label="Close menu" onClick={() => setOpen(false)}><X size={18} /></IconButton>{navigation}</SheetContent></Sheet>
+    <Sheet open={open} onOpenChange={setOpen}><SheetContent side="left" className="mobile-sidebar" showCloseButton={false}><SheetTitle className="sr-only">Navigation menu</SheetTitle><SheetDescription className="sr-only">Navigate applications, infrastructure and settings of this control panel.</SheetDescription><IconButton className="mobile-nav-close" label="Close menu" onClick={() => setOpen(false)}><X size={18} /></IconButton>{navigation}</SheetContent></Sheet>
     <div className="app-frame app-body">
-      <header className="topbar"><div className="breadcrumbs topbar-left"><IconButton className="mobile-menu" label="Open menu" onClick={() => setOpen(true)}><Menu size={18} /></IconButton><span>Workspace</span><ChevronRight size={13} /><strong>{routeLabel(route)}</strong></div><div className="topbar-right"><span className="updated live-indicator" role="status"><span className={refreshing ? 'online-dot pulse' : 'online-dot'} />{loading ? 'Connecting…' : updatedAt ? `Updated ${relativeTime(updatedAt.toISOString())}` : 'Connected'}</span><ActivityDrawer /><DropdownMenu><DropdownMenuTrigger asChild><button className="user-avatar small account-trigger" aria-label="Account menu">A</button></DropdownMenuTrigger><DropdownMenuContent align="end" className="account-dropdown"><DropdownMenuItem asChild><a href={withSticky(detailHref('two-factor', 'account'))}>Two-factor authentication</a></DropdownMenuItem><DropdownMenuItem onSelect={() => { void (async () => { try { await preferences.flush().catch(() => {}); const response = await fetch('/api/v1/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); if (!response.ok) throw new Error('Sign out failed. Please try again.'); location.href = '/login.html'; } catch (reason) { notify(String(reason), true); } })(); }}>Sign out</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></header>
-      <main id="main-content">{preferences.error && <ErrorBanner>{preferences.error} <Button size="sm" onClick={() => { void preferences.flush().catch(() => {}); }}>Retry</Button></ErrorBanner>}{loading || !preferences.ready ? <Loading overlay label="Loading your workspace…" /> : <Page>{children}</Page>}<footer className="page-footer"><span>Built with Līdza <span aria-hidden="true">·</span> Independent apps. One place to deploy.</span><span>shadcn/ui · Nova</span></footer></main>
+      <header className="topbar"><div className="topbar-left"><IconButton className="mobile-menu" label="Open menu" onClick={() => setOpen(true)}><Menu size={18} /></IconButton><Breadcrumbs trail={trail} /></div><div className="topbar-right"><span className="updated live-indicator" role="status"><span className={refreshing ? 'online-dot pulse' : 'online-dot'} />{loading ? 'Connecting…' : updatedAt ? `Updated ${relativeTime(updatedAt.toISOString())}` : 'Connected'}</span><ActivityDrawer /><AccountMenu trigger={<button type="button" className="user-avatar small account-trigger" aria-label={`Account menu for ${person}`}>{initial(status.user?.name || status.user?.email || 'A')}</button>} /></div></header>
+      <main id="main-content">{preferences.error && <ErrorBanner>{preferences.error} <Button size="sm" onClick={() => { void preferences.flush().catch(() => {}); }}>Retry</Button></ErrorBanner>}{loading || !preferences.ready ? <Loading overlay label="Loading the control panel…" /> : <Page><SectionBoundary label={trail[trail.length - 1].label || 'This page'} resetKey={route}>{children}</SectionBoundary></Page>}<footer className="page-footer"><span>Built with Līdza <span aria-hidden="true">·</span> Independent apps. One place to deploy.</span><span>shadcn/ui · Nova</span></footer></main>
     </div>
   </div>;
 }

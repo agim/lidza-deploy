@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -162,8 +163,44 @@ func validateNativeDatabasePolicy(id string, p NativeDatabasePolicy) error {
 	return p.Backup.Validate()
 }
 
-func sameNativeDatabasePolicy(a, b NativeDatabasePolicy) bool {
-	return a.Enabled == b.Enabled && a.AppID == b.AppID && a.EnvironmentKey == b.EnvironmentKey && slices.Equal(a.Roles, b.Roles) && a.Host == b.Host && a.Port == b.Port && a.MaintenancePort == b.MaintenancePort && a.ConfigSHA256 == b.ConfigSHA256 && a.PostgresMajor == b.PostgresMajor && a.DumpSHA256 == b.DumpSHA256 && a.SQLitePath == b.SQLitePath && a.ArchiveDatabase == b.ArchiveDatabase && a.ClickHouseDatabase == b.ClickHouseDatabase && a.Backup == b.Backup
+// sameNativeDatabaseIdentity reports whether two policies name the same
+// resource: the application, variable, roles, connection, file and backup
+// policy. The integrity pins (dump_sha256, config_sha256) are not identity:
+// every backup verifies the tool binary and database.yml against them
+// (nativeBackupToolPin, nativeDatabaseSource), and an operator re-pins them
+// by hand after a reviewed update. Any identity change still makes the
+// database not in use until it is reviewed and adopted again.
+func sameNativeDatabaseIdentity(a, b NativeDatabasePolicy) bool {
+	return a.Enabled == b.Enabled && a.AppID == b.AppID && a.EnvironmentKey == b.EnvironmentKey && slices.Equal(a.Roles, b.Roles) && a.Host == b.Host && a.Port == b.Port && a.MaintenancePort == b.MaintenancePort && a.PostgresMajor == b.PostgresMajor && a.SQLitePath == b.SQLitePath && a.ArchiveDatabase == b.ArchiveDatabase && a.ClickHouseDatabase == b.ClickHouseDatabase && a.Backup == b.Backup
+}
+
+// convergeNativeDatabasePinsLocked adopts the configuration's integrity pins
+// into the stored binding when the identity matches and only the pins
+// differ, so the binding follows a hand re-pin instead of staying divergent.
+// Backups keep verifying the binary and database.yml against the adopted
+// pins. When the state cannot be saved the binding is kept as it was (and
+// its old pins keep failing closed at backup time). Caller holds m.mu.
+func (m *Manager) convergeNativeDatabasePinsLocked(id string, binding NativeDatabaseBinding, p NativeDatabasePolicy) {
+	if binding.Policy.DumpSHA256 == p.DumpSHA256 && binding.Policy.ConfigSHA256 == p.ConfigSHA256 {
+		return
+	}
+	updated := binding
+	updated.Policy.Roles = slices.Clone(binding.Policy.Roles)
+	updated.Policy.DumpSHA256, updated.Policy.ConfigSHA256 = p.DumpSHA256, p.ConfigSHA256
+	m.data.NativeDatabases[id] = updated
+	if err := m.save(); err != nil {
+		m.data.NativeDatabases[id] = binding
+		log.Printf("database %s: binding pins could not be updated from the host configuration: %v", id, err)
+		return
+	}
+	changes := []string{}
+	if binding.Policy.DumpSHA256 != p.DumpSHA256 {
+		changes = append(changes, "tool sha256 "+shortDigest(binding.Policy.DumpSHA256)+"→"+shortDigest(p.DumpSHA256))
+	}
+	if binding.Policy.ConfigSHA256 != p.ConfigSHA256 {
+		changes = append(changes, "config sha256 "+shortDigest(binding.Policy.ConfigSHA256)+"→"+shortDigest(p.ConfigSHA256))
+	}
+	log.Printf("database %s: binding pins updated from the host configuration (%s)", id, strings.Join(changes, ", "))
 }
 
 var nativePostgresDatabasePath = regexp.MustCompile(`^/[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$`)
@@ -193,8 +230,8 @@ func validateNativeDatabaseURL(raw string, p NativeDatabasePolicy) error {
 	return nil
 }
 
-// Read the registered app's literal configuration; never boot Rails, interpolate
-// ERB/shell or infer multi-database roles. The reviewed file hash declares roles.
+// Read the registered app's literal configuration; never boot Rails, run
+// ERB/shell or infer multi-database roles. The reviewed file declares roles.
 func (m *Manager) nativeDatabaseSource(p NativeDatabasePolicy) (string, error) {
 	if raw, managed, err := m.nativeHostDataSource(p); managed {
 		return raw, err // provisioned by this agent; see native_hostdata.go
@@ -212,21 +249,34 @@ func (m *Manager) nativeDatabaseSource(p NativeDatabasePolicy) (string, error) {
 	if err != nil || a.Runtime != "rails" && a.Runtime != "" {
 		return "", errors.New("native database requires a registered Rails application")
 	}
-	data := m.nativeMetadataFile(filepath.Join(a.Name, "current/config/database.yml"))
-	digest := sha256.Sum256(data)
-	if len(data) == 0 || hex.EncodeToString(digest[:]) != p.ConfigSHA256 {
-		return "", errors.New("Rails database configuration changed; adoption needs review")
-	}
-	if p.SQLitePath != "" {
-		return m.nativeSQLiteSource(a, p)
-	}
-	values, err := m.nativeBuildEnvironment(a.Name)
+	// The file is pinned by hash; a change that keeps every database's
+	// identity is re-approved (native_database_config.go).
+	m.databaseConfigMu.Lock()
+	defer m.databaseConfigMu.Unlock()
+	approval, err := m.nativeRailsDatabaseConfig(a, p)
 	if err != nil {
 		return "", err
 	}
-	raw := values[p.EnvironmentKey]
-	if err := validateNativeDatabaseURL(raw, p); err != nil {
-		return "", err
+	m.clearDatabaseConfigProblem(p)
+	var raw string
+	if p.SQLitePath != "" {
+		if raw, err = m.nativeSQLiteSource(a, p); err != nil {
+			return "", err
+		}
+	} else {
+		values, err := m.nativeBuildEnvironment(a.Name)
+		if err != nil {
+			return "", err
+		}
+		raw = values[p.EnvironmentKey]
+		if err := validateNativeDatabaseURL(raw, p); err != nil {
+			return "", err
+		}
+	}
+	if approval != nil {
+		if err = m.recordDatabaseConfig(a, p, approval); err != nil {
+			return "", err
+		}
 	}
 	return raw, nil
 }
@@ -273,7 +323,11 @@ func (m *Manager) adoptNativeDatabase(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err = checkNativeBackupSource(ctx, raw, p); err != nil {
+	checked := p
+	if checked.DumpSHA256, _, err = m.nativeBackupToolPin(ctx, p); err != nil {
+		return err
+	}
+	if err = checkNativeBackupSource(ctx, raw, checked); err != nil {
 		return err
 	}
 	// Recheck after the network operation. A concurrent settings/release change
@@ -292,7 +346,9 @@ func (m *Manager) adoptNativeDatabase(ctx context.Context, id string) error {
 	}
 	if prior, exists := m.data.Databases[id]; exists {
 		binding, bound := m.data.NativeDatabases[id]
-		if bound && sameNativeDatabasePolicy(binding.Policy, p) && prior.URL == raw && prior.Ready && prior.Mode == "external" {
+		if bound && sameNativeDatabaseIdentity(binding.Policy, p) && prior.URL == raw && prior.Ready && prior.Mode == "external" {
+			// The configuration's pins were verified above.
+			m.convergeNativeDatabasePinsLocked(id, binding, p)
 			return nil
 		}
 		return errors.New("native database identity already exists; existing resource retained")
@@ -344,7 +400,8 @@ func (m *Manager) adoptNativeDatabase(ctx context.Context, id string) error {
 	return nil
 }
 
-// Caller holds m.mu; no filesystem/database access or app health probe here.
+// Caller holds m.mu; no database access or app health probe here. The only
+// write is the binding's pins converging to the configuration's.
 func (m *Manager) nativeDatabaseInUseLocked(id string) bool {
 	binding, ok := m.data.NativeDatabases[id]
 	if ok && m.nativeHostDataBoundLocked(id, binding.Policy) {
@@ -355,7 +412,11 @@ func (m *Manager) nativeDatabaseInUseLocked(id string) bool {
 	}
 	p, approved := m.cfg.Native.Databases[id]
 	a, registered := m.data.NativeApps[p.AppID]
-	return approved && (p.ArchiveDatabase != "" || registered && (a.Runtime == "rails" || a.Runtime == "")) && validateNativeDatabasePolicy(id, p) == nil && sameNativeDatabasePolicy(binding.Policy, p)
+	if !approved || !(p.ArchiveDatabase != "" || registered && (a.Runtime == "rails" || a.Runtime == "")) || validateNativeDatabasePolicy(id, p) != nil || !sameNativeDatabaseIdentity(binding.Policy, p) {
+		return false
+	}
+	m.convergeNativeDatabasePinsLocked(id, binding, p)
+	return true
 }
 
 func (m *Manager) nativeDatabaseRoute(w http.ResponseWriter, r *http.Request) {

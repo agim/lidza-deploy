@@ -118,13 +118,13 @@ The old release remains live during clone, build, and readiness checking. The ca
 
 ### Editing applications
 
-Use an application's Settings button to change its branch, FQDN, or runtime environment. Domain routing changes immediately; point DNS at the host first. Caddy allows the newly registered domain and obtains its certificate on demand. Saving settings on a deployed app queues a readiness-checked reload of the existing image with its new environment. No GitHub fetch or rebuild is needed. Branch changes select the source for the next Git deployment. Active deployments or reloads block edits. APP_URL defaults to https:// plus the saved FQDN unless explicitly supplied in the environment. Repository and server assignments are fixed in this version.
+Use an application's Settings button to change its branch, FQDN, or runtime environment. Domain routing changes immediately; point DNS at the host first. Caddy allows the newly registered domain and obtains its certificate on demand. Every save says what it applied (`internal/agent/settings_apply.go`, one table for every runtime): a runtime change (environment variables and credentials, the master key, database attachments, the primary hostname while the agent supplies APP_URL) queues a readiness-checked reload of the existing image with the new environment, without a GitHub fetch or rebuild; a build change (branch, repository directory, Astro output, stack profile, toolchains, Astro `PUBLIC_` variables) makes the Save button read **Save and deploy** and starts a deployment; additional hostnames, customer hostnames and the backup policy apply at once without a restart. A stopped app keeps the change for its start. Active deployments or reloads block edits. APP_URL defaults to https:// plus the saved FQDN unless explicitly supplied in the environment. Repository and server assignments are fixed in this version.
 
 Environment settings show names with masked, write-only value fields. Use Add variable to supply a name and value; use Replace value to rotate a secret or Delete variable to remove it. Keep saved value preserves existing values without sending them to the browser. Advanced JSON import remains available: strings set keys, `null` deletes keys, omitted keys are preserved. Close/save clears entered values; the browser does not retain them in local storage.
 
 Agent state, including all per-app variables, is encrypted using Līdza's authenticated credential encryption and atomically saved with mode 0600. Existing plaintext private state migrates automatically at startup. Back up the agent's `config/master.key` together with encrypted state (or the securely supplied `LIDZA_MASTER_KEY` when used). Losing the key prevents reopening state. HTTPS is required to reach remote agents. Variables are isolated per app, passed only to runtime containers through a temporary mode-0600 file, and excluded from the image build. Docker administrators and the hosted application can access their runtime environment; applications must avoid printing secrets in their own logs.
 
-Saving applies runtime changes through an automatic reload. Follow the queued result in Deployments; a failed candidate leaves the current healthy container serving. Use Reload to retry after correcting a failure. An app that has never been deployed still needs its first Deploy. A running or rollback release keeps the environment with which it started; rotating a compromised secret also requires retiring old releases/credentials as appropriate.
+Saving applies runtime changes through an automatic reload; the console says "Restarting…" and then "Restarted." or the error, and the reload is listed in Deployments; a failed candidate leaves the current healthy container serving. Use Reload to retry after correcting a failure. An app that has never been deployed still needs its first Deploy. A running or rollback release keeps the environment with which it started; rotating a compromised secret also requires retiring old releases/credentials as appropriate.
 
 Control metadata and remote agent settings cannot be committed atomically. If an agent saves settings but the control-panel disk write fails, the API reports that explicitly; retry the same settings after restoring writable storage to synchronize them.
 
@@ -137,7 +137,7 @@ Choose **Delete** in the card's More menu (or **Delete application** in the
 Danger zone of the General settings) and type the application ID. The
 application is archived on its server for 90 days: its settings, files and
 databases (with every login disabled) are kept and can be restored from
-**Workspace → Deleted apps**; its cache, every local and off-site backup,
+**Settings → Deleted apps**; its cache, every local and off-site backup,
 routes, certificates nothing else uses, units or containers, tasks and the
 webhook are deleted at once, and its hostnames are released immediately. After
 90 days, or with **Delete now**, the archive is purged, databases included.
@@ -156,7 +156,7 @@ handshake with the primary hostname as SNI, 5 seconds per port; a failed
 handshake becomes a warning with the TLS error. These checks never hold or fail
 a deployment.
 
-The live workspace opens directly at the root and uses the approved Līdza-branded Signal design. If one server is unavailable, deployment history from healthy servers remains visible with an explicit warning naming unavailable servers.
+The live console opens directly at the root and uses the approved Līdza-branded Signal design. If one server is unavailable, deployment history from healthy servers remains visible with an explicit warning naming unavailable servers.
 
 Application database provisioning, local/S3 backup policies and SMTP alert setup are documented in [Databases and backups](databases-backups.md). Līdza v0.1.71 resolves [#27](https://github.com/agim/lidza/issues/27); concurrent mail reload and queued-delivery regressions pass. Upgrade both the control panel and hosting agents to use the database APIs.
 

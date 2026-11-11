@@ -887,7 +887,7 @@ func (m *Manager) moveFileFetchRoute(w http.ResponseWriter, r *http.Request) {
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(6*time.Hour + time.Minute))
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Hour)
 	defer cancel()
-	ctx, endProgress := m.trackMoveFiles(ctx, in.Move, set, "Downloading the archive from workspace storage")
+	ctx, endProgress := m.trackMoveFiles(ctx, in.Move, set, "Downloading the archive from backup storage")
 	defer endProgress()
 	store, err := storage.New(*cfg)
 	if err != nil {

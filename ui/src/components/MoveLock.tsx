@@ -1,10 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { AlertTriangle, ArrowUpRight, LoaderCircle, XCircle } from 'lucide-react';
 import { get } from '../lib/api';
-import { href, withSticky } from '../lib/router';
+import { resourceHref, withSticky } from '../lib/router';
 import { lastOutput, moveActive, moveCurrentStep, moveHolds, moveLockReason, movePhaseLabel, moveTone, stateLabels, working, type MoveFailure, type MoveJob } from '../lib/move';
 import { formatElapsed, LiveProgress } from './LiveProgress';
 import { Badge, Card } from './ui';
+import { SummaryList } from './SummaryList';
 
 // A move copies in the background while the application stays usable
 // ("Preparing move (app stays live)"); from the final sync until it finishes
@@ -36,9 +37,9 @@ export interface MoveLockOptions {
   idleMs?: number;
 }
 
-/** moveHref opens the application's move panel on the applications page. */
+/** moveHref opens the application's Move tab. */
 export function moveHref(appID: string) {
-  return `${href('applications')}?move=${encodeURIComponent(appID)}`;
+  return resourceHref('applications', appID, 'move');
 }
 
 /** useAppMoveLock follows the move of one application. */
@@ -100,11 +101,11 @@ export function MoveFailureNote({ failure }: { failure: MoveFailure }) {
   const retry = failure.next_retry ? new Date(failure.next_retry) : undefined;
   return <div className={`move-failure move-failure-${failure.class}`} role="alert">
     <p className="move-failure-message">{failure.message}</p>
-    <dl className="move-failure-facts">
-      <dt>Step</dt><dd>{failure.step}{failure.engine ? ` · ${failure.engine}` : ''}{failure.server ? ` · ${failure.server}` : ''}</dd>
-      <dt>Cause</dt><dd>{failure.class === 'transient' ? 'Transient' : failure.class === 'operator' ? 'Needs your action' : 'Failed'} ({failure.code}) · attempt {failure.attempt}/{failure.max_attempts}</dd>
-      {retry && <><dt>Next attempt</dt><dd><time dateTime={failure.next_retry}>{retry.toLocaleTimeString()}</time></dd></>}
-    </dl>
+    <SummaryList items={[
+      { label: 'Step', value: `${failure.step}${failure.engine ? ` · ${failure.engine}` : ''}${failure.server ? ` · ${failure.server}` : ''}` },
+      { label: 'Cause', value: `${failure.class === 'transient' ? 'Transient' : failure.class === 'operator' ? 'Needs your action' : 'Failed'} (${failure.code}) · attempt ${failure.attempt}/${failure.max_attempts}` },
+      retry && { label: 'Next attempt', value: <time dateTime={failure.next_retry}>{retry.toLocaleTimeString()}</time> },
+    ]} />
     {failure.remediation && <p className="move-failure-remediation"><strong>What to do:</strong> {failure.remediation}</p>}
     {failure.detail && failure.detail !== failure.message && <details className="move-failure-detail"><summary>Error detail</summary><code>{failure.detail}</code></details>}
     {failure.diagnostics && failure.diagnostics.length > 0 && <details className="move-failure-detail"><summary>Diagnostics ({failure.diagnostics.length})</summary><ul>{failure.diagnostics.map((line, index) => <li key={index}>{line}</li>)}</ul></details>}

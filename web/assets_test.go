@@ -10,7 +10,7 @@ import (
 
 func TestUIAssetsRevalidate(t *testing.T) {
 	h := Handler()
-	for _, path := range []string{"/console.html", "/login.html", "/setup.html", "/app.js", "/style.css", "/help.js"} {
+	for _, path := range []string{"/console.html", "/login.html", "/setup.html", "/login.js", "/setup.js", "/style.css"} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 200 || w.Header().Get("Cache-Control") != "no-cache" || w.Header().Get("ETag") == "" || w.Header().Get("X-Lidza-Deploy-Version") == "" {
@@ -23,7 +23,7 @@ func TestUIAssetsRevalidate(t *testing.T) {
 }
 
 func TestUIUpgradeInvalidatesWarmAssetValidators(t *testing.T) {
-	for _, path := range []string{"/console.html", "/app.js", "/style.css"} {
+	for _, path := range []string{"/console.html", "/login.js", "/style.css"} {
 		name := strings.TrimPrefix(path, "/")
 		first := staticHandler(fstest.MapFS{name: {Data: []byte("first release")}}, "v0.2.41")
 		second := staticHandler(fstest.MapFS{name: {Data: []byte("updated release")}}, "v0.2.42")

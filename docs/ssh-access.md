@@ -16,6 +16,38 @@ journalctl -k --since '1 hour ago' | grep -Ei 'oom|out of memory|killed process'
 free -h
 ```
 
+## Reading service logs of adopted applications
+
+On a server whose applications were adopted from an existing setup, the
+shared deployment account (the one named under **Service control** on the
+server's **Agent** tab, usually `deploy`) is how you sign in over SSH. Its
+applications now run as system units of their own `app-<name>` accounts, not
+as user units of the shared account, so `journalctl --user -u <unit>` finds
+nothing and `journalctl -u <unit>` prints `-- No entries --` until the account
+may read the system journal.
+
+Turn on **System log access for the deployment account** on the server's
+**Agent** tab. The agent adds the account to the `systemd-journal` group at
+once, records a `log-access` host operation, and checks the membership at
+every start and once a minute, so a membership changed by hand is put back to
+the setting. Turning it off removes only the `systemd-journal` membership;
+other groups stay. Until the setting is changed in the panel, the agent leaves
+the membership as it is. The card shows whether the account is a member now.
+
+Group changes apply to new SSH sessions only, so sign in again, then read
+system units without `--user`:
+
+```sh
+ssh deploy@your-server.example.com
+journalctl -u <unit> --since '1 hour ago'
+journalctl -u <unit> -f
+systemctl list-units --type=service   # unit names
+```
+
+Applications' logs may contain secrets: everyone who can sign in as the
+account reads every service's logs. Only infrastructure managers can change
+the setting.
+
 **Allow full sudo administration without a password** is off by default. Enabling it grants root-level control to everyone who can log in as deploy, including via unmanaged keys. Use it when server administration is needed; disable it to remove the grant managed by this app. Privileges assigned outside this app remain effective. Deploy is never added to the Docker or sudo groups automatically.
 
 Only control-panel administrators can manage server SSH access. The GUI lists managed labels and fingerprints and supports revocation. Existing root access, password policy, and unmanaged authorized keys remain intact. Removing a managed key prevents future logins through that key; established sessions remain open. Add and test deploy access before separately restricting root login.

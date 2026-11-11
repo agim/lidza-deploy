@@ -617,6 +617,10 @@ func (m *Manager) redirectView(ctx context.Context, id string) (RedirectView, er
 	if view.Redirects == nil {
 		view.Redirects = []RedirectDomain{}
 	}
+	if view.Statuses == nil {
+		// Behind a Caddy, the TLS upkeep reports the certificates.
+		view.Statuses = m.caddyDomainStatuses(RedirectHosts(view.Redirects))
+	}
 	view.Ingress, view.Detail = m.redirectIngress(ctx)
 	addresses := moveDetectAddresses()
 	view.IPv4, view.IPv6 = addresses.IPv4, addresses.IPv6

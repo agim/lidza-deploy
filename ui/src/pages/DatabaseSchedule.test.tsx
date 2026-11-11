@@ -11,7 +11,7 @@ it('saves a calendar backup on the exact selected database resource', async () =
   api.get.mockResolvedValue([{ app_id: 'database-a', server_id: 'server-a', ready: true,
     backup: { hours: 24, keep: 1, offsite: true }, backups: [] }]);
   api.patch.mockResolvedValue({});
-  render(<DatabaseDetailPage appID="database-a" />);
+  render(<DatabaseDetailPage appID="database-a" tab="schedule" />);
   fireEvent.change(await screen.findByLabelText('Frequency'), { target: { value: 'calendar' } });
   fireEvent.change(screen.getByPlaceholderText('0 3 * * 1'), { target: { value: '@monthly' } });
   fireEvent.change(screen.getByLabelText(/Timezone/), { target: { value: 'Europe/Tirane' } });

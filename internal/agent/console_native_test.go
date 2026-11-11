@@ -132,32 +132,15 @@ func TestConsoleCollectsNativeServiceJournals(t *testing.T) {
 	m.data.NativeReleases = map[string]NativeReleaseHistory{"shop": {Current: NativeReleaseRef{ID: "20261105100000", Commit: "abc123", Path: "/srv/lidza/apps/shop/releases/20261105100000"}}}
 	m.mu.Unlock()
 
-	var mu sync.Mutex
-	calls := [][]string{}
 	at := time.Now().UTC().Add(-time.Minute)
-	entry := func(message string) string {
-		data, _ := json.Marshal(map[string]any{"__REALTIME_TIMESTAMP": strconv.FormatInt(at.UnixMicro(), 10), "MESSAGE": message})
-		return string(data) + "\n"
-	}
+	journal := fakeJournal(t, m)
+	journal.add(false, journalTestEntry("s1", at, "_SYSTEMD_UNIT", "lidza-app-shop-web.service", "[a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d] NoMethodError (undefined method 'total' for nil created-secret-value):"))
+	journal.add(false, journalTestEntry("s2", at, "_SYSTEMD_UNIT", "lidza-app-shop-web.service", "[a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d] app/models/order.rb:12:in 'total'"))
+	journal.add(true, journalTestEntry("u1", at, "_SYSTEMD_USER_UNIT", "myrails-server.service", `{"msg":"request","path":"/.env","method":"GET","status":404,"request_id":"req-1"}`))
 	m.nativeCommand = func(_ context.Context, args []string) (string, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if args[0] != "journalctl" {
-			return "", nil
+		if args[0] == "journalctl" {
+			t.Error("collector read a unit journal on its own", args)
 		}
-		calls = append(calls, slices.Clone(args))
-		if !slices.Contains(args, "--output=json") || !slices.Contains(args, "--lines=1000") || !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "--since=@") }) {
-			t.Error("journal read missing collector flags", args)
-		}
-		switch args[1] {
-		case "--unit=lidza-app-shop-web.service":
-			return entry("[a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d] NoMethodError (undefined method 'total' for nil created-secret-value):") + entry("[a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d] app/models/order.rb:12:in 'total'"), nil
-		case "--user-unit=myrails-server.service":
-			return entry(`{"msg":"request","path":"/.env","method":"GET","status":404,"request_id":"req-1"}`), nil
-		case "--user-unit=myrails-worker.service":
-			return "", nil
-		}
-		t.Error("unexpected journal read", args)
 		return "", nil
 	}
 	var deliveredMu sync.Mutex
@@ -179,15 +162,9 @@ func TestConsoleCollectsNativeServiceJournals(t *testing.T) {
 
 	m.consoleTick(context.Background())
 
-	mu.Lock()
-	units := []string{}
-	for _, call := range calls {
-		units = append(units, call[1])
-	}
-	mu.Unlock()
-	slices.Sort(units)
-	if !slices.Equal(units, []string{"--unit=lidza-app-shop-web.service", "--user-unit=myrails-server.service", "--user-unit=myrails-worker.service"}) {
-		t.Fatal("collector read the wrong units", units)
+	calls := journal.calls()
+	if len(calls) != 2 || !slices.Contains(calls, "system --follow --no-tail --no-pager --quiet --output=json --since=@"+journalSinceOf(calls, "system")+" --unit=lidza-app-shop-web.service") || !slices.Contains(calls, "user --follow --no-tail --no-pager --quiet --output=json --since=@"+journalSinceOf(calls, "user")+" --user-unit=myrails-server.service --user-unit=myrails-worker.service") {
+		t.Fatal("collector did not start one stream per scope over all units", calls)
 	}
 	deliveredMu.Lock()
 	count := len(delivered)
@@ -219,5 +196,8 @@ func TestConsoleCollectsNativeServiceJournals(t *testing.T) {
 	deliveredMu.Unlock()
 	if count != 2 {
 		t.Fatal("journal replay duplicated native reports", count)
+	}
+	if calls := journal.calls(); len(calls) != 2 {
+		t.Fatal("a later tick started journal readers again", calls)
 	}
 }

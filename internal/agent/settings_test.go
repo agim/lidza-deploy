@@ -187,6 +187,7 @@ func TestSettingsAutomaticallyReloadAndRetainHealthyRelease(t *testing.T) {
 	rt.mu.Lock()
 	rt.fail = true
 	rt.mu.Unlock()
+	value = "updated again"
 	if err = m.PatchSettings(a.ID, SettingsPatch{Branch: a.Branch, Domain: domain, EnvChanges: map[string]*string{"FEATURE": &value}}); err != nil {
 		t.Fatal(err)
 	}

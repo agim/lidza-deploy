@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ControlPanelPage, dnsRecords, type PanelMove, type PanelMovePlan, type PanelMoveView } from './ControlPanelPage';
+import { ControlPanelPage, planChecks, type PanelMove, type PanelMovePlan, type PanelMoveView } from './ControlPanelPage';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -36,7 +36,7 @@ describe('ControlPanelPage', () => {
       if (url === '/api/control/panel-move' && init.method === 'POST') { started = true; return respond({ ...moving, state: 'running', phase: 'prepare', read_only: false }, 202); }
       return respond(started ? { ...view, move: { ...moving, state: 'running', phase: 'prepare', read_only: false, steps: [{ name: 'check', title: 'Check the destination', status: 'running' }] } } : view);
     }));
-    render(<ControlPanelPage />);
+    render(<ControlPanelPage tab="move" />);
     fireEvent.change(await screen.findByLabelText('Destination server'), { target: { value: 'combined' } });
     expect(screen.queryByRole('option', { name: 'Old host' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Review the move' }));
@@ -44,7 +44,7 @@ describe('ControlPanelPage', () => {
     expect(within(review).getByText(/8.0 MiB, copied with pg_dump and pg_restore/)).toBeInTheDocument();
     expect(within(review).getByText('Leaves the server list (retire)')).toBeInTheDocument();
     expect(within(review).getByText('http://127.0.0.1:9092')).toBeInTheDocument();
-    expect(JSON.parse(calls.find(c => c.url.endsWith('/plan'))!.body!)).toEqual({ target: 'combined' });
+    expect(JSON.parse(calls.find(c => c.url.endsWith('/plan'))!.body!)).toEqual({ target: 'combined', keep_source: true });
     fireEvent.click(screen.getByRole('button', { name: /Start the move/ }));
     expect(await screen.findByText('Moving to Combined')).toBeInTheDocument();
     expect(calls.some(c => c.url === '/api/control/panel-move' && c.method === 'POST')).toBe(true);
@@ -55,7 +55,7 @@ describe('ControlPanelPage', () => {
     const blocked: PanelMovePlan = { ...plan, ready: false, blockers: ['The destination cannot reach Edge at http://127.0.0.1:19093 (no answer); enter an agent URL it can reach.'],
       servers: [...plan.servers, { id: 'edge', name: 'Edge', role: 'remote', url: 'http://127.0.0.1:19093', new_url: 'http://127.0.0.1:19093', reachable: false, apps: 1, detail: 'no answer' }] };
     vi.stubGlobal('fetch', vi.fn((url: string) => respond(url.endsWith('/plan') ? blocked : view)));
-    render(<ControlPanelPage />);
+    render(<ControlPanelPage tab="move" />);
     fireEvent.change(await screen.findByLabelText('Destination server'), { target: { value: 'combined' } });
     fireEvent.click(screen.getByRole('button', { name: 'Review the move' }));
     expect(await screen.findByText(/cannot reach Edge/)).toBeInTheDocument();
@@ -65,20 +65,38 @@ describe('ControlPanelPage', () => {
 
   it('shows the DNS records to set with copy buttons while waiting for DNS', async () => {
     vi.stubGlobal('fetch', vi.fn(() => respond({ ...view, read_only: true, move: moving })));
-    render(<ControlPanelPage />);
+    render(<ControlPanelPage tab="move" />);
     expect(await screen.findByText('DNS records for deploy.example.com')).toBeInTheDocument();
     expect(screen.getByText('Read-only: moving')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Copy A' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Copy AAAA' })).toBeInTheDocument();
-    expect(screen.getByText(/198.51.100.7 \(ns1.example.com\)/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy A value for deploy.example.com' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy AAAA value for deploy.example.com' })).toBeInTheDocument();
+    const answers = screen.getByRole('list', { name: 'DNS answers' });
+    expect(within(answers).getByText(/198.51.100.7/)).toBeInTheDocument();
+    expect(within(answers).getByText('Answered by ns1.example.com')).toBeInTheDocument();
+    expect(within(answers).getByText(/Waiting:/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Abort' })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: /Check DNS now/ })).toBeEnabled());
   });
 
-  it('builds A and AAAA records from the destination addresses', () => {
-    expect(dnsRecords('deploy.example.com', ['203.0.113.9', '2001:db8::9'])).toEqual([
-      { name: 'deploy.example.com', type: 'A', value: '203.0.113.9' },
-      { name: 'deploy.example.com', type: 'AAAA', value: '2001:db8::9' },
+  it('lists readiness checks and warnings as one check list', () => {
+    expect(planChecks({ ...plan, checks: [...plan.checks, { name: 'reach', ok: false, detail: 'Edge does not answer.' }], warnings: ['Jobs pause.'] }).map(item => [item.status, item.children])).toEqual([
+      ['ok', 'The destination runs the same release v1.0.0-private.1.'],
+      ['warning', 'Edge does not answer.'],
+      ['warning', 'Jobs pause.'],
     ]);
+  });
+
+  it('shows the plan as a summary list and a check list', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string) => respond(url.endsWith('/plan') ? plan : view)));
+    render(<ControlPanelPage tab="move" />);
+    fireEvent.change(await screen.findByLabelText('Destination server'), { target: { value: 'combined' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Review the move' }));
+    const summary = await screen.findByLabelText('Move summary');
+    expect(summary.tagName).toBe('DL');
+    expect(summary).toHaveClass('summary-list');
+    expect(within(summary).getByText('203.0.113.9, 2001:db8::9')).toBeInTheDocument();
+    const checks = screen.getByRole('list', { name: 'Checks' });
+    expect(within(checks).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(checks).getByText('The destination runs the same release v1.0.0-private.1.').closest('.check-list-item')).toHaveAttribute('data-status', 'ok');
   });
 });

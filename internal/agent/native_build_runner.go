@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -40,7 +39,7 @@ func (m *Manager) runNativeBuildUnit(ctx context.Context, a NativeApplication, c
 	if !regexp.MustCompile(`^[a-f0-9]{24}(-post)?$`).MatchString(id) || len(args) == 0 || strings.ContainsAny(m.cfg.Native.Root, " \t\r\n") {
 		return "", 0, errors.New("invalid native build identity or directory")
 	}
-	account, err := user.Lookup(m.cfg.Native.User)
+	account, err := nativeLookupUser(m.cfg.Native.User)
 	if err != nil {
 		return "", 0, errors.New("native build user is unavailable")
 	}

@@ -868,3 +868,86 @@ func (c *configRedis) do(ctx context.Context, args ...string) (any, error) {
 	}
 	return c.fakeRedisConn.do(ctx, args...)
 }
+
+// fakeFileSettings answers the tuner's pg_file_settings queries: pending
+// counts errors other than a pending restart once the tuned file exists.
+func fakeFileSettings(t *testing.T, root, conf string, realErrors int) func(ctx context.Context, stdin, name string, args ...string) (string, error) {
+	return func(ctx context.Context, stdin, name string, args ...string) (string, error) {
+		_, statErr := os.Stat(filepath.Join(root, conf))
+		written := statErr == nil
+		switch {
+		case strings.Contains(stdin, "SELECT count(*) FROM pg_catalog.pg_file_settings"):
+			if !strings.Contains(stdin, "<> 'setting could not be applied'") {
+				t.Fatalf("error count must ignore settings waiting for a restart: %q", stdin)
+			}
+			if written {
+				return strconv.Itoa(realErrors), nil
+			}
+			return "0", nil
+		case strings.Contains(stdin, "|| ': ' || error"):
+			if realErrors > 0 {
+				return "work_mem: invalid value for parameter \"work_mem\": \"56XB\"", nil
+			}
+			return "", nil
+		}
+		return "", nil
+	}
+}
+
+func TestWritePostgresTuningAcceptsRestartPending(t *testing.T) {
+	root := t.TempDir()
+	conf := "/etc/postgresql/17/main/conf.d/90-lidza-tuning.conf"
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, conf)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := nativeHostData{root: root, run: fakeFileSettings(t, root, conf, 0)}
+	m := &Manager{}
+	changed, err := m.writePostgresTuning(context.Background(), h, &tuningPGObs{ConfFile: conf, Port: 5432, Cluster: "17/main"}, "shared_buffers = '2988MB'\nmax_connections = 125\n", func(string, ...any) {})
+	if err != nil || !changed {
+		t.Fatalf("restart-only settings must be written, got changed=%v err=%v", changed, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, conf)); err != nil {
+		t.Fatalf("tuned file was not kept: %v", err)
+	}
+}
+
+func TestWritePostgresTuningRejectsRealErrors(t *testing.T) {
+	root := t.TempDir()
+	conf := "/etc/postgresql/17/main/conf.d/90-lidza-tuning.conf"
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, conf)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := nativeHostData{root: root, run: fakeFileSettings(t, root, conf, 1)}
+	m := &Manager{}
+	_, err := m.writePostgresTuning(context.Background(), h, &tuningPGObs{ConfFile: conf, Port: 5432, Cluster: "17/main"}, "work_mem = '56XB'\n", func(string, ...any) {})
+	if err == nil || !strings.Contains(err.Error(), "work_mem: invalid value") {
+		t.Fatalf("a real error must be rejected and named, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, conf)); statErr == nil {
+		t.Fatal("rejected file must be removed")
+	}
+}
+
+func TestPostgresMaxConnectionsCoversObservedPeak(t *testing.T) {
+	host := TuningHost{CPUs: 8, MemoryMiB: 32 * 1024, DiskGiB: 386}
+	base := computePostgresTuning(pgTuningInput{Host: host, SliceMiB: 12000, Share: 1, Apps: 17})
+	baseMC, _ := strconv.Atoi(base.Settings["max_connections"])
+	peaked := computePostgresTuning(pgTuningInput{Host: host, SliceMiB: 12000, Share: 1, Apps: 17, PeakConnections: 160})
+	mc, _ := strconv.Atoi(peaked.Settings["max_connections"])
+	sr, _ := strconv.Atoi(peaked.Settings["superuser_reserved_connections"])
+	reserved, _ := strconv.Atoi(peaked.Settings["reserved_connections"])
+	if mc-sr-reserved < 200 { // 160 × 1.25
+		t.Fatalf("applications get %d of max_connections %d (memory estimate %d); need at least 200 for a peak of 160", mc-sr-reserved, mc, baseMC)
+	}
+	low := computePostgresTuning(pgTuningInput{Host: host, SliceMiB: 12000, Share: 1, Apps: 17, PeakConnections: 10})
+	if low.Settings["max_connections"] != base.Settings["max_connections"] {
+		t.Fatalf("a small peak must not change the estimate: %s vs %s", low.Settings["max_connections"], base.Settings["max_connections"])
+	}
+}
+
+func TestTuningPeakTotalSumsOneCluster(t *testing.T) {
+	peaks := map[string][]TuningPeak{"5432/a": {{Max: 30}}, "5432/b": {{Max: 50}, {Max: 20}}, "5433/c": {{Max: 99}}}
+	if got := tuningPeakTotal(peaks, 5432); got != 80 {
+		t.Fatalf("got %d, want 80", got)
+	}
+}

@@ -1,60 +1,73 @@
 import { useEffect } from 'react';
-import { HOME, routeTitle, useRoute } from './lib/router';
+import { HOME, redirectPath, routeTitle, useLocation, useRoute } from './lib/router';
 import type { Route } from './lib/types';
 import { AppShell } from './components/AppShell';
-import { ErrorBanner, Loading } from './components/ui';
+import { ResourceNameProvider, useResourceName } from './components/resource';
+import { EmptyState, PageHeader } from './components/ui';
 import { ApplicationsPage } from './pages/ApplicationsPage';
-import { DeploymentsPage } from './pages/DeploymentsPage';
+import { ApplicationDetailPage } from './pages/ApplicationDetailPage';
+import { DeploymentDetailPage, DeploymentsPage } from './pages/DeploymentsPage';
 import { ServersPage } from './pages/ServersPage';
-import { AppSettingsPage } from './pages/AppSettingsPage';
 import { NewApplicationPage } from './pages/NewApplicationPage';
-import { ServerCleanupPage } from './pages/ServerCleanupPage';
-import { ContainersPage, LogPage, ServerConsolePage, ServerSettingsPage } from './pages/ServerDetailPages';
+import { ConnectServerPage, ServerDetailPage } from './pages/ServerDetailPages';
 import { DatabaseDetailPage, DatabasesPage, RemoteBackupsPage } from './pages/DataPages';
 import { IntegrationsPage } from './pages/IntegrationsPage';
-import { ActivityPage, DefaultsPage, HelpPage, TeamPage, TwoFactorPage, UpdatesPage } from './pages/WorkspacePages';
-import { CachePage, SimpleServerOperationPage } from './pages/ResourceDetailPages';
+import { AccountPage, ActivityDetailPage, ActivityPage, AuditPage, DefaultsPage, HelpPage, NewMemberPage, TeamMemberPage, TeamPage, UpdatesPage } from './pages/WorkspacePages';
 import { ControlPanelPage } from './pages/ControlPanelPage';
-import { DeletedAppsPage } from './pages/DeletedAppsPage';
+import { DeletedAppDetailPage, DeletedAppsPage } from './pages/DeletedAppsPage';
+import { SearchX } from 'lucide-react';
 
 export default function App() {
+  return <ResourceNameProvider><Routed /></ResourceNameProvider>;
+}
+
+function Routed() {
   // main.tsx starts the router before the first render, so the route is
-  // already normalized from any legacy hash or bare entry URL here.
+  // already normalized from any legacy hash, bare entry URL or earlier path.
   const route = useRoute();
-  const { page, detail, id } = route;
-  useEffect(() => { window.scrollTo({ top: 0 }); }, [page, detail, id]);
-  useEffect(() => { document.title = routeTitle(route); }, [route]);
+  const { pathname, search } = useLocation();
+  const name = useResourceName();
+  // An earlier URL reached through Back/Forward is rewritten to its current form.
+  useEffect(() => { const target = redirectPath(pathname, search); if (target) history.replaceState(history.state, '', target); }, [pathname, search]);
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [route.view, route.collection, route.id]);
+  useEffect(() => { document.title = routeTitle(route, name); }, [route, name]);
   return <AppShell route={route}><RouteView route={route} /></AppShell>;
 }
 
 function RouteView({ route }: { route: Route }) {
-  if (route.page === 'applications') return <ApplicationsPage />;
-  if (route.page === 'deployments') return <DeploymentsPage />;
-  if (route.page === 'servers') return <ServersPage />;
-  if (route.page === 'databases') return <DatabasesPage />;
-  if (route.page === 'remote-backups') return <RemoteBackupsPage />;
-  if (route.page === 'integrations') return <IntegrationsPage />;
-  if (route.page === 'defaults') return <DefaultsPage />;
-  if (route.page === 'updates') return <UpdatesPage />;
-  if (route.page === 'team') return <TeamPage />;
-  if (route.page === 'audit') return <TeamPage audit />;
-  if (route.page === 'errors') return <ActivityPage selectedID={route.id} />;
-  if (route.page === 'security') return <ActivityPage security selectedID={route.id} />;
-  if (route.page === 'help') return <HelpPage />;
-  if (route.page === 'control-panel') return <ControlPanelPage />;
-  if (route.page === 'deleted-apps') return <DeletedAppsPage />;
-  if (route.page === 'new-application') return <NewApplicationPage serverID={route.id} />;
-  if (route.page === 'detail' && route.id) {
-    if (route.detail === 'settings') return <AppSettingsPage appID={route.id} />;
-    if (route.detail === 'server') return <ServerSettingsPage serverID={route.id} />;
-    if (route.detail === 'cleanup') return <ServerCleanupPage serverID={route.id} />;
-    if (route.detail === 'containers') return <ContainersPage serverID={route.id} />;
-    if (route.detail === 'console') return <ServerConsolePage key={route.id} serverID={route.id} />;
-    if (route.detail === 'database') return <DatabaseDetailPage appID={route.id} />;
-    if (route.detail === 'cache') return <CachePage appID={route.id} />;
-    if (route.detail === 'build-logs' || route.detail === 'runtime-logs') return <LogPage kind={route.detail} id={route.id} />;
-    if (route.detail === 'ssh' || route.detail === 'upgrade') return <SimpleServerOperationPage kind={route.detail} serverID={route.id} />;
-    if (route.detail === 'two-factor') return <TwoFactorPage />;
+  const { view, collection: c, id = '', tab = '', query } = route;
+  if (view === 'index') {
+    if (c === 'applications') return <ApplicationsPage />;
+    if (c === 'deployments') return <DeploymentsPage />;
+    if (c === 'servers') return <ServersPage />;
+    if (c === 'databases') return <DatabasesPage />;
+    if (c === 'deleted-apps') return <DeletedAppsPage />;
+    if (c === 'team') return <TeamPage />;
+    if (c === 'audit') return <AuditPage />;
+    if (c === 'errors' || c === 'security') return <ActivityPage key={c} security={c === 'security'} appID={query?.app} />;
   }
-  return <ErrorBanner>That workspace page is not available. <a href={HOME}>Return to applications</a>.</ErrorBanner>;
+  if (view === 'create') {
+    if (c === 'applications') return <NewApplicationPage serverID={query?.server} />;
+    if (c === 'servers') return <ConnectServerPage />;
+    if (c === 'team') return <NewMemberPage />;
+  }
+  if (view === 'detail') {
+    if (c === 'applications') return <ApplicationDetailPage key={id} appID={id} tab={tab} />;
+    if (c === 'servers') return <ServerDetailPage key={id} serverID={id} tab={tab} />;
+    if (c === 'databases') return <DatabaseDetailPage key={id} appID={id} tab={tab} />;
+    if (c === 'deployments') return <DeploymentDetailPage key={id} id={id} tab={tab} />;
+    if (c === 'deleted-apps') return <DeletedAppDetailPage key={id} id={id} tab={tab} />;
+    if (c === 'team') return <TeamMemberPage key={id} id={id} tab={tab} />;
+    if (c === 'errors' || c === 'security') return <ActivityDetailPage key={`${c}/${id}`} security={c === 'security'} appID={query?.app || ''} id={id} tab={tab} />;
+  }
+  if (view === 'singleton') {
+    if (c === 'integrations') return <IntegrationsPage tab={tab} />;
+    if (c === 'defaults') return <DefaultsPage tab={tab} />;
+    if (c === 'remote-backups') return <RemoteBackupsPage tab={tab} />;
+    if (c === 'updates') return <UpdatesPage tab={tab} />;
+    if (c === 'control-panel') return <ControlPanelPage tab={tab} />;
+    if (c === 'help') return <HelpPage tab={tab} />;
+    if (c === 'account') return <AccountPage tab={tab} />;
+  }
+  return <div className="resource-page" data-template="not-found"><PageHeader title="Page not found" description="The address may be mistyped, or the page has moved. The breadcrumb above leads back Home." /><EmptyState icon={<SearchX />} title="Nothing lives at this address" description="Open the applications to find your way again." action={<a className="button button-primary button-md" href={HOME}>Open applications</a>} /></div>;
 }

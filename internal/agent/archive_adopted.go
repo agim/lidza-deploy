@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -173,7 +172,7 @@ func (m *Manager) adoptedArchiveSnapshot(ctx context.Context, id string) (*Archi
 	if info, err := os.Lstat(root); err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 		return nil, fmt.Errorf("%s is not a directory; review it on the host", root)
 	}
-	if account, err := user.Lookup(m.cfg.Native.User); err == nil && filepath.Clean(account.HomeDir) == root {
+	if account, err := nativeLookupUser(m.cfg.Native.User); err == nil && filepath.Clean(account.HomeDir) == root {
 		return nil, errors.New("the application's directory is the deployment account's home; review it on the host")
 	}
 	m.mu.Lock()

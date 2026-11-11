@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -227,7 +228,9 @@ func TestExplicitMasterKeyGeneratorIsAuthenticatedMaskedAndNoRotation(t *testing
 	if reply.Code != 200 {
 		t.Fatal(reply.Code, reply.Body)
 	}
+	m.mu.Lock()
 	key := m.data.Apps[a.ID].Env["LIDZA_MASTER_KEY"]
+	m.mu.Unlock()
 	var entry EnvironmentEntry
 	if err := json.Unmarshal(reply.Body.Bytes(), &entry); err != nil {
 		t.Fatal(err)
@@ -235,15 +238,22 @@ func TestExplicitMasterKeyGeneratorIsAuthenticatedMaskedAndNoRotation(t *testing
 	if len(key) != 64 || entry.Key != "LIDZA_MASTER_KEY" || entry.Value != "" || entry.Length != 64 || entry.Kind != EnvironmentCredential || strings.Contains(reply.Body.String(), key) {
 		t.Fatal("invalid or exposed key metadata")
 	}
-	if m.Current(a.ID).ID != "running" || len(m.queue) != 0 || len(m.data.Deployments) != 0 {
-		t.Fatal("generation changed running release")
+	// The key is applied like any environment change: the running release
+	// is reloaded with it (settings_apply.go).
+	var generated MasterKeyGenerated
+	if err := json.Unmarshal(reply.Body.Bytes(), &generated); err != nil || generated.Apply.Applied != SettingsAppliedRestart || generated.Apply.Deployment == nil || generated.Apply.Deployment.Kind != "reload" || !slices.Equal(generated.Apply.Changes, []string{"env:LIDZA_MASTER_KEY"}) {
+		t.Fatalf("generation did not restart the application: %s", reply.Body.String())
 	}
+	waitDeployment(t, m, generated.Apply.DeploymentID)
 	for i := 0; i < 2; i++ {
 		if err := m.GenerateMasterKey(a.ID); err == nil {
 			t.Fatal("rotated existing key")
 		}
 	}
-	if m.data.Apps[a.ID].Env["LIDZA_MASTER_KEY"] != key {
+	m.mu.Lock()
+	kept := m.data.Apps[a.ID].Env["LIDZA_MASTER_KEY"]
+	m.mu.Unlock()
+	if kept != key {
 		t.Fatal("existing key changed")
 	}
 	// A second operator must not win a racing generation request.

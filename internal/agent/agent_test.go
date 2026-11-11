@@ -56,7 +56,20 @@ func (f *fakeRuntime) Ready(context.Context, *Release) error          { return n
 func (f *fakeRuntime) Logs(context.Context, *Release) (string, error) { return "test logs", nil }
 func testManager(t *testing.T, f Runtime) *Manager {
 	t.Helper()
-	m, err := NewManager(context.Background(), Config{DataDir: t.TempDir(), APIKey: strings.Repeat("a", 32)}, f)
+	return testManagerWith(t, f, nil)
+}
+
+// testManagerWith is testManager with configuration changes applied before
+// the manager starts. The manager's background loops read its Config, so a
+// test that changes a field they read (ProxyListen, for one) sets it here
+// instead of on m.cfg afterwards.
+func testManagerWith(t *testing.T, f Runtime, configure func(*Config)) *Manager {
+	t.Helper()
+	cfg := Config{DataDir: t.TempDir(), APIKey: strings.Repeat("a", 32)}
+	if configure != nil {
+		configure(&cfg)
+	}
+	m, err := NewManager(context.Background(), cfg, f)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -96,8 +96,36 @@ func (f *fakeUserUnits) run(_ context.Context, c release.Command) error {
 	return errors.New("unexpected systemctl verb " + args[3])
 }
 
+// observe answers the owner's status reads (nativeExec) from the same
+// unit states, so status never asks the user manager of the account that
+// runs the tests.
+func (f *fakeUserUnits) observe(_ context.Context, args []string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	const show = "systemctl --user show --property=Id,ActiveState,SubState,UnitFileState --no-pager "
+	command := strings.Join(args, " ")
+	if !strings.HasPrefix(command, show) {
+		return "", errors.New("unexpected native command: " + command)
+	}
+	var blocks []string
+	for _, unit := range strings.Fields(strings.TrimPrefix(command, show)) {
+		state, ok := f.states[unit]
+		if !ok {
+			state = "inactive/dead"
+		}
+		active, sub, _ := strings.Cut(state, "/")
+		file := "enabled"
+		if active == "inactive" {
+			file = "disabled"
+		}
+		blocks = append(blocks, "Id="+unit+"\nActiveState="+active+"\nSubState="+sub+"\nUnitFileState="+file)
+	}
+	return strings.Join(blocks, "\n\n") + "\n", nil
+}
+
 type fakeCrontab struct {
 	mu   sync.Mutex
+	user string // the account whose crontab this is; "agim" when unset
 	body string
 	fail bool
 }
@@ -105,13 +133,17 @@ type fakeCrontab struct {
 func (f *fakeCrontab) run(_ context.Context, stdin string, args []string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	account := f.user
+	if account == "" {
+		account = "agim"
+	}
 	switch strings.Join(args, " ") {
-	case "-u agim -l":
+	case "-u " + account + " -l":
 		if f.body == "" {
-			return "", "no crontab for agim\n", errors.New("exit status 1")
+			return "", "no crontab for " + account + "\n", errors.New("exit status 1")
 		}
 		return f.body, "", nil
-	case "-u agim -":
+	case "-u " + account + " -":
 		if f.fail {
 			return "", "bad minute\n", errors.New("exit status 1")
 		}
@@ -153,7 +185,8 @@ func newNativeReleaseFixture(t *testing.T) *nativeReleaseFixture {
 			t.Fatal(err)
 		}
 	}
-	m.cfg.Native = &NativeHostConfig{Root: home, User: "agim", Releases: map[string]NativeReleasePolicy{}}
+	account := fixtureNativeUser(t)
+	m.cfg.Native = &NativeHostConfig{Root: home, User: account, Releases: map[string]NativeReleasePolicy{}}
 	app, err := m.nativeRegistration(NativeApplication{ID: "rails-myrails", Name: "MyRails", Repository: "acme/myrails", Branch: "main", Domain: "myrails.example.com", Runtime: "rails"})
 	if err != nil {
 		t.Fatal(err)
@@ -189,9 +222,10 @@ func newNativeReleaseFixture(t *testing.T) *nativeReleaseFixture {
 	t.Cleanup(health.Close)
 	f := &nativeReleaseFixture{m: m, app: app, root: root, original: original, source: "file://" + work, commit: commit,
 		units:   &fakeUserUnits{states: map[string]string{"myrails-server.service": "active/running", "myrails-worker.service": "active/running"}},
-		crontab: &fakeCrontab{}, health: health}
+		crontab: &fakeCrontab{user: account}, health: health}
 	m.nativeReleaseRun = release.LocalExecutor{}.Run
 	m.nativeReleaseUserRun = f.units.run
+	m.nativeCommand = f.units.observe
 	m.nativeCrontabCommand = f.crontab.run
 	m.nativeReleaseSource = func(NativeReleasePolicy, string) release.Source { return release.Source{URL: f.source} }
 	m.nativeReleaseHealthAddress = strings.TrimPrefix(health.URL, "https://")
@@ -552,7 +586,7 @@ func TestNativeReleaseSettingsEditEnvironmentAndBranch(t *testing.T) {
 		t.Fatalf("environment view keys=%v readonly=%v", settings.EnvKeys, settings.ReadonlyEnvKeys)
 	}
 	value := func(s string) *string { return &s }
-	err = f.m.patchNativeSettings(f.app.ID, SettingsPatch{Domain: f.app.Domain, EnvChanges: map[string]*string{
+	_, err = f.m.patchNativeSettings(f.app.ID, SettingsPatch{Domain: f.app.Domain, EnvChanges: map[string]*string{
 		"SECRET_KEY_BASE": value("rotated"), "GREETING": value("hello world"), "DATABASE_URL": nil}})
 	if err != nil {
 		t.Fatal(err)
@@ -578,11 +612,11 @@ func TestNativeReleaseSettingsEditEnvironmentAndBranch(t *testing.T) {
 		"no backup":  {BackupBeforeDeploy: new(bool)},
 		"bad branch": {Branch: "-x"},
 	} {
-		if err := f.m.patchNativeSettings(f.app.ID, patch); err == nil {
+		if _, err := f.m.patchNativeSettings(f.app.ID, patch); err == nil {
 			t.Fatal("accepted", name)
 		}
 	}
-	if err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{Branch: "staging"}); err != nil {
+	if _, err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{Branch: "staging"}); err != nil {
 		t.Fatal(err)
 	}
 	_, policy, err := f.m.nativeReleasePolicy(f.app.ID)
@@ -603,12 +637,12 @@ func TestNativeReleaseSettingsApplyWorkspaceDefaults(t *testing.T) {
 	if err != nil || settings.ReleaseRuntime != "node" { // the fixture policy runs the Node.js profile
 		t.Fatal("release runtime not reported", settings.ReleaseRuntime, err)
 	}
-	if err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{EnvChanges: map[string]*string{"RAILS_ENV": value("staging"), "EMPTY_SETTING": value("")}}); err != nil {
+	if _, err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{EnvChanges: map[string]*string{"RAILS_ENV": value("staging"), "EMPTY_SETTING": value("")}}); err != nil {
 		t.Fatal(err)
 	}
 	// Missing-only keeps every key already in the environment files, including
 	// empty assignments, and appends only the missing ones.
-	err = f.m.patchNativeSettings(f.app.ID, SettingsPatch{FromDefaults: true, OnlyMissing: true, EnvChanges: map[string]*string{
+	_, err = f.m.patchNativeSettings(f.app.ID, SettingsPatch{FromDefaults: true, OnlyMissing: true, EnvChanges: map[string]*string{
 		"RAILS_ENV": value("production"), "RACK_ENV": value("production"), "EMPTY_SETTING": value("1"), "RAILS_LOG_TO_STDOUT": value("1")}})
 	if err != nil {
 		t.Fatal(err)
@@ -618,14 +652,14 @@ func TestNativeReleaseSettingsApplyWorkspaceDefaults(t *testing.T) {
 		t.Fatal("missing-only defaults", values, err)
 	}
 	before, _ := os.ReadFile(envFile)
-	if err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{FromDefaults: true, OnlyMissing: true, EnvChanges: map[string]*string{"RAILS_ENV": value("production")}}); err != nil {
+	if _, err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{FromDefaults: true, OnlyMissing: true, EnvChanges: map[string]*string{"RAILS_ENV": value("production")}}); err != nil {
 		t.Fatal(err)
 	}
 	if after, _ := os.ReadFile(envFile); string(after) != string(before) {
 		t.Fatal("missing-only defaults rewrote an unchanged environment file")
 	}
 	// Replacement overwrites the approved keys in place.
-	if err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{FromDefaults: true, EnvChanges: map[string]*string{"RAILS_ENV": value("production")}}); err != nil {
+	if _, err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{FromDefaults: true, EnvChanges: map[string]*string{"RAILS_ENV": value("production")}}); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(envFile)
@@ -642,7 +676,7 @@ func TestNativeReleaseSettingsApplyWorkspaceDefaults(t *testing.T) {
 		"quote":      {"GREETING": value("it's")},
 		"delete":     {"RAILS_ENV": nil},
 	} {
-		if err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{FromDefaults: true, EnvChanges: changes}); err == nil {
+		if _, err := f.m.patchNativeSettings(f.app.ID, SettingsPatch{FromDefaults: true, EnvChanges: changes}); err == nil {
 			t.Fatal("accepted default", name)
 		}
 	}

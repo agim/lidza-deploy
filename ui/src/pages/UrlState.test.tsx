@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { normalizeLocation } from '../lib/router';
+import { normalizeLocation, useRoute } from '../lib/router';
 import { ApplicationsPage } from './ApplicationsPage';
-import { AppSettingsPage } from './AppSettingsPage';
+import { ApplicationDetailPage } from './ApplicationDetailPage';
 import { NewApplicationPage } from './NewApplicationPage';
 
 const workspace = vi.hoisted(() => ({
@@ -17,7 +17,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const open = (url: string) => { history.replaceState(null, '', url); normalizeLocation(); };
 const here = () => location.pathname + location.search;
-const cards = () => [...document.querySelectorAll('[data-app-card]')].map(card => card.getAttribute('data-app-card'));
+const cards = () => [...document.querySelectorAll('.resource-row .resource-name a')].map(link => link.textContent);
 const respond = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body });
 
 describe('application filters in the URL', () => {
@@ -49,32 +49,28 @@ describe('application filters in the URL', () => {
     expect(here()).toBe('/console/applications');
   });
 
-  it('keeps the open move panel in the URL', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => respond({ error: 'no move' }, 404)));
+  it('opens the Move tab for an earlier move link', () => {
     open('/console/applications?move=shop');
-    const { container } = render(<ApplicationsPage />);
-    const panel = (id: string) => container.querySelector(`[data-app-card="${id}"] details.move-flow`) as HTMLDetailsElement;
-    expect(panel('shop').open).toBe(true);
-    expect(panel('site').open).toBe(false);
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/control/apps/shop/move', expect.anything()));
-    act(() => { panel('shop').open = false; fireEvent(panel('shop'), new Event('toggle')); });
-    expect(here()).toBe('/console/applications');
-    act(() => { panel('site').open = true; fireEvent(panel('site'), new Event('toggle')); });
-    expect(here()).toBe('/console/applications?move=site');
+    expect(here()).toBe('/console/applications/shop/move');
   });
 });
 
-describe('settings tab in the URL', () => {
-  it('opens the tab named by the path and replaces the entry on change', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => respond({ id: 'portal', server_id: 'a', repository: 'acme/portal', branch: 'main', domain: 'portal.example.com', environment: [{ key: 'TITLE', kind: 'setting', value: 'Portal' }] })));
-    open('/console/applications/portal/settings/environment');
-    render(<AppSettingsPage appID="portal" />);
-    expect(await screen.findByRole('tab', { name: 'Environment' })).toHaveAttribute('aria-selected', 'true');
+describe('application tabs in the URL', () => {
+  // The page shows the tab the URL names, as App does.
+  function Routed() { const route = useRoute(); return <ApplicationDetailPage appID={route.id || ''} tab={route.tab || 'overview'} />; }
+  it('opens the tab named by the path and adds a history entry on change', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => respond({ id: 'shop', server_id: 'b', repository: 'org/shop', branch: 'main', domain: 'shop.example.com', environment: [{ key: 'TITLE', kind: 'setting', value: 'Shop' }] })));
+    open('/console/applications/shop/settings/environment');
+    expect(here()).toBe('/console/applications/shop/environment');
+    render(<Routed />);
+    expect(screen.getByRole('tab', { name: 'Environment' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByDisplayValue('Shop')).toBeInTheDocument();
     const before = history.length;
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'General' }), { button: 0, ctrlKey: false });
-    expect(here()).toBe('/console/applications/portal/settings/general');
-    expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true');
-    expect(history.length).toBe(before);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Domains' }), { button: 0, ctrlKey: false });
+    expect(here()).toBe('/console/applications/shop/domains');
+    expect(screen.getByRole('tab', { name: 'Domains' })).toHaveAttribute('aria-selected', 'true');
+    expect(history.length).toBe(before + 1);
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('href', '/console/applications/shop');
   });
 });
 
@@ -85,18 +81,18 @@ describe('new application wizard steps', () => {
 
   it('gives each step a history entry so browser Back returns to the previous step', async () => {
     stubAPI();
-    open('/console/new-application');
+    open('/console/applications/new');
     render(<NewApplicationPage />);
     expect(current()).toContain('Name');
     fireEvent.change(screen.getByLabelText(/Application name/), { target: { value: 'suite' } });
     const before = history.length;
     next();
-    expect(here()).toBe('/console/new-application?step=repository');
+    expect(here()).toBe('/console/applications/new?step=repository');
     expect(current()).toContain('Repository');
     expect(history.length).toBe(before + 1);
     act(() => history.back());
     await waitFor(() => expect(current()).toContain('Name'));
-    expect(here()).toBe('/console/new-application');
+    expect(here()).toBe('/console/applications/new');
     expect(screen.getByLabelText(/Application name/)).toHaveValue('suite');
     act(() => history.forward());
     await waitFor(() => expect(current()).toContain('Repository'));
@@ -104,25 +100,25 @@ describe('new application wizard steps', () => {
 
   it('matches the browser Back from its own Back button', async () => {
     stubAPI();
-    open('/console/new-application?server=b');
+    open('/console/applications/new?server=b');
     render(<NewApplicationPage serverID="b" />);
     fireEvent.change(screen.getByLabelText(/Application name/), { target: { value: 'suite' } });
     next();
-    expect(here()).toBe('/console/new-application?server=b&step=repository');
+    expect(here()).toBe('/console/applications/new?server=b&step=repository');
     const back = vi.spyOn(history, 'back');
     const length = history.length;
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
     expect(back).toHaveBeenCalledOnce();
     await waitFor(() => expect(current()).toContain('Name'));
-    expect(here()).toBe('/console/new-application?server=b');
+    expect(here()).toBe('/console/applications/new?server=b');
     expect(history.length).toBe(length);
   });
 
   it('starts a fresh draft at the first step after a reload', () => {
     stubAPI();
-    open('/console/new-application?step=review');
+    open('/console/applications/new?step=review');
     render(<NewApplicationPage />);
     expect(current()).toContain('Name');
-    expect(here()).toBe('/console/new-application');
+    expect(here()).toBe('/console/applications/new');
   });
 });

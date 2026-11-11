@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -710,52 +709,6 @@ func (m *Manager) nativeHostDataSource(p NativeDatabasePolicy) (raw string, mana
 		return "", true, err
 	}
 	return nativePGURL(record.Postgres.Name, password, record.Postgres.Port), true, nil
-}
-
-var nativePGClientPackage = regexp.MustCompile(`^postgresql-client-\d+$`)
-
-// refreshNativeHostDataTool follows package updates of pg_dump for databases
-// the agent provisioned: the new binary is accepted when the package manager
-// verifies it unchanged from its package. Otherwise the pinned digest stays
-// and the backup fails closed.
-func (m *Manager) refreshNativeHostDataTool(ctx context.Context, resource string) {
-	m.mu.Lock()
-	binding, ok := m.data.NativeDatabases[resource]
-	bound := ok && m.nativeHostDataBoundLocked(resource, binding.Policy) && binding.Policy.ClickHouseDatabase == ""
-	m.mu.Unlock()
-	if !bound {
-		return
-	}
-	h := nativeHostDataHost(m)
-	path := nativePGDumpPath(binding.Policy.PostgresMajor)
-	digest, err := h.dumpDigest(h.path(path))
-	if err != nil || digest == binding.Policy.DumpSHA256 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	owner, err := h.run(ctx, "", "/usr/bin/dpkg-query", "-S", path)
-	pkg, _, _ := strings.Cut(strings.TrimSpace(owner), ":")
-	if err != nil || !nativePGClientPackage.MatchString(pkg) {
-		return
-	}
-	verify, err := h.run(ctx, "", "/usr/bin/dpkg", "--verify", pkg)
-	if err != nil || slices.ContainsFunc(strings.Split(verify, "\n"), func(line string) bool { return strings.HasSuffix(strings.TrimSpace(line), " "+path) }) {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	current, ok := m.data.NativeDatabases[resource]
-	if !ok || current.Policy.DumpSHA256 != binding.Policy.DumpSHA256 {
-		return
-	}
-	updated := current
-	updated.Policy.Roles = slices.Clone(current.Policy.Roles)
-	updated.Policy.DumpSHA256 = digest
-	m.data.NativeDatabases[resource] = updated
-	if m.save() != nil {
-		m.data.NativeDatabases[resource] = current
-	}
 }
 
 // nativeCreatedNeverReleased reports whether id is an application this agent

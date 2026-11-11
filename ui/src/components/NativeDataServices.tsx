@@ -2,7 +2,7 @@ import { Database, HardDrive } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { get } from '../lib/api';
 import { formatBytes, formatDate } from '../lib/format';
-import { detailHref, href, navigate } from '../lib/router';
+import { indexHref, navigate, resourceHref } from '../lib/router';
 import { Button, Card, Loading } from './ui';
 
 type Backups = { backups?: number; last_backup?: string; backup_error?: string; measure_error?: string; size_bytes?: number; ready?: boolean; resource?: string };
@@ -33,8 +33,8 @@ export function NativeDataServices({ appID }: { appID: string }) {
   }, [appID]);
   if (loading) return <Loading label="Loading data services…" />;
   const none = !view?.postgres && !view?.redis && !view?.clickhouse;
-  if (none) return <Card className="resource-setting"><Database size={23} /><div><h2>Data services</h2><p>No database or cache was provisioned on the server for this application. Databases it uses that the server backs up are listed under Databases & backups.</p>{missing && <p className="muted-copy">{missing}</p>}</div><Button type="button" onClick={() => { navigate(href('databases')); }}>Databases & backups</Button></Card>;
-  const database = (title: string, value: Backups & { engine: string; database: string }, detail: string) => <Card className="resource-setting"><Database size={23} /><div><h2>{title}</h2><p>{detail}{value.size_bytes ? ` · ${formatBytes(value.size_bytes)}` : ''}</p><p>{value.ready ? 'Ready' : 'Not ready'} · {value.backups ? `${value.backups} backup${value.backups === 1 ? '' : 's'}${value.last_backup ? `, latest ${formatDate(value.last_backup)}` : ''}` : 'No backups yet'}</p>{value.backup_error && <p className="text-danger">{value.backup_error}</p>}{value.measure_error && <p className="muted-copy">{value.measure_error}</p>}</div>{value.resource && <Button type="button" onClick={() => { navigate(detailHref('database', value.resource!)); }}>Manage backups</Button>}</Card>;
+  if (none) return <Card className="resource-setting"><Database size={23} /><div><h2>Data services</h2><p>No database or cache was provisioned on the server for this application. Databases it uses that the server backs up are listed under Databases & backups.</p>{missing && <p className="muted-copy">{missing}</p>}</div><Button type="button" onClick={() => { navigate(indexHref('databases')); }}>Databases & backups</Button></Card>;
+  const database = (title: string, value: Backups & { engine: string; database: string }, detail: string) => <Card className="resource-setting"><Database size={23} /><div><h2>{title}</h2><p>{detail}{value.size_bytes ? ` · ${formatBytes(value.size_bytes)}` : ''}</p><p>{value.ready ? 'Ready' : 'Not ready'} · {value.backups ? `${value.backups} backup${value.backups === 1 ? '' : 's'}${value.last_backup ? `, latest ${formatDate(value.last_backup)}` : ''}` : 'No backups yet'}</p>{value.backup_error && <p className="text-danger">{value.backup_error}</p>}{value.measure_error && <p className="muted-copy">{value.measure_error}</p>}</div>{value.resource && <Button type="button" onClick={() => { navigate(resourceHref('databases', value.resource!)); }}>Manage backups</Button>}</Card>;
   return <div className="resource-settings-grid">
     {view?.postgres && database('PostgreSQL', view.postgres, `Database ${view.postgres.database}${view.postgres.version ? ` · PostgreSQL ${view.postgres.version}` : ''} on the server`)}
     {view?.clickhouse && database('ClickHouse', view.clickhouse, `Database ${view.clickhouse.database}${typeof view.clickhouse.tables === 'number' ? ` · ${view.clickhouse.tables} tables` : ''}`)}

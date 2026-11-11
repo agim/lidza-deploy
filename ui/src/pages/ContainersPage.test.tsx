@@ -1,6 +1,6 @@
 import {cleanup,render,screen,within} from '@testing-library/react';
 import {afterEach,it,expect,vi} from 'vitest';
-import {ContainersPage} from './ServerDetailPages';
+import {ServerProcesses as ContainersPage} from './ServerDetailPages';
 vi.mock('../state/WorkspaceContext',()=>({useWorkspace:()=>({servers:[{id:'local',name:'Host'}],apps:[{id:'one',domain:'one.example.com'}]})}));
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 it('groups application, database and sidecars under their app and isolates unassigned containers',async()=>{

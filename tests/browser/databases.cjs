@@ -1,47 +1,82 @@
-const {chromium}=require('playwright');
-const {spawn,execFileSync}=require('node:child_process');
-const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto'),net=require('node:net');
-(async()=>{
- const root=path.resolve(__dirname,'../..'),base=process.env.TEST_WEB_URL||'http://127.0.0.1:3000';
- const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lidza-db-browser-')),key=crypto.randomBytes(32).toString('hex'),id='browser-db-'+crypto.randomBytes(5).toString('hex'),host='dbhost-'+crypto.randomBytes(5).toString('hex');
- const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
- const config=path.join(dir,'agent.json');fs.writeFileSync(config,JSON.stringify({listen:'127.0.0.1:'+port,proxy_listen:'127.0.0.1:0',data_dir:dir,api_key:key}),{mode:0o600});
- const agent=spawn(path.join(root,'bin/lidza-agent'),['-config',config],{cwd:root,stdio:'ignore'});let browser,page;
- try{
-  for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:'+port+'/health')).ok)break}catch{}await new Promise(r=>setTimeout(r,100));}
-  browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox']});page=await browser.newPage({viewport:{width:1440,height:1000},acceptDownloads:true});
-  const errors=[];page.on('pageerror',e=>errors.push(e.message));const cfg={};for(const line of fs.readFileSync(path.join(root,'.local/dev.env'),'utf8').split('\n')){const m=line.match(/^export ([A-Z_]+)=(.*)$/);if(m)cfg[m[1]]=m[2].replace(/^'|'$/g,'');}
-  await page.goto(base+'/login.html');await page.fill('[name=email]',cfg.CONTROL_USER);await page.fill('[name=password]',cfg.CONTROL_PASSWORD);await page.click('button[type=submit]');await page.waitForURL('**/console/applications');
-  let response=await page.request.post(base+'/api/control/servers',{headers:{Origin:base},data:{id:host,name:'Database browser fixture',url:'http://127.0.0.1:'+port,token:key}});if(!response.ok())throw Error('Could not connect fixture host');
-  await page.reload();await page.locator('#new-app').click();await page.fill('#app-form [name=id]',id);await page.fill('#app-form [name=repository]','acme/database-fixture');await page.fill('#app-form [name=domain]',id+'.example.com');await page.selectOption('#server-select',host);
-  await page.selectOption('#app-form [name=database_mode]','external');if(!await page.locator('#app-form [name=database_url]').isVisible()||await page.locator('#app-form [name=database_url]').getAttribute('type')!=='password')throw Error('External URL not masked');
-  await page.selectOption('#app-form [name=database_mode]','local');await page.selectOption('#app-form [name=backup_hours]','0');await page.fill('#app-form [name=backup_keep]','2');
-  fs.mkdirSync(path.join(root,'.local/screenshots'),{recursive:true});await page.screenshot({path:path.join(root,'.local/screenshots/new-app-database.png'),fullPage:true});await page.click('#app-form button[type=submit]');await page.waitForFunction(()=>document.querySelector('#new-app-page').hidden||!document.querySelector('#form-error').hidden);if(await page.locator('#form-error').isVisible())throw Error(await page.locator('#form-error').textContent());await page.locator('#new-app-page').waitFor({state:'hidden'});
-await page.locator('[data-app-menu="'+id+'"] summary').click();
-  await page.locator('[data-action=database][data-id="'+id+'"]').click();await page.locator('#database-dialog').waitFor({state:'visible'});
-  for(let i=0;i<100;i++){const text=await page.locator('#database-run').textContent();if(text==='Back up now')break;await page.click('#database-refresh');await page.waitForTimeout(500);}
-  if(await page.locator('#database-run').textContent()!=='Back up now')throw Error('Database not ready');
-  await page.click('#database-run');
-  for(let i=0;i<100;i++){if(await page.locator('#database-dialog a[download]').count())break;await page.click('#database-refresh');await page.waitForTimeout(300);}
-  const downloadEvent=page.waitForEvent('download');await page.locator('#database-dialog a[download]').first().click();const download=await downloadEvent;const backupPath=await download.path();const bytes=fs.readFileSync(backupPath);if(bytes.subarray(0,5).toString()!=='PGDMP')throw Error('Not a PostgreSQL custom dump');
-  await page.locator('#database-dialog [data-restore]').first().click();await page.selectOption('#restore-form [name=app]',id);await page.fill('#restore-form [name=target]',id+'-restored');await page.fill('#restore-form [name=env_key]','ARCHIVE_DATABASE_URL');const restoration=page.waitForResponse(r=>r.url().endsWith('/apps/'+id+'/restore'));await page.click('#restore-form button[type=submit]');if(!(await restoration).ok())throw Error('GUI restore request failed');await page.locator('#feature-dialog').waitFor({state:'hidden'});
-  for(let i=0;i<100;i++){const v=await (await page.request.get(base+'/api/control/apps/'+id+'/settings')).json();if(v.database_bindings?.ARCHIVE_DATABASE_URL===id+'-restored')break;await page.waitForTimeout(300)}const restoredSettings=await (await page.request.get(base+'/api/control/apps/'+id+'/settings')).json();if(restoredSettings.database_bindings?.ARCHIVE_DATABASE_URL!==id+'-restored')throw Error('Restored database was not attached');
-  await page.selectOption('#backup-form [name=backup_hours]','24');await page.click('#backup-form button[type=submit]');await page.waitForTimeout(300);await page.screenshot({path:path.join(root,'.local/screenshots/database-backups.png'),fullPage:true});
-  const saved=await (await page.request.get(base+'/api/control/databases')).json();if(saved.databases.find(d=>d.app_id===id)?.backup.hours!==24)throw Error('Backup frequency not saved');
-  await page.locator('#database-dialog summary').filter({hasText:'Create or connect another database'}).click();
-  await page.fill('#attach-database-form [name=id]',id+'-extra');await page.fill('#attach-database-form [name=env_key]','ANALYTICS_DATABASE_URL');await page.selectOption('#attach-database-form [name=database_mode]','local');await page.selectOption('#attach-database-form [name=backup_hours]','0');const creation=page.waitForResponse(r=>r.url().endsWith('/apps/'+id+'/database')&&r.request().method()==='POST');await page.click('#attach-database-form button[type=submit]');const created=await creation;if(!created.ok())throw Error('Additional database creation failed: '+(await created.json()).error);await page.waitForFunction(expected=>document.querySelector('#managed-database')?.value===expected,id+'-extra');
-  for(let i=0;i<100;i++){if(await page.locator('#database-run').textContent()==='Back up now')break;await page.click('#database-refresh');await page.waitForTimeout(500);}
-  await page.fill('#bind-database-form [name=env_key]','DATABASE_URL');await page.selectOption('#bind-database-form [name=id]',id+'-extra');const switching=page.waitForResponse(r=>r.url().endsWith('/apps/'+id+'/database')&&r.request().method()==='POST');await page.click('#bind-database-form button[type=submit]');if(!(await switching).ok())throw Error('Primary switch request failed');
-  const settings=await (await page.request.get(base+'/api/control/apps/'+id+'/settings')).json();if(settings.database_bindings.DATABASE_URL!==id+'-extra'||settings.database_bindings.ANALYTICS_DATABASE_URL!==id+'-extra')throw Error('Additional attachment or main switch failed');if(!settings.backup_before_deploy)throw Error('Pre-deployment backups not enabled by default');
-  await page.locator('#database-dialog [data-close]').click();response=await page.request.delete(base+'/api/control/apps/'+id,{headers:{Origin:base},data:{confirm:id}});if(!response.ok())throw Error('App removal failed');
-  await page.locator('[data-tab=backups]').click();await page.getByText('Retained after app removal',{exact:false}).first().waitFor();
-  await page.locator('[data-tab=settings]').click();await page.locator('#storage-form').waitFor();if(!await page.locator('#mail-form').count())throw Error('Missing infrastructure controls');
-  if(errors.length)throw Error(errors.join('\n'));
-  console.log('PASS: GUI local database creation, masked external URL, backup/download/restore, schedule editing, named attachments, primary switch, pre-deployment default, retained backups, integration controls');
- }finally{
-  if(page){await page.request.delete(base+'/api/control/apps/'+id,{headers:{Origin:base},data:{confirm:id}}).catch(()=>{});await page.request.delete(base+'/api/control/servers/'+host,{headers:{Origin:base}}).catch(()=>{});}
-  if(browser)await browser.close();if(agent.exitCode===null){agent.kill('SIGTERM');await new Promise(r=>agent.once('exit',r));}
-  for(const dbID of [id,id+'-extra',id+'-restored']){const name='lidza-db-'+dbID;for(const args of [['rm','-f',name],['volume','rm',name+'-data'],['network','rm',name]])try{execFileSync('docker',args,{stdio:'ignore'})}catch{}}
-  fs.rmSync(dir,{recursive:true,force:true});
- }
-})().catch(e=>{console.error(e.message);process.exitCode=1});
+// Databases and backup storage: the databases index filter, backups (back
+// up now, restore into a new database), the backup schedule, remote backup
+// objects and the S3-compatible storage integration.
+const { suite, assert, callsTo, until } = require('./fixtures/harness.cjs');
+
+suite('databases', [
+  {
+    name: 'index filters by application and links each database',
+    async run({ page, open }) {
+      await open('/console/databases');
+      const rows = page.locator('#main-content table tbody tr');
+      await rows.first().waitFor();
+      await page.getByRole('combobox', { name: 'Application' }).selectOption('api');
+      await page.getByText(/No (matching )?databases?/i).first().waitFor();
+      await page.getByRole('combobox', { name: 'Application' }).selectOption('portal');
+      await rows.getByRole('link', { name: 'portal' }).click();
+      await page.waitForURL(url => url.pathname === '/console/databases/portal');
+      await page.getByRole('tab', { name: 'Overview', selected: true }).waitFor();
+    },
+  },
+  {
+    name: 'backups: back up now; restore goes into a new database after confirmation',
+    async run({ page, state, open }) {
+      await open('/console/databases/portal/backups');
+      await page.getByRole('button', { name: 'Back up now' }).click();
+      await until(() => callsTo(state, 'control/servers/local/databases/portal/backup', 'POST').length === 1, 'the backup request');
+      const row = page.getByRole('row').filter({ hasText: 'Local · upload failed' });
+      await row.getByText('Storage unavailable').waitFor();
+      await row.getByRole('button', { name: 'Restore', exact: true }).click();
+      const dialog = page.getByRole('alertdialog', { name: 'Restore backup into a new database' }).or(page.getByRole('dialog', { name: 'Restore backup into a new database' }));
+      await dialog.getByRole('textbox').fill('restored-portal');
+      assert.equal(callsTo(state, 'control/apps/portal/restore').length, 0, 'restored before confirmation');
+      await dialog.getByRole('button', { name: 'Start restore' }).click();
+      await dialog.waitFor({ state: 'hidden' });
+      assert.deepEqual(callsTo(state, 'control/apps/portal/restore', 'POST')[0].body, { source: 'portal', backup: 'backup-one', target: 'restored-portal', env_key: 'DATABASE_URL' });
+    },
+  },
+  {
+    name: 'schedule: frequency and off-site copy save',
+    async run({ page, state, open }) {
+      await open('/console/databases/portal/schedule');
+      await page.getByRole('combobox', { name: 'Frequency' }).selectOption({ label: 'Hourly' });
+      await page.getByRole('checkbox', { name: 'Copy to off-site storage' }).uncheck();
+      await page.getByRole('button', { name: 'Save backup schedule' }).click();
+      await page.getByText('Backup schedule saved.').first().waitFor();
+      assert.deepEqual(callsTo(state, 'control/servers/local/databases/portal/backups', 'PATCH')[0].body, { hours: 1, keep: 1, offsite: false });
+    },
+  },
+  {
+    name: 'remote backups: objects filter and long keys stay inside the page',
+    widths: [320, 1440],
+    async run({ page, state, open }) {
+      await page.route('**/api/control/storage/backups', route => route.fulfill({ json: { bucket: 'private-backups', prefix: 'lidza', checked: '2026-10-15T14:00:00Z', objects: ['portal', 'api', 'shop'].map(id => ({ key: `databases/${id}/${'long-backup-name-'.repeat(8)}.dump`, prefix: 'lidza', size: 4096, modifiedAt: '2026-10-15T14:00:00Z' })) } }));
+      await open('/console/remote-backups');
+      const rows = page.locator('[role=tabpanel] table tbody tr');
+      await page.waitForFunction(() => document.querySelectorAll('[role=tabpanel] table tbody tr').length === 3);
+      await page.getByRole('searchbox', { name: 'Filter backup objects' }).fill('databases/shop');
+      await page.waitForFunction(() => document.querySelectorAll('[role=tabpanel] table tbody tr').length === 1);
+      assert.match(await rows.first().innerText(), /databases\/shop/);
+      await page.getByRole('tab', { name: 'Retention' }).click();
+      await page.waitForURL(url => url.pathname === '/console/remote-backups/retention');
+      assert.deepEqual(state.unknown, [], 'unmocked API reads');
+    },
+  },
+  {
+    name: 'storage integration never shows saved keys; blank keeps them',
+    async run({ page, state, open }) {
+      await open('/console/integrations/storage');
+      const access = page.getByRole('textbox', { name: /^Access key/ }), secret = page.getByRole('textbox', { name: /^Secret key/ });
+      assert.equal(await access.inputValue(), '');
+      assert.equal(await secret.inputValue(), '');
+      assert.equal(await secret.getAttribute('type'), 'password');
+      await page.getByRole('textbox', { name: 'Bucket', exact: true }).fill('other-backups');
+      await page.getByRole('button', { name: 'Test & save storage' }).click();
+      await page.getByText('Storage verified and saved.').first().waitFor();
+      const saved = callsTo(state, 'control/storage', 'PUT')[0].body;
+      assert.equal(saved.bucket, 'other-backups');
+      assert.equal(saved.endpoint, 'https://nyc3.digitaloceanspaces.com');
+      assert(!saved.access_key && !saved.secret_key, 'blank key fields replaced the saved credentials');
+    },
+  },
+]).catch(error => { console.error(error); process.exit(1); });

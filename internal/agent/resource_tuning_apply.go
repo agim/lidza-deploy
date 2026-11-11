@@ -801,13 +801,22 @@ func (m *Manager) applyTuning(ctx context.Context, obs tuningObservation, view *
 // writePostgresTuning replaces the managed conf.d file, keeps it only when
 // PostgreSQL reads it without errors, resets ALTER SYSTEM values that would
 // shadow it and reloads the configuration (no restart).
+// pgPendingRestartError is the pg_file_settings error PostgreSQL reports for
+// a value that takes effect only after a restart.
+const pgPendingRestartError = "'setting could not be applied'"
+
 func (m *Manager) writePostgresTuning(ctx context.Context, h nativeHostData, pg *tuningPGObs, content string, logf func(string, ...any)) (bool, error) {
 	path := pg.ConfFile
 	old, readErr := os.ReadFile(h.path(path))
 	if readErr == nil && string(old) == content {
 		return false, nil
 	}
-	const countErrors = "SELECT count(*) FROM pg_catalog.pg_file_settings WHERE error IS NOT NULL;\n"
+	// A setting that only changes at a restart (shared_buffers,
+	// max_connections, …) is reported with the error "setting could not be
+	// applied" until PostgreSQL restarts; that is the expected state of a
+	// tuned file between now and the maintenance window, not a rejection.
+	const countErrors = "SELECT count(*) FROM pg_catalog.pg_file_settings WHERE error IS NOT NULL AND error <> " + pgPendingRestartError + ";\n"
+	const listErrors = "SELECT coalesce(name, '-') || ': ' || error FROM pg_catalog.pg_file_settings WHERE error IS NOT NULL AND error <> " + pgPendingRestartError + " ORDER BY sourcefile, sourceline LIMIT 5;\n"
 	before, err := h.psql(ctx, pg.Port, countErrors)
 	if err != nil {
 		return false, err
@@ -817,10 +826,19 @@ func (m *Manager) writePostgresTuning(ctx context.Context, h nativeHostData, pg 
 	}
 	after, err := h.psql(ctx, pg.Port, countErrors)
 	if err != nil || after != before {
+		detail := ""
+		if err != nil {
+			detail = err.Error()
+		} else if rows, listErr := h.psql(ctx, pg.Port, listErrors); listErr == nil && rows != "" {
+			detail = strings.ReplaceAll(rows, "\n", "; ")
+		}
 		if readErr == nil {
 			_, _ = h.writeIfChanged(path, old, 0o644, 0, 0)
 		} else {
 			_ = os.Remove(h.path(path))
+		}
+		if detail != "" {
+			return false, fmt.Errorf("PostgreSQL rejected the tuned configuration (%s); the previous file was restored", detail)
 		}
 		return false, errors.New("PostgreSQL rejected the tuned configuration; the previous file was restored")
 	}
@@ -1191,6 +1209,12 @@ func (m *Manager) resourceTuningView(ctx context.Context, refresh bool) Resource
 		}
 	}
 	view.Overrides, view.Paused = state.Overrides, state.Overrides.Paused
+	view.Journal = nil
+	if state.Journal != nil {
+		journal := *state.Journal
+		journal.Neutralized = slices.Clone(journal.Neutralized)
+		view.Journal = &journal
+	}
 	policy := m.hostPolicyLocked()
 	view.NextWindow = policy.RebootWindow.next(time.Now())
 	view.Migrations = nil
@@ -1200,7 +1224,7 @@ func (m *Manager) resourceTuningView(ctx context.Context, refresh bool) Resource
 	slices.SortFunc(view.Migrations, func(a, b RedisMigration) int { return b.Started.Compare(a.Started) })
 	view.Jobs = nil
 	for _, job := range m.hostUpdatesStateLocked().Jobs {
-		if job.Kind == tuningJobKind {
+		if job.Kind == tuningJobKind || job.Kind == journalPolicyJobKind {
 			view.Jobs = append(view.Jobs, job)
 		}
 	}

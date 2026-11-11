@@ -15,6 +15,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -31,6 +32,9 @@ type Runtime interface {
 }
 type job struct {
 	nativeRelease *nativeReleaseIntent
+	// nativeRestart restarts a release-managed application after a
+	// settings save (native_settings_apply.go).
+	nativeRestart bool
 	native        bool
 	credentials   DeployRequest
 	reload        bool
@@ -46,16 +50,35 @@ type Manager struct {
 
 	// moveTransfers counts running move exports, downloads and restores; an
 	// agent upgrade waits for them because it restarts the agent.
-	moveTransfers      atomic.Int64
-	nativeBackupRun    func(context.Context, string, []string) ([]NativeDatabaseBackupProof, error) // local gate fixture only
-	nativePGExecutable string                                                                       // local acceptance override; not a host configuration field
-	nativeBuildCommand func(context.Context, NativeApplication, string, []string) (string, error)
-	nativeCheckout     func(context.Context, App, string, string) error
-	nativeCommand      func(context.Context, []string) (string, error)
+	moveTransfers atomic.Int64
+	// backupToolProblems are the pinned backup tools that changed and could
+	// not be re-approved, by path; backupToolChecked and backupToolDpkg
+	// schedule the next check (native_backup_tool.go). Guarded by mu.
+	backupToolProblems map[string]backupToolProblem
+	backupToolChecked  time.Time
+	backupToolDpkg     time.Time
+	// databaseConfigProblems are the changed database.yml files that were
+	// not re-approved, by application id; databaseConfigChecked schedules
+	// the next check (native_database_config.go). Guarded by mu.
+	// databaseConfigMu serializes the checks themselves.
+	databaseConfigProblems map[string]databaseConfigProblem
+	databaseConfigChecked  time.Time
+	databaseConfigMu       sync.Mutex
+	nativeBackupRun        func(context.Context, string, []string) ([]NativeDatabaseBackupProof, error) // local gate fixture only
+	nativePGExecutable     string                                                                       // local acceptance override; not a host configuration field
+	nativeBuildCommand     func(context.Context, NativeApplication, string, []string) (string, error)
+	nativeCheckout         func(context.Context, App, string, string) error
+	nativeCommand          func(context.Context, []string) (string, error)
+	// journal follows native service journals for the console collector;
+	// journalSpawn builds its journalctl process in tests.
+	journal      journalFollower
+	journalSpawn func(context.Context, bool, []string) (*exec.Cmd, error)
 	// Release engine fixtures; nil in production.
-	nativeReleaseRun           func(context.Context, release.Command) error
-	nativeReleaseUserRun       func(context.Context, release.Command) error
-	nativeReleaseSource        func(NativeReleasePolicy, string) release.Source
+	nativeReleaseRun     func(context.Context, release.Command) error
+	nativeReleaseUserRun func(context.Context, release.Command) error
+	nativeReleaseSource  func(NativeReleasePolicy, string) release.Source
+	// nativeRestartHook replaces release.Restart in tests.
+	nativeRestartHook          func(context.Context, release.Plan) (release.Result, error)
 	nativeCrontabCommand       func(context.Context, string, []string) (string, string, error)
 	nativeReleaseHealthAddress string
 	nativeReleaseHealthTLS     *tls.Config
@@ -86,7 +109,12 @@ type Manager struct {
 	reportWake                 chan struct{}
 	cpuTotal, cpuIdle          float64
 	ingressMu                  sync.Mutex
+	logAccessMu                sync.Mutex // serialises system log access reconciles (native_log_access.go)
+	logAccessBooted            bool
 	ingressDetected            *HostIngressStatus
+	caddyTLSMu                 sync.Mutex
+	caddyTLS                   *CaddyTLSReport           // latest TLS automation upkeep (caddy_tls_failover.go)
+	caddyCerts                 map[string]caddyCertState // certificate status of managed hostnames
 	domainWake                 chan struct{}
 	domains                    map[string]DomainStatus
 	mailProbes                 map[string]mailProbeResult // latest mail-port probe by application (mail_tls.go)
@@ -104,6 +132,9 @@ type Manager struct {
 	ctx                        context.Context
 	cancel                     context.CancelFunc
 	wg                         sync.WaitGroup
+	// linkMu guards linkCancel, the running agent link (control_link.go).
+	linkMu     sync.Mutex
+	linkCancel context.CancelFunc
 }
 
 func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error) {
@@ -286,7 +317,10 @@ func NewManager(parent context.Context, cfg Config, rt Runtime) (*Manager, error
 	m.wg.Add(1)
 	go m.hostIngressLoop()
 	m.wg.Add(1)
+	go m.caddyTLSLoop()
+	m.wg.Add(1)
 	go m.controlRouteLoop()
+	m.startControlLink()
 	m.wg.Add(1)
 	go m.redirectLoop()
 	m.wg.Add(1)
@@ -792,7 +826,9 @@ func (m *Manager) work() {
 			return
 		case j := <-m.queue:
 			if j.native {
-				if j.nativeRelease != nil {
+				if j.nativeRestart {
+					m.workNativeRestart(j)
+				} else if j.nativeRelease != nil {
 					m.workNativeRelease(j)
 				} else {
 					m.workNativeStatic(j)
