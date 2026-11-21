@@ -1,8 +1,6 @@
 module github.com/agim/lidza-deploy
 
-go 1.27.0
-
-toolchain go1.27.3
+go 1.27.4
 
 require (
 	github.com/agim/lidza v0.1.139
