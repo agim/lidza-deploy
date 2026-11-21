@@ -16,7 +16,7 @@ import (
 )
 
 func TestNativeClickHouseConfigGolden(t *testing.T) {
-	got := renderNativeClickHouseConfig(8123, 9000, 0.25, "/var/lib/clickhouse/lidza-backups")
+	got := renderNativeClickHouseConfig(8123, 9000, 0.25, 2048, "/var/lib/clickhouse/lidza-backups")
 	want := `<?xml version="1.0"?>
 <!-- Managed by Līdza Deploy. Changes are overwritten. -->
 <clickhouse>
@@ -28,7 +28,8 @@ func TestNativeClickHouseConfigGolden(t *testing.T) {
     <mysql_port remove="1"/>
     <postgresql_port remove="1"/>
     <interserver_http_port remove="1"/>
-    <max_server_memory_usage_to_ram_ratio>0.25</max_server_memory_usage_to_ram_ratio>
+    <max_server_memory_usage>2147483648</max_server_memory_usage>
+    <max_server_memory_usage_to_ram_ratio>1</max_server_memory_usage_to_ram_ratio>
     <cache_size_to_ram_max_ratio>0.125</cache_size_to_ram_max_ratio>
     <mark_cache_size>268435456</mark_cache_size>
     <send_crash_reports><enabled>false</enabled></send_crash_reports>
