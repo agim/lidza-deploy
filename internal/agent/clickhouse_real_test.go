@@ -194,9 +194,11 @@ func TestRealClickHouseConfigIsLoopbackOnly(t *testing.T) {
 	if _, err := (clickhouseClient{base: fx.host.clickhouseURL, user: "default"}).version(ctx); err == nil {
 		t.Fatal("the default user signs in without the agent's password")
 	}
-	ratio := mustQuery(t, ctx, fx.client(), "SELECT value FROM system.server_settings WHERE name = 'max_server_memory_usage_to_ram_ratio'")
-	if ratio != "0.25" {
-		t.Fatalf("memory ratio %q", ratio)
+	// 4 GiB host x 0.25: a 1 GiB cap in bytes, not a ratio ClickHouse would
+	// apply to the unit's MemoryMax.
+	limit := mustQuery(t, ctx, fx.client(), "SELECT value FROM system.server_settings WHERE name = 'max_server_memory_usage'")
+	if limit != "1073741824" {
+		t.Fatalf("memory cap %q", limit)
 	}
 	disks := mustQuery(t, ctx, fx.client(), "SELECT path FROM system.disks WHERE name = 'backups'")
 	if disks != filepath.Join(fx.root, nativeCHBackupDir)+"/" {

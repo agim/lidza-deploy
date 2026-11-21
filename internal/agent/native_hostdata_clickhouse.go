@@ -169,8 +169,13 @@ func (c NativeHostDataConfig) clickhouseRatio() float64 {
 
 // ---- renderers --------------------------------------------------------------------
 
-// renderNativeClickHouseConfig is config.d/lidza.xml.
-func renderNativeClickHouseConfig(httpPort, tcpPort int, ratio float64, backupDir string) string {
+// renderNativeClickHouseConfig is config.d/lidza.xml. The server's cap is
+// written in bytes: ClickHouse applies max_server_memory_usage_to_ram_ratio to
+// its cgroup limit, not to the host's RAM, so under the unit's MemoryMax a
+// host-relative ratio shrinks the cap to ratio x MemoryMax. A ratio of 1 keeps
+// the byte cap from being cut down. The cache ratio stays relative to the
+// unit's limit.
+func renderNativeClickHouseConfig(httpPort, tcpPort int, ratio float64, serverMiB int, backupDir string) string {
 	dir := strings.TrimRight(backupDir, "/") + "/"
 	return fmt.Sprintf(`<?xml version="1.0"?>
 <!-- Managed by Līdza Deploy. Changes are overwritten. -->
@@ -183,7 +188,8 @@ func renderNativeClickHouseConfig(httpPort, tcpPort int, ratio float64, backupDi
     <mysql_port remove="1"/>
     <postgresql_port remove="1"/>
     <interserver_http_port remove="1"/>
-    <max_server_memory_usage_to_ram_ratio>%s</max_server_memory_usage_to_ram_ratio>
+    <max_server_memory_usage>%d</max_server_memory_usage>
+    <max_server_memory_usage_to_ram_ratio>1</max_server_memory_usage_to_ram_ratio>
     <cache_size_to_ram_max_ratio>%s</cache_size_to_ram_max_ratio>
     <mark_cache_size>268435456</mark_cache_size>
     <send_crash_reports><enabled>false</enabled></send_crash_reports>
@@ -206,7 +212,7 @@ func renderNativeClickHouseConfig(httpPort, tcpPort int, ratio float64, backupDi
         <remove_backup_files_after_failure>true</remove_backup_files_after_failure>
     </backups>
 </clickhouse>
-`, httpPort, tcpPort, strconv.FormatFloat(ratio, 'f', -1, 64), strconv.FormatFloat(ratio/2, 'f', -1, 64), renderClickHouseSystemLogs(), dir, dir)
+`, httpPort, tcpPort, int64(serverMiB)<<20, strconv.FormatFloat(ratio/2, 'f', -1, 64), renderClickHouseSystemLogs(), dir, dir)
 }
 
 // renderNativeClickHouseUsers is users.d/lidza.xml: the default user keeps
@@ -406,7 +412,7 @@ func (h nativeHostData) clickhouseGroup() (int, error) {
 // exist (preinstall) the files are root-only, so a server the package might
 // start cannot run with a passwordless default user.
 func (h nativeHostData) writeClickHouseFiles(server NativeClickHouseServer, adminPassword string, preinstall bool) (bool, error) {
-	_, unitMiB, _ := h.clickhouseMemory()
+	serverMiB, unitMiB, _ := h.clickhouseMemory()
 	mode, gid := os.FileMode(0o600), 0
 	if !preinstall {
 		var err error
@@ -420,7 +426,7 @@ func (h nativeHostData) writeClickHouseFiles(server NativeClickHouseServer, admi
 		path string
 		data string
 	}{
-		{nativeCHConfigFile, renderNativeClickHouseConfig(server.HTTPPort, server.TCPPort, h.cfg.clickhouseRatio(), h.path(nativeCHBackupDir))},
+		{nativeCHConfigFile, renderNativeClickHouseConfig(server.HTTPPort, server.TCPPort, h.cfg.clickhouseRatio(), serverMiB, h.path(nativeCHBackupDir))},
 		{nativeCHUsersFile, renderNativeClickHouseUsers(adminPassword)},
 	} {
 		written, err := h.writeIfChanged(file.path, []byte(file.data), mode, 0, gid)
