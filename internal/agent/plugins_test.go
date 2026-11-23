@@ -67,8 +67,9 @@ func TestPluginIsInstalledOnlyFromAKeyTheServerTrustsAndRunsReadOnlyHooks(t *tes
 	manifest, signature, archive := pluginRelease(t, private, "1.0", pluginScript)
 	stage := jsonBody(map[string]any{"manifest": manifest, "signature": signature})
 
-	// No key is trusted yet: nothing is accepted.
-	if w := do("POST", "/v1/plugins/manifest", "application/json", stage); w.Code != 409 || !strings.Contains(w.Body.String(), "trusts no plugin signing key") {
+	// The plugin's key is not trusted yet: nothing is accepted. (A build that
+	// pins update keys trusts those, but not this one.)
+	if w := do("POST", "/v1/plugins/manifest", "application/json", stage); w.Code != 409 || !(strings.Contains(w.Body.String(), "trusts no plugin signing key") || strings.Contains(w.Body.String(), "does not trust")) {
 		t.Fatalf("untrusted server: %d %s", w.Code, w.Body)
 	}
 	if w := do("PUT", "/v1/plugins/keys", "application/json", jsonBody(map[string]any{"keys": []string{"not-a-key"}})); w.Code != 400 {
