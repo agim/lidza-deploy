@@ -150,7 +150,7 @@ Run the root installer on each hosting server. Configure the agent hostname's DN
 sudo sh install.sh --agent-only --fqdn agent.example.com --email ops@example.com
 ```
 
-This installs the hosting agent with an authenticated HTTPS management endpoint. Import `/etc/lidza-agent/connection.json` through the control panel's wizard or **Servers → Connect server**; retrieve it privately over SSH. The file contains the agent token. Ports 9090 and 8081 remain internal. The installer opens ports 80/443 in an already active UFW or firewalld host firewall; forward or allow them yourself on routers and cloud firewalls. You can connect multiple servers and deploy multiple apps on each.
+This installs the hosting agent with an authenticated HTTPS management endpoint. Import `/etc/lidza-agent/connection.json` through the control panel's wizard or **Servers → Connect server**; retrieve it privately over SSH. The file contains the agent token. Ports 9090 and 8081 remain internal. The installer opens ports 80/443 in an already active UFW or firewalld host firewall; forward or allow them yourself on routers and cloud firewalls. DNS may be added after installation: the certificate is requested automatically within minutes of the hostname resolving. You can connect multiple servers and deploy multiple apps on each.
 
 ### Application databases, backups and alerts
 

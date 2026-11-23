@@ -74,6 +74,7 @@ if $plan; then
 4. Install the agent, private configuration, and systemd service.
 5. Public mode only: install and validate Caddy routing for application FQDNs.
    Also allow ports 80/443 in an already active UFW or firewalld host firewall.
+   Install a timer that retries HTTPS certificates once the hostname resolves.
 6. Start services; check the authenticated agent API.
 7. Save private GUI connection details in /etc/lidza-agent/connection.json.
 GUI setup address: $setup_origin
@@ -205,6 +206,86 @@ if [[ -z "$stage" ]];then
 fi
 install -m 0644 "$bundle/deploy/lidza-agent-upgrade.path" "$bundle/deploy/lidza-agent-upgrade.service" "$root/etc/systemd/system/"
 if $public_host; then
+# Hostnames with an installer-managed (not on-demand) certificate.
+{
+ [[ -z "$hostname" ]] || printf '%s\n' "$hostname"
+ if $with_control && [[ "$fqdn" != localhost ]];then printf '%s\n' "$fqdn";fi
+} > "$root/etc/lidza-agent/tls-hostnames"
+chmod 0644 "$root/etc/lidza-agent/tls-hostnames"
+cat > "$root/usr/local/libexec/lidza-tls-retry" <<'RETRY'
+#!/bin/sh
+# Managed by lidza-deploy installer.
+# After a failed certificate attempt Caddy waits up to several hours before its
+# next one, so a hostname whose DNS or ports become ready after installation can
+# stay without HTTPS for a long time. While an installer-configured hostname has
+# no trusted certificate, re-apply the running Caddy configuration unchanged:
+# that is a graceful reload which starts a fresh attempt immediately.
+set -u
+hosts=/etc/lidza-agent/tls-hostnames
+state=/var/lib/lidza-agent/tls-retry
+admin=http://127.0.0.1:2019
+[ -r "$hosts" ] || exit 0
+mkdir -p "$state"
+now=$(date +%s)
+retry=''
+while read -r host; do
+ case "$host" in ''|*[!a-z0-9.-]*) continue;; esac
+ # A verified handshake with the local Caddy means the certificate is issued and trusted.
+ if curl -sS -o /dev/null --max-time 10 --resolve "$host:443:127.0.0.1" "https://$host/" 2>/dev/null; then
+  rm -f "$state/$host";continue
+ fi
+ answer=$(getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+ # Nothing can be issued for a hostname that does not resolve yet.
+ [ -n "$answer" ] || continue
+ previous='';changed=0;last=0
+ if [ -r "$state/$host" ]; then { read -r previous;read -r changed;read -r last; } < "$state/$host" || true;fi
+ case "$changed" in ''|*[!0-9]*) changed=0;; esac
+ case "$last" in ''|*[!0-9]*) last=0;; esac
+ due=0
+ if [ "$answer" != "$previous" ]; then
+  # New or changed DNS answer: retry now.
+  changed=$now;due=1
+ elif [ $((now-changed)) -lt 21600 ] && [ $((now-last)) -ge 900 ]; then
+  # Same answer (for example, ports opened later): at most four attempts an hour,
+  # below the certificate authority's failure limit, for six hours. After that
+  # Caddy's own schedule continues.
+  due=1
+ fi
+ if [ "$due" -eq 1 ]; then last=$now;retry="$retry $host";fi
+ printf '%s\n%s\n%s\n' "$answer" "$changed" "$last" > "$state/$host"
+done < "$hosts"
+[ -n "$retry" ] || exit 0
+config=$(mktemp)
+trap 'rm -f "$config"' EXIT
+curl -fsS --max-time 10 "$admin/config/" -o "$config" || { echo 'Caddy admin API unavailable; certificate retry skipped.' >&2;exit 1; }
+[ -s "$config" ] && [ "$(head -c 5 "$config")" != null ] || { echo 'Caddy has no running configuration; certificate retry skipped.' >&2;exit 1; }
+curl -fsS --max-time 60 -o /dev/null -X POST -H 'Content-Type: application/json' -H 'Cache-Control: must-revalidate' --data-binary @"$config" "$admin/load" || { echo 'Caddy rejected the reload; certificate retry failed.' >&2;exit 1; }
+echo "Retried certificate issuance for:$retry"
+RETRY
+chmod 0755 "$root/usr/local/libexec/lidza-tls-retry"
+cat > "$root/etc/systemd/system/lidza-tls-retry.service" <<'UNIT'
+[Unit]
+Description=Retry HTTPS certificates for Lidza hostnames that became reachable after installation
+After=network-online.target caddy.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/lidza-tls-retry
+User=root
+UMask=0077
+TimeoutStartSec=3min
+UNIT
+cat > "$root/etc/systemd/system/lidza-tls-retry.timer" <<'UNIT'
+[Unit]
+Description=Check Lidza hostnames that still lack an HTTPS certificate
+[Timer]
+OnActiveSec=5min
+OnUnitActiveSec=2min
+AccuracySec=30s
+[Install]
+WantedBy=timers.target
+UNIT
+fi
+if $public_host; then
 config=$(mktemp "$root/etc/caddy/.lidza-config.XXXXXX")
 {
  echo '# Managed by lidza-deploy installer'
@@ -242,6 +323,7 @@ docker info >/dev/null
 systemctl enable lidza-agent
 if $public_host; then systemctl enable caddy;fi
 systemctl enable --now lidza-agent-upgrade.path
+if $public_host; then systemctl enable --now lidza-tls-retry.timer;fi
 systemctl restart lidza-agent
 if $public_host; then
 systemctl restart caddy
@@ -274,6 +356,7 @@ case "$firewall_opened" in
  *) echo "Opened ports 80/tcp, 443/tcp and 443/udp in $firewall_opened.";;
 esac
 printf '%s\n' 'For a remote GUI, the agent hostname must resolve to this host. Cloud security groups, routers and other external firewalls must also allow ports 80/443.'
+printf '%s\n' 'If DNS or ports are not ready yet, the certificate is requested again automatically within minutes of the hostname resolving; no reinstall is needed.'
 else
  printf '%s\n' 'Agent and Docker are installed and running in local mode. Existing Caddy and ports 80/443 were left untouched.' 'Private GUI connection details: /etc/lidza-agent/connection.json' 'Automatic HTTPS for hosted apps requires a public hosting agent; add one in the GUI.'
 fi

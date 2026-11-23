@@ -18,6 +18,43 @@ cmp -s "$scratch/original.env" "$scratch/stage/etc/lidza-agent/agent.env"
 ! rg -q "^LIDZA_SELF_UPDATE_" "$scratch/stage/etc/lidza-control/control.env"
 rg -q "^AUTH_CONNECT=github$" "$scratch/stage/etc/lidza-control/control.env"
 [[ $(stat -c %a "$scratch/stage/etc/lidza-agent/agent.env") == 600 ]]
+# Public installs ship a certificate retry for installer-managed hostnames.
+[[ "$(cat "$scratch/stage/etc/lidza-agent/tls-hostnames")" == $'agent.example.com\ndeploy.example.com' ]]
+[[ -x "$scratch/stage/usr/local/libexec/lidza-tls-retry" && -f "$scratch/stage/etc/systemd/system/lidza-tls-retry.timer" && -f "$scratch/stage/etc/systemd/system/lidza-tls-retry.service" ]]
+sh -n "$scratch/stage/usr/local/libexec/lidza-tls-retry"
+mkdir -p "$scratch/retry-bin" "$scratch/retry-etc"
+sed "s#/etc/lidza-agent#$scratch/retry-etc#;s#/var/lib/lidza-agent#$scratch/retry-var#" "$scratch/stage/usr/local/libexec/lidza-tls-retry" > "$scratch/tls-retry"
+printf 'agent.example.com\n' > "$scratch/retry-etc/tls-hostnames"
+cat > "$scratch/retry-bin/curl" <<'SH'
+#!/bin/sh
+# TLS probe: trusted only when RETRY_TRUSTED=1. Admin API: return and accept a configuration.
+out='';post=0;prev=''
+for arg in "$@";do [ "$prev" != -o ] || out=$arg;[ "$arg" != POST ] || post=1;prev=$arg;done
+case "$*" in
+ *--resolve*) [ "${RETRY_TRUSTED:-0}" = 1 ];exit;;
+ *2019/load*) [ "$post" = 1 ] || exit 1;case "$*" in *'Cache-Control: must-revalidate'*) echo load >> "$RETRY_LOG";; *) exit 1;; esac;;
+ *2019/config/*) printf '{"apps":{}}' > "$out";;
+esac
+SH
+printf '#!/bin/sh\n[ -z "${RETRY_DNS:-}" ] || printf "%%s STREAM x\\n" $RETRY_DNS\n' > "$scratch/retry-bin/getent"
+printf '#!/bin/sh\necho "$RETRY_NOW"\n' > "$scratch/retry-bin/date"
+chmod +x "$scratch/retry-bin/"*
+export RETRY_LOG="$scratch/retry-log";: > "$RETRY_LOG"
+retry() { env "$@" PATH="$scratch/retry-bin:$PATH" sh "$scratch/tls-retry" >/dev/null; }
+loads() { wc -l < "$RETRY_LOG"; }
+# Unresolved hostname: nothing to retry.
+retry RETRY_NOW=1000;[[ $(loads) == 0 ]]
+# The hostname starts resolving: Caddy is reloaded immediately, with its running configuration.
+retry RETRY_NOW=1100 RETRY_DNS=203.0.113.7;[[ $(loads) == 1 ]]
+# Unchanged answer: no reload every run, at most one per 15 minutes.
+retry RETRY_NOW=1220 RETRY_DNS=203.0.113.7;[[ $(loads) == 1 ]]
+retry RETRY_NOW=2000 RETRY_DNS=203.0.113.7;[[ $(loads) == 2 ]]
+# A corrected DNS record retries at once.
+retry RETRY_NOW=2100 RETRY_DNS=203.0.113.8;[[ $(loads) == 3 ]]
+# Six hours after the last DNS change, Caddy's own schedule takes over.
+retry RETRY_NOW=30000 RETRY_DNS=203.0.113.8;[[ $(loads) == 3 ]]
+# A trusted certificate ends retries and clears state.
+retry RETRY_NOW=30100 RETRY_DNS=203.0.113.8 RETRY_TRUSTED=1;[[ $(loads) == 3 && ! -e "$scratch/retry-var/tls-retry/agent.example.com" ]]
 [[ $(stat -c %a "$scratch/stage/etc/lidza-agent/connection.json") == 600 ]]
 [[ -x "$scratch/stage/usr/local/bin/lidza-agent" ]]
 python3 - "$scratch/stage" <<'PY'
@@ -112,6 +149,9 @@ rg -q '^systemctl restart lidza-control$' "$scratch/host-actions"
 rg -q '^swap-check$' "$scratch/host-actions"
 rg -q 'http://localhost:3000' "$scratch/local-live.log"
 rg -q 'Automatic HTTPS for hosted apps requires a public hosting agent' "$scratch/local-live.log"
+# Local mode has no installer-managed certificate to retry.
+[[ ! -e "$scratch/host/etc/lidza-agent/tls-hostnames" && ! -e "$scratch/host/etc/systemd/system/lidza-tls-retry.timer" ]]
+! rg -q 'lidza-tls-retry' "$scratch/host-actions"
 # Local mode never touches the host firewall, even when one is active.
 ! rg -q '^ufw |^firewall-cmd ' "$scratch/host-actions"
 # A public agent opens 80/443 only in an already active host firewall.
@@ -121,6 +161,8 @@ INSTALL_TEST_FREE_WEB=1 PATH="$scratch/host-bin:$PATH" bash "$scratch/live-insta
 for rule in 80/tcp 443/tcp 443/udp;do rg -q "^ufw allow $rule\$" "$scratch/host-actions";done
 ! rg -q '^ufw (enable|delete|reset|default)' "$scratch/host-actions"
 rg -q 'Opened ports 80/tcp, 443/tcp and 443/udp in UFW' "$scratch/firewall-active.log"
+rg -q '^systemctl enable --now lidza-tls-retry.timer$' "$scratch/host-actions"
+[[ "$(cat "$scratch/host/etc/lidza-agent/tls-hostnames")" == agent.example.com ]]
 : > "$scratch/host-actions"
 INSTALL_TEST_FREE_WEB=1 INSTALL_TEST_UFW=inactive PATH="$scratch/host-bin:$PATH" bash "$scratch/live-installer" --bundle "$scratch/bundle" --fqdn agent.example.com > "$scratch/firewall-inactive.log"
 ! rg -q '^ufw (allow|enable)|^firewall-cmd .*--add' "$scratch/host-actions"
@@ -147,4 +189,4 @@ assert any('deploy.example.com' in p.get('subjects',[]) and not p.get('on_demand
 assert any(p.get('on_demand',False) for p in policies)
 PYJSON
 fi
-printf '%s\n' 'PASS: installer staging, private credentials, repeatability, checksum rejection, host validation, local coexistence with occupied web ports, host firewall opening, and Caddy configuration'
+printf '%s\n' 'PASS: installer staging, private credentials, repeatability, checksum rejection, host validation, local coexistence with occupied web ports, host firewall opening, certificate retry, and Caddy configuration'
