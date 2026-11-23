@@ -170,6 +170,24 @@ The agent then:
 - runs `release` with that record and those secrets when the application is
   removed, or when its creation fails part way.
 
+### In the console, and installing from a release
+
+A server's **Plugins** tab lists its plugins, runs a plugin's own check,
+edits the signing keys trusted on that server and installs a plugin from its
+published release: release `v<version>` of a public GitHub repository that
+publishes `plugin.json`, `plugin.sig` and `plugin-<architecture>.tar.gz`
+(`POST .../plugins/install` `{"repository": "owner/name", "version": "1.0"}`).
+The control panel fetches the three files and relays them; the server's agent
+still verifies the signature with the keys that server trusts and the archive
+against the signed manifest.
+
+### As part of the server
+
+A plugin's last `status` is in server health. Its `check`, with no
+application in mind, is in the server's readiness report; what it marks
+repairable is fixed by its `repair` hook when the server is repaired; its
+`maintain` hook runs hourly.
+
 ### Writing a plugin
 
 The `pluginapi` package is the kit: the request and answer types the agent
@@ -179,9 +197,9 @@ plugin (a notes directory per application) in about ninety lines; a test
 builds it from source and takes it through the agent: signed, installed,
 checked, provisioned for an application and released.
 
-Not built yet: backups, restores, moves, tuning and maintenance through
-hooks; the console pages; naming a plugin in `deploy/lidza.stack.json`; and
-the ClickHouse plugin itself, so ClickHouse is still built into the agent.
+Not built yet: backups, restores, moves and tuning through hooks; naming a
+plugin in `deploy/lidza.stack.json`; and the ClickHouse plugin itself, so
+ClickHouse is still built into the agent.
 
 ## Open questions
 

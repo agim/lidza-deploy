@@ -37,7 +37,7 @@ export const resources: Record<CollectionKey, ResourceDef> = {
     overview, { id: 'applications', label: 'Applications' }, { id: 'processes', label: 'Processes' }, { id: 'ingress', label: 'Web ingress' },
     { id: 'updates', label: 'Updates' }, { id: 'tuning', label: 'Tuning' }, { id: 'firewall', label: 'Firewall' },
     { id: 'cleanup', label: 'Disk cleanup' }, { id: 'retained', label: 'Retained data' }, { id: 'console', label: 'Console' },
-    { id: 'ssh', label: 'SSH access' }, { id: 'agent', label: 'Agent' },
+    { id: 'ssh', label: 'SSH access' }, { id: 'plugins', label: 'Plugins' }, { id: 'agent', label: 'Agent' },
   ] },
   databases: { key: 'databases', label: 'Databases', kind: 'collection', tabs: [
     overview, { id: 'backups', label: 'Backups' }, { id: 'schedule', label: 'Schedule' }, { id: 'excluded', label: 'Excluded tables' }, { id: 'settings', label: 'Settings' },

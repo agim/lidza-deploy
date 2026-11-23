@@ -85,6 +85,30 @@ suite('servers', [
     },
   },
   {
+    name: 'plugins tab: check a plugin, install one from its release, trust a key, remove',
+    async run({ page, state, open }) {
+      await open('/console/servers/local/plugins');
+      const row = page.locator('[data-plugin="search"]');
+      await row.getByText('Provides search').waitFor();
+      await row.getByRole('button', { name: 'Check server' }).click();
+      await row.getByText('its service failed').waitFor();
+      await page.getByRole('textbox', { name: /^Repository/ }).fill('example/deploy-plugin-queue');
+      await page.getByRole('textbox', { name: 'Version' }).fill('2.1');
+      await page.getByRole('button', { name: 'Install plugin' }).click();
+      await page.locator('[data-plugin="queue"]').getByText('queue 2.1').waitFor();
+      assert.deepEqual(callsTo(state, 'control/servers/local/plugins/install', 'POST')[0].body, { repository: 'example/deploy-plugin-queue', version: '2.1' });
+      await page.getByRole('textbox', { name: 'Public keys you trust' }).fill('cd'.repeat(32));
+      await page.getByRole('button', { name: 'Save trusted keys' }).click();
+      await page.getByText('Trusted plugin keys saved.').waitFor();
+      assert.deepEqual(callsTo(state, 'control/servers/local/plugins/keys', 'PUT')[0].body, { keys: ['cd'.repeat(32)] });
+      // Removing asks first.
+      await row.getByRole('button', { name: 'Remove' }).click();
+      assert.equal(callsTo(state, 'control/servers/local/plugins/search', 'DELETE').length, 0);
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Remove plugin' }).click();
+      await row.waitFor({ state: 'detached' });
+    },
+  },
+  {
     name: 'agent tab: native applications are enabled after confirmation',
     async run({ page, state, open }) {
       await open('/console/servers/local/agent');

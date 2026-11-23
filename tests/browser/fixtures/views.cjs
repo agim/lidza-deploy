@@ -12,7 +12,7 @@ const withQuery = (rows, query) => rows.map(([path, template, tab]) => [`${path}
 const views = [
   ...['applications', 'deployments', 'servers', 'databases', 'deleted-apps', 'team', 'audit', 'errors', 'security'].map(name => index(`/console/${name}`)),
   ...tabs('/console/applications/portal', ['overview', 'deployments', 'logs', 'environment', 'domains', 'data', 'backups', 'processes', 'move', 'settings']),
-  ...tabs('/console/servers/local', ['overview', 'applications', 'processes', 'ingress', 'updates', 'tuning', 'firewall', 'cleanup', 'retained', 'console', 'ssh', 'agent']),
+  ...tabs('/console/servers/local', ['overview', 'applications', 'processes', 'ingress', 'updates', 'tuning', 'firewall', 'cleanup', 'retained', 'console', 'ssh', 'plugins', 'agent']),
   ...tabs('/console/databases/portal', ['overview', 'backups', 'schedule', 'excluded', 'settings']),
   ...tabs('/console/deployments/build-one', ['overview', 'log']),
   ...tabs('/console/deleted-apps/archive-one', ['overview', 'settings']),

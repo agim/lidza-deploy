@@ -2,6 +2,8 @@ package control
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -109,5 +111,91 @@ func TestServerPluginsAreRelayedToTheAgent(t *testing.T) {
 	old = true
 	if w := do("GET", "/api/control/servers/edge/plugins", "", "", "", nil); w.Code != 404 || !strings.Contains(w.Body.String(), "has no plugins yet") {
 		t.Fatalf("older agent: %d %s", w.Code, w.Body)
+	}
+}
+
+// Installing from a release: the panel fetches the release's three files and
+// relays them; what it fetched is exactly what the agent receives.
+func TestPluginIsInstalledFromItsPublishedRelease(t *testing.T) {
+	token := strings.Repeat("a", 32)
+	var manifestSent, archiveSent []byte
+	refuse := false
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v1/plugins":
+			io.WriteString(w, `{"plugins":[],"keys":[],"arch":"arm64"}`)
+		case "POST /v1/plugins/manifest":
+			if refuse {
+				w.WriteHeader(409)
+				io.WriteString(w, `{"error":"the plugin was signed by a key this server does not trust"}`)
+				return
+			}
+			manifestSent = body
+			io.WriteString(w, `{"name":"example","version":"1.2","arch":"arm64"}`)
+		case "PUT /v1/plugins/example/archive":
+			archiveSent = body
+			w.WriteHeader(201)
+			io.WriteString(w, `{"name":"example","version":"1.2","provides":"example"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer agentServer.Close()
+	c, err := New(Config{PublicURL: "https://deploy.example.com", User: "operator@example.com", Password: strings.Repeat("p", 20), Key: []byte(strings.Repeat("k", 32)), DataDir: t.TempDir(),
+		Servers: []Server{{ID: "edge", Name: "Edge", URL: agentServer.URL, Token: token}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := map[string]string{
+		"https://github.com/acme/deploy-plugin-example/releases/download/v1.2/plugin.json":         `{"contract":1,"name":"example"}` + "\n",
+		"https://github.com/acme/deploy-plugin-example/releases/download/v1.2/plugin.sig":          `{"key_id":"0123456789abcdef","algorithm":"ed25519","signature":"c2ln"}` + "\n",
+		"https://github.com/acme/deploy-plugin-example/releases/download/v1.2/plugin-arm64.tar.gz": strings.Repeat("archive-bytes", 9000),
+	}
+	var fetched []string
+	saved := pluginReleaseFetch
+	t.Cleanup(func() { pluginReleaseFetch = saved })
+	pluginReleaseFetch = func(_ context.Context, url string, limit int64, w io.Writer) (int64, error) {
+		fetched = append(fetched, url)
+		body, ok := release[url]
+		if !ok {
+			return 0, errors.New("not found")
+		}
+		n, err := io.WriteString(w, body)
+		return int64(n), err
+	}
+	install := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/api/control/servers/edge/plugins/install", strings.NewReader(body))
+		r.SetPathValue("server", "edge")
+		w := httptest.NewRecorder()
+		c.serverPlugins(w, r)
+		return w
+	}
+	for _, bad := range []string{`{"repository":"not a repo","version":"1.2"}`, `{"repository":"acme/../etc","version":"1.2"}`, `{"repository":"acme/deploy-plugin-example","version":"latest"}`} {
+		if w := install(bad); w.Code != 400 || len(fetched) != 0 {
+			t.Fatalf("invalid request %s: %d %s (fetched %v)", bad, w.Code, w.Body, fetched)
+		}
+	}
+	w := install(`{"repository":"acme/deploy-plugin-example","version":"1.2"}`)
+	if w.Code != 201 || !strings.Contains(w.Body.String(), `"provides":"example"`) {
+		t.Fatalf("install: %d %s", w.Code, w.Body)
+	}
+	// The agent gets the manifest's exact text (without the file's final newline) and the server's own architecture's archive.
+	if !bytes.Contains(manifestSent, []byte(`"manifest":"{\"contract\":1,\"name\":\"example\"}"`)) || !bytes.Contains(manifestSent, []byte(`"key_id":"0123456789abcdef"`)) {
+		t.Fatalf("manifest relayed: %s", manifestSent)
+	}
+	if string(archiveSent) != release["https://github.com/acme/deploy-plugin-example/releases/download/v1.2/plugin-arm64.tar.gz"] {
+		t.Fatalf("archive relayed: %d bytes", len(archiveSent))
+	}
+	// The agent's refusal of the signature reaches the operator, and no archive is fetched.
+	refuse, fetched = true, nil
+	if w := install(`{"repository":"acme/deploy-plugin-example","version":"1.2"}`); w.Code != 409 || !strings.Contains(w.Body.String(), "does not trust") || len(fetched) != 2 {
+		t.Fatalf("untrusted: %d %s (fetched %v)", w.Code, w.Body, fetched)
+	}
+	// A release without the files says which file is missing.
+	refuse = false
+	if w := install(`{"repository":"acme/deploy-plugin-example","version":"9.9"}`); w.Code != 502 || !strings.Contains(w.Body.String(), "has no plugin.json") {
+		t.Fatalf("missing release: %d %s", w.Code, w.Body)
 	}
 }

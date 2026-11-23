@@ -17,6 +17,7 @@ import { ServerTuning } from '../components/ServerTuning';
 import { ServerEnrollment } from '../components/ServerEnrollment';
 import { ServerNativeApps } from '../components/ServerNativeApps';
 import { ServerReadiness } from '../components/ServerReadiness';
+import { ServerPlugins } from '../components/ServerPlugins';
 import { ServerFirewall } from '../components/ServerFirewall';
 import { ServerIngress } from '../components/ServerIngress';
 import { ServerServiceControl } from '../components/ServerServiceControl';
@@ -67,6 +68,7 @@ export function ServerDetailPage({ serverID, tab }: { serverID: string; tab: str
       {tab === 'updates' && <ServerUpdates serverID={serverID} />}
       {tab === 'tuning' && <ServerTuning serverID={serverID} />}
       {tab === 'firewall' && <ServerFirewall serverID={serverID} />}
+      {tab === 'plugins' && <ServerPlugins serverID={serverID} />}
       {tab === 'cleanup' && <ServerCleanup serverID={serverID} />}
       {tab === 'retained' && <RetainedResources serverID={serverID} />}
       {tab === 'console' && <ServerConsole serverID={serverID} />}

@@ -43,7 +43,10 @@ type PluginsView struct {
 	// the keys pinned in the agent and the ones an operator added.
 	Keys   []string `json:"keys"`
 	Pinned int      `json:"pinned"`
-	Arch   string   `json:"arch"`
+	// OperatorKeys are the public keys an operator added on this server, in
+	// full, so the list can be edited; public keys are not secrets.
+	OperatorKeys []string `json:"operator_keys"`
+	Arch         string   `json:"arch"`
 }
 
 const maxPluginKeys = 8
@@ -91,6 +94,7 @@ func (m *Manager) pluginsView() PluginsView {
 	}
 	slices.Sort(view.Keys)
 	m.mu.Lock()
+	view.OperatorKeys = append([]string{}, m.data.PluginKeys...)
 	for _, record := range m.data.Plugins {
 		view.Plugins = append(view.Plugins, record)
 	}
