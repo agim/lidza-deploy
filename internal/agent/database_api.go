@@ -111,6 +111,8 @@ func (m *Manager) databaseRoutes(mux *http.ServeMux) {
 			extension = ".sqlite3"
 		} else if m.data.NativeDatabases[id].Policy.ClickHouseDatabase != "" {
 			extension = ".clickhouse.tar"
+		} else if service := m.data.NativeDatabases[id].Policy.PluginService; service != "" {
+			extension = "." + service + ".tar"
 		}
 		valid := false
 		for _, b := range d.Backups {

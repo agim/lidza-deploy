@@ -84,7 +84,7 @@ type backupToolProblem struct {
 // whether a package name is an expected provider of it. ok is false for
 // policies without a tool (ClickHouse backs itself up).
 func nativeBackupTool(p NativeDatabasePolicy) (path string, provider func(string) bool, ok bool) {
-	if p.ClickHouseDatabase != "" || !nativeHexDigest(p.DumpSHA256, 64) {
+	if p.ClickHouseDatabase != "" || p.PluginService != "" || !nativeHexDigest(p.DumpSHA256, 64) {
 		return "", nil, false
 	}
 	if p.SQLitePath != "" {

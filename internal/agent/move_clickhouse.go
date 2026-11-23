@@ -717,9 +717,16 @@ func (m *Manager) clickhouseRestoreBackupRoute(w http.ResponseWriter, r *http.Re
 		Fail(w, 409, errors.New("agent upgrade in progress"))
 		return
 	}
+	restore, failed := m.restoreClickHouseBackup, "ClickHouse restore failed: "
 	app, ok := m.clickhouseResourceApp(resource)
 	if !ok {
-		Fail(w, 409, errors.New("in-place restores are available for ClickHouse databases; restore PostgreSQL backups into a new database"))
+		// A plugin's service is restored by its plugin (plugin_backup.go).
+		if app, _, ok = m.pluginResourceApp(resource); ok {
+			restore, failed = m.restorePluginBackup, "Restore failed: "
+		}
+	}
+	if !ok {
+		Fail(w, 409, errors.New("in-place restores are available for ClickHouse databases and plugin services; restore PostgreSQL backups into a new database"))
 		return
 	}
 	m.mu.Lock()
@@ -760,7 +767,7 @@ func (m *Manager) clickhouseRestoreBackupRoute(w http.ResponseWriter, r *http.Re
 		var err error
 		select {
 		case m.databaseSlots <- struct{}{}:
-			err = m.restoreClickHouseBackup(ctx, app, resource, record)
+			err = restore(ctx, app, resource, record)
 			<-m.databaseSlots
 		case <-ctx.Done():
 			err = ctx.Err()
@@ -771,7 +778,7 @@ func (m *Manager) clickhouseRestoreBackupRoute(w http.ResponseWriter, r *http.Re
 		latest.Operation, latest.Event = "", newID()
 		latest.Error = ""
 		if err != nil {
-			latest.Error = "ClickHouse restore failed: " + err.Error()
+			latest.Error = failed + err.Error()
 		}
 		m.data.Databases[resource] = latest
 		_ = m.save()

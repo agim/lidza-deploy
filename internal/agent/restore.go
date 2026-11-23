@@ -53,6 +53,9 @@ func (m *Manager) restoreDatabase(appID string, in RestoreRequest) error {
 	if m.data.NativeDatabases[in.Source].Policy.ClickHouseDatabase != "" {
 		return errors.New("ClickHouse backups are restored into the application's own ClickHouse database")
 	}
+	if m.data.NativeDatabases[in.Source].Policy.PluginService != "" {
+		return errors.New("a plugin service's backups are restored in place, into the application's own service")
+	}
 	var record BackupRecord
 	for _, b := range source.Backups {
 		if b.ID == in.Backup {

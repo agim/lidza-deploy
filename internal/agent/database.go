@@ -216,6 +216,8 @@ func (m *Manager) databaseViews() []DatabaseView {
 			engine = "sqlite"
 		} else if m.data.NativeDatabases[id].Policy.ClickHouseDatabase != "" {
 			engine = "clickhouse"
+		} else if service := m.data.NativeDatabases[id].Policy.PluginService; service != "" {
+			engine = service // a plugin's service is named by what it provides
 		}
 		view := DatabaseView{Attachments: attachments, Engine: engine, AppID: id, Mode: d.Mode, Ready: d.Ready, Operation: d.Operation, Error: d.Error, Event: d.Event, Backup: policy, NextBackup: next, Backups: slices.Clone(d.Backups), Retained: !live,
 			BeforeDeploy: m.beforeDeployPolicyLocked(id), Primary: m.databasePrimaryLocked(id), Removed: d.Removed, ExcludedTables: m.backupExcludedTablesLocked(id)}

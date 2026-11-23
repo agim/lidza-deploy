@@ -65,7 +65,13 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	dumpMessage := "Dumping PostgreSQL to local disk (database lock wait limited to 30 seconds)"
 	sqlite := nativePolicy != nil && nativePolicy.SQLitePath != ""
 	clickhouse := nativePolicy != nil && nativePolicy.ClickHouseDatabase != ""
-	if sqlite {
+	pluginService := ""
+	if nativePolicy != nil {
+		pluginService = nativePolicy.PluginService
+	}
+	if pluginService != "" {
+		dumpMessage = "Backing up the " + pluginService + " service through its plugin"
+	} else if sqlite {
 		dumpMessage = "Creating and validating a read-only SQLite snapshot"
 	} else if clickhouse {
 		dumpMessage = "Creating a ClickHouse BACKUP of the database"
@@ -79,7 +85,9 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 		excluded = m.backupExcludedTables(d.AppID)
 	}
 	stopDump := backupProgress(ctx, dumpMessage, writer.n.Load)
-	if sqlite {
+	if pluginService != "" {
+		err = m.dumpPluginService(ctx, d, *nativePolicy, writer)
+	} else if sqlite {
 		err = m.dumpNativeSQLite(ctx, d, *nativePolicy, writer)
 	} else if clickhouse {
 		err = m.dumpHostClickHouse(ctx, d, *nativePolicy, writer)
@@ -111,6 +119,9 @@ func (m *Manager) dumpDatabase(ctx context.Context, d Database, target *storage.
 	stopDump()
 	if err != nil {
 		if ctx.Err() != nil {
+			if pluginService != "" {
+				return record, fmt.Errorf("backup of the %s service interrupted: %w", pluginService, ctx.Err())
+			}
 			if sqlite {
 				return record, fmt.Errorf("SQLite snapshot interrupted: %w", ctx.Err())
 			}

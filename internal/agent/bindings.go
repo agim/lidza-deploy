@@ -46,6 +46,9 @@ func (m *Manager) bindDatabaseLocked(appID, key, id string) error {
 	if m.data.NativeDatabases[id].Policy.ClickHouseDatabase != "" {
 		return errors.New("a ClickHouse database belongs to the application it was provisioned for")
 	}
+	if m.data.NativeDatabases[id].Policy.PluginService != "" {
+		return errors.New("a plugin's service belongs to the application it was provisioned for")
+	}
 	if m.data.NativeDatabases[id].Policy.ArchiveDatabase != "" {
 		return errors.New("standalone native backup credentials cannot be attached to an application")
 	}

@@ -40,8 +40,11 @@ type NativeDatabasePolicy struct {
 	ArchiveDatabase string   `json:"archive_database,omitempty"`
 	// ClickHouseDatabase names a ClickHouse database the agent provisioned
 	// on the host server (native_hostdata_clickhouse.go).
-	ClickHouseDatabase string       `json:"clickhouse_database,omitempty"`
-	Backup             BackupPolicy `json:"backup"`
+	ClickHouseDatabase string `json:"clickhouse_database,omitempty"`
+	// PluginService names a service a plugin provisioned for the
+	// application (plugin_backup.go).
+	PluginService string       `json:"plugin_service,omitempty"`
+	Backup        BackupPolicy `json:"backup"`
 	// BeforeDeploy is the reviewed configuration's pre-deployment backup
 	// choice for this database (before_deploy.go). It is the initial
 	// default only: the panel's per-database setting, kept in agent state,
@@ -120,6 +123,9 @@ func validateNativeDatabasePolicy(id string, p NativeDatabasePolicy) error {
 	}
 	if p.ClickHouseDatabase != "" {
 		return validateNativeClickHousePolicy(id, p)
+	}
+	if p.PluginService != "" {
+		return validateNativePluginPolicy(id, p)
 	}
 	if !idPattern.MatchString(id) || !p.Enabled || !nativeHexDigest(p.ConfigSHA256, 64) || !nativeHexDigest(p.DumpSHA256, 64) {
 		return errors.New("native database requires a reviewed exact resource policy")
@@ -238,6 +244,9 @@ func (m *Manager) nativeDatabaseSource(p NativeDatabasePolicy) (string, error) {
 	}
 	if p.ClickHouseDatabase != "" {
 		return "", errors.New("ClickHouse databases are provisioned by the agent for the applications it creates; they cannot be adopted")
+	}
+	if p.PluginService != "" {
+		return "", errors.New("a plugin's service belongs to the application it was provisioned for; it cannot be adopted")
 	}
 	if p.ArchiveDatabase != "" {
 		return nativeArchiveMetadataURL(p.ArchiveDatabase), nil

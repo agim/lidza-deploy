@@ -5,7 +5,7 @@
 //
 // Build it for the server's architecture, pack the program as "plugin" at
 // the top of a .tar.gz, then make and sign its manifest with cmd/plugin-sign
-// (-hooks describe,check,status,provision,release -env NOTES_DIR).
+// (-hooks describe,check,status,provision,release,backup,restore -env NOTES_DIR).
 package main
 
 import (
@@ -72,6 +72,48 @@ func main() {
 				return pluginapi.Answer{}, err
 			}
 			return pluginapi.Answer{OK: true, Messages: []string{"Removed " + dir + "."}}, os.RemoveAll(dir)
+		},
+		// backup leaves the application's notes in the directory the agent
+		// gives it; the agent archives, stores and schedules them.
+		"backup": func(_ context.Context, req pluginapi.Request) (pluginapi.Answer, error) {
+			var in pluginapi.AppInput
+			if err := req.Decode(&in); err != nil {
+				return pluginapi.Answer{}, err
+			}
+			dir, err := notesDir(req, in.App)
+			if err != nil {
+				return pluginapi.Answer{}, err
+			}
+			// A marker, so an application without notes still has a backup.
+			if err := os.WriteFile(filepath.Join(req.WorkDir, "application"), []byte(in.App+"\n"), 0o600); err != nil {
+				return pluginapi.Answer{}, err
+			}
+			return pluginapi.Answer{OK: true}, os.CopyFS(filepath.Join(req.WorkDir, "notes"), os.DirFS(dir))
+		},
+		// restore replaces the application's notes with a backup's.
+		"restore": func(_ context.Context, req pluginapi.Request) (pluginapi.Answer, error) {
+			var in pluginapi.AppInput
+			if err := req.Decode(&in); err != nil {
+				return pluginapi.Answer{}, err
+			}
+			dir, err := notesDir(req, in.App)
+			if err != nil {
+				return pluginapi.Answer{}, err
+			}
+			if owner, _ := os.ReadFile(filepath.Join(req.WorkDir, "application")); string(owner) != in.App+"\n" {
+				return pluginapi.Answer{}, errors.New("this backup belongs to another application")
+			}
+			info, err := os.Stat(dir)
+			if err != nil {
+				return pluginapi.Answer{}, err
+			}
+			if err := os.RemoveAll(dir); err != nil {
+				return pluginapi.Answer{}, err
+			}
+			if err := os.CopyFS(dir, os.DirFS(filepath.Join(req.WorkDir, "notes"))); err != nil {
+				return pluginapi.Answer{}, err
+			}
+			return pluginapi.Answer{OK: true, Messages: []string{"Restored " + dir + "."}}, os.Chmod(dir, info.Mode().Perm())
 		},
 	})
 }

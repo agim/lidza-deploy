@@ -66,6 +66,7 @@ export interface BeforeDeployDatabase {
 function databaseKind(database: BeforeDeployDatabase) {
   if (database.engine === 'clickhouse') return 'ClickHouse';
   if (database.engine === 'sqlite') return 'SQLite';
+  if (database.engine) return `${database.engine} service`;
   return 'PostgreSQL';
 }
 

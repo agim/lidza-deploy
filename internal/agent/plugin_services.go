@@ -39,6 +39,9 @@ type NativeHostPlugin struct {
 	Secrets string `json:"secrets_sealed,omitempty"`
 	// Env are the variables it set for the application.
 	Env []string `json:"env,omitempty"`
+	// Resource is the protected resource its backups are kept under, when
+	// the plugin can back the service up.
+	Resource string `json:"resource,omitempty"`
 }
 
 const (
@@ -137,55 +140,56 @@ func (m *Manager) pluginSecrets(sealed string) (map[string]string, error) {
 // provisionPluginService runs the plugin's provision hook for an application
 // and records what it answers. Only variables the signed manifest declares
 // reach the application, and none that another service already set.
-func (m *Manager) provisionPluginService(ctx context.Context, id string, account NativeAppAccount, service NativePluginService, taken map[string]string) (map[string]string, error) {
+func (m *Manager) provisionPluginService(ctx context.Context, id string, account NativeAppAccount, service NativePluginService, taken map[string]string, backup BackupPolicy) (map[string]string, string, error) {
 	record, manifest, err := m.pluginProviding(service.Service)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !manifest.Implements("provision") || !manifest.Implements("release") {
-		return nil, fmt.Errorf("the %s plugin cannot provision a service for an application", record.Name)
+		return nil, "", fmt.Errorf("the %s plugin cannot provision a service for an application", record.Name)
 	}
+	resource := ""
 	input := pluginAppInput{App: id, Account: pluginAppAccount{User: account.User, UID: account.UID, GID: account.GID, Root: account.Root}, Options: service.Options}
 	// A retry hands back what an earlier attempt recorded.
 	if existing, ok := m.hostDataRecord(id); ok {
 		if previous, ok := existing.Plugins[service.Service]; ok {
-			input.Record = previous.Record
+			input.Record, resource = previous.Record, previous.Resource
 			if input.Secrets, err = m.pluginSecrets(previous.Secrets); err != nil {
-				return nil, err
+				return nil, "", err
 			}
 		}
 	}
 	raw, _ := json.Marshal(input)
 	result, err := m.runPluginHook(ctx, record.Name, "provision", raw)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !result.Answer.OK {
-		return nil, fmt.Errorf("the %s plugin could not provision the service: %s", record.Name, cmpMessages(result.Answer.Messages))
+		return nil, "", fmt.Errorf("the %s plugin could not provision the service: %s", record.Name, cmpMessages(result.Answer.Messages))
 	}
 	var out pluginProvisionOutput
 	if err := json.Unmarshal(result.Answer.Output, &out); err != nil {
-		return nil, fmt.Errorf("the %s plugin's provision answer is not understood", record.Name)
+		return nil, "", fmt.Errorf("the %s plugin's provision answer is not understood", record.Name)
 	}
 	if len(out.Record) > maxPluginRecord || len(out.Secrets) > maxPluginSecrets {
-		return nil, fmt.Errorf("the %s plugin answered more than the agent keeps for a service", record.Name)
+		return nil, "", fmt.Errorf("the %s plugin answered more than the agent keeps for a service", record.Name)
 	}
 	for key, value := range out.Env {
 		if !slices.Contains(manifest.Environment, key) {
-			return nil, fmt.Errorf("the %s plugin set %s, which its manifest does not declare", record.Name, key)
+			return nil, "", fmt.Errorf("the %s plugin set %s, which its manifest does not declare", record.Name, key)
 		}
 		if _, conflict := taken[key]; conflict {
-			return nil, fmt.Errorf("the %s plugin set %s, which another service of this application already sets", record.Name, key)
+			return nil, "", fmt.Errorf("the %s plugin set %s, which another service of this application already sets", record.Name, key)
 		}
 		if _, err := nativeReleaseEnvLine(key, value); err != nil {
-			return nil, fmt.Errorf("the %s plugin set a value the environment file cannot hold: %v", record.Name, err)
+			return nil, "", fmt.Errorf("the %s plugin set a value the environment file cannot hold: %v", record.Name, err)
 		}
 	}
 	sealed := ""
 	if len(out.Secrets) > 0 {
 		secrets, _ := json.Marshal(out.Secrets)
 		if sealed, err = m.sealHostSecret(string(secrets)); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	keys := slices.Sorted(maps.Keys(out.Env))
@@ -193,18 +197,40 @@ func (m *Manager) provisionPluginService(ctx context.Context, id string, account
 		if r.Plugins == nil {
 			r.Plugins = map[string]NativeHostPlugin{}
 		}
-		r.Plugins[service.Service] = NativeHostPlugin{Plugin: record.Name, Version: record.Version, Record: out.Record, Secrets: sealed, Env: keys}
+		r.Plugins[service.Service] = NativeHostPlugin{Plugin: record.Name, Version: record.Version, Record: out.Record, Secrets: sealed, Env: keys, Resource: resource}
 	}); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return out.Env, nil
+	if !manifest.Implements("backup") {
+		return out.Env, "", nil
+	}
+	if resource, err = m.protectPluginService(id, service.Service, backup); err != nil {
+		return nil, "", err
+	}
+	return out.Env, resource, nil
 }
 
 // releasePluginServices runs the release hook of every plugin service the
-// application has and forgets each one that was released.
-func (m *Manager) releasePluginServices(ctx context.Context, id string, record NativeHostDataRecord) error {
+// application has and forgets each one that was released. A service with
+// backups gets a final one first (unless the application was never
+// released); its backups stay.
+func (m *Manager) releasePluginServices(ctx context.Context, id string, record NativeHostDataRecord, finalBackup bool) error {
 	for _, service := range slices.Sorted(maps.Keys(record.Plugins)) {
 		entry := record.Plugins[service]
+		if entry.Resource != "" {
+			m.mu.Lock()
+			d, exists := m.data.Databases[entry.Resource]
+			binding, bound := m.data.NativeDatabases[entry.Resource]
+			m.mu.Unlock()
+			if finalBackup && exists && bound && binding.Policy.AppID == id && d.Ready && !m.nativeCreatedNeverReleased(id) {
+				if err := m.freshBackupBeforeRelease(ctx, []string{entry.Resource}); err != nil {
+					return fmt.Errorf("the final backup of the %s service failed; the service is retained: %w", service, err)
+				}
+			}
+			if err := m.unbindHostDatabase(id, entry.Resource); err != nil {
+				return err
+			}
+		}
 		secrets, err := m.pluginSecrets(entry.Secrets)
 		if err != nil {
 			return err

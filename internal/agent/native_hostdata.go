@@ -317,11 +317,18 @@ func provisionNativeHostData(ctx context.Context, m *Manager, id string, account
 		grant.Databases = append(grant.Databases, resource)
 	}
 	for _, service := range req.Plugins {
-		env, err := m.provisionPluginService(ctx, id, account, service, grant.Env)
+		backup, err := nativeHostDataBackupPolicy(req)
+		if err != nil {
+			return grant, err
+		}
+		env, resource, err := m.provisionPluginService(ctx, id, account, service, grant.Env, backup)
 		if err != nil {
 			return grant, err
 		}
 		maps.Copy(grant.Env, env)
+		if resource != "" {
+			grant.Databases = append(grant.Databases, resource)
+		}
 	}
 	return grant, nil
 }
@@ -599,7 +606,7 @@ func releaseNativeHostDataRecord(ctx context.Context, m *Manager, id string, fin
 	}
 	h := nativeHostDataHost(m)
 	// Plugin services first: what they hold may depend on the databases below.
-	if err := m.releasePluginServices(ctx, id, record); err != nil {
+	if err := m.releasePluginServices(ctx, id, record, finalBackup); err != nil {
 		return err
 	}
 	if pg := record.Postgres; pg != nil {
@@ -693,6 +700,9 @@ func (m *Manager) unbindHostDatabase(id, resource string) error {
 // provisioned and still holds for the application in p. Caller holds m.mu.
 func (m *Manager) nativeHostDataBoundLocked(resource string, p NativeDatabasePolicy) bool {
 	record, ok := m.data.NativeHostData[p.AppID]
+	if ok && p.PluginService != "" {
+		return record.Plugins[p.PluginService].Resource == resource && validateNativeDatabasePolicy(resource, p) == nil
+	}
 	if ok && p.ClickHouseDatabase != "" {
 		ch := record.ClickHouse
 		return ch != nil && ch.Ready && ch.Resource == resource && ch.Name == p.ClickHouseDatabase && p.ConfigSHA256 == nativeHostClickHouseDigest(ch.HTTPPort, ch.Name) &&
@@ -712,6 +722,13 @@ func (m *Manager) nativeHostDataSource(p NativeDatabasePolicy) (raw string, mana
 	m.mu.Lock()
 	record, ok := m.data.NativeHostData[p.AppID]
 	m.mu.Unlock()
+	if ok && p.PluginService != "" {
+		entry := record.Plugins[p.PluginService]
+		if entry.Resource == "" || p.ConfigSHA256 != nativeHostPluginDigest(p.PluginService, p.AppID, entry.Resource) {
+			return "", false, nil
+		}
+		return nativePluginResourceURL(p.PluginService, p.AppID), true, nil
+	}
 	if ok && p.ClickHouseDatabase != "" {
 		ch := record.ClickHouse
 		if ch == nil || ch.Name != p.ClickHouseDatabase || p.ConfigSHA256 != nativeHostClickHouseDigest(ch.HTTPPort, ch.Name) {

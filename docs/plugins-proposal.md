@@ -198,6 +198,19 @@ application comes from and the size of its data), the server's readiness
 report leaves ClickHouse to the plugin, and a repair is the plugin's
 `repair`. Servers without the plugin behave as before.
 
+### Backups and restores
+
+A plugin that implements `backup` gets a protected resource for each
+application it serves (it appears among the server's databases, named by what
+the plugin provides). Its backups are then in the same pipeline as a
+database's: the schedule, one local copy, the off-site copy, the backup
+before a release and a final one when the application is removed. For a
+backup the agent gives the hook an empty directory (`work_dir`), with the
+record and secrets `provision` answered, and archives the regular files the
+hook leaves there. A restore verifies the archive's digest, unpacks it into a
+fresh directory and runs `restore`, which replaces the service's data for the
+application in place.
+
 ### Writing a plugin
 
 The `pluginapi` package is the kit: the request and answer types the agent
@@ -207,7 +220,7 @@ plugin (a notes directory per application) in about ninety lines; a test
 builds it from source and takes it through the agent: signed, installed,
 checked, provisioned for an application and released.
 
-Not built yet: backups, restores, moves and tuning through hooks; naming a
+Not built yet: moves and tuning through hooks; naming a
 plugin in `deploy/lidza.stack.json`; and the ClickHouse plugin's provision,
 backup and move hooks, so those parts of ClickHouse are still built into the
 agent.

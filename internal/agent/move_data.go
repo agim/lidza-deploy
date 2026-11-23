@@ -185,7 +185,7 @@ func (m *Manager) moveBackupDownload(w http.ResponseWriter, r *http.Request) {
 	id, key := r.PathValue("id"), r.PathValue("backup")
 	m.mu.Lock()
 	d, ok := m.data.Databases[id]
-	sqlite := m.data.NativeDatabases[id].Policy.SQLitePath != "" || m.data.NativeDatabases[id].Policy.ClickHouseDatabase != ""
+	sqlite := m.data.NativeDatabases[id].Policy.SQLitePath != "" || m.data.NativeDatabases[id].Policy.ClickHouseDatabase != "" || m.data.NativeDatabases[id].Policy.PluginService != ""
 	var record BackupRecord
 	for _, b := range d.Backups {
 		if b.ID == key {

@@ -237,7 +237,7 @@ func (m *Manager) pluginServer(name string) plugin.Server {
 	return server
 }
 
-func (m *Manager) runPluginHookIn(ctx context.Context, dir string, manifest plugin.Manifest, hook string, input json.RawMessage) (plugin.Result, error) {
+func (m *Manager) runPluginHookIn(ctx context.Context, dir string, manifest plugin.Manifest, hook string, input json.RawMessage, work ...string) (plugin.Result, error) {
 	if !manifest.Implements(hook) {
 		return plugin.Result{}, fmt.Errorf("plugin %s does not implement the %s hook", manifest.Name, hook)
 	}
@@ -251,11 +251,20 @@ func (m *Manager) runPluginHookIn(ctx context.Context, dir string, manifest plug
 	s.mu.Unlock()
 	lock.Lock()
 	defer lock.Unlock()
-	return plugin.Run(ctx, dir, plugin.Request{Hook: hook, Server: m.pluginServer(manifest.Name), StateDir: m.pluginState(manifest.Name), Input: input})
+	request := plugin.Request{Hook: hook, Server: m.pluginServer(manifest.Name), StateDir: m.pluginState(manifest.Name), Input: input}
+	if len(work) > 0 {
+		request.WorkDir = work[0]
+	}
+	return plugin.Run(ctx, dir, request)
+}
+
+// runPluginHookWork runs a hook that produces or consumes data in work.
+func (m *Manager) runPluginHookWork(ctx context.Context, name, hook string, input json.RawMessage, work string) (plugin.Result, error) {
+	return m.runPluginHook(ctx, name, hook, input, work)
 }
 
 // runPluginHook runs a hook of an installed plugin.
-func (m *Manager) runPluginHook(ctx context.Context, name, hook string, input json.RawMessage) (plugin.Result, error) {
+func (m *Manager) runPluginHook(ctx context.Context, name, hook string, input json.RawMessage, work ...string) (plugin.Result, error) {
 	m.mu.Lock()
 	record, ok := m.data.Plugins[name]
 	m.mu.Unlock()
@@ -266,7 +275,7 @@ func (m *Manager) runPluginHook(ctx context.Context, name, hook string, input js
 	if err != nil {
 		return plugin.Result{}, err
 	}
-	return m.runPluginHookIn(ctx, plugin.Dir(m.pluginRoot(), record.Name, record.Version), manifest, hook, input)
+	return m.runPluginHookIn(ctx, plugin.Dir(m.pluginRoot(), record.Name, record.Version), manifest, hook, input, work...)
 }
 
 // removePlugin forgets a plugin and deletes its program. Its state directory

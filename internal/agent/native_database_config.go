@@ -268,7 +268,7 @@ func (m *Manager) checkNativeDatabaseConfigs(appID string) []string {
 	var candidates []candidate
 	for _, id := range railsMapKeys(m.data.NativeDatabases) {
 		p := m.data.NativeDatabases[id].Policy
-		if appID != "" && p.AppID != appID || p.ArchiveDatabase != "" || p.ClickHouseDatabase != "" ||
+		if appID != "" && p.AppID != appID || p.ArchiveDatabase != "" || p.ClickHouseDatabase != "" || p.PluginService != "" ||
 			!m.nativeDatabaseInUseLocked(id) || m.nativeHostDataBoundLocked(id, p) {
 			continue
 		}

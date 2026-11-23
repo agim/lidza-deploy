@@ -435,6 +435,8 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 			db := RetainedDatabaseView{ID: id, Covered: m.coveredLocked(id, it.writesStopped), Engine: "postgresql"}
 			if m.data.NativeDatabases[id].Policy.ClickHouseDatabase != "" {
 				db.Engine = "clickhouse"
+			} else if service := m.data.NativeDatabases[id].Policy.PluginService; service != "" {
+				db.Engine = service
 			}
 			if d.Network != "" {
 				db.Volume = d.Network + "-data"

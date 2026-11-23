@@ -315,7 +315,7 @@ func TestTheExamplePluginBuiltWithTheKitWorksThroughTheAgent(t *testing.T) {
 	}
 	sum := sha256.Sum256(buf.Bytes())
 	raw, _ := json.Marshal(plugin.Manifest{Contract: plugin.Contract, Name: "notes", Version: "1.0", Provides: "notes", Summary: "Keeps a notes directory per application.",
-		Hooks: []string{"describe", "check", "status", "provision", "release"}, Environment: []string{"NOTES_DIR"},
+		Hooks: []string{"describe", "check", "status", "provision", "release", "backup", "restore"}, Environment: []string{"NOTES_DIR"},
 		Archives: []plugin.Archive{{Arch: runtime.GOARCH, SHA256: hex.EncodeToString(sum[:]), Size: int64(buf.Len())}}})
 	signature, _ := json.Marshal(plugin.Sign(private, raw))
 	ctx := context.Background()
@@ -340,6 +340,31 @@ func TestTheExamplePluginBuiltWithTheKitWorksThroughTheAgent(t *testing.T) {
 	result, err := m.runPluginHook(ctx, "notes", "status", nil)
 	if err != nil || !strings.Contains(string(result.Answer.Output), `"applications":1`) {
 		t.Fatalf("status: %v %s", err, result.Answer.Output)
+	}
+	// Its notes are backed up and restored through the agent's backup pipeline.
+	if len(grant.Databases) != 1 {
+		t.Fatalf("no protected resource: %+v", grant)
+	}
+	note := filepath.Join(dir, "week", "monday.txt")
+	os.MkdirAll(filepath.Dir(note), 0o750)
+	os.WriteFile(note, []byte("ship it"), 0o640)
+	m.mu.Lock()
+	d := m.data.Databases[grant.Databases[0]]
+	m.mu.Unlock()
+	backup, err := m.dumpDatabase(ctx, d, nil)
+	if err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+	os.WriteFile(note, []byte("overwritten"), 0o640)
+	os.WriteFile(filepath.Join(dir, "later.txt"), []byte("new"), 0o640)
+	if err := m.restorePluginBackup(ctx, "shop", grant.Databases[0], backup); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if raw, _ := os.ReadFile(note); string(raw) != "ship it" {
+		t.Fatalf("restored note: %q", raw)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "later.txt")); !os.IsNotExist(err) {
+		t.Fatal("a file written after the backup survived the restore")
 	}
 	if err := releaseNativeData(ctx, m, "shop"); err != nil {
 		t.Fatalf("release: %v", err)
@@ -543,5 +568,127 @@ esac
 		if strings.Contains(command, "systemctl start clickhouse") || strings.Contains(command, "purge") {
 			t.Fatalf("the agent repaired ClickHouse itself although the plugin owns it: %s", command)
 		}
+	}
+}
+
+// A plugin that can back its service up gets a protected resource for the
+// application: its backups go through the same pipeline as a database's,
+// and a restore hands the plugin the files it wrote.
+func TestAPluginServiceIsBackedUpAndRestoredThroughItsPlugin(t *testing.T) {
+	m, _ := newHostDataFixture(t)
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	if err := m.setPluginKeys([]string{hex.EncodeToString(public)}); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+request=$(cat)
+work=$(printf '%s' "$request" | sed -n 's/.*"work_dir":"\([^"]*\)".*/\1/p')
+case "$1" in
+ describe|release) printf '{"ok":true}';;
+ provision) printf '{"ok":true,"output":{"env":{"SEARCH_URL":"http://127.0.0.1:7700/shop"},"record":{"index":"shop"}}}';;
+ backup) if [ -e refuse ]; then printf '{"ok":false,"messages":["the index is locked"]}'; exit 0; fi
+   mkdir -p "$work/data"; cp index.txt "$work/data/index.txt"; printf '{"ok":true}';;
+ restore) cp "$work/data/index.txt" index.txt; printf '{"ok":true}';;
+esac
+`
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	tw.WriteHeader(&tar.Header{Name: plugin.Program, Mode: 0o755, Size: int64(len(script)), Typeflag: tar.TypeReg})
+	tw.Write([]byte(script))
+	tw.Close()
+	gz.Close()
+	sum := sha256.Sum256(buf.Bytes())
+	raw, _ := json.Marshal(plugin.Manifest{Contract: plugin.Contract, Name: "meili", Version: "1.0", Provides: "search", Environment: []string{"SEARCH_URL"},
+		Hooks:    []string{"describe", "provision", "release", "backup", "restore"},
+		Archives: []plugin.Archive{{Arch: runtime.GOARCH, SHA256: hex.EncodeToString(sum[:]), Size: int64(buf.Len())}}})
+	signature, _ := json.Marshal(plugin.Sign(private, raw))
+	if _, err := m.stagePluginManifest(string(raw), signature); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := m.installPlugin(ctx, "meili", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	state := m.pluginState("meili")
+	os.WriteFile(filepath.Join(state, "index.txt"), []byte("first"), 0o600)
+	account := NativeAppAccount{User: "app-shop", UID: 1001, GID: 1001, Root: "/srv/apps/shop"}
+	grant, err := provisionNativeData(ctx, m, "shop", account, NativeDataRequest{Plugins: []NativePluginService{{Service: "search"}}})
+	if err != nil || len(grant.Databases) != 1 {
+		t.Fatalf("provision: %v %+v", err, grant)
+	}
+	resource := grant.Databases[0]
+	record, _ := m.hostDataRecord("shop")
+	if record.Plugins["search"].Resource != resource || !strings.HasPrefix(resource, "shop-pl") {
+		t.Fatalf("resource: %q %+v", resource, record.Plugins["search"])
+	}
+	m.mu.Lock()
+	policy, d := m.data.NativeDatabases[resource].Policy, m.data.Databases[resource]
+	inUse := m.nativeDatabaseInUseLocked(resource)
+	m.mu.Unlock()
+	if policy.PluginService != "search" || policy.AppID != "shop" || !d.Ready || d.Backup.Hours != 24 || !inUse || strings.Contains(d.URL, "@") {
+		t.Fatalf("protected resource: %+v %+v in use %v", policy, d, inUse)
+	}
+	// The service appears among the server's databases under the name of what the plugin provides.
+	found := false
+	for _, view := range m.databaseViews() {
+		found = found || view.AppID == resource && view.Engine == "search"
+	}
+	if !found {
+		t.Fatal("the service is not listed with its engine")
+	}
+	// A refusal of the plugin fails the backup and records nothing.
+	os.WriteFile(filepath.Join(state, "refuse"), nil, 0o600)
+	if _, err := m.dumpDatabase(ctx, d, nil); err == nil || !strings.Contains(err.Error(), "the index is locked") {
+		t.Fatalf("refused backup: %v", err)
+	}
+	os.Remove(filepath.Join(state, "refuse"))
+	backup, err := m.dumpDatabase(ctx, d, nil)
+	if err != nil || backup.Size == 0 || len(backup.SHA256) != 64 {
+		t.Fatalf("backup: %v %+v", err, backup)
+	}
+	if left, _ := filepath.Glob(filepath.Join(m.backupDir(resource), ".plugin-*")); len(left) != 0 {
+		t.Fatalf("the plugin's work directory stayed: %v", left)
+	}
+	// The data changes; the restore brings the backup's files back through the plugin.
+	os.WriteFile(filepath.Join(state, "index.txt"), []byte("second"), 0o600)
+	if err := m.restorePluginBackup(ctx, "shop", resource, backup); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(state, "index.txt")); string(raw) != "first" {
+		t.Fatalf("restored: %q", raw)
+	}
+	// A damaged backup is refused before the plugin sees it.
+	damaged := backup
+	damaged.SHA256 = strings.Repeat("0", 64)
+	if err := m.restorePluginBackup(ctx, "shop", resource, damaged); err == nil || !strings.Contains(err.Error(), "integrity") {
+		t.Fatalf("damaged backup: %v", err)
+	}
+	// It cannot be attached to another application or restored as PostgreSQL.
+	m.mu.Lock()
+	m.data.Apps = map[string]App{"other": {}}
+	bindErr := m.bindDatabaseLocked("other", "DATABASE_URL", resource)
+	m.mu.Unlock()
+	if bindErr == nil {
+		t.Fatal("a plugin's service was attached to another application")
+	}
+	// Removing the application releases the service; the resource is no longer bound.
+	if err := releaseNativeData(ctx, m, "shop"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	m.mu.Lock()
+	_, bound := m.data.NativeDatabases[resource]
+	m.mu.Unlock()
+	if _, _, ok := m.pluginResourceApp(resource); ok || bound {
+		t.Fatal("the resource stayed bound after the release")
+	}
+	// Archives with anything but files and directories are refused.
+	var bad bytes.Buffer
+	btw := tar.NewWriter(&bad)
+	btw.WriteHeader(&tar.Header{Name: "../escape", Mode: 0o600, Size: 1, Typeflag: tar.TypeReg})
+	btw.Write([]byte("x"))
+	btw.Close()
+	if err := untarPluginDirectory(&bad, t.TempDir()); err == nil {
+		t.Fatal("a path outside the directory was unpacked")
 	}
 }
