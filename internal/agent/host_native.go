@@ -75,30 +75,64 @@ func (m *Manager) enableHostNative(ctx context.Context) (HostNativeStatus, error
 	}
 	nativeCreateMu.Lock()
 	defer nativeCreateMu.Unlock()
-	account, err := nativeLookupUser(nativeDefaultUser)
+	native, err := provisionNativeHost(ctx, m.cfg.nativeConfigPath, m.nativeRootExec)
 	if err != nil {
-		// The same account managed SSH access creates: a login shell and no password.
-		if out, err := m.nativeRootExec(ctx, "useradd", "--create-home", "--shell", "/bin/bash", "--password", "*", nativeDefaultUser); err != nil {
-			return status, fmt.Errorf("the deployment account could not be created: %s", lastLines(out))
-		}
-		if account, err = nativeLookupUser(nativeDefaultUser); err != nil {
-			return status, errors.New("the deployment account was created but cannot be looked up")
-		}
-	}
-	native := NativeHostConfig{Root: filepath.Clean(account.HomeDir), User: nativeDefaultUser}
-	if err := native.validate(); err != nil {
-		return status, err
-	}
-	if resolved, err := filepath.EvalSymlinks(native.Root); err != nil || resolved != native.Root {
-		return status, fmt.Errorf("the deployment account's home %s must exist and must not be a symbolic link", native.Root)
-	}
-	if err := writeNativeConfig(m.cfg.nativeConfigPath, native); err != nil {
 		return status, err
 	}
 	if err := hostNativeRestart(); err != nil {
 		return status, fmt.Errorf("native applications are configured, but the agent could not restart itself (%v); restart the agent service", err)
 	}
 	return HostNativeStatus{User: native.User, Root: native.Root, Supported: true, Restarting: true}, nil
+}
+
+// provisionNativeHost creates the deployment account when it is missing and
+// names it and its home in the configuration file.
+func provisionNativeHost(ctx context.Context, configPath string, run func(context.Context, ...string) (string, error)) (NativeHostConfig, error) {
+	account, err := nativeLookupUser(nativeDefaultUser)
+	if err != nil {
+		// The same account managed SSH access creates: a login shell and no password.
+		if out, err := run(ctx, "useradd", "--create-home", "--shell", "/bin/bash", "--password", "*", nativeDefaultUser); err != nil {
+			return NativeHostConfig{}, fmt.Errorf("the deployment account could not be created: %s", lastLines(out))
+		}
+		if account, err = nativeLookupUser(nativeDefaultUser); err != nil {
+			return NativeHostConfig{}, errors.New("the deployment account was created but cannot be looked up")
+		}
+	}
+	native := NativeHostConfig{Root: filepath.Clean(account.HomeDir), User: nativeDefaultUser}
+	if err := native.validate(); err != nil {
+		return NativeHostConfig{}, err
+	}
+	if resolved, err := filepath.EvalSymlinks(native.Root); err != nil || resolved != native.Root {
+		return NativeHostConfig{}, fmt.Errorf("the deployment account's home %s must exist and must not be a symbolic link", native.Root)
+	}
+	if err := writeNativeConfig(configPath, native); err != nil {
+		return NativeHostConfig{}, err
+	}
+	return native, nil
+}
+
+// installerDataDir is the agent data directory of servers the hosting
+// installer set up; other layouts are configured by whoever built them.
+const installerDataDir = "/var/lib/lidza-agent"
+
+// EnsureNativeHost makes a server the hosting installer set up ready for
+// native applications when its agent starts: servers installed before the
+// installer did this get the deployment account and the native section with
+// their next agent update, without anyone asking. It reports what it did;
+// on any failure the agent starts as before and the server's Agent tab
+// offers the same step with the reason.
+func EnsureNativeHost(ctx context.Context, cfg *Config) (enabled bool, err error) {
+	if cfg.Native != nil || cfg.IngressOnly || cfg.DataDir != installerDataDir || cfg.nativeConfigPath == "" || runtime.GOOS != "linux" || hostNativeEUID() != 0 {
+		return false, nil
+	}
+	native, err := provisionNativeHost(ctx, cfg.nativeConfigPath, func(ctx context.Context, args ...string) (string, error) {
+		return hostCommand(ctx, args[0], args[1:]...)
+	})
+	if err != nil {
+		return false, err
+	}
+	cfg.Native = &native
+	return true, nil
 }
 
 // writeNativeConfig adds the native section to the configuration file,

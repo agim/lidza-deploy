@@ -94,6 +94,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if !*checkConfig {
+		// A server set up by the installer runs native applications as well as
+		// containers; one installed before that is prepared here, once.
+		setup, cancel := context.WithTimeout(context.Background(), time.Minute)
+		if enabled, err := agent.EnsureNativeHost(setup, &cfg); err != nil {
+			log.Printf("native applications are not enabled on this server: %v", err)
+		} else if enabled {
+			log.Printf("native applications enabled: deployment account %s, root %s", cfg.Native.User, cfg.Native.Root)
+		}
+		cancel()
+	}
 	if *checkConfig {
 		return
 	}

@@ -85,3 +85,65 @@ func TestEnableHostNativeCreatesTheAccountWritesTheConfigurationAndRestarts(t *t
 		t.Fatalf("configured agent: %v %+v", err, status)
 	}
 }
+
+func TestAgentStartEnablesNativeApplicationsOnInstallerServersOnly(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home-deploy")
+	if err := os.Mkdir(home, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(dir, "config.json")
+	write := func() {
+		if err := os.WriteFile(config, []byte(`{"listen":"127.0.0.1:9090","data_dir":"/var/lib/lidza-agent"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write()
+	t.Setenv("LIDZA_AGENT_TOKEN", strings.Repeat("k", 32))
+	savedLookup, savedEUID, savedCommand := nativeLookupUser, hostNativeEUID, hostCommand
+	t.Cleanup(func() { nativeLookupUser, hostNativeEUID, hostCommand = savedLookup, savedEUID, savedCommand })
+	nativeLookupUser = func(string) (*user.User, error) { return &user.User{Username: "deploy", HomeDir: home}, nil }
+	hostCommand = func(context.Context, string, ...string) (string, error) {
+		t.Fatal("an existing deployment account was created again")
+		return "", nil
+	}
+	hostNativeEUID = func() int { return 0 }
+	untouched := func(name string, cfg Config) {
+		t.Helper()
+		if enabled, err := EnsureNativeHost(context.Background(), &cfg); enabled || err != nil || cfg.Native != nil {
+			t.Fatalf("%s: enabled=%v err=%v native=%+v", name, enabled, err, cfg.Native)
+		}
+		if raw, _ := os.ReadFile(config); strings.Contains(string(raw), "native") {
+			t.Fatalf("%s: the configuration file was changed", name)
+		}
+	}
+	// Other layouts, readers of the web routes and non-root agents are left as they are.
+	untouched("custom data directory", Config{DataDir: "/var/lib/other-agent", nativeConfigPath: config})
+	untouched("ingress only", Config{DataDir: installerDataDir, IngressOnly: true, nativeConfigPath: config})
+	hostNativeEUID = func() int { return 1000 }
+	untouched("not root", Config{DataDir: installerDataDir, nativeConfigPath: config})
+	hostNativeEUID = func() int { return 0 }
+	// A server the installer set up before it prepared native applications.
+	cfg := Config{DataDir: installerDataDir, nativeConfigPath: config}
+	if enabled, err := EnsureNativeHost(context.Background(), &cfg); !enabled || err != nil || cfg.Native == nil || cfg.Native.Root != home || cfg.Native.User != "deploy" {
+		t.Fatalf("installer server: enabled=%v err=%v native=%+v", enabled, err, cfg.Native)
+	}
+	loaded, err := LoadConfig(config)
+	if err != nil || loaded.Native == nil || loaded.Native.Root != home {
+		t.Fatalf("configuration after start: %v %+v", err, loaded.Native)
+	}
+	// The next start finds it configured and does nothing.
+	if enabled, err := EnsureNativeHost(context.Background(), &loaded); enabled || err != nil {
+		t.Fatalf("second start: enabled=%v err=%v", enabled, err)
+	}
+	// A failure leaves the agent container-only; it still starts.
+	write()
+	nativeLookupUser = func(name string) (*user.User, error) { return nil, user.UnknownUserError(name) }
+	hostCommand = func(context.Context, string, ...string) (string, error) {
+		return "useradd: cannot lock /etc/passwd", errors.New("exit 1")
+	}
+	cfg = Config{DataDir: installerDataDir, nativeConfigPath: config}
+	if enabled, err := EnsureNativeHost(context.Background(), &cfg); enabled || err == nil || cfg.Native != nil {
+		t.Fatalf("failed account creation: enabled=%v err=%v", enabled, err)
+	}
+}

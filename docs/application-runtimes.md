@@ -60,8 +60,15 @@ connected with **Servers → Connect server**: it creates the `deploy` account
 (a login shell, no password; the account managed SSH access uses) and adds the
 `native` section, keeping one that is already there.
 
-A server installed before that runs containers only. Open its **Agent** tab
-and choose **Enable native applications**: the agent creates the account if it
+A server installed before that is prepared by its agent: when an agent that
+runs as root from the installer's layout (`data_dir` `/var/lib/lidza-agent`)
+starts without a `native` section, which it does after every update, it
+creates the account and adds the section before it serves anything, and logs
+`native applications enabled`. Agents of other layouts, readers of the web
+routes (`ingress_only`) and agents that are not root are left as they are.
+If that step fails the agent starts as before and logs why; the server's
+**Agent** tab then offers **Enable native applications**, which does the same
+on request: the agent creates the account if it
 is missing, adds the section to its configuration file (every other key, the
 file's mode and owner are kept, and the result must load before it replaces
 the file) and restarts itself once. Hosted applications are not touched. A

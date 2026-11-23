@@ -883,3 +883,6 @@ html { scroll-padding-top: 84px; }
   .resource-index-list .resource-table-body { gap: 0; }
   .resource-index-list .resource-row { border-bottom: 0; }
 }
+/* Move form: the destination address override stays folded away unless it is needed. */
+.move-address summary { cursor: pointer; }
+.move-address > * + * { margin-top: var(--space-2); }

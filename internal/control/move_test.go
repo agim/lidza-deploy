@@ -1203,7 +1203,7 @@ func TestMovePlanBlocksConflictsAndUnknownAddresses(t *testing.T) {
 		t.Fatal(status, err)
 	}
 	joined := strings.Join(plan.Blockers, "\n")
-	for _, want := range []string{"already has an application with this id", "already serves a hostname", "public address is unknown"} {
+	for _, want := range []string{"already has an application with this id", "already serves a hostname", "public address could not be found"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing blocker %q in %v", want, plan.Blockers)
 		}

@@ -1111,7 +1111,7 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 		return plan, 400, errors.New("destination addresses must be public IPv4 or IPv6 addresses")
 	}
 	if len(plan.Addresses) == 0 {
-		plan.Blockers = append(plan.Blockers, "The destination's public address is unknown; enter the addresses DNS should point to.")
+		plan.Blockers = append(plan.Blockers, "The destination server's public address could not be found; enter it under \"Destination address\". It is only used to show which DNS records to set when the move reaches Switch DNS.")
 	}
 	var remote []agent.App
 	if err := c.agentCall(req, target.ID, http.MethodGet, "/v1/apps", nil, &remote); err == nil {

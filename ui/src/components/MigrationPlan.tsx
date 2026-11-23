@@ -258,7 +258,11 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
       <Field label="Automatic attempts per step" hint="Transient failures (network, a restarting agent, a stalled transfer) are retried after 30s, 1m, 2m, 5m and 10m."><select aria-label="Automatic attempts per step" value={attempts} onChange={event => setAttempts(event.target.value)}>{['1', '3', '6', '8', '10'].map(value => <option key={value} value={value}>{value === '1' ? 'No automatic retry' : `${value} attempts`}</option>)}</select></Field>
       <Field label="Database copy" hint="Continuous replication keeps the destination following the source, so the locked final sync takes seconds; the plan shows the mode per database and falls back to a dump when a database cannot replicate."><select aria-label="Database copy" value={replication} onChange={event => { setReplication(event.target.value); setPlan(undefined); }}><option value="auto">Automatic (continuous replication when possible)</option><option value="dump">Dump and restore</option></select></Field>
     </div>
-    <Field label="DNS addresses (optional)" hint="Public IPv4 or IPv6 addresses DNS should point to. Leave empty to use the addresses the destination detects."><input aria-label="DNS addresses" autoComplete="off" value={addresses} onChange={event => { setAddresses(event.target.value); setPlan(undefined); }} placeholder="203.0.113.10, 2001:db8::10" /></Field>
+    <details className="move-address" open={addressList.length > 0 || (!!plan && plan.addresses.length === 0) || undefined}>
+      <summary>Destination address (normally found automatically)</summary>
+      <p className="muted-copy">The application keeps its hostnames. At the end of the move you point their DNS records at the new server; the move shows the exact records and waits until they resolve there. The control panel works out the new server's public address itself, so there is usually nothing to enter.</p>
+      <Field label="Public address of the destination" hint="Only if visitors reach that server through another address than the one found, such as a load balancer or a router that forwards to it. IPv4 or IPv6; several separated by commas."><input aria-label="Public address of the destination" autoComplete="off" value={addresses} onChange={event => { setAddresses(event.target.value); setPlan(undefined); }} placeholder="203.0.113.10, 2001:db8::10" /></Field>
+    </details>
     <div className="move-actions"><Button type="button" onClick={() => { void review(); }} disabled={busy || !target}>Review move</Button></div>
     {error && <ErrorBanner>{error}</ErrorBanner>}
     {plan && <div className="move-plan-review">
@@ -267,7 +271,7 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
         { label: 'Release', value: <>{plan.repository}@{plan.branch} · commit <code>{plan.commit?.slice(0, 12) || 'not deployed'}</code></> },
         { label: 'Hostnames', value: plan.hostnames.join(', ') },
         (plan.redirect_domains?.length ?? 0) > 0 && { label: 'Redirect domains', value: <>{plan.redirect_domains!.map(item => `${item.host} → ${item.status || 301}`).join(', ')}{plan.redirect_note && <span className="muted-copy"> {plan.redirect_note}</span>}</> },
-        { label: 'DNS will point to', value: plan.addresses.length ? plan.addresses.join(', ') : 'unknown' },
+        { label: 'New server address', value: plan.addresses.length ? <>{plan.addresses.join(', ')} <span className="muted-copy">· the address the hostnames' DNS records get at the Switch DNS step; nothing changes before</span></> : 'not found — enter it under Destination address' },
         { label: 'Environment', value: <>{plan.copied_keys.length} copied{environmentSources(plan.copied_sources)}{plan.copied_keys.length > 0 && <>: <code>{plan.copied_keys.join(', ')}</code></>}{plan.destination_keys.length > 0 && <>; set by the destination: <code>{plan.destination_keys.join(', ')}</code></>}</> },
         { label: 'Redis', value: plan.redis ? 'provisioned on the destination; contents are not copied' : 'none' },
         (plan.public_ports?.length ?? 0) > 0 && { label: 'Published ports', value: `${portList(plan.public_ports)}${plan.target_runtime === 'container' ? ' · opened by the destination agent' : ' · not published by the native runtime'}` },
