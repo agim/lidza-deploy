@@ -10,6 +10,7 @@ func (m *Manager) hostRoutes(mux *http.ServeMux) {
 	m.bundlerRoutes(mux)
 	m.resourceTuningRoutes(mux)
 	m.hostMailRoutes(mux)
+	m.hostNativeRoutes(mux)
 	mux.HandleFunc("GET /v1/host/updates", func(w http.ResponseWriter, r *http.Request) {
 		JSON(w, 200, m.hostUpdatesStatus(r.Context(), r.URL.Query().Get("refresh") == "1"))
 	})

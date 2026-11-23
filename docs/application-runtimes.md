@@ -50,3 +50,22 @@ Build settings are sent only when the serving agent advertises support.
 Validation includes real static and standalone Astro production builds,
 readiness and image reloads against an isolated Docker engine, retaining the old
 container during the test. These checks do not deploy or change hosted apps.
+
+## Servers ready for native applications
+
+Native applications need a deployment account on the server and its home
+named in the agent's configuration (`native.root`, `native.user`). The
+installer prepares this on every server it sets up, including servers
+connected with **Servers → Connect server**: it creates the `deploy` account
+(a login shell, no password; the account managed SSH access uses) and adds the
+`native` section, keeping one that is already there.
+
+A server installed before that runs containers only. Open its **Agent** tab
+and choose **Enable native applications**: the agent creates the account if it
+is missing, adds the section to its configuration file (every other key, the
+file's mode and owner are kept, and the result must load before it replaces
+the file) and restarts itself once. Hosted applications are not touched. A
+move of a native application to a server that is not ready says so and points
+here. `GET`/`POST /api/control/servers/{server}/host/native` is the API
+(`configured`, `user`, `root`, `supported`, `reason`, `restarting`).
+

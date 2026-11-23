@@ -34,7 +34,22 @@ async function mockConsole(page) {
     if (path === 'control/servers/local/maintenance/run') { state.maintenance.running = true; state.maintenanceStarted = Date.now(); return send(state.maintenance); }
     if (path === 'control/status') return send({ roles: ['admin'], github_app_connected: true, github_app_configured: true, github_public_https: true, hostname: 'deploy.example.com', control_version: 'v0.2.83', user: { subject: 'owner', email: 'ada@example.com', name: 'Ada Lovelace' } });
     if (path === 'control/apps') { if (method === 'POST') { state.apps.push({ ...app, ...body }); return send({ id: body.id }); } return send(state.apps); }
-    if (path === 'control/servers') return send([{ id: 'local', name: 'Production', url: 'http://127.0.0.1:9090' }]);
+    if (path === 'control/servers') return send([{ id: 'local', name: 'Production', url: 'http://127.0.0.1:9090' }, ...(state.enrolled || [])]);
+    // Connecting a new server: an SSH installation finishes on its second poll; a command waits to be run.
+    if (path === 'control/server-enrollments') {
+      state.enrollments ||= {};
+      const enrollment = { id: body.id, name: body.name, hostname: body.hostname, mode: body.ssh ? 'ssh' : 'command', state: body.ssh ? 'installing' : 'waiting', message: body.ssh ? 'Logged in; installing the agent' : 'Waiting for the command to run on the server', polls: 0 };
+      if (body.ssh) Object.assign(enrollment, { host_key: 'SHA256:fixturehostkey', log: 'Downloading the agent release…\n' });
+      else enrollment.command = `curl -fsSL https://deploy.example.com/enroll/${'ab'.repeat(32)}/install.sh | sudo sh`;
+      state.enrollments[body.id] = enrollment;
+      return send(enrollment);
+    }
+    if (path.startsWith('control/server-enrollments/')) {
+      const enrollment = (state.enrollments || {})[path.split('/').pop()];
+      if (!enrollment) return route.fulfill({ status: 404, json: { error: 'not found' } });
+      if (enrollment.mode === 'ssh' && ++enrollment.polls >= 1) { Object.assign(enrollment, { state: 'connected', message: 'Server connected' }); state.enrolled = [...(state.enrolled || []), { id: enrollment.id, name: enrollment.name, url: `https://${enrollment.hostname}` }]; }
+      return send(enrollment);
+    }
     if (path === 'control/deployments/build-one') return send({id:'build-one',app_id:'portal',server_id:'local',status:'building',created:now,duration_seconds:20,log:'Preparing deployment\nBuilding image\n[fixture output]'});
     if (path === 'control/deployments') return send({ deployments: [{ id: 'build-one', app_id: 'portal', server_id: 'local', status: 'building', created: now, duration_seconds: 20, commit: app.current.commit, log: 'Preparing deployment\nBuilding image\n[fixture output]' }], unavailable_servers: [] });
     if (path === 'control/server-health') return send({ servers: [{ server_id: 'local', checked: now, cpus: 4, cpu_percent: 12.5, memory_total: 8 * 1024 ** 3, memory_available: 5 * 1024 ** 3, load1: .2, disks: [{ path: '/var/lib/docker', total: 100 * 1024 ** 3, available: 30 * 1024 ** 3, used_percent: 70 }], database_bytes: { portal: 20 * 1024 ** 2 } }], unavailable_servers: [] });
@@ -61,6 +76,12 @@ async function mockConsole(page) {
     if (path === 'control/servers/local/containers') return send({ checked_at: now, containers: [{ id: 'container-one', ports, name: 'lidza-portal-' + 'a'.repeat(48), app_id: 'portal', role: 'application', state: 'running', health: 'healthy', cpu: '12.5%', memory: '80 MiB / 1 GiB', memory_percent: 8, restartable: true }] });
     if (path === 'control/servers/local/host/resources' || path === 'control/servers/local/host/resources/overrides') { const policy = { max_use_bytes: 4294967296, keep_free_bytes: 19299041280, max_file_bytes: 536870912, retention: '30day' }; return send({ supported: true, host: { cpus: 8, memory_mib: 32768, disk_gib: 359 }, apps: 4, computed: now, overrides: {}, changes: [], journal: { disk_path: '/var/log/journal', disk_bytes: 386000000000, computed: policy, target: policy, drop_in: '/etc/systemd/journald.conf.d/zz-lidza-journal.conf', usage_bytes: 4100000000, last_applied: now, neutralized: [{ file: '/etc/systemd/journald.conf.d/99-zz-retention-30d.conf', lines: ['SystemMaxUse=100G', 'SystemKeepFree=50G', 'MaxRetentionSec=30day'], backup: '/var/lib/lidza-agent/journald-backups/99-zz-retention-30d.conf.20261106T140000Z', at: now }] }, jobs: [{ id: 'journal-policy-boot-1', kind: 'journal-policy', trigger: 'boot', status: 'succeeded', started: now, summary: 'System log size set to 4G.' }] }); }
     if (path === 'control/servers/local/host/service-control') { state.serviceControl ||= { supported: true, enabled: false, source: 'config', config_default: false, account: 'deploy' }; if (method === 'PUT') state.serviceControl = { ...state.serviceControl, enabled: body.enabled, source: 'setting' }; return send(state.serviceControl); }
+    // Native applications: enabling restarts the agent, which then reports them configured.
+    if (path === 'control/servers/local/host/native') {
+      state.native ||= { configured: false, supported: true };
+      if (method === 'POST') { state.native = { configured: true, supported: true, user: 'deploy', root: '/home/deploy' }; return send({ configured: false, supported: true, restarting: true, user: 'deploy', root: '/home/deploy' }); }
+      return send(state.native);
+    }
     if (path === 'control/servers/local/host/log-access') { state.logAccess ||= { supported: true, enabled: false, source: 'config', account: 'deploy', group: 'systemd-journal', member: false }; if (method === 'PUT') state.logAccess = { ...state.logAccess, enabled: body.enabled, member: body.enabled, source: 'setting' }; return send(state.logAccess); }
     if (path === 'control/servers/local/upgrade') return send({ current: 'v0.2.83', latest: 'v0.2.84', state: 'idle', supported: true });
     if (path === 'control/servers/local/ssh-access') return send({ keys: [{ id: 'operator', name: 'Operator', fingerprint: 'SHA256:fixture-key' }] });

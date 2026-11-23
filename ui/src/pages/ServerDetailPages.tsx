@@ -15,6 +15,7 @@ import { HostUpdateBadges, ServerUpdates } from '../components/ServerUpdates';
 import { ResourceList, type Column } from '../components/ResourceList';
 import { ServerTuning } from '../components/ServerTuning';
 import { ServerEnrollment } from '../components/ServerEnrollment';
+import { ServerNativeApps } from '../components/ServerNativeApps';
 import { ServerFirewall } from '../components/ServerFirewall';
 import { ServerIngress } from '../components/ServerIngress';
 import { ServerServiceControl } from '../components/ServerServiceControl';
@@ -83,7 +84,7 @@ export function ServerDetailPage({ serverID, tab }: { serverID: string; tab: str
 export function ConnectServerPage() {
   const [mode, setMode] = useState<'ssh' | 'command' | 'existing'>('ssh');
   return <div className="page" data-template="create" data-resource="servers"><PageHeader title="Connect server" description="Add a server to this control panel." />
-    <Stack gap="section">
+    <Stack gap="page">
       <Card className="form-card narrow-form"><Field label="How to connect" hint={mode === 'ssh' ? 'Recommended for a new server.' : mode === 'command' ? 'For servers the control panel cannot reach over SSH.' : 'For a server whose hosting agent is already installed.'}><select aria-label="How to connect" value={mode} onChange={event => setMode(event.target.value as 'ssh' | 'command' | 'existing')}><option value="ssh">Install over SSH</option><option value="command">Run one command on the server</option><option value="existing">The agent is already installed</option></select></Field></Card>
       {mode === 'existing' ? <ConnectInstalledAgent /> : <ServerEnrollment key={mode} mode={mode} />}
     </Stack>
@@ -92,7 +93,7 @@ export function ConnectServerPage() {
 
 function ConnectInstalledAgent() {
   const { submit, error, busy } = useSaveConnection('new', true);
-  return <ActionForm id="server-form" onSubmit={submit}><Stack gap="section">{error && <ErrorBanner>{error}</ErrorBanner>}<Card className="form-card narrow-form"><SectionHeader title="Agent connection" description="The token is sent only when you save it and is never returned to the browser." /><ConnectionFields isNew /></Card><div className="sticky-actions"><Button type="button" onClick={() => { goBack(indexHref('servers')); }}>Cancel</Button><Button type="submit" variant="primary" disabled={busy}>{busy ? 'Saving…' : 'Save connection'}</Button></div></Stack></ActionForm>;
+  return <ActionForm id="server-form" onSubmit={submit}><Stack gap="page">{error && <ErrorBanner>{error}</ErrorBanner>}<Card className="form-card narrow-form"><SectionHeader title="Agent connection" description="The token is sent only when you save it and is never returned to the browser." /><ConnectionFields isNew /></Card><div className="sticky-actions"><Button type="button" onClick={() => { goBack(indexHref('servers')); }}>Cancel</Button><Button type="submit" variant="primary" disabled={busy}>{busy ? 'Saving…' : 'Save connection'}</Button></div></Stack></ActionForm>;
 }
 
 function ServerConnectionCard({ serverID, server }: { serverID: string; server?: ServerType }) {
@@ -131,6 +132,7 @@ function ServerAgent({ server }: { server: ServerType }) {
   return <Stack gap="page">
     <ServerAgentUpgrade serverID={server.id} />
     <ServerConnectionCard serverID={server.id} server={server} />
+    <ServerNativeApps serverID={server.id} />
     <ServerServiceControl serverID={server.id} />
     <ServerLogAccess serverID={server.id} />
     <DangerZone id={server.id} description="Disconnecting affects only this control panel.">

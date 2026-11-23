@@ -34,6 +34,8 @@ func (c *Control) hostAdminRoutes(handle func(string, http.HandlerFunc)) {
 		"PUT /api/control/servers/{server}/host/log-access",
 		"GET /api/control/servers/{server}/host/ruby/bundlers",
 		"POST /api/control/servers/{server}/host/ruby/bundlers/remove",
+		"GET /api/control/servers/{server}/host/native",
+		"POST /api/control/servers/{server}/host/native",
 		"GET /api/control/servers/{server}/host/resources",
 		"PUT /api/control/servers/{server}/host/resources/overrides",
 		"POST /api/control/servers/{server}/host/resources/apply",
@@ -167,6 +169,9 @@ func (c *Control) hostAdmin(w http.ResponseWriter, r *http.Request) {
 		input = apply
 	case rest == "/host/firewall/confirm":
 		input = struct{}{}
+	case rest == "/host/native" && r.Method == http.MethodPost:
+		// Enabling restarts the server's agent; the answer says so.
+		input, accepted = struct{}{}, true
 	case rest == "/host/ruby/bundlers/remove":
 		var removal agent.BundlerRemoval
 		if err := agent.Decode(w, r, &removal); err != nil {

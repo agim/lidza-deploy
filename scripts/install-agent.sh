@@ -75,6 +75,7 @@ if $plan; then
 5. Public mode only: install and validate Caddy routing for application FQDNs.
    Also allow ports 80/443 in an already active UFW or firewalld host firewall.
    Install a timer that retries HTTPS certificates once the hostname resolves.
+   Create the deployment account so the server also runs native applications.
 6. Start services; check the authenticated agent API.
 7. Save private GUI connection details in /etc/lidza-agent/connection.json.
 GUI setup address: $setup_origin
@@ -143,6 +144,8 @@ if [[ -z "$stage" ]]; then
  fi
  getent group lidza-agent >/dev/null || groupadd --system lidza-agent
  id lidza-agent >/dev/null 2>&1 || useradd --system --gid lidza-agent --home-dir /var/lib/lidza-agent --shell /usr/sbin/nologin lidza-agent
+ # Native applications are built and run by a deployment account (the one managed SSH access uses).
+ id deploy >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --password '*' deploy
  if $with_control; then
   getent group lidza-control >/dev/null || groupadd --system lidza-control
   id lidza-control >/dev/null 2>&1 || useradd --system --gid lidza-control --home-dir /var/lib/lidza-control --shell /usr/sbin/nologin lidza-control
@@ -157,6 +160,20 @@ install -m 0644 "$bundle/deploy/lidza-agent.service" "$root/etc/systemd/system/l
 if [[ ! -f "$root/etc/lidza-agent/config.json" ]]; then
  install -m 0600 "$bundle/deploy/agent.example.json" "$root/etc/lidza-agent/config.json"
 fi
+# Every installed server can run native applications as well as containers:
+# name the deployment account and its home, keeping an existing native section.
+native_home=$( { getent passwd deploy 2>/dev/null || true; } | cut -d: -f6)
+python3 - "$root/etc/lidza-agent/config.json" "${native_home:-/home/deploy}" <<'PYNATIVE'
+import json, os, sys
+path, home = sys.argv[1], sys.argv[2]
+with open(path) as f: config = json.load(f)
+if 'native' not in config and not config.get('ingress_only'):
+    config['native'] = {'root': home, 'user': 'deploy'}
+    temp = path + '.next'
+    with open(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as f:
+        json.dump(config, f, indent=2); f.write('\n')
+    os.replace(temp, path)
+PYNATIVE
 if [[ ! -f "$root/etc/lidza-agent/agent.env" ]]; then
  token=$(openssl rand -hex 32)
  printf 'LIDZA_AGENT_TOKEN=%s\nDOCKER_CONFIG=/var/lib/lidza-agent/docker\n' "$token" > "$root/etc/lidza-agent/agent.env"

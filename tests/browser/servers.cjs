@@ -32,6 +32,8 @@ suite('servers', [
     name: 'connecting a server opens it',
     async run({ page, state, open }) {
       await open('/console/servers/new');
+      // A server that already runs an agent is added with its connection details.
+      await page.getByRole('combobox', { name: 'How to connect' }).selectOption('existing');
       await page.getByRole('textbox', { name: /^Server ID/ }).fill('edge');
       await page.getByRole('textbox', { name: 'Display name' }).fill('Edge');
       await page.getByRole('textbox', { name: 'Agent URL' }).fill('https://agent.example.com');
@@ -39,6 +41,45 @@ suite('servers', [
       await page.getByRole('button', { name: 'Save connection' }).click();
       await page.waitForURL(url => url.pathname === '/console/servers/edge');
       assert.deepEqual(callsTo(state, 'control/servers', 'POST')[0].body, { id: 'edge', name: 'Edge', url: 'https://agent.example.com', token: 't'.repeat(40) });
+    },
+  },
+  {
+    name: 'connect: the panel installs a new server over SSH, or gives one command',
+    async run({ page, state, open }) {
+      await open('/console/servers/new');
+      // Installing over SSH is the default; the login is sent once with the request.
+      await page.getByRole('textbox', { name: /^Server ID/ }).fill('edge');
+      await page.getByRole('textbox', { name: 'Display name' }).fill('Edge');
+      await page.getByRole('textbox', { name: /^Hostname/ }).fill('edge.example.com');
+      await page.getByRole('textbox', { name: 'SSH password' }).fill('one-time-pass');
+      await page.getByRole('button', { name: 'Install and connect' }).click();
+      await page.getByRole('region', { name: 'Installer output' }).waitFor();
+      assert.deepEqual(callsTo(state, 'control/server-enrollments', 'POST')[0].body, { id: 'edge', name: 'Edge', hostname: 'edge.example.com', email: '', ssh: { user: 'root', port: 22, address: '', host_key: '', password: 'one-time-pass' } });
+      assert.equal(await page.getByRole('textbox', { name: 'SSH password' }).count(), 0, 'the password field stayed on screen after the request');
+      // The page follows the installation and opens the server once it is connected.
+      await page.waitForURL(url => url.pathname === '/console/servers/edge');
+      // Without SSH access the panel gives one command to run on the server.
+      await open('/console/servers/new');
+      await page.getByRole('combobox', { name: 'How to connect' }).selectOption('command');
+      assert.equal(await page.getByRole('textbox', { name: 'SSH password' }).count(), 0);
+      await page.getByRole('textbox', { name: /^Server ID/ }).fill('edge2');
+      await page.getByRole('textbox', { name: 'Display name' }).fill('Edge 2');
+      await page.getByRole('textbox', { name: /^Hostname/ }).fill('edge2.example.com');
+      await page.getByRole('button', { name: 'Create install command' }).click();
+      assert.match(await page.getByRole('textbox', { name: 'Install command' }).inputValue(), /^curl -fsSL https:\/\/deploy\.example\.com\/enroll\/[a-f0-9]+\/install\.sh \| sudo sh$/);
+      assert.equal(callsTo(state, 'control/server-enrollments', 'POST')[1].body.ssh, undefined);
+    },
+  },
+  {
+    name: 'agent tab: native applications are enabled after confirmation',
+    async run({ page, state, open }) {
+      await open('/console/servers/local/agent');
+      await page.getByRole('button', { name: 'Enable native applications' }).click();
+      assert.equal(callsTo(state, 'control/servers/local/host/native', 'POST').length, 0, 'enabled before the agent restart was confirmed');
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Enable' }).click();
+      // The card follows the agent's restart and then shows the account and root.
+      await page.locator('[data-native-apps="enabled"]').getByText('/home/deploy').waitFor();
+      assert.equal(callsTo(state, 'control/servers/local/host/native', 'POST').length, 1);
     },
   },
   {

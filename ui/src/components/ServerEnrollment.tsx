@@ -60,7 +60,7 @@ export function ServerEnrollment({ mode }: { mode: 'ssh' | 'command' }) {
   };
   const cancel = async () => { if (enrollment) await del(`control/server-enrollments/${encodeURIComponent(enrollment.id)}`).catch(() => undefined); setEnrollment(undefined); };
 
-  if (enrollment) return <Stack gap="section">
+  if (enrollment) return <Stack gap="page">
     {enrollment.state === 'failed' && <ErrorBanner>{enrollment.message || 'The server could not be connected.'}</ErrorBanner>}
     <Card className="form-card narrow-form" data-enrollment={enrollment.state}><SectionHeader title={`Connecting ${enrollment.name}`} description={enrollment.hostname} actions={<StatusBadge status={stateStatus[enrollment.state]} />} />
       <Stack gap="md">
@@ -73,7 +73,7 @@ export function ServerEnrollment({ mode }: { mode: 'ssh' | 'command' }) {
     </Card>
   </Stack>;
 
-  return <ActionForm id="server-enrollment-form" onSubmit={submit}><Stack gap="section">
+  return <ActionForm id="server-enrollment-form" onSubmit={submit}><Stack gap="page">
     {error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
     <Card className="form-card narrow-form"><SectionHeader title="New server" description={mode === 'ssh' ? 'The control panel logs in once, installs the hosting agent, opens the web ports and connects the server. Nothing is typed on the server.' : 'The control panel gives you one command to run on the server. It installs the hosting agent and connects the server by itself.'} /><IdentityFields /></Card>
     {mode === 'ssh' && <Card className="form-card narrow-form"><SectionHeader title="SSH login" description="Used for this one installation and never stored." />

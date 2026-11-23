@@ -1169,7 +1169,7 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 		}
 	}
 	if plan.TargetRuntime == moveRuntimeNative && !host.Native {
-		plan.Blockers = append(plan.Blockers, "Native management is not configured on the destination agent.")
+		plan.Blockers = append(plan.Blockers, "The destination server is not set up for native applications; enable them on its Agent tab, then review the move again.")
 	}
 	planMoveGateway(&plan, appID, source, host, targetName)
 

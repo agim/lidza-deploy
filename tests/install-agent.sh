@@ -18,6 +18,14 @@ cmp -s "$scratch/original.env" "$scratch/stage/etc/lidza-agent/agent.env"
 ! rg -q "^LIDZA_SELF_UPDATE_" "$scratch/stage/etc/lidza-control/control.env"
 rg -q "^AUTH_CONNECT=github$" "$scratch/stage/etc/lidza-control/control.env"
 [[ $(stat -c %a "$scratch/stage/etc/lidza-agent/agent.env") == 600 ]]
+# Every installed server is ready for native applications; the listeners stay as configured.
+python3 - "$scratch/stage/etc/lidza-agent/config.json" <<'PYCONFIG'
+import json, sys
+config = json.load(open(sys.argv[1]))
+assert config['native'] == {'root': '/home/deploy', 'user': 'deploy'}, config
+assert config['listen'] == '127.0.0.1:9090' and config['data_dir'] == '/var/lib/lidza-agent', config
+PYCONFIG
+[[ $(stat -c %a "$scratch/stage/etc/lidza-agent/config.json") == 600 ]]
 # Installer-prepared hosts are container hosts: the agent manages Docker's daemon settings there.
 [[ -f "$scratch/stage/etc/lidza-agent/docker-managed" ]]
 # Public installs ship a certificate retry for installer-managed hostnames.
