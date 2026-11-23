@@ -170,6 +170,15 @@ The agent then:
 - runs `release` with that record and those secrets when the application is
   removed, or when its creation fails part way.
 
+### Writing a plugin
+
+The `pluginapi` package is the kit: the request and answer types the agent
+itself uses, and `pluginapi.Main`, which reads the request, calls the handler
+of the hook and writes the answer. `examples/plugin-example` is a complete
+plugin (a notes directory per application) in about ninety lines; a test
+builds it from source and takes it through the agent: signed, installed,
+checked, provisioned for an application and released.
+
 Not built yet: backups, restores, moves, tuning and maintenance through
 hooks; the console pages; naming a plugin in `deploy/lidza.stack.json`; and
 the ClickHouse plugin itself, so ClickHouse is still built into the agent.

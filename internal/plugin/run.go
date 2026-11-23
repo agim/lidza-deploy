@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/agim/lidza-deploy/pluginapi"
 )
 
 const (
@@ -19,49 +21,14 @@ const (
 	maxLog    = 64 << 10
 )
 
-// Server is what the agent tells a plugin about the server it runs on, so a
-// plugin never has to guess (a release its processor cannot run, a disk too
-// small for the data).
-type Server struct {
-	Arch        string   `json:"arch"`
-	CPUFlags    []string `json:"cpu_flags,omitempty"`
-	MemoryBytes uint64   `json:"memory_bytes,omitempty"`
-	// StateFreeBytes is the free space of the file system the plugin's state
-	// directory is on.
-	StateFreeBytes uint64 `json:"state_free_bytes,omitempty"`
-}
-
-// Request is what every hook receives on standard input.
-type Request struct {
-	Contract int    `json:"contract"`
-	Hook     string `json:"hook"`
-	Server   Server `json:"server"`
-	// StateDir is the plugin's own directory for what it keeps.
-	StateDir string `json:"state_dir"`
-	// WorkDir is a directory for this one call (a backup to write, an
-	// export to read); empty for hooks without data.
-	WorkDir string `json:"work_dir,omitempty"`
-	// Input is the hook's own request.
-	Input json.RawMessage `json:"input,omitempty"`
-}
-
-// Check is one thing a plugin verified.
-type Check struct {
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	OK         bool   `json:"ok"`
-	Detail     string `json:"detail,omitempty"`
-	Repairable bool   `json:"repairable,omitempty"`
-	Caution    bool   `json:"caution,omitempty"`
-}
-
-// Answer is what every hook writes to standard output.
-type Answer struct {
-	OK       bool            `json:"ok"`
-	Messages []string        `json:"messages,omitempty"`
-	Checks   []Check         `json:"checks,omitempty"`
-	Output   json.RawMessage `json:"output,omitempty"`
-}
+// The request and answer of a hook are the plugin kit's types: the agent and a
+// plugin written with pluginapi share one definition.
+type (
+	Server  = pluginapi.Server
+	Request = pluginapi.Request
+	Check   = pluginapi.Check
+	Answer  = pluginapi.Answer
+)
 
 // Result is a hook's answer with what the agent observed.
 type Result struct {

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -276,5 +277,72 @@ func TestAnApplicationGetsAServiceFromAPluginAndGivesItBack(t *testing.T) {
 	}
 	if err := validateNativePluginServices([]NativePluginService{{Service: "Bad Name"}}); err == nil {
 		t.Fatal("an invalid service name was accepted")
+	}
+}
+
+// The example plugin, built from source with the plugin kit, goes through the
+// agent exactly as a real one would: signed, installed, checked, provisioned
+// for an application and released. This is the proof that the kit and the
+// agent speak the same contract.
+func TestTheExamplePluginBuiltWithTheKitWorksThroughTheAgent(t *testing.T) {
+	goBinary, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("the Go toolchain is not on PATH")
+	}
+	program := filepath.Join(t.TempDir(), plugin.Program)
+	build := exec.Command(goBinary, "build", "-o", program, "github.com/agim/lidza-deploy/examples/plugin-example")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building the example plugin: %v\n%s", err, out)
+	}
+	binary, err := os.ReadFile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	tw.WriteHeader(&tar.Header{Name: plugin.Program, Mode: 0o755, Size: int64(len(binary)), Typeflag: tar.TypeReg})
+	tw.Write(binary)
+	tw.Close()
+	gz.Close()
+	m, _ := newHostDataFixture(t)
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	if err := m.setPluginKeys([]string{hex.EncodeToString(public)}); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	raw, _ := json.Marshal(plugin.Manifest{Contract: plugin.Contract, Name: "notes", Version: "1.0", Provides: "notes", Summary: "Keeps a notes directory per application.",
+		Hooks: []string{"describe", "check", "status", "provision", "release"}, Environment: []string{"NOTES_DIR"},
+		Archives: []plugin.Archive{{Arch: runtime.GOARCH, SHA256: hex.EncodeToString(sum[:]), Size: int64(buf.Len())}}})
+	signature, _ := json.Marshal(plugin.Sign(private, raw))
+	ctx := context.Background()
+	if _, err := m.stagePluginManifest(string(raw), signature); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.installPlugin(ctx, "notes", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	services := []NativePluginService{{Service: "notes"}}
+	if checks := m.pluginServiceChecks(ctx, "shop", services, nil); len(checks) != 1 || !checks[0].OK || checks[0].Title != "Notes disk" {
+		t.Fatalf("check: %+v", checks)
+	}
+	grant, err := provisionNativeData(ctx, m, "shop", NativeAppAccount{User: "app-shop", UID: 1001, GID: 1001, Root: "/srv/apps/shop"}, NativeDataRequest{Plugins: services})
+	dir := grant.Env["NOTES_DIR"]
+	if err != nil || dir != filepath.Join(m.pluginState("notes"), "notes", "shop") {
+		t.Fatalf("provision: %v %v", err, grant.Env)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("the provisioned directory: %v", err)
+	}
+	result, err := m.runPluginHook(ctx, "notes", "status", nil)
+	if err != nil || !strings.Contains(string(result.Answer.Output), `"applications":1`) {
+		t.Fatalf("status: %v %s", err, result.Answer.Output)
+	}
+	if err := releaseNativeData(ctx, m, "shop"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("the released directory stayed")
 	}
 }

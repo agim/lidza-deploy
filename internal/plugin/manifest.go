@@ -16,10 +16,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/agim/lidza-deploy/pluginapi"
 )
 
 // Contract is the version of the hook contract this agent speaks.
-const Contract = 1
+const Contract = pluginapi.Contract
 
 const (
 	// MaxManifestSize bounds a manifest or signature document.
