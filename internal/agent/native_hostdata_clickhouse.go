@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -72,6 +73,14 @@ type NativeClickHouseServer struct {
 	Password  string    `json:"password_sealed"` // the default (administrator) user
 	Installed bool      `json:"installed"`
 	Updated   time.Time `json:"updated"`
+}
+
+// NativeClickHouseBlocked records that a ClickHouse release could not run on
+// this server at all (its processor is too old for it).
+type NativeClickHouseBlocked struct {
+	Series string    `json:"series"`
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
 }
 
 // NativeHostClickHouse is one application's database on the host server.
@@ -503,9 +512,102 @@ func (h nativeHostData) installClickHouse(ctx context.Context, series string, se
 		return "", err
 	}
 	if out, err := h.aptInstall(ctx, "clickhouse-server", "clickhouse-client"); err != nil {
-		return "", fmt.Errorf("ClickHouse %s installation failed: %s", series, nativeTrimOutput(out))
+		// Nothing of a failed installation stays behind: a half-configured
+		// package stops every later package operation on the host.
+		cleaned := h.removeClickHousePackages(ctx)
+		if clickhouseIllegalInstruction(out) {
+			return "", &clickhouseUnsupportedError{Series: series, CPU: h.cpuSummary(), Cleaned: cleaned}
+		}
+		suffix := ""
+		if cleaned {
+			suffix = " The packages were removed again."
+		}
+		return "", fmt.Errorf("ClickHouse %s installation failed: %s.%s", series, nativeTrimOutput(out), suffix)
 	}
 	return series, nil
+}
+
+// clickhouseUnsupportedError: the server's processor cannot run this
+// ClickHouse release. Retrying cannot help; the application's ClickHouse
+// needs another server.
+type clickhouseUnsupportedError struct {
+	Series, CPU string
+	Cleaned     bool
+}
+
+func (e *clickhouseUnsupportedError) Error() string {
+	message := "ClickHouse " + e.Series + " cannot run on this server's processor (" + e.CPU + "): its programs stop with an illegal instruction, so they need processor features this one does not have. Host this application's ClickHouse on a server with a newer processor."
+	if e.Cleaned {
+		message += " The packages were removed again; the server is as it was."
+	}
+	return message
+}
+
+// clickhouseIllegalInstruction recognises a package script that died of
+// SIGILL (exit status 132): the binary uses instructions the CPU lacks.
+func clickhouseIllegalInstruction(out string) bool {
+	lower := strings.ToLower(out)
+	return strings.Contains(lower, "exit status 132") || strings.Contains(lower, "illegal instruction")
+}
+
+// removeClickHousePackages purges the packages of an installation that did
+// not complete. It is only called when ClickHouse was not installed before,
+// so no data exists yet.
+func (h nativeHostData) removeClickHousePackages(ctx context.Context) bool {
+	_, err := h.run(ctx, "", "/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=300", "purge", "-y", "-q", "clickhouse-server", "clickhouse-client", "clickhouse-common-static")
+	return err == nil
+}
+
+// cpuSummary names the processor and which of the newer instruction sets it
+// lacks, for messages about software that will not run on it.
+func (h nativeHostData) cpuSummary() string {
+	raw, err := os.ReadFile(h.path("/proc/cpuinfo"))
+	if err != nil {
+		return "unknown processor"
+	}
+	model, flags := "unknown processor", map[string]bool{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "model name":
+			model = strings.Join(strings.Fields(value), " ")
+		case "flags":
+			for _, flag := range strings.Fields(value) {
+				flags[flag] = true
+			}
+		}
+	}
+	if len(flags) == 0 {
+		return model
+	}
+	missing := []string{}
+	for _, flag := range []string{"avx2", "bmi2", "fma"} {
+		if !flags[flag] {
+			missing = append(missing, strings.ToUpper(flag))
+		}
+	}
+	if len(missing) == 0 {
+		return model
+	}
+	return model + ", without " + strings.Join(missing, ", ")
+}
+
+// cpuLacksAVX2 reports an x86 processor without AVX2: older than what recent
+// ClickHouse releases are built for.
+func (h nativeHostData) cpuLacksAVX2() bool {
+	raw, err := os.ReadFile(h.path("/proc/cpuinfo"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if key, value, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(key) == "flags" {
+			return !slices.Contains(strings.Fields(value), "avx2")
+		}
+	}
+	return false
 }
 
 func (m *Manager) saveClickHouseServer(server NativeClickHouseServer) error {
@@ -564,11 +666,33 @@ func (m *Manager) ensureHostClickHouse(ctx context.Context, h nativeHostData, se
 	if err != nil {
 		return server, "", err
 	}
+	if installed && !server.Installed {
+		// Packages of an installation that never completed (the server was
+		// never recorded as installed): remove them and install afresh, so a
+		// retry does not start from a half-configured package.
+		if h.removeClickHousePackages(ctx) {
+			installed = false
+		}
+	}
 	if !installed {
 		chosen, err := h.installClickHouse(ctx, cmp.Or(series, h.cfg.ClickHouseVersion), server, admin)
 		if err != nil {
+			var unsupported *clickhouseUnsupportedError
+			if errors.As(err, &unsupported) {
+				// Remembered, so the next review says so before anything is tried.
+				m.mu.Lock()
+				m.data.NativeClickHouseBlocked = &NativeClickHouseBlocked{Series: unsupported.Series, Reason: err.Error(), At: time.Now().UTC()}
+				_ = m.save()
+				m.mu.Unlock()
+			}
 			return server, "", err
 		}
+		m.mu.Lock()
+		if m.data.NativeClickHouseBlocked != nil {
+			m.data.NativeClickHouseBlocked = nil
+			_ = m.save()
+		}
+		m.mu.Unlock()
 		server.Series, server.Installed = chosen, true
 		if err := m.saveClickHouseServer(server); err != nil {
 			return server, "", err

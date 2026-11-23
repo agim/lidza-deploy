@@ -115,6 +115,12 @@ func provisionNativeHost(ctx context.Context, configPath string, run func(contex
 // installer set up; other layouts are configured by whoever built them.
 const installerDataDir = "/var/lib/lidza-agent"
 
+// InstallerServer reports a server the hosting installer set up, whose agent
+// runs as root and may keep it ready on its own.
+func InstallerServer(cfg Config) bool {
+	return !cfg.IngressOnly && cfg.DataDir == installerDataDir && runtime.GOOS == "linux" && hostNativeEUID() == 0
+}
+
 // EnsureNativeHost makes a server the hosting installer set up ready for
 // native applications when its agent starts: servers installed before the
 // installer did this get the deployment account and the native section with

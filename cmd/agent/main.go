@@ -123,6 +123,12 @@ func main() {
 	if !cfg.IngressOnly {
 		m.StartMaintenance()
 	}
+	if agent.InstallerServer(cfg) {
+		// A server the installer set up repairs what an earlier failure left
+		// behind (a service that failed, packages of an installation that did
+		// not complete) once it is up. Other layouts are repaired on request.
+		go m.RepairHostAfterStart(ctx, 45*time.Second)
+	}
 	api := &http.Server{Addr: cfg.Listen, Handler: agent.Handler(m), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second}
 	proxy := &http.Server{Addr: cfg.ProxyListen, Handler: agent.Proxy(m), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	gateway := m.GatewayServer()

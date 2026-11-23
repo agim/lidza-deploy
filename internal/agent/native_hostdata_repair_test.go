@@ -225,3 +225,51 @@ func TestHostReadinessReportsAndRepairsServicesAndNamesAFullDisk(t *testing.T) {
 		t.Fatalf("another layout's Caddy was reported: %+v", c)
 	}
 }
+
+// A ClickHouse release the processor cannot run: the installation is rolled
+// back, the error says what it is, and the half-configured packages of an
+// earlier attempt are recognised as the agent's own to remove.
+func TestClickHouseOnATooOldProcessorIsNamedAndLeavesNothingBehind(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "proc"), 0o755)
+	os.MkdirAll(filepath.Join(root, "usr/bin"), 0o755)
+	os.WriteFile(filepath.Join(root, "proc/cpuinfo"), []byte("processor\t: 0\nmodel name\t: Example(R) CPU E5-2407 v2 @ 2.40GHz\nflags\t\t: fpu sse4_2 popcnt avx f16c aes\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "usr/bin/dpkg-query"), []byte("#!/bin/sh\n"), 0o755)
+	var commands []string
+	h := nativeHostData{root: root, run: func(_ context.Context, _ string, name string, args ...string) (string, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		if name == "/usr/bin/dpkg-query" {
+			return "ii bash\niF clickhouse-server\nii clickhouse-client\niU clickhouse-common-static\nrc old-package\n", nil
+		}
+		return "", nil
+	}}
+	if got := h.cpuSummary(); got != "Example(R) CPU E5-2407 v2 @ 2.40GHz, without AVX2, BMI2, FMA" || !h.cpuLacksAVX2() {
+		t.Fatalf("cpu summary %q", got)
+	}
+	out := "(core dumped)\ndpkg: error processing package clickhouse-server (--configure):\n installed clickhouse-server package post-installation script subprocess returned error exit status 132\n"
+	if !clickhouseIllegalInstruction(out) || clickhouseIllegalInstruction("E: Unable to locate package clickhouse-server") {
+		t.Fatal("an illegal instruction was not told from another failure")
+	}
+	err := &clickhouseUnsupportedError{Series: "26.8", CPU: h.cpuSummary(), Cleaned: true}
+	for _, want := range []string{"ClickHouse 26.8 cannot run on this server's processor", "without AVX2, BMI2, FMA", "illegal instruction", "removed again"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("message lacks %q: %s", want, err)
+		}
+	}
+	// Half-installed packages are found; only ClickHouse's own are the agent's to remove.
+	broken := h.brokenPackages(context.Background())
+	if strings.Join(broken, ",") != "clickhouse-server,clickhouse-common-static" {
+		t.Fatalf("broken packages %v", broken)
+	}
+	m := &Manager{data: diskState{}}
+	if !m.ownsBrokenPackages(h, broken) || m.ownsBrokenPackages(h, append(broken, "postgresql-17")) {
+		t.Fatal("ownership of half-installed packages is wrong")
+	}
+	m.data.NativeClickHouse = &NativeClickHouseServer{Installed: true}
+	if m.ownsBrokenPackages(h, broken) {
+		t.Fatal("packages of a completed ClickHouse installation would be removed")
+	}
+	if !h.removeClickHousePackages(context.Background()) || !strings.Contains(commands[len(commands)-1], "purge -y -q clickhouse-server clickhouse-client clickhouse-common-static") {
+		t.Fatalf("purge command %v", commands)
+	}
+}

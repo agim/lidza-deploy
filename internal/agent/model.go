@@ -245,6 +245,9 @@ type diskState struct {
 	// installed for created applications, with its sealed administrator
 	// password (native_hostdata_clickhouse.go).
 	NativeClickHouse *NativeClickHouseServer `json:"native_clickhouse,omitempty"`
+	// NativeClickHouseBlocked is set when a ClickHouse release proved
+	// unable to run on this server's processor.
+	NativeClickHouseBlocked *NativeClickHouseBlocked `json:"native_clickhouse_blocked,omitempty"`
 
 	// Host operating-system management: update/reboot policy with its job
 	// history, and the managed firewall (host_updates.go, host_firewall.go).

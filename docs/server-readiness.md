@@ -14,6 +14,7 @@ nobody discovers it in the middle of a deployment or a move.
 
 | ClickHouse, Redis | the service runs (where installed) | a service that **failed** is started; one stopped without failing is left alone and not reported |
 | Web server (Caddy) | it runs, on servers where the installer set it up as the web entrance | yes, it is started |
+| Package manager | no package is half installed | packages of a ClickHouse installation the agent started and that never completed are removed; anything else is named |
 | Disk space | the root file system and each PostgreSQL data disk have more than 2 GiB and 5% free | no: named with the path and what is free |
 
 A PostgreSQL cluster that is stopped without having failed was stopped on
@@ -36,6 +37,21 @@ the tool is missing. Neither lets anyone list or read the directory.
   destination will repair it itself.
 - **The server's Overview** shows the report under *Ready for applications*,
   with **Repair now**.
+
+## A server that cannot run a service at all
+
+Recent ClickHouse releases are built for processors newer than some servers
+have. On such a server the package's own setup stops with an illegal
+instruction. The agent recognises that, **removes the packages again** so the
+server is as it was, says that this processor (with its name and the
+instruction sets it lacks) cannot run that release, and remembers it: the next
+review of a move there blocks on it before anything is tried. A server whose
+processor lacks AVX2 and has no ClickHouse yet is flagged *At risk* in the
+rehearsal beforehand.
+
+On servers the installer set up, the agent runs one repair pass 45 seconds
+after it starts, so what an earlier failure left behind (a failed service,
+half-installed packages of its own) is cleared with the next agent update.
 
 ## Rehearsing an application before a move
 

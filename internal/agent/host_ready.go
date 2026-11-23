@@ -9,6 +9,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -25,6 +26,8 @@ type HostReadinessCheck struct {
 	// Repairable problems are fixed by POST /v1/host/readiness/repair, and
 	// by the agent itself when an application needs the service.
 	Repairable bool `json:"repairable,omitempty"`
+	// Caution marks a passing check with a risk worth reading before going on.
+	Caution bool `json:"caution,omitempty"`
 }
 
 type HostReadiness struct {
@@ -81,6 +84,10 @@ func (m *Manager) hostReadiness(ctx context.Context) HostReadiness {
 		}
 		// Otherwise it was stopped on purpose, or runs per application: not this report's business.
 	}
+	// Half-configured packages stop every later installation and update.
+	if broken := host.brokenPackages(ctx); len(broken) > 0 {
+		add(HostReadinessCheck{ID: "packages", Title: "Package manager", Detail: "Packages are only half installed (" + strings.Join(broken, ", ") + "); nothing can be installed or updated on this server until that is resolved.", Repairable: m.ownsBrokenPackages(host, broken)})
+	}
 	// A full disk stops deployments, databases and logs alike.
 	paths := []string{"/"}
 	if clusters, _ := host.listClusters(ctx); len(clusters) > 0 {
@@ -100,6 +107,43 @@ func (m *Manager) hostReadiness(ctx context.Context) HostReadiness {
 		}
 	}
 	return report
+}
+
+// brokenPackages lists packages dpkg reports as unpacked or half configured.
+func (h nativeHostData) brokenPackages(ctx context.Context) []string {
+	if !h.fileExists("/usr/bin/dpkg-query") {
+		return nil
+	}
+	out, err := h.run(ctx, "", "/usr/bin/dpkg-query", "-W", "-f", "${db:Status-Abbrev} ${Package}\\n")
+	if err != nil {
+		return nil
+	}
+	broken := []string{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		// Desired state install, actual state unpacked (U), half-configured (F) or half-installed (H).
+		if len(fields) == 2 && len(fields[0]) >= 2 && fields[0][0] == 'i' && strings.ContainsRune("UFH", rune(fields[0][1])) {
+			broken = append(broken, fields[1])
+		}
+	}
+	return broken
+}
+
+// ownsBrokenPackages reports that every broken package is of a ClickHouse
+// installation this agent started and never completed: those it may remove.
+func (m *Manager) ownsBrokenPackages(h nativeHostData, broken []string) bool {
+	m.mu.Lock()
+	completed := m.data.NativeClickHouse != nil && m.data.NativeClickHouse.Installed
+	m.mu.Unlock()
+	if completed || len(broken) == 0 {
+		return false
+	}
+	for _, name := range broken {
+		if !strings.HasPrefix(name, "clickhouse-") {
+			return false
+		}
+	}
+	return true
 }
 
 // readinessService is a host service applications depend on.
@@ -160,6 +204,13 @@ func (m *Manager) repairHost(ctx context.Context) HostReadiness {
 				repaired = append(repaired, "started Docker")
 			}
 		}
+		if broken := host.brokenPackages(ctx); m.ownsBrokenPackages(host, broken) {
+			if host.removeClickHousePackages(ctx) {
+				repaired = append(repaired, "removed the packages of a ClickHouse installation that did not complete ("+strings.Join(broken, ", ")+")")
+			} else {
+				failed = append(failed, "the half-installed ClickHouse packages could not be removed; run: apt-get purge clickhouse-server clickhouse-client clickhouse-common-static")
+			}
+		}
 		for _, service := range host.readinessServices() {
 			if state := host.unitState(ctx, service.unit); state == "failed" || service.always && state != "active" {
 				if did, err := host.startService(ctx, service); err != nil {
@@ -173,6 +224,31 @@ func (m *Manager) repairHost(ctx context.Context) HostReadiness {
 	report := m.hostReadiness(ctx)
 	report.Repaired, report.Failed = repaired, failed
 	return report
+}
+
+// RepairHostAfterStart runs one repair pass shortly after the agent starts,
+// so a server heals from what an earlier failure left behind without anyone
+// asking, and logs what it did.
+func (m *Manager) RepairHostAfterStart(ctx context.Context, delay time.Duration) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(delay):
+	}
+	bounded, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	report := m.repairHost(bounded)
+	for _, line := range report.Repaired {
+		log.Printf("server readiness: repaired: %s", line)
+	}
+	for _, line := range report.Failed {
+		log.Printf("server readiness: could not repair: %s", line)
+	}
+	for _, check := range report.Checks {
+		if !check.OK && !check.Repairable {
+			log.Printf("server readiness: needs attention: %s: %s", check.Title, check.Detail)
+		}
+	}
 }
 
 func (m *Manager) hostReadinessRoutes(mux *http.ServeMux) {

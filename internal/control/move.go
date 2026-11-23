@@ -1402,6 +1402,8 @@ func (c *Control) planMovePreflight(r *http.Request, plan *MovePlan, src Applica
 	}
 	for _, check := range out.Checks {
 		switch {
+		case check.OK && check.Caution:
+			plan.Warnings = append(plan.Warnings, "On the destination: "+check.Detail)
 		case check.OK:
 		case check.Repairable:
 			plan.Notes = append(plan.Notes, "On the destination: "+check.Detail+" The destination repairs this itself when the move prepares it.")

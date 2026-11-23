@@ -146,7 +146,15 @@ func (m *Manager) nativePreflight(ctx context.Context, in NativePreflightRequest
 		if installed {
 			state = host.unitState(ctx, nativeCHUnit)
 		}
+		m.mu.Lock()
+		blocked := m.data.NativeClickHouseBlocked
+		m.mu.Unlock()
 		switch {
+		case blocked != nil && !(installed && state == "active"):
+			// A release already proved unable to run on this processor.
+			add(HostReadinessCheck{ID: "clickhouse", Title: "ClickHouse", Detail: blocked.Reason})
+		case !installed && host.fileExists("/usr/bin/apt-get") && host.cpuLacksAVX2():
+			add(HostReadinessCheck{ID: "clickhouse", Title: "ClickHouse", OK: true, Caution: true, Detail: "ClickHouse is not installed. This server's processor (" + host.cpuSummary() + ") is older than recent ClickHouse releases are built for; the installation may stop with an illegal instruction. If it does, nothing is left behind and the move stops at its first step."})
 		case !installed && host.fileExists("/usr/bin/apt-get"):
 			series := req.Data.ClickHouseVersion
 			if series == "" {
