@@ -31,9 +31,13 @@ for target in agent:lidza-agent web:lidza-control;do
 done
 printf 'amd64\n' > "$stage/ARCH"
 install -m 0755 scripts/upgrade-agent.sh "$stage/deploy/upgrade-agent.sh"
+# The installer travels with the release, so the control panel can set up a
+# new server from the very bundle it verified (server enrollment).
+install -m 0755 scripts/install-agent.sh "$stage/install-agent.sh"
+install -m 0644 deploy/agent.example.json "$stage/deploy/agent.example.json"
 install -m 0644 deploy/lidza-agent-upgrade.path deploy/lidza-agent-upgrade.service deploy/lidza-agent.service deploy/lidza-control.service "$stage/deploy/"
 printf '%s\n' "$commit" > "$stage/REVISION"
-(cd "$stage" && sha256sum ARCH REVISION bin/lidza-agent bin/lidza-control deploy/* > SHA256SUMS && sha256sum --strict -c SHA256SUMS >/dev/null)
+(cd "$stage" && sha256sum ARCH REVISION install-agent.sh bin/lidza-agent bin/lidza-control deploy/* > SHA256SUMS && sha256sum --strict -c SHA256SUMS >/dev/null)
 [[ $("$stage/bin/lidza-agent" -version) == "$version" && $("$stage/bin/lidza-control" -version) == "$version" ]]
 archive=$output/lidza-agent-linux-amd64.tar.gz
 tar --sort=name --owner=0 --group=0 --numeric-owner -czf "$archive" -C "$stage" .

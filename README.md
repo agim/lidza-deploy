@@ -144,13 +144,15 @@ Each Līdza project must contain `lidza.json`. An absent root Dockerfile is gene
 
 ### Separate hosting servers
 
-Run the root installer on each hosting server. Configure the agent hostname's DNS first, then install:
+Point a DNS name at the new server, then open **Servers → Connect server** in the control panel. It installs the hosting agent itself, either over SSH (you enter the server's login once; it is not stored) or with one command it gives you to run on the server, then opens the web ports, obtains the certificate and connects the server. No agent token is copied by hand. See [Connecting a new server](docs/connect-server.md).
+
+To install by hand instead, run the root installer on the server:
 
 ```sh
 sudo sh install.sh --agent-only --fqdn agent.example.com --email ops@example.com
 ```
 
-This installs the hosting agent with an authenticated HTTPS management endpoint. Import `/etc/lidza-agent/connection.json` through the control panel's wizard or **Servers → Connect server**; retrieve it privately over SSH. The file contains the agent token. Ports 9090 and 8081 remain internal. The installer opens ports 80/443 in an already active UFW or firewalld host firewall; forward or allow them yourself on routers and cloud firewalls. DNS may be added after installation: the certificate is requested automatically within minutes of the hostname resolving. You can connect multiple servers and deploy multiple apps on each.
+Then choose **The agent is already installed** on the Connect server page and enter the URL and token from `/etc/lidza-agent/connection.json`; retrieve it privately over SSH. Ports 9090 and 8081 remain internal. The installer opens ports 80/443 in an already active UFW or firewalld host firewall; forward or allow them yourself on routers and cloud firewalls. DNS may be added after installation: the certificate is requested automatically within minutes of the hostname resolving. You can connect multiple servers and deploy multiple apps on each.
 
 ### Application databases, backups and alerts
 

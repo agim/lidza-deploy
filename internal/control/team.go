@@ -51,6 +51,9 @@ func routePermission(pattern string) string {
 		return "team.manage"
 	case "GET /api/control/servers/{server}/ssh-access", "GET /api/control/servers/{server}/retained-resources", "GET /api/control/servers/{server}/databases/{id}/tables":
 		return "infrastructure.manage"
+	case "GET /api/control/server-enrollments/{id}":
+		// The pending install command carries the one-time enrollment token.
+		return "infrastructure.manage"
 	case "POST /api/control/servers/{server}/console/jobs/{job}/cancel", "GET /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console", "POST /api/control/servers/{server}/console/jobs", "GET /api/control/servers/{server}/console/jobs/{job}":
 		return "infrastructure.manage"
 	case "GET /api/control/audit":

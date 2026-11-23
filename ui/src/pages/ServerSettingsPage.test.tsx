@@ -76,6 +76,9 @@ describe('server detail tabs', () => {
     render(<ConnectServerPage />);
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Connect server/ })).toBeInTheDocument();
+    // A new server is installed by the panel; connecting an installed agent by hand stays available.
+    expect(screen.getByRole('button', { name: 'Install and connect' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('How to connect'), { target: { value: 'existing' } });
     expect(screen.getByRole('button', { name: 'Save connection' })).toBeInTheDocument();
   });
 });

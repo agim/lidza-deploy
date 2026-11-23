@@ -45,7 +45,9 @@ from a different build (for example the public release) has no signed bundle
 routes and cannot verify this distribution's releases: it is marked *skipped*
 with what to do, and the remaining hosts still update. Install this
 distribution's agent bundle on that host once; the next check then counts it
-as updated. Hosted applications are never
+as updated. A new server connected with **Servers → Connect
+server** gets this distribution's bundle from the start (see
+[Connecting a new server](connect-server.md)). Hosted applications are never
 touched. Unit files are not replaced by bundle upgrades; unit changes remain
 reviewed host changes.
 

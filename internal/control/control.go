@@ -116,6 +116,8 @@ type saved struct {
 	PanelArrival *PanelArrival `json:"panel_arrival,omitempty"`
 }
 type Control struct {
+	// enroll holds the pending connections of new servers (enroll.go).
+	enroll enrollments
 	// stateWriter writes the sealed state file outside mu (state_writer.go).
 	stateWriter stateWriter
 	// credentialsFixture replaces deploymentCredentials in unit tests that run
@@ -499,6 +501,7 @@ func (c *Control) Handler(frontend http.Handler) http.Handler {
 	mux.HandleFunc("POST /api/agent/checkout-token", c.panelReadOnlyGuard("POST /api/agent/checkout-token", c.checkoutToken))
 	mux.HandleFunc("POST /api/agent/errors", c.panelReadOnlyGuard("POST /api/agent/errors", c.ingestErrors))
 	c.agentLinkRoutes(mux)
+	c.enrollmentPublicRoutes(mux)
 	mux.Handle("/api/control/", c.Protect(private))
 	mux.Handle("/", frontend)
 	return mux
@@ -551,6 +554,7 @@ func (c *Control) routes(handle func(string, http.HandlerFunc)) {
 	handle("PUT /api/control/apps/{id}/{feature}", c.appFeature)
 	handle("POST /api/control/apps/{id}/restore", func(w http.ResponseWriter, r *http.Request) { r.SetPathValue("feature", "restore"); c.appFeature(w, r) })
 	handle("GET /api/control/status", c.status)
+	c.enrollmentRoutes(handle)
 	handle("GET /api/control/servers", func(w http.ResponseWriter, r *http.Request) {
 		out := c.servers()
 		for i := range out {

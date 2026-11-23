@@ -14,6 +14,7 @@ import { ServerResources, useServerHealth } from '../components/ServerResources'
 import { HostUpdateBadges, ServerUpdates } from '../components/ServerUpdates';
 import { ResourceList, type Column } from '../components/ResourceList';
 import { ServerTuning } from '../components/ServerTuning';
+import { ServerEnrollment } from '../components/ServerEnrollment';
 import { ServerFirewall } from '../components/ServerFirewall';
 import { ServerIngress } from '../components/ServerIngress';
 import { ServerServiceControl } from '../components/ServerServiceControl';
@@ -73,10 +74,25 @@ export function ServerDetailPage({ serverID, tab }: { serverID: string; tab: str
   </ResourceDetailPage>;
 }
 
-/** ConnectServerPage: the create form of a server (/servers/new). */
+/**
+ * ConnectServerPage: the create form of a server (/servers/new). A server
+ * without an agent is installed by the control panel over SSH or with one
+ * command (ServerEnrollment); a server that already runs an agent is added
+ * with its connection details.
+ */
 export function ConnectServerPage() {
+  const [mode, setMode] = useState<'ssh' | 'command' | 'existing'>('ssh');
+  return <div className="page" data-template="create" data-resource="servers"><PageHeader title="Connect server" description="Add a server to this control panel." />
+    <Stack gap="section">
+      <Card className="form-card narrow-form"><Field label="How to connect" hint={mode === 'ssh' ? 'Recommended for a new server.' : mode === 'command' ? 'For servers the control panel cannot reach over SSH.' : 'For a server whose hosting agent is already installed.'}><select aria-label="How to connect" value={mode} onChange={event => setMode(event.target.value as 'ssh' | 'command' | 'existing')}><option value="ssh">Install over SSH</option><option value="command">Run one command on the server</option><option value="existing">The agent is already installed</option></select></Field></Card>
+      {mode === 'existing' ? <ConnectInstalledAgent /> : <ServerEnrollment key={mode} mode={mode} />}
+    </Stack>
+  </div>;
+}
+
+function ConnectInstalledAgent() {
   const { submit, error, busy } = useSaveConnection('new', true);
-  return <ActionForm id="server-form" className="page" data-template="create" data-resource="servers" onSubmit={submit}><PageHeader title="Connect server" description="Add an installed hosting agent to this control panel." actions={<div className="sticky-actions"><Button type="button" onClick={() => { goBack(indexHref('servers')); }}>Cancel</Button><Button type="submit" variant="primary" disabled={busy}>{busy ? 'Saving…' : 'Save connection'}</Button></div>} />{error && <ErrorBanner>{error}</ErrorBanner>}<Card className="form-card narrow-form"><SectionHeader title="Agent connection" description="The token is sent only when you save it and is never returned to the browser." /><ConnectionFields isNew /></Card></ActionForm>;
+  return <ActionForm id="server-form" onSubmit={submit}><Stack gap="section">{error && <ErrorBanner>{error}</ErrorBanner>}<Card className="form-card narrow-form"><SectionHeader title="Agent connection" description="The token is sent only when you save it and is never returned to the browser." /><ConnectionFields isNew /></Card><div className="sticky-actions"><Button type="button" onClick={() => { goBack(indexHref('servers')); }}>Cancel</Button><Button type="submit" variant="primary" disabled={busy}>{busy ? 'Saving…' : 'Save connection'}</Button></div></Stack></ActionForm>;
 }
 
 function ServerConnectionCard({ serverID, server }: { serverID: string; server?: ServerType }) {
