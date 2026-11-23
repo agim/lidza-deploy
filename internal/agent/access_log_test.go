@@ -19,11 +19,13 @@ func hatchboxLogs() map[string]any {
 	}}
 }
 
-func TestAccessLogMappingKeepsTheJournalAndAddsTheApplicationLogger(t *testing.T) {
+// Each request is written once: a hostname with its own file leaves the
+// journal, and returns to it when the file is switched off.
+func TestAccessLogMappingMovesAHostnameFromTheJournalToItsOwnFile(t *testing.T) {
 	hosts := map[string]string{"shop.example.com": "shop", "www.shop.example.com": "shop"}
 	next, changed := accessLogServerLogs(hatchboxLogs(), hosts)
 	names := next["logger_names"].(map[string]any)
-	if !changed || !slices.Equal(caddyNameList(names["shop.example.com"]), []string{"", "lidza-access-shop"}) || !slices.Equal(caddyNameList(names["www.shop.example.com"]), []string{"", "lidza-access-shop"}) {
+	if !changed || !slices.Equal(caddyNameList(names["shop.example.com"]), []string{"lidza-access-shop"}) || !slices.Equal(caddyNameList(names["www.shop.example.com"]), []string{"lidza-access-shop"}) {
 		t.Fatalf("mapping = %v", names)
 	}
 	if !slices.Equal(caddyNameList(names["other.example.com"]), []string{""}) {
@@ -32,10 +34,13 @@ func TestAccessLogMappingKeepsTheJournalAndAddsTheApplicationLogger(t *testing.T
 	if again, changed := accessLogServerLogs(next, hosts); changed || !jsonEqual(mustJSON(again), mustJSON(next)) {
 		t.Fatal("a second pass must change nothing")
 	}
-	// Switched off: the names go, the hostnames log as before.
+	// Switched off: the names go; unmapped again, the hostnames log to the
+	// server's default logger, the journal.
 	back, changed := accessLogServerLogs(next, nil)
 	names = back["logger_names"].(map[string]any)
-	if !changed || !slices.Equal(caddyNameList(names["shop.example.com"]), []string{""}) || !slices.Equal(caddyNameList(names["www.shop.example.com"]), []string{""}) {
+	_, shop := names["shop.example.com"]
+	_, www := names["www.shop.example.com"]
+	if !changed || shop || www || !slices.Equal(caddyNameList(names["other.example.com"]), []string{""}) {
 		t.Fatalf("withdrawn mapping = %v", names)
 	}
 	// Untouched entries keep their exact form.
@@ -50,7 +55,7 @@ func TestAccessLogMappingOfHostnamesThatWereNotMapped(t *testing.T) {
 		logs map[string]any
 		want []string
 	}{
-		{"unmapped, logged by default", map[string]any{}, []string{"", "lidza-access-shop"}},
+		{"unmapped, logged by default", map[string]any{}, []string{"lidza-access-shop"}},
 		{"unmapped with a default logger name", map[string]any{"default_logger_name": "sites"}, []string{"sites", "lidza-access-shop"}},
 		{"wildcard mapping", map[string]any{"logger_names": map[string]any{"*.example.com": []any{"wild"}}}, []string{"wild", "lidza-access-shop"}},
 		{"unmapped hosts skipped", map[string]any{"skip_unmapped_hosts": true}, []string{"lidza-access-shop"}},
@@ -130,8 +135,11 @@ func TestAccessLogLoggingExcludesTheApplicationLogsFromEveryOtherLog(t *testing.
 	if logs["tls"].(map[string]any)["exclude"] != nil || logs["scanners"].(map[string]any)["exclude"] != nil {
 		t.Fatal("logs that never took access entries must stay as they are")
 	}
-	if logs["lidza-access-shop"].(map[string]any)["encoder"].(map[string]any)["format"] != "json" {
-		t.Fatal("the application log must encode entries as the journal does")
+	// Encoded as the journal's entries are, without the fields that repeat on every request.
+	encoder := logs["lidza-access-shop"].(map[string]any)["encoder"].(map[string]any)
+	fields, _ := encoder["fields"].(map[string]any)
+	if encoder["format"] != "filter" || encoder["wrap"].(map[string]any)["format"] != "json" || !jsonEqual(mustJSON(fields["resp_headers"]), mustJSON(map[string]any{"filter": "delete"})) || fields["request>tls"] == nil {
+		t.Fatalf("application log encoder = %s", mustJSON(encoder))
 	}
 	back, _, _ := accessLogLogging(next, nil, false)
 	if !jsonEqual(mustJSON(back), mustJSON(current)) {
@@ -213,7 +221,7 @@ func TestAccessLogIsOnByDefaultAndReadableOnlyByTheApplication(t *testing.T) {
 	f.m.reconcileAccessLogs(ctx)
 
 	names := caddy.at("/config/apps/http/servers/srv0/logs/logger_names").(map[string]any)
-	if !slices.Equal(caddyNameList(names["shop.example.com"]), []string{"", "lidza-access-shop"}) || !slices.Equal(caddyNameList(names["other.example.com"]), []string{""}) {
+	if !slices.Equal(caddyNameList(names["shop.example.com"]), []string{"lidza-access-shop"}) || !slices.Equal(caddyNameList(names["other.example.com"]), []string{""}) {
 		t.Fatalf("logger names = %v", names)
 	}
 	if got := caddy.strings("/config/logging/logs/default/exclude"); !slices.Equal(got, []string{"http.log.access.lidza-access-shop"}) {
@@ -265,7 +273,8 @@ func TestAccessLogIsOnByDefaultAndReadableOnlyByTheApplication(t *testing.T) {
 	f.m.mu.Unlock()
 	f.m.reconcileAccessLogs(ctx)
 	names = caddy.at("/config/apps/http/servers/srv0/logs/logger_names").(map[string]any)
-	if _, still := names["www.shop.example.com"]; !still || !slices.Equal(caddyNameList(names["www.shop.example.com"]), []string{""}) || !slices.Equal(caddyNameList(names["shop.example.org"]), []string{"", "lidza-access-shop"}) {
+	// The hostname the application gave up is unmapped (the journal again); the new one has only the file.
+	if _, still := names["www.shop.example.com"]; still || !slices.Equal(caddyNameList(names["shop.example.org"]), []string{"lidza-access-shop"}) {
 		t.Fatalf("hostname change: %v", names)
 	}
 }
@@ -281,8 +290,8 @@ func TestAccessLogSwitchedOffStopsWritingAndRemovesTheFiles(t *testing.T) {
 		t.Fatalf("switch off: %d %s", w.Code, w.Body)
 	}
 	names := caddy.at("/config/apps/http/servers/srv0/logs/logger_names").(map[string]any)
-	if !slices.Equal(caddyNameList(names["shop.example.com"]), []string{""}) {
-		t.Fatalf("journal mapping must stay: %v", names)
+	if _, mapped := names["shop.example.com"]; mapped || !slices.Equal(caddyNameList(names["other.example.com"]), []string{""}) {
+		t.Fatalf("switched off, the hostname must be unmapped again and log to the journal: %v", names)
 	}
 	if caddy.at("/config/logging/logs/lidza-access-shop") != nil || caddy.at("/config/logging/logs/default") != nil {
 		t.Fatalf("logging = %v", caddy.at("/config/logging"))
@@ -434,5 +443,18 @@ func TestArchiveDeletionWithdrawsTheAccessLogAndRestoresTheJournalMapping(t *tes
 	names := f.caddy.at("/config/apps/http/servers/srv0/logs/logger_names").(map[string]any)
 	if !slices.Equal(caddyNameList(names["rails.example.com"]), []string{""}) {
 		t.Fatalf("restored mapping %v", names["rails.example.com"])
+	}
+}
+
+// An encoder that already filters fields keeps them; ours are added.
+func TestAccessLogSlimEncoderKeepsAnExistingFilter(t *testing.T) {
+	got := accessLogSlimEncoder(map[string]any{"format": "filter", "wrap": map[string]any{"format": "json", "time_format": "iso8601"},
+		"fields": map[string]any{"request>headers>Cookie": map[string]any{"filter": "delete"}}})
+	fields := got["fields"].(map[string]any)
+	if got["format"] != "filter" || got["wrap"].(map[string]any)["time_format"] != "iso8601" || fields["request>headers>Cookie"] == nil || fields["resp_headers"] == nil || fields["request>tls"] == nil {
+		t.Fatalf("encoder = %s", mustJSON(got))
+	}
+	if plain := accessLogSlimEncoder(nil); plain["wrap"].(map[string]any)["format"] != "json" || len(plain["fields"].(map[string]any)) != 2 {
+		t.Fatalf("default encoder = %s", mustJSON(plain))
 	}
 }

@@ -68,14 +68,18 @@ writes the access entries of the application's hostnames to
 ```
 
 and the application's environment file sets `LIDZA_ACCESS_LOG` to that path.
-Each line is the JSON entry `journalctl -u caddy -o cat` shows, except that
-`logger` is `http.log.access.lidza-access-<id>`. The directory is
+Each line is Caddy's JSON access entry (time, host, method, URI, client
+address, request headers, status, size, duration) with `logger`
+`http.log.access.lidza-access-<id>`. The response headers and TLS details are
+left out: they repeat on every request and were more than half of each entry. The directory is
 `<caddy>:<app group>` mode `2750` and the files `0640`, so only the
 application's account and root read them. Rotated files
 (`access-<UTC time>[-<reason>].log.gz`) stay in the same directory: at most
 50 MiB per file, 30 files and 14 days; Caddy 2.11 and later also rotate daily.
-The journal keeps exactly what it had: the default log excludes the
-application loggers. It needs Caddy 2.9 or later. Running processes read
+Each request is written once: while an application has its file, its
+hostnames no longer log to the journal as well (loggers an operator named for
+them stay). The journal keeps everything else, and gets the requests back when
+the file is switched off. It needs Caddy 2.9 or later. Running processes read
 `LIDZA_ACCESS_LOG` when they start (next restart or deploy); scheduled jobs
 read it from their next run. Switching the log off stops writing and removes
 the files and the variable; deleting the application removes them too.

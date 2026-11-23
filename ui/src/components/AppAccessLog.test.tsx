@@ -25,7 +25,7 @@ it('shows the access log file, who reads it and the environment variable, and sw
   expect(screen.getByText(/after the next restart or deploy/)).toBeInTheDocument();
   expect(screen.getByText('shop.example.com, www.shop.example.com')).toBeInTheDocument();
   expect(screen.getByText(/up to 14 days · 2 files/)).toBeInTheDocument();
-  expect(screen.getByText(/The system journal is unchanged/)).toBeInTheDocument();
+  expect(screen.getByText(/no longer repeated in the system journal/)).toBeInTheDocument();
   fireEvent.click(toggle);
   await waitFor(() => expect(api.put).toHaveBeenCalledWith('control/apps/shop/access-log', { enabled: false }));
   await waitFor(() => expect(screen.getByRole('switch', { name })).toHaveAttribute('aria-checked', 'false'));

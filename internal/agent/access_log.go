@@ -30,8 +30,11 @@ import (
 //
 //	/var/log/lidza/apps/<id>/access.log
 //
-// one JSON entry per line, exactly the entry the journal shows except for
-// its "logger" field (http.log.access.lidza-access-<id>). The roller keeps
+// one JSON entry per line, the entry the journal used to show without the
+// response headers and TLS details (they repeat on every request and were
+// more than half of each entry) and with its own "logger" field
+// (http.log.access.lidza-access-<id>). Each request is written once: a
+// hostname with its own file no longer goes to the journal as well. The roller keeps
 // rotated siblings in the same directory (access-<UTC time>[-<reason>].log.gz),
 // at most 50 MiB per file, 30 files and 14 days; Caddy 2.11 and later also
 // rotate daily. The directory is owned by Caddy's account with the
@@ -48,8 +51,8 @@ import (
 //     writes to the journal, first of all) excludes it, so the journal keeps
 //     exactly what it has today;
 //   - the server's logs.logger_names maps each hostname of the application
-//     to the names it logged to before (usually "", the journal) plus
-//     lidza-access-<id>. A hostname that was not logged before gets only
+//     to lidza-access-<id>, plus any logger an operator named for it; the
+//     default logger (the journal) is dropped while the file is on. A hostname that was not logged before gets only
 //     the application's name. A server without access logging gets a logs
 //     object whose default logger name (lidza_unlogged) no log accepts, so
 //     unmapped hostnames stay unlogged.
@@ -335,11 +338,38 @@ func renderAccessLog(id, version string, encoder any) map[string]any {
 		// Nanoseconds: Caddy 2.11.0 reads a plain duration number only.
 		writer["roll_interval"] = int64(24 * time.Hour)
 	}
-	out := map[string]any{"writer": writer, "include": []any{accessLogNamespace(accessLogName(id))}}
-	if encoder != nil {
-		out["encoder"] = accessLogClone(encoder)
+	return map[string]any{"writer": writer, "include": []any{accessLogNamespace(accessLogName(id))}, "encoder": accessLogSlimEncoder(encoder)}
+}
+
+// accessLogSlimFields are left out of an application's file: the response
+// headers and the TLS details repeat on every request and were measured at
+// more than half of each entry. What identifies and measures a request
+// stays: time, host, method, URI, client address, request headers, status,
+// size and duration.
+var accessLogSlimFields = []string{"resp_headers", "request>tls"}
+
+// accessLogSlimEncoder wraps the journal's encoder (JSON when it has none) in
+// a filter that deletes accessLogSlimFields, keeping the fields a filter
+// encoder there already handles.
+func accessLogSlimEncoder(encoder any) map[string]any {
+	wrap := map[string]any{"format": "json"}
+	fields := map[string]any{}
+	if e, ok := accessLogClone(encoder).(map[string]any); ok {
+		if format, _ := e["format"].(string); format == "filter" {
+			if inner, ok := e["wrap"].(map[string]any); ok {
+				wrap = inner
+			}
+			if existing, ok := e["fields"].(map[string]any); ok {
+				fields = existing
+			}
+		} else {
+			wrap = e
+		}
 	}
-	return out
+	for _, name := range accessLogSlimFields {
+		fields[name] = map[string]any{"filter": "delete"}
+	}
+	return map[string]any{"format": "filter", "wrap": wrap, "fields": fields}
 }
 
 // accessLogEncoder is the default log's JSON encoder, nil when it has none
@@ -497,7 +527,7 @@ func accessLogServerLogs(current map[string]any, hosts map[string]string) (map[s
 		list := caddyNameList(value)
 		kept := slices.DeleteFunc(slices.Clone(list), accessLogOurs)
 		if id, wanted := hosts[host]; wanted {
-			kept = append(kept, accessLogName(id))
+			kept = append(accessLogWithoutJournal(kept), accessLogName(id))
 		}
 		switch {
 		case slices.Equal(kept, list):
@@ -512,7 +542,7 @@ func accessLogServerLogs(current map[string]any, hosts map[string]string) (map[s
 			continue
 		}
 		_, before := caddyHostLogged(current, host)
-		kept := slices.DeleteFunc(slices.Clone(before), accessLogOurs)
+		kept := accessLogWithoutJournal(slices.DeleteFunc(slices.Clone(before), accessLogOurs))
 		names[host] = anyList(append(kept, accessLogName(hosts[host])))
 	}
 	if len(names) == 0 {
@@ -521,6 +551,14 @@ func accessLogServerLogs(current map[string]any, hosts map[string]string) (map[s
 		next["logger_names"] = names
 	}
 	return next, !jsonEqual(mustJSON(current), mustJSON(next))
+}
+
+// accessLogWithoutJournal drops the default logger (the journal) from the
+// loggers of a hostname that has its own file: each request is written once.
+// Loggers an operator named stay. With the application's log switched off
+// its hostname is unmapped again and logs to the journal as before.
+func accessLogWithoutJournal(names []string) []string {
+	return slices.DeleteFunc(names, func(name string) bool { return name == "" || name == "default" })
 }
 
 // accessLogMapped lists, by application id, the hostnames a server's logs

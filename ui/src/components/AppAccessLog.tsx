@@ -49,7 +49,7 @@ export function AppAccessLog({ appID, disabled = false }: { appID: string; disab
     {status.enabled && status.warning && <Notice>{status.warning}</Notice>}
     <label className="check-row switch-row">
       <Switch aria-label="Write an access log for this application" checked={status.enabled} disabled={busy || disabled} onCheckedChange={enabled => { void change(enabled); }} />
-      <span><strong>Write an access log for this application</strong><small>Caddy also writes each request to this application’s hostnames to a file that {account} and root read; no other application can. The system journal is unchanged. Switching it off stops writing and removes the files.</small></span>
+      <span><strong>Write an access log for this application</strong><small>Caddy writes each request to this application’s hostnames once, to a file that {account} and root read; no other application can. The requests are no longer repeated in the system journal. Switching it off removes the files and sends the requests to the journal again.</small></span>
     </label>
     {status.enabled && <SummaryList aria-label="Access log" items={[
       { label: 'File', value: <span className="input-action"><code>{status.path}</code><CopyButton value={status.path} label="Copy access log path" /></span> },
