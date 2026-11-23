@@ -44,6 +44,11 @@ type job struct {
 	token         string
 }
 type Manager struct {
+	// plugins holds verified plugin manifests between the steps of an
+	// install and one lock per plugin (plugins.go).
+	plugins    *pluginStaging
+	pluginOnce sync.Once
+
 	// releasedReservations mirrors State.ReleasedReservations for
 	// reservation checks made with or without m.mu held.
 	releasedReservations atomic.Pointer[map[string]string]

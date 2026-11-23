@@ -539,6 +539,7 @@ func (c *Control) routes(handle func(string, http.HandlerFunc)) {
 		handle(pattern, c.serverMaintenance)
 	}
 	c.hostAdminRoutes(handle)
+	c.pluginRoutes(handle)
 	handle("POST /api/control/servers/{server}/host/ingress/error-pages", c.adoptErrorPages)
 	handle("GET /api/control/servers/{server}/containers", c.serverContainers)
 	handle("POST /api/control/servers/{server}/containers/restart", c.serverContainers)

@@ -1,6 +1,8 @@
 # Proposal: plugins for application-specific software
 
-Status: proposal, not implemented. Nothing here changes the agent yet.
+Status: stage 1 is implemented (the contract, signature check, installation
+and the read-only hooks; see [Stage 1 as built](#stage-1-as-built)). Nothing in
+the agent uses a plugin yet, and ClickHouse is still built in.
 
 ## Why
 
@@ -23,16 +25,16 @@ supports needs them, and they are part of running a server.
 
 ## What a plugin is
 
-One executable, installed on a server under
-`/usr/local/lib/lidza/plugins/<name>/<version>/plugin`, with a manifest
-`plugin.json` beside it. The agent runs it as `plugin <hook>`, writes one JSON
+One executable, installed on a server under the agent's data directory
+(`<data_dir>/plugins/<name>/<version>/plugin`), described by a signed manifest,
+`plugin.json`. The agent runs it as `plugin <hook>`, writes one JSON
 request to its standard input, reads one JSON answer from its standard output
 and keeps its standard error as the hook's log. Large data never goes through
 the JSON: hooks that produce or consume data are given a directory.
 
 A plugin has no network API, keeps no process running for the agent, and
 stores its state in a directory the agent gives it
-(`/var/lib/lidza/plugins/<name>`). Secrets it needs to keep (an administrator
+(`<data_dir>/plugin-state/<name>`). Secrets it needs to keep (an administrator
 password) are sealed by the agent: the plugin returns them, the agent stores
 them encrypted and hands them back on later hooks.
 
@@ -116,10 +118,46 @@ Each stage ships on its own and leaves production working.
 5. **Other plugins.** The same contract for application-specific support of
    known Rails, Node and Go applications.
 
+## Stage 1 as built
+
+A plugin release is three files: the archive (a gzip-compressed tar of
+regular files with the `plugin` program at its top), `plugin.json` and
+`plugin.sig`. `cmd/plugin-sign` makes them:
+
+```sh
+go run ./cmd/plugin-sign keygen -out plugin-signing.key
+go run ./cmd/plugin-sign manifest -name example -version 1.0 -provides example \
+    -hooks describe,check,status -env EXAMPLE_URL -archive amd64=plugin-amd64.tar.gz
+go run ./cmd/plugin-sign sign -key plugin-signing.key
+```
+
+On a server, through the control panel's API (each call is audited and needs
+the permission to manage infrastructure, except the list):
+
+| Call | Does |
+| --- | --- |
+| `GET /api/control/servers/{server}/plugins` | installed plugins, the ids of the trusted signing keys, the server's architecture |
+| `PUT .../plugins/keys` `{"keys": ["<hex public key>"]}` | replaces the keys an operator trusts on that server (at most 8), beside the keys pinned in the agent |
+| `POST .../plugins/manifest` `{"manifest": "<plugin.json text>", "signature": <plugin.sig>}` | verifies the signature and the manifest; nothing is installed yet |
+| `PUT .../plugins/{name}/archive` (`application/octet-stream`) | unpacks the archive if it matches the signed manifest, runs `describe`, records the plugin. A plugin that cannot describe itself is not kept |
+| `POST .../plugins/{name}/hooks/{describe,status,check}` | runs a read-only hook and answers its answer, its log and how long it took |
+| `DELETE .../plugins/{name}` | removes the program; the plugin's state directory stays |
+
+What the agent enforces today: the signature (a domain of its own, so an
+update bundle's signature is never a plugin's), the archive's digest and
+size, no links or paths outside the plugin's directory, a minimal
+environment without the agent's secrets, the plugin's state directory as
+working directory, one hook at a time per plugin, a time limit per hook
+after which the plugin and everything it started are killed, and bounded
+answers and logs. Hooks that change a server cannot be run on request.
+
+The plugin's secrets, its use by applications, the console pages and
+everything else in the stages above are not built yet.
+
 ## Open questions
 
-- Where the ClickHouse plugin lives: its own repository, or the repository of
-  the application that needs it.
+- Decided: the ClickHouse plugin lives in its own public repository; an
+  application that needs it names it.
 - Whether container applications' managed ClickHouse (a container per
   application) moves to the plugin in the same stages or after.
 - How much of a move's incremental final sync the generic `export`/`import`

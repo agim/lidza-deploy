@@ -245,6 +245,10 @@ type diskState struct {
 	// installed for created applications, with its sealed administrator
 	// password (native_hostdata_clickhouse.go).
 	NativeClickHouse *NativeClickHouseServer `json:"native_clickhouse,omitempty"`
+	// Plugins are the installed plugins and PluginKeys the signing keys an
+	// operator trusts for them on this server (plugins.go).
+	Plugins    map[string]PluginRecord `json:"plugins,omitempty"`
+	PluginKeys []string                `json:"plugin_keys,omitempty"`
 	// NativeClickHouseBlocked is set when a ClickHouse release proved
 	// unable to run on this server's processor.
 	NativeClickHouseBlocked *NativeClickHouseBlocked `json:"native_clickhouse_blocked,omitempty"`
