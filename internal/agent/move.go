@@ -553,6 +553,12 @@ func (m *Manager) nativeMoveSource(id string) (MoveSource, error) {
 	if s.Redis {
 		s.CacheMode = "host"
 	}
+	// A plugin's service is provisioned again on the destination, but a move
+	// does not copy its data yet: say so before anything starts, instead of
+	// arriving with an empty service.
+	for _, service := range slices.Sorted(maps.Keys(record.Plugins)) {
+		s.Blockers = append(s.Blockers, "The "+service+" service of the "+record.Plugins[service].Plugin+" plugin holds data a move does not copy yet. Move it by hand: back it up here and restore it on the destination.")
+	}
 	if entries, err := os.ReadDir(filepath.Join(policy.Root, "shared", "storage")); err == nil && len(entries) > 0 {
 		s.Volumes = append(s.Volumes, "files in shared/storage")
 	}

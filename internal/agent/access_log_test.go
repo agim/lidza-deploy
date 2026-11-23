@@ -314,6 +314,23 @@ func TestAccessLogSwitchedOffStopsWritingAndRemovesTheFiles(t *testing.T) {
 	if source, err := f.m.nativeMoveSource("shop"); err != nil || source.CreateSpec == nil || !source.CreateSpec.AccessLogOff {
 		t.Fatalf("move source = %+v, %v", source.CreateSpec, err)
 	}
+	// A plugin's service whose data a move cannot copy blocks the move up front.
+	f.m.mu.Lock()
+	withoutPlugin := f.m.data.NativeHostData["shop"]
+	withPlugin := withoutPlugin
+	withPlugin.Plugins = map[string]NativeHostPlugin{"search": {Plugin: "meili", Version: "1.0"}}
+	if f.m.data.NativeHostData == nil {
+		f.m.data.NativeHostData = map[string]NativeHostDataRecord{}
+	}
+	f.m.data.NativeHostData["shop"] = withPlugin
+	f.m.mu.Unlock()
+	source, err := f.m.nativeMoveSource("shop")
+	if err != nil || !slices.ContainsFunc(source.Blockers, func(b string) bool { return strings.Contains(b, "search service of the meili plugin") }) {
+		t.Fatalf("a plugin service must block the move: %v %v", source.Blockers, err)
+	}
+	f.m.mu.Lock()
+	f.m.data.NativeHostData["shop"] = withoutPlugin
+	f.m.mu.Unlock()
 	on := true
 	if err := f.m.setAccessLog(ctx, "shop", AppAccessLogSettings{Enabled: &on}); err != nil {
 		t.Fatal(err)
