@@ -1,6 +1,8 @@
 package control
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -73,5 +75,61 @@ func TestMovePlanReportsDestinationProblemsBeforeStarting(t *testing.T) {
 	}
 	if p = plan(t); has(p.Blockers, "On the destination") || has(p.Notes, "On the destination") {
 		t.Fatalf("a ready destination was reported: %v %v", p.Blockers, p.Notes)
+	}
+}
+
+// A native move's review has the destination rehearse the creation of this
+// application with its data: the request is the one the move would send, and
+// each failed step is in the plan before anything starts.
+func TestMovePlanRehearsesTheApplicationOnANativeDestination(t *testing.T) {
+	fx := newMoveFixture(t)
+	native := agent.NativeApplication{ID: "shop", Name: "shop", Runtime: "rails", Repository: "acme/shop", Branch: "main", Domain: "shop.example.com", Services: []string{"app-shop-web.service"}}
+	fx.c.data.Apps["shop"] = Application{ID: "shop", ServerID: "alpha", Native: &native, Runtime: "rails", Repository: "acme/shop", Branch: "main", Domain: "shop.example.com", GitHubInstallation: 7, Generation: "g-source"}
+	spec := agent.NativeCreateRequest{ID: "shop", Runtime: "rails", Repository: "acme/shop", Branch: "main", Domain: "shop.example.com", HealthPath: "/up",
+		Processes: []agent.NativeProcessSpec{{Name: "web", Command: `bin/rails server -p "$PORT"`, Web: true}}, Data: agent.NativeDataRequest{Postgres: true}}
+	fx.a.source = &agent.MoveSource{AppID: "shop", Runtime: "rails", Native: true, Repository: "acme/shop", Branch: "main", Domain: "shop.example.com", Commit: moveTestCommit,
+		EnvironmentKeys: []string{"DATABASE_URL"},
+		Databases:       []agent.MoveSourceDatabase{{ID: "shop-dbsource", Engine: "postgresql", Mode: "host", EnvironmentKeys: []string{"DATABASE_URL"}, Copyable: true, Tables: 12, Backup: agent.BackupPolicy{Hours: 24, Keep: 1}}},
+		Volumes:         []string{}, Tasks: []string{}, Blockers: []string{}, Notes: []string{}, CreateSpec: &spec, SpecRecorded: true}
+	fx.a.nativeSource = &agent.NativeStatus{Application: native}
+	fx.a.tables["shop-dbsource"] = 12
+	var asked agent.NativePreflightRequest
+	calls := 0
+	fx.b.mux.HandleFunc("POST /v1/native/preflight", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewDecoder(r.Body).Decode(&asked)
+		json.NewEncoder(w).Encode(agent.NativePreflight{Checks: []agent.HostReadinessCheck{
+			{ID: "application", Title: "Application", OK: true, Detail: "The application's account, directories, port and service units can be created."},
+			{ID: "postgres", Title: "PostgreSQL", Repairable: true, Detail: `PostgreSQL 17 cluster "main" (port 5432) cannot start: the postgres account cannot enter /mnt/data.`},
+			{ID: "postgres-disk", Title: "PostgreSQL disk", Detail: "/mnt/data has 10.0 GiB free; the data needs about 53.0 GiB there."},
+		}})
+	})
+	review := func() MovePlan {
+		t.Helper()
+		plan, status, err := fx.c.computeMovePlan(httptest.NewRequest("GET", "/", nil), "shop", moveStartInput{TargetServer: "beta"})
+		if err != nil || status != 200 || plan.TargetRuntime != moveRuntimeNative {
+			t.Fatal(status, err, plan.TargetRuntime)
+		}
+		return plan
+	}
+	has := func(list []string, text string) bool {
+		return slices.ContainsFunc(list, func(item string) bool { return strings.Contains(item, text) })
+	}
+	// A destination agent without the preflight is not asked.
+	if plan := review(); calls != 0 || len(plan.Preflight) != 0 {
+		t.Fatalf("an agent without the preflight was asked: %d %v", calls, plan.Preflight)
+	}
+	fx.b.host.Preflight = true
+	// The host-wide report's PostgreSQL entry is superseded by the rehearsal of this application.
+	fx.b.host.Problems = []agent.MoveHostProblem{{ID: "postgres", Detail: "host-wide report"}}
+	plan := review()
+	if calls != 1 || asked.Request.ID != "shop" || asked.Request.Runtime != "rails" || !asked.Request.Data.Postgres || asked.Request.Domain != "shop.example.com" {
+		t.Fatalf("preflight request %d %+v", calls, asked.Request)
+	}
+	if !has(plan.Blockers, "On the destination: /mnt/data has 10.0 GiB free") || has(plan.Blockers, "cannot start") || has(plan.Blockers, "host-wide report") {
+		t.Fatalf("blockers %v", plan.Blockers)
+	}
+	if !has(plan.Notes, "cannot enter /mnt/data. The destination repairs this itself when the move prepares it.") || len(plan.Preflight) != 3 {
+		t.Fatalf("notes %v preflight %v", plan.Notes, plan.Preflight)
 	}
 }

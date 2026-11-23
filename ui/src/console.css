@@ -886,3 +886,7 @@ html { scroll-padding-top: 84px; }
 /* Move form: the destination address override stays folded away unless it is needed. */
 .move-address summary { cursor: pointer; }
 .move-address > * + * { margin-top: var(--space-2); }
+/* Move review: the destination rehearsal lists one step per line. */
+.move-preflight ul { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--space-2); }
+.move-preflight h4 { margin: 0; }
+.move-preflight > * + * { margin-top: var(--space-2); }

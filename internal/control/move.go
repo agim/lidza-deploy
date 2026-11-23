@@ -338,11 +338,14 @@ type MovePlan struct {
 	// AutoCutover: the final sync and the finish start by themselves once
 	// DNS points to the destination (default when every database
 	// replicates continuously, move_auto.go).
-	AutoCutover bool      `json:"auto_cutover"`
-	Warnings    []string  `json:"warnings"`
-	Notes       []string  `json:"notes"`
-	Blockers    []string  `json:"blockers"`
-	Checked     time.Time `json:"checked"`
+	AutoCutover bool     `json:"auto_cutover"`
+	Warnings    []string `json:"warnings"`
+	Notes       []string `json:"notes"`
+	Blockers    []string `json:"blockers"`
+	// Preflight is the destination's rehearsal of the application's setup,
+	// step by step (planMovePreflight); empty from agents without it.
+	Preflight []agent.HostReadinessCheck `json:"preflight,omitempty"`
+	Checked   time.Time                  `json:"checked"`
 }
 
 // moveServerLabel names a server in the plan's sentences: its name, else
@@ -1178,6 +1181,10 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 		switch {
 		case problem.ID == "postgres" && plan.TargetRuntime != moveRuntimeNative, problem.ID == "docker" && plan.TargetRuntime != moveRuntimeContainer:
 			// Containers bring their own database; native applications need no Docker.
+		case problem.ID == "clickhouse" && source.ClickHouse == nil, problem.ID == "redis" && !source.Redis:
+			// A service this application does not use.
+		case problem.ID == "postgres" && host.Native && host.Preflight:
+			// The preflight below rehearses this application's own database.
 		case problem.Repairable:
 			plan.Notes = append(plan.Notes, "On the destination: "+problem.Detail+" The destination repairs this itself when the move prepares it.")
 		default:
@@ -1232,7 +1239,11 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 		plan.Blockers = append(plan.Blockers, "The destination agent cannot provision PostgreSQL or Redis.")
 	}
 	needed += planMoveClickHouse(&plan, source, host)
-	needed += c.planMoveFiles(&plan, source, host)
+	files := c.planMoveFiles(&plan, source, host)
+	needed += files
+	if plan.TargetRuntime == moveRuntimeNative && host.Native && host.Preflight {
+		c.planMovePreflight(req, &plan, src, source, target.ID, int64(files))
+	}
 	var targetHealth agent.ServerHealth
 	if c.agentCall(req, target.ID, http.MethodGet, "/v1/server-health", nil, &targetHealth) == nil {
 		capacity := &MoveCapacity{MemoryAvailable: targetHealth.MemoryAvailable, Needed: needed}
@@ -1361,6 +1372,44 @@ var moveResolveHost = func(host string) []string {
 		return nil
 	}
 	return addresses
+}
+
+// planMovePreflight has the destination rehearse the creation of this very
+// application with the sizes of its data (agent: native_preflight.go) and
+// puts the result in the plan: what a person must resolve is a blocker, what
+// the destination repairs itself when the move prepares it is a note.
+func (c *Control) planMovePreflight(r *http.Request, plan *MovePlan, src Application, source agent.MoveSource, target string, filesBytes int64) {
+	spec, err := c.moveNativeSpec(r.Context(), src, source, *plan)
+	if err != nil {
+		return // the plan already says why the application cannot be created natively
+	}
+	in := agent.NativePreflightRequest{Request: spec, FilesBytes: filesBytes}
+	for _, d := range plan.Databases {
+		if d.Action != "copy" {
+			continue
+		}
+		switch d.Engine {
+		case "postgresql":
+			in.PostgresBytes += max(d.SizeBytes, 0)
+		case "clickhouse":
+			in.ClickHouseBytes += max(d.SizeBytes, 0)
+		}
+	}
+	var out agent.NativePreflight
+	if err := c.agentCall(r, target, http.MethodPost, "/v1/native/preflight", in, &out); err != nil {
+		plan.Notes = append(plan.Notes, "The destination could not rehearse the application's setup ("+moveAgentError(err)+"); problems on it show when the move prepares it.")
+		return
+	}
+	for _, check := range out.Checks {
+		switch {
+		case check.OK:
+		case check.Repairable:
+			plan.Notes = append(plan.Notes, "On the destination: "+check.Detail+" The destination repairs this itself when the move prepares it.")
+		default:
+			plan.Blockers = append(plan.Blockers, "On the destination: "+check.Detail)
+		}
+	}
+	plan.Preflight = out.Checks
 }
 
 // createMove records a new job from a reviewed plan.

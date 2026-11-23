@@ -105,6 +105,36 @@ it('shows blockers and keeps the move from starting', async () => {
   expect(fetch.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(false);
 });
 
+it('shows the destination rehearsal step by step and opens the address field when none was found', async () => {
+  const preflight = [
+    { id: 'application', title: 'Application', ok: true, detail: 'The application\'s account, directories, port and service units can be created.' },
+    { id: 'postgres', title: 'PostgreSQL', ok: false, repairable: true, detail: 'PostgreSQL 17 cluster "main" (port 5432) cannot start: the postgres account cannot enter /mnt/data.' },
+    { id: 'postgres-disk', title: 'PostgreSQL disk', ok: false, detail: '/mnt/data has 10.0 GiB free; the data needs about 53.0 GiB there.' },
+  ];
+  const fetch = vi.fn((url: string, init: RequestInit = {}) => {
+    if (url === '/api/control/apps/shop/move' && !init.method) return respond(404, { error: 'none' });
+    if (url.startsWith('/api/control/apps/shop/move-plan?')) return respond(200, { ...plan, addresses: [], warnings: [], preflight, blockers: ['On the destination: /mnt/data has 10.0 GiB free; the data needs about 53.0 GiB there.'] });
+    return respond(500, { error: 'unexpected' });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const { container } = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} />);
+  const details = container.querySelector('details')!;
+  details.open = true;
+  fireEvent(details, new Event('toggle'));
+  const review = await screen.findByRole('button', { name: 'Review move' });
+  // The address is normally found by the control panel: the field is folded away.
+  expect(container.querySelector<HTMLDetailsElement>('details.move-address')!.open).toBe(false);
+  fireEvent.click(review);
+  const rehearsal = await screen.findByRole('region', { name: 'Destination rehearsal' });
+  expect(rehearsal.querySelector('[data-preflight="ok"]')).toHaveTextContent('Application');
+  expect(rehearsal.querySelector('[data-preflight="repairable"]')).toHaveTextContent('Repaired at start');
+  expect(rehearsal.querySelector('[data-preflight="blocked"]')).toHaveTextContent('Blocks the move PostgreSQL disk /mnt/data has 10.0 GiB free');
+  expect(screen.getByRole('button', { name: 'Start move' })).toBeDisabled();
+  // No address could be found for this destination: the field opens and the summary says where to enter it.
+  expect(container.querySelector<HTMLDetailsElement>('details.move-address')!.open).toBe(true);
+  expect(screen.getByText('not found — enter it under Destination address')).toBeInTheDocument();
+});
+
 it('shows the build memory estimate and a memory blocker', async () => {
   const memory = { estimate: { mib: 2900, basis: ['peak of earlier builds on Alpha: 2.8 GiB'], learned: true }, total_mib: 2048, available_mib: 1500, reserve_mib: 512, level: 'blocker',
     message: 'Building needs about 2.8 GiB of memory, but Beta has 2.0 GiB in total and keeps 512 MiB free for running applications. Choose a server with more memory.' };

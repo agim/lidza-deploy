@@ -146,3 +146,82 @@ func TestPostgresProblemsTheAgentMustNotDecideAreNamedAndLeftAlone(t *testing.T)
 		t.Fatalf("failed start: %v", err)
 	}
 }
+
+// The server-wide report covers the other services applications depend on:
+// a failed service is repairable, the installer's web server must run, a
+// service stopped on purpose is not reported, and a full disk is named.
+func TestHostReadinessReportsAndRepairsServicesAndNamesAFullDisk(t *testing.T) {
+	m, f := newHostDataFixture(t)
+	states := map[string]string{nativeCHUnit: "failed", "redis-server.service": "inactive", "caddy.service": "inactive"}
+	started := []string{}
+	previous := nativeHostDataHost
+	t.Cleanup(func() { nativeHostDataHost = previous })
+	nativeHostDataHost = func(*Manager) nativeHostData {
+		return nativeHostData{root: f.root, run: func(ctx context.Context, stdin, name string, args ...string) (string, error) {
+			if name == "/usr/bin/systemctl" && args[0] == "show" {
+				return states[args[len(args)-1]] + "\n", nil
+			}
+			if name == "/usr/bin/systemctl" && args[0] == "start" {
+				started = append(started, args[1])
+				states[args[1]] = "active"
+				return "", nil
+			}
+			return f.run(ctx, stdin, name, args...)
+		}}
+	}
+	for name, content := range map[string]string{"usr/bin/clickhouse-server": "", "usr/bin/redis-server": "", "etc/caddy/Caddyfile": installerCaddyMarker + "\n{\n}\n"} {
+		path := filepath.Join(f.root, name)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte(content), 0o644)
+	}
+	savedDisk := preflightDisk
+	t.Cleanup(func() { preflightDisk = savedDisk })
+	preflightDisk = func(string) (DiskHealth, error) {
+		return DiskHealth{Total: 100 << 30, Available: 1 << 30, UsedPercent: 99}, nil
+	}
+	find := func(report HostReadiness, id string) *HostReadinessCheck {
+		for _, c := range report.Checks {
+			if c.ID == id {
+				return &c
+			}
+		}
+		return nil
+	}
+	report := m.hostReadiness(context.Background())
+	if c := find(report, "clickhouse"); c == nil || c.OK || !c.Repairable || !strings.Contains(c.Detail, "its service (clickhouse-server.service) failed") {
+		t.Fatalf("clickhouse: %+v", c)
+	}
+	if c := find(report, "web"); c == nil || c.OK || !c.Repairable || !strings.Contains(c.Detail, "not reachable without it") {
+		t.Fatalf("web: %+v", c)
+	}
+	// Redis was stopped without failing: a decision, not a problem.
+	if c := find(report, "redis"); c != nil {
+		t.Fatalf("a service stopped on purpose was reported: %+v", c)
+	}
+	if c := find(report, "disk"); c == nil || c.OK || c.Repairable || !strings.Contains(c.Detail, "almost full: 1.0 GiB free (99% used)") {
+		t.Fatalf("disk: %+v", c)
+	}
+	if report.OK {
+		t.Fatal("a server with failed services and a full disk reads as ready")
+	}
+	repaired := m.repairHost(context.Background())
+	if strings.Join(started, " ") != "clickhouse-server.service caddy.service" {
+		t.Fatalf("started %v", started)
+	}
+	if c := find(repaired, "clickhouse"); c == nil || !c.OK {
+		t.Fatalf("clickhouse after repair: %+v", c)
+	}
+	if c := find(repaired, "web"); c == nil || !c.OK {
+		t.Fatalf("web after repair: %+v", c)
+	}
+	joined := strings.Join(repaired.Repaired, "; ")
+	if !strings.Contains(joined, "started ClickHouse") || !strings.Contains(joined, "started Web server (Caddy)") {
+		t.Fatalf("repaired %v", repaired.Repaired)
+	}
+	// A Caddy the installer did not set up is not the agent's to start.
+	os.WriteFile(filepath.Join(f.root, "etc/caddy/Caddyfile"), []byte("example.com {\n}\n"), 0o644)
+	states["caddy.service"] = "inactive"
+	if c := find(m.hostReadiness(context.Background()), "web"); c != nil {
+		t.Fatalf("another layout's Caddy was reported: %+v", c)
+	}
+}

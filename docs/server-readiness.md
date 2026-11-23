@@ -12,6 +12,10 @@ nobody discovers it in the middle of a deployment or a move.
 | PostgreSQL | the cluster applications use is online, a primary and owned by `postgres` | a cluster whose service **failed**: the agent starts it, first letting the `postgres` account enter a directory on the way to its data directory when that is what stops it |
 | Docker | the daemon runs (where Docker is installed) | yes, it is started |
 
+| ClickHouse, Redis | the service runs (where installed) | a service that **failed** is started; one stopped without failing is left alone and not reported |
+| Web server (Caddy) | it runs, on servers where the installer set it up as the web entrance | yes, it is started |
+| Disk space | the root file system and each PostgreSQL data disk have more than 2 GiB and 5% free | no: named with the path and what is free |
+
 A PostgreSQL cluster that is stopped without having failed was stopped on
 purpose; a standby and a cluster with another owner are somebody's decision
 too. Those are reported with the cluster's name and port and left unchanged.
@@ -32,6 +36,25 @@ the tool is missing. Neither lets anyone list or read the directory.
   destination will repair it itself.
 - **The server's Overview** shows the report under *Ready for applications*,
   with **Repair now**.
+
+## Rehearsing an application before a move
+
+A move's review does more than read that report. The destination agent
+**rehearses the creation of that application** with the sizes of its data
+(`POST /v1/native/preflight`) and changes nothing:
+
+- the create request itself (names, runtime, processes, conflicts), the
+  application's account and a free port;
+- PostgreSQL, Redis and ClickHouse as that application needs them: usable,
+  repairable, or installed on creation;
+- the free space **on the file system each service stores its data on**
+  against the size of the data arriving there. A database on its own disk is
+  measured on that disk, not on the root file system;
+- the web route: the Caddy that owns the server's web ports answers.
+
+The review shows the steps under *Destination rehearsal*. A step only a
+person can resolve blocks the move; a step the destination repairs itself
+when the move prepares it is marked *Repaired at start*.
 
 ## API
 

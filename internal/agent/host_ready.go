@@ -8,7 +8,10 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -67,7 +70,74 @@ func (m *Manager) hostReadiness(ctx context.Context) HostReadiness {
 			add(HostReadinessCheck{ID: "docker", Title: "Docker", Detail: "Docker is installed but its daemon is not running; containers cannot start.", Repairable: true})
 		}
 	}
+	for _, service := range host.readinessServices() {
+		switch state := host.unitState(ctx, service.unit); {
+		case state == "active":
+			add(HostReadinessCheck{ID: service.id, Title: service.title, OK: true, Detail: service.title + " is running."})
+		case state == "failed":
+			add(HostReadinessCheck{ID: service.id, Title: service.title, Detail: service.title + " is down: its service (" + service.unit + ") failed.", Repairable: true})
+		case service.always:
+			add(HostReadinessCheck{ID: service.id, Title: service.title, Detail: service.title + " is not running (" + service.unit + " is " + state + "); this server's applications are not reachable without it.", Repairable: true})
+		}
+		// Otherwise it was stopped on purpose, or runs per application: not this report's business.
+	}
+	// A full disk stops deployments, databases and logs alike.
+	paths := []string{"/"}
+	if clusters, _ := host.listClusters(ctx); len(clusters) > 0 {
+		for _, c := range clusters {
+			paths = append(paths, host.existingDir(c.DataDir))
+		}
+	}
+	seen := map[uint64]bool{}
+	for _, path := range paths {
+		disk, err := preflightDisk(host.path(path))
+		if err != nil || disk.Total == 0 || seen[disk.Total^disk.Available] {
+			continue
+		}
+		seen[disk.Total^disk.Available] = true
+		if disk.Available < 2<<30 || disk.UsedPercent > 95 {
+			add(HostReadinessCheck{ID: "disk", Title: "Disk space", Detail: fmt.Sprintf("%s is almost full: %s free (%.0f%% used). Free space there, or clean up under the server's Disk cleanup tab.", path, gib(disk.Available), disk.UsedPercent)})
+		}
+	}
 	return report
+}
+
+// readinessService is a host service applications depend on.
+type readinessService struct {
+	id, title, unit string
+	// always is true for a service this server cannot do without: stopped
+	// counts as a problem, not as a decision.
+	always bool
+}
+
+const installerCaddyMarker = "# Managed by lidza-deploy installer"
+
+// readinessServices lists the services present on this host. Caddy counts
+// only where the hosting installer set it up as the server's web entrance;
+// another layout's Caddy is not the agent's to start.
+func (h nativeHostData) readinessServices() []readinessService {
+	services := []readinessService{}
+	if h.fileExists(nativeCHServerBinary) {
+		services = append(services, readinessService{id: "clickhouse", title: "ClickHouse", unit: nativeCHUnit})
+	}
+	if h.fileExists(nativeRedisServer) {
+		services = append(services, readinessService{id: "redis", title: "Redis", unit: "redis-server.service"})
+	}
+	if raw, err := os.ReadFile(h.path("/etc/caddy/Caddyfile")); err == nil && strings.HasPrefix(string(raw), installerCaddyMarker) {
+		services = append(services, readinessService{id: "web", title: "Web server (Caddy)", unit: "caddy.service", always: true})
+	}
+	return services
+}
+
+// startService starts a service whose unit failed (or, for a service the
+// server cannot do without, is stopped) and reports what it did.
+func (h nativeHostData) startService(ctx context.Context, service readinessService) (string, error) {
+	_, _ = h.run(ctx, "", "/usr/bin/systemctl", "reset-failed", service.unit)
+	if out, err := h.run(ctx, "", "/usr/bin/systemctl", "start", service.unit); err != nil {
+		tail, _ := h.run(ctx, "", "/usr/bin/journalctl", "-u", service.unit, "-n", "5", "--no-pager", "-o", "cat")
+		return "", fmt.Errorf("%s did not start: %s", service.title, nativeTrimOutput(strings.TrimSpace(out+"\n"+tail)))
+	}
+	return "started " + service.title, nil
 }
 
 // repairHost fixes what the report marks repairable and returns the report
@@ -88,6 +158,15 @@ func (m *Manager) repairHost(ctx context.Context) HostReadiness {
 				failed = append(failed, "Docker could not be started: "+err.Error())
 			} else if dockerRunning(ctx) {
 				repaired = append(repaired, "started Docker")
+			}
+		}
+		for _, service := range host.readinessServices() {
+			if state := host.unitState(ctx, service.unit); state == "failed" || service.always && state != "active" {
+				if did, err := host.startService(ctx, service); err != nil {
+					failed = append(failed, err.Error())
+				} else {
+					repaired = append(repaired, did)
+				}
 			}
 		}
 	}
