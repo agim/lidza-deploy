@@ -379,6 +379,12 @@ func (c *Control) updateActivity(v UpdateSettings, now time.Time) []ActivityItem
 				continue
 			}
 			item.State, item.Title = "failed", fmt.Sprintf("Updating %s to %s failed", item.ServerName, v.Version)
+		case "skipped":
+			// Needs a person, like a failure, but did not stop the rollout.
+			if at.IsZero() || !activityRecent("failed", at, now) {
+				continue
+			}
+			item.State, item.Title = "failed", fmt.Sprintf("%s was left out of the update to %s", item.ServerName, v.Version)
 		case "succeeded":
 			if at.IsZero() || !activityRecent("succeeded", at, now) {
 				continue

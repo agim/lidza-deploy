@@ -40,7 +40,12 @@ replaced by public ones.
    back on failure.
 
 Remote hosts are updated first, one at a time; the control panel's own host
-is last. A failed host stops the batch. Hosted applications are never
+is last. A failed host stops the batch. A host whose agent was installed
+from a different build (for example the public release) has no signed bundle
+routes and cannot verify this distribution's releases: it is marked *skipped*
+with what to do, and the remaining hosts still update. Install this
+distribution's agent bundle on that host once; the next check then counts it
+as updated. Hosted applications are never
 touched. Unit files are not replaced by bundle upgrades; unit changes remain
 reviewed host changes.
 

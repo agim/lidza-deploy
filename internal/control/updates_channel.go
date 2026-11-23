@@ -313,6 +313,12 @@ func (c *Control) cachedArchive(ctx context.Context, bundle UpdateBundle, arch s
 	return path, nil
 }
 
+// errAgentWithoutSignedUpdates: the server's agent has no signed bundle
+// routes, so it cannot verify or install this distribution's releases. Only
+// installing this distribution's agent on the host once (the step that places
+// the trusted keys there) changes that; retrying the transfer cannot.
+var errAgentWithoutSignedUpdates = errors.New("this server's agent was installed from a different build and cannot verify this distribution's signed updates; install this distribution's agent bundle on the server once, then update again")
+
 // transferBundle stages the verified bundle on one agent: manifest and
 // signature first, then the archive, each verified by the agent itself.
 func (c *Control) transferBundle(r *http.Request, target Server, bundle UpdateBundle, arch string) error {
@@ -328,6 +334,12 @@ func (c *Control) transferBundle(r *http.Request, target Server, bundle UpdateBu
 		Arch    string `json:"arch"`
 	}
 	if err := c.agentRequest(r, target, "POST", "/v1/upgrade/manifest", map[string]any{"manifest": bundle.Manifest, "signature": bundle.Signature}, &staged); err != nil {
+		// A route that does not exist answers 404 with no agent message: this
+		// agent was installed from a build without the signed bundle channel.
+		var refused *agentHTTPError
+		if errors.As(err, &refused) && refused.status == http.StatusNotFound && refused.message == "" {
+			return errAgentWithoutSignedUpdates
+		}
 		return fmt.Errorf("agent refused the signed manifest: %w", err)
 	}
 	if staged.Arch != arch {

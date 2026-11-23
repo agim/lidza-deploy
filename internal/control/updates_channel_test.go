@@ -45,6 +45,9 @@ type fakeAgents struct {
 	manifests map[string][]byte
 	archives  map[string][]byte
 	queued    []string
+	// foreign agents were installed from a build without the signed bundle
+	// and server administration routes: those paths do not exist there.
+	foreign map[string]bool
 }
 
 func signedRelease(t *testing.T, repository, version string, key ed25519.PrivateKey, archive []byte) (manifest, signature []byte) {
@@ -157,6 +160,8 @@ func newChannelFixture(t *testing.T) *channelFixture {
 		defer agents.mu.Unlock()
 		code, out := 200, any(agents.states[id])
 		switch {
+		case agents.foreign[id] && (r.URL.Path == "/v1/upgrade/manifest" || strings.HasPrefix(r.URL.Path, "/v1/host/")):
+			return &http.Response{StatusCode: 404, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("404 page not found\n"))}, nil
 		case r.Method == "POST" && r.URL.Path == "/v1/upgrade/manifest":
 			var in struct {
 				Manifest  string            `json:"manifest"`
@@ -392,5 +397,77 @@ func TestPublicBuildFollowsPublishedReleasesUntilKeysArePinned(t *testing.T) {
 	channelTrust = func() updates.Trust { return updates.Trust{Keys: []ed25519.PublicKey{pub}} }
 	if c.updatesAvailable() {
 		t.Fatal("a signed build without a configured channel offered public releases")
+	}
+}
+
+// A server whose agent came from a build without the signed bundle channel
+// cannot take any signed release. It is left out, with what to do about it,
+// and the rest of the rollout proceeds.
+func TestSignedRolloutLeavesOutAnAgentFromAnotherBuildWithoutStoppingTheRest(t *testing.T) {
+	f := newChannelFixture(t)
+	c := f.control
+	if w := f.post(t, "channel", `{"repository":"acme/deploy-private"}`); w.Code != 200 {
+		t.Fatal("channel configuration failed", w.Code, w.Body)
+	}
+	f.agents.mu.Lock()
+	f.agents.foreign = map[string]bool{"remote": true}
+	f.agents.states["remote"] = agent.UpgradeStatus{Current: "v0.2.105", State: "idle", Supported: true, Arch: "amd64"}
+	f.agents.mu.Unlock()
+	c.mu.Lock()
+	c.data.Updates.Version = f.version
+	c.data.Updates.Targets = []UpdateTarget{{ServerID: "remote", Name: "Remote", State: "waiting"}, {ServerID: "local", Name: "GUI", State: "waiting", Local: true}}
+	c.mu.Unlock()
+	if err := c.updateTick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	targets := c.updateSettingsSnapshot().Targets
+	if targets[0].State != "skipped" || !strings.Contains(targets[0].Message, "Install this distribution's agent bundle") || strings.Contains(targets[0].Message, "404") {
+		t.Fatalf("foreign agent not left out with instructions: %+v", targets[0])
+	}
+	f.agents.mu.Lock()
+	queued := append([]string{}, f.agents.queued...)
+	f.agents.mu.Unlock()
+	if targets[1].State != "updating" || len(queued) != 1 || queued[0] != "local" {
+		t.Fatalf("the remaining server was held back: %+v queued %v", targets[1], queued)
+	}
+	if strings.HasPrefix(targets[1].Message, "Waits for ") {
+		t.Fatalf("the remaining server still waits for the one left out: %q", targets[1].Message)
+	}
+	var left *ActivityItem
+	for _, item := range c.updateActivity(c.updateSettingsSnapshot(), time.Now()) {
+		if item.ServerID == "remote" {
+			left = &item
+		}
+	}
+	if left == nil || left.State != "failed" || !strings.Contains(left.Title, "left out") {
+		t.Fatalf("the server left out is not shown as needing attention: %+v", left)
+	}
+	// Installed by hand since: it counts as updated on the next check.
+	f.agents.mu.Lock()
+	f.agents.foreign = nil
+	f.agents.states["remote"] = agent.UpgradeStatus{Current: f.version, State: "idle", Supported: true, Channel: "private", Arch: "amd64"}
+	f.agents.mu.Unlock()
+	if err := c.updateTick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.updateSettingsSnapshot().Targets[0]; got.State != "succeeded" {
+		t.Fatalf("a server installed by hand stayed left out: %+v", got)
+	}
+}
+
+// Server pages on an agent that predates them say so, not a bare 404.
+func TestServerPagesOnAnOlderAgentSayToUpdateIt(t *testing.T) {
+	f := newChannelFixture(t)
+	f.agents.mu.Lock()
+	f.agents.foreign = map[string]bool{"remote": true}
+	f.agents.mu.Unlock()
+	for _, page := range []string{"ingress", "updates", "resources"} {
+		r := httptest.NewRequest("GET", "/api/control/servers/remote/host/"+page, nil)
+		r.SetPathValue("server", "remote")
+		w := httptest.NewRecorder()
+		f.control.hostAdmin(w, r)
+		if w.Code != 404 || !strings.Contains(w.Body.String(), "older than the control panel") || strings.Contains(w.Body.String(), "agent returned") {
+			t.Fatalf("%s on an older agent: %d %s", page, w.Code, w.Body)
+		}
 	}
 }

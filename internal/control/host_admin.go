@@ -181,6 +181,12 @@ func (c *Control) hostAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	var out json.RawMessage
 	if err := c.agentCall(r, r.PathValue("server"), r.Method, path, input, &out); err != nil {
+		// A route the agent does not have answers 404 with no agent message.
+		var refused *agentHTTPError
+		if errors.As(err, &refused) && refused.status == http.StatusNotFound && refused.message == "" {
+			agent.Fail(w, http.StatusNotFound, errors.New("this server's agent is older than the control panel and does not have this page yet; update the agent on this server first"))
+			return
+		}
 		failAgent(w, err)
 		return
 	}

@@ -82,6 +82,8 @@ const (
 	updateQueueWaits  = "Waits for %s to finish updating"
 	updateQueueFailed = "Waits for %s, whose update failed; retry the update after fixing it"
 	updateQueueLast   = "; the control panel's host updates last"
+	// updateSkippedMessage is shown on a server left out of a signed rollout.
+	updateSkippedMessage = "Left out of this update: its agent was installed from a different build and cannot verify this distribution's signed updates. Install this distribution's agent bundle on the server once; the other servers were not held back"
 )
 
 func updateQueueMessage(message string) bool {
@@ -94,7 +96,7 @@ func updateQueueMessage(message string) bool {
 func annotateUpdateQueue(targets, old []UpdateTarget, now time.Time) {
 	head := -1
 	for i, t := range targets {
-		if t.State != "succeeded" {
+		if t.State != "succeeded" && t.State != "skipped" {
 			head = i
 			break
 		}
@@ -314,6 +316,19 @@ func (c *Control) updateTick(ctx context.Context) error {
 		if t.State == "succeeded" {
 			continue
 		}
+		if t.State == "skipped" {
+			// Installed by hand since: it counts as updated. Either way it
+			// does not hold the rollout.
+			var current agent.UpgradeStatus
+			if err := c.agentCall(r, t.ServerID, "GET", "/v1/upgrade", nil, &current); err == nil && (current.Current == v.Version ||
+				semver.IsValid(current.Current) && semver.IsValid(v.Version) && semver.Compare(current.Current, v.Version) > 0) {
+				t.State, t.Message = "succeeded", "Release installed"
+				if err := c.saveUpdateSettings(v); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		var status agent.UpgradeStatus
 		if err := c.agentCall(r, t.ServerID, "GET", "/v1/upgrade", nil, &status); err != nil {
 			t.Message = "Agent unavailable; will retry"
@@ -394,6 +409,16 @@ func (c *Control) updateTick(ctx context.Context) error {
 				return err
 			}
 			if err := c.transferBundle(r, c.serverByID(t.ServerID), *v.Bundle, agentArch(status)); err != nil {
+				if errors.Is(err, errAgentWithoutSignedUpdates) {
+					// Nothing about the release failed: this host cannot take
+					// any signed bundle until it is installed once by hand.
+					// It is left out so the other servers still update.
+					t.State, t.Message = "skipped", updateSkippedMessage
+					if err := c.saveUpdateSettings(v); err != nil {
+						return err
+					}
+					continue
+				}
 				t.State = "failed"
 				t.Message = err.Error()
 				return c.saveUpdateSettings(v)
