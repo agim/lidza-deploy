@@ -69,8 +69,10 @@ disruptive packages then install only on request.
 
 With live-restore, containers keep running while the Docker daemon restarts
 or is upgraded. The agent reconciles it where it manages Docker: it installed
-Docker Engine, or it runs container applications on the host. Hosts that
-merely have Docker are reported, not changed.
+Docker Engine, the hosting installer prepared the host (it writes
+`/etc/lidza-agent/docker-managed`, also when Docker was already present), or
+it runs container applications on the host. Hosts that merely have Docker
+are reported, not changed.
 
 Hourly, when the running daemon reports live-restore off, the agent
 

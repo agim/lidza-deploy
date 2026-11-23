@@ -18,6 +18,8 @@ cmp -s "$scratch/original.env" "$scratch/stage/etc/lidza-agent/agent.env"
 ! rg -q "^LIDZA_SELF_UPDATE_" "$scratch/stage/etc/lidza-control/control.env"
 rg -q "^AUTH_CONNECT=github$" "$scratch/stage/etc/lidza-control/control.env"
 [[ $(stat -c %a "$scratch/stage/etc/lidza-agent/agent.env") == 600 ]]
+# Installer-prepared hosts are container hosts: the agent manages Docker's daemon settings there.
+[[ -f "$scratch/stage/etc/lidza-agent/docker-managed" ]]
 # Public installs ship a certificate retry for installer-managed hostnames.
 [[ "$(cat "$scratch/stage/etc/lidza-agent/tls-hostnames")" == $'agent.example.com\ndeploy.example.com' ]]
 [[ -x "$scratch/stage/usr/local/libexec/lidza-tls-retry" && -f "$scratch/stage/etc/systemd/system/lidza-tls-retry.timer" && -f "$scratch/stage/etc/systemd/system/lidza-tls-retry.service" ]]

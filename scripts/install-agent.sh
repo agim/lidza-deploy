@@ -164,6 +164,9 @@ else
  token=$(sed -n 's/^LIDZA_AGENT_TOKEN=//p' "$root/etc/lidza-agent/agent.env")
  [[ "$token" =~ ^[a-f0-9]{64}$ ]] || { echo 'Existing token format is not installer-managed; refusing to replace it.' >&2;exit 1; }
 fi
+# This installer sets the host up for containers (it installs Docker when missing),
+# so the agent keeps Docker's live-restore on here even if Docker was already present.
+: > "$root/etc/lidza-agent/docker-managed"
 api_url=http://127.0.0.1:9090
 [[ -z "$hostname" ]] || api_url="https://$hostname"
 server_id=local

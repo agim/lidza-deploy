@@ -112,11 +112,19 @@ func (m *Manager) updateDockerState(edit func(*HostDockerState)) {
 	}
 }
 
+// dockerManagedMarker is written by the hosting installer, which sets a host
+// up as a container host and installs Docker itself when it is missing.
+var dockerManagedMarker = "/etc/lidza-agent/docker-managed"
+
 // dockerManaged reports whether the daemon configuration is the agent's to
-// reconcile: it installed Docker, or it runs hosted applications in
-// containers on this host. Hosts that merely have Docker are left alone.
+// reconcile: it installed Docker, the hosting installer prepared this host
+// for containers, or it runs hosted applications in containers on this host.
+// Hosts that merely have Docker are left alone.
 func (m *Manager) dockerManaged() bool {
 	_, containers := m.runtime.(*Docker)
+	if _, err := os.Stat(dockerManagedMarker); err == nil {
+		return true
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.data.HostUpdates != nil && m.data.HostUpdates.Docker != nil && m.data.HostUpdates.Docker.InstalledByAgent {
