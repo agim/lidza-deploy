@@ -150,7 +150,10 @@ func applyClickHouseLogTTL(ctx context.Context, c clickhouseClient) ([]string, e
 		if err != nil {
 			continue
 		}
-		if err := c.exec(ctx, fmt.Sprintf("ALTER TABLE system.%s MODIFY TTL event_date + INTERVAL %d DAY DELETE", ident, policy.Days)); err != nil {
+		// Not materialised: rewriting gigabytes of old log parts at once would
+		// load the server for nothing. ClickHouse drops the expired parts in
+		// its regular TTL merges over the following hours.
+		if err := c.exec(ctx, fmt.Sprintf("ALTER TABLE system.%s MODIFY TTL event_date + INTERVAL %d DAY DELETE SETTINGS materialize_ttl_after_modify = 0", ident, policy.Days)); err != nil {
 			return changed, fmt.Errorf("system.%s: %w", r.Name, err)
 		}
 		changed = append(changed, r.Name)

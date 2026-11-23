@@ -300,7 +300,7 @@ func TestClickHouseSystemLogRetention(t *testing.T) {
 	if err != nil || !slices.Equal(changed, []string{"metric_log_0", "query_log", "query_log_0", "text_log", "trace_log"}) {
 		t.Fatal("changed", changed, err)
 	}
-	if !slices.Contains(fake.altered, "ALTER TABLE system.`text_log` MODIFY TTL event_date + INTERVAL 3 DAY DELETE") {
+	if !slices.Contains(fake.altered, "ALTER TABLE system.`text_log` MODIFY TTL event_date + INTERVAL 3 DAY DELETE SETTINGS materialize_ttl_after_modify = 0") {
 		t.Fatal("text_log not shortened", fake.altered)
 	}
 	// Switched-off logs are emptied, never altered; an empty one and other tables are left alone.
