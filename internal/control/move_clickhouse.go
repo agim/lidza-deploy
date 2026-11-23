@@ -74,6 +74,11 @@ func planMoveClickHouse(plan *MovePlan, source agent.MoveSource, host agent.Move
 		entry.Note = fmt.Sprintf("ClickHouse %s, %d rows", ch.Version, ch.Rows)
 	}
 	plan.Databases = append(plan.Databases, entry)
+	// A destination whose ClickHouse is a plugin's gives the application
+	// the plugin's service, which the built-in copy cannot fill.
+	if host.ClickHousePlugin && plan.TargetRuntime == moveRuntimeNative {
+		plan.Blockers = append(plan.Blockers, "ClickHouse on the destination is run by its ClickHouse plugin, and this application's ClickHouse is still run by the built-in support here. Hand it to the plugin on this server first (the server's Plugins tab), then move.")
+	}
 	if !host.ClickHouse {
 		plan.Blockers = append(plan.Blockers, "The destination agent cannot receive ClickHouse data; upgrade its agent.")
 	} else if plan.TargetRuntime == moveRuntimeNative && !host.HostData {

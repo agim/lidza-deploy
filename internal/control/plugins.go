@@ -137,6 +137,7 @@ func (c *Control) pluginRoutes(handle func(string, http.HandlerFunc)) {
 		"PUT /api/control/servers/{server}/plugins/keys",
 		"POST /api/control/servers/{server}/plugins/manifest",
 		"POST /api/control/servers/{server}/plugins/install",
+		"POST /api/control/servers/{server}/plugins/handover/clickhouse",
 		"PUT /api/control/servers/{server}/plugins/{name}/archive",
 		"POST /api/control/servers/{server}/plugins/{name}/hooks/{hook}",
 		"DELETE /api/control/servers/{server}/plugins/{name}",
@@ -172,6 +173,12 @@ func (c *Control) serverPlugins(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write(out)
+	}
+	// Handing the built-in ClickHouse to its plugin is the agent's to do
+	// and to refuse; nothing on the server restarts (agent: plugin_handover.go).
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/plugins/handover/clickhouse") {
+		reply(200, c.agentRequest(r, target, http.MethodPost, "/v1/plugins/handover/clickhouse", nil, &out))
+		return
 	}
 	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/plugins/install") {
 		var in struct {

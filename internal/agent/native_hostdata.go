@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -270,6 +272,16 @@ func provisionNativeHostData(ctx context.Context, m *Manager, id string, account
 			return grant, err
 		}
 		grant.Env["DATABASE_URL"] = req.ExternalDatabaseURL
+	}
+	// Where ClickHouse is the plugin's to provide (plugin_handover.go), a
+	// request for ClickHouse is a request for the plugin's service.
+	if req.ClickHouse && m.clickhouseViaPlugin() && !slices.ContainsFunc(req.Plugins, func(p NativePluginService) bool { return p.Service == clickhousePluginService }) {
+		service := NativePluginService{Service: clickhousePluginService}
+		if req.ClickHouseVersion != "" {
+			service.Options, _ = json.Marshal(map[string]string{"series": req.ClickHouseVersion})
+		}
+		req.ClickHouse, req.ClickHouseVersion = false, ""
+		req.Plugins = append(slices.Clone(req.Plugins), service)
 	}
 	if !req.Postgres && !req.Redis && !req.ClickHouse && len(req.Plugins) == 0 {
 		return grant, nil

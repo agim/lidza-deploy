@@ -462,9 +462,10 @@ func TestPluginsReportStatusCheckAndRepairTheServerAndRunMaintenance(t *testing.
 	}
 }
 
-// With the ClickHouse plugin installed, the agent asks it instead of using
-// its own ClickHouse rules: for an application's rehearsal and for the
-// server's readiness.
+// Where ClickHouse is the plugin's to provide (it can provision, and the
+// built-in support runs no ClickHouse on the server), the agent asks it
+// instead of using its own ClickHouse rules: for an application's rehearsal
+// and for the server's readiness.
 func TestTheClickHousePluginReplacesTheBuiltInChecksWhereItIsInstalled(t *testing.T) {
 	m, f := newHostDataFixture(t)
 	m.cfg.Native = &NativeHostConfig{Root: t.TempDir(), User: "deploy", AppsRoot: filepath.Join(f.root, "srv/apps")}
@@ -529,7 +530,7 @@ esac
 	tw.Close()
 	gz.Close()
 	sum := sha256.Sum256(buf.Bytes())
-	raw, _ := json.Marshal(plugin.Manifest{Contract: plugin.Contract, Name: "clickhouse", Version: "0.1", Provides: "clickhouse", Hooks: []string{"describe", "check", "repair"},
+	raw, _ := json.Marshal(plugin.Manifest{Contract: plugin.Contract, Name: "clickhouse", Version: "0.1", Provides: "clickhouse", Hooks: []string{"describe", "check", "repair", "provision", "release"},
 		Archives: []plugin.Archive{{Arch: runtime.GOARCH, SHA256: hex.EncodeToString(sum[:]), Size: int64(buf.Len())}}})
 	signature, _ := json.Marshal(plugin.Sign(private, raw))
 	if _, err := m.stagePluginManifest(string(raw), signature); err != nil {

@@ -183,3 +183,34 @@ func TestMoveCopiesOnlyWhatChangedInTheFinalSyncWhenThePluginsCan(t *testing.T) 
 		}
 	})
 }
+
+// An application whose ClickHouse the built-in support still runs cannot
+// move to a server where ClickHouse is the plugin's: the built-in copy
+// could not fill the plugin's service.
+func TestMovePlanRefusesBuiltInClickHouseOntoAPluginsServer(t *testing.T) {
+	fx := newMoveFixture(t)
+	native := agent.NativeApplication{ID: "shop", Name: "shop", Runtime: "go", Repository: "acme/shop", Branch: "main", Domain: "shop.example.com", Services: []string{"app-shop-web.service"}}
+	fx.c.data.Apps["shop"] = Application{ID: "shop", ServerID: "alpha", Native: &native, Runtime: "go", Repository: "acme/shop", Branch: "main", Domain: "shop.example.com", Generation: "g-source"}
+	spec := agent.NativeCreateRequest{ID: "shop", Runtime: "go", Repository: "acme/shop", Branch: "main", Domain: "shop.example.com", HealthPath: "/healthz",
+		Processes: []agent.NativeProcessSpec{{Name: "web", Command: "bin/shop", Web: true}}, Data: agent.NativeDataRequest{ClickHouse: true}}
+	fx.a.source = &agent.MoveSource{AppID: "shop", Runtime: "go", Native: true, Repository: "acme/shop", Branch: "main", Domain: "shop.example.com", Commit: moveTestCommit,
+		EnvironmentKeys: []string{"PORT"}, Databases: []agent.MoveSourceDatabase{}, Volumes: []string{}, Tasks: []string{}, Blockers: []string{}, Notes: []string{},
+		ClickHouse: &agent.MoveSourceClickHouse{Mode: "host", Database: "app_shop", Version: "26.8.15.10", Tables: 2, Rows: 1200, SizeBytes: 1 << 20, EnvironmentKeys: agent.ClickHouseEnvironmentKeys, Copyable: true},
+		CreateSpec: &spec, SpecRecorded: true}
+	fx.a.nativeSource = &agent.NativeStatus{Application: native}
+	fx.b.host.ClickHouse = true
+	blocked := func() bool {
+		plan, _, err := fx.c.computeMovePlan(httptest.NewRequest("GET", "/", nil), "shop", moveStartInput{TargetServer: "beta"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.ContainsFunc(plan.Blockers, func(b string) bool { return strings.Contains(b, "Hand it to the plugin on this server first") })
+	}
+	if blocked() {
+		t.Fatal("a destination on the built-in support was refused")
+	}
+	fx.b.host.ClickHousePlugin = true
+	if !blocked() {
+		t.Fatal("a built-in ClickHouse was planned onto a plugin's server")
+	}
+}

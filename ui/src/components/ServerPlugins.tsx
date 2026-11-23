@@ -7,7 +7,9 @@ import { Stack } from './layout';
 
 /** An installed plugin and the keys a server trusts (control/servers/{id}/plugins). */
 export type PluginRecord = { name: string; version: string; provides: string; summary?: string; hooks?: string[]; key_id?: string; installed?: string };
-export type PluginsView = { plugins?: PluginRecord[]; keys?: string[]; operator_keys?: string[]; pinned?: number; arch?: string };
+/** The ClickHouse the agent's built-in support runs, and what handing it to the plugin would cover. */
+export type ClickHouseHandOver = { available?: boolean; reason?: string; built_in?: boolean; version?: string; plugin?: string; plugin_version?: string; applications?: Array<{ app: string; database: string; resource: string; backups?: number }>; done?: string[] };
+export type PluginsView = { plugins?: PluginRecord[]; keys?: string[]; operator_keys?: string[]; pinned?: number; arch?: string; clickhouse_handover?: ClickHouseHandOver };
 type PluginCheck = { id: string; title: string; ok: boolean; detail?: string; repairable?: boolean; caution?: boolean };
 
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
@@ -27,6 +29,7 @@ export function ServerPlugins({ serverID }: { serverID: string }) {
   const [busy, setBusy] = useState('');
   const [keys, setKeys] = useState('');
   const [checks, setChecks] = useState<Record<string, PluginCheck[]>>({});
+  const [handed, setHanded] = useState<string[]>([]);
   const accept = (next: PluginsView) => { setView(next); setKeys((next.operator_keys || []).join('\n')); };
   const load = () => get<PluginsView>(pluginsEndpoint(serverID)).then(next => { accept(next || {}); setError(''); }).catch(reason => { setView({}); setError(message(reason)); });
   useEffect(() => { setView(undefined); setChecks({}); void load(); }, [serverID]);
@@ -39,8 +42,10 @@ export function ServerPlugins({ serverID }: { serverID: string }) {
   };
   const check = (name: string) => run(`check:${name}`, async () => { const result = await post<{ answer?: { ok?: boolean; checks?: PluginCheck[]; messages?: string[] } }>(`${pluginsEndpoint(serverID)}/${encodeURIComponent(name)}/hooks/check`, {}); const list = result.answer?.checks || []; setChecks(current => ({ ...current, [name]: list.length ? list : [{ id: 'answer', title: name, ok: Boolean(result.answer?.ok), detail: (result.answer?.messages || []).join(' ') || (result.answer?.ok ? 'No problems reported.' : 'The plugin reported a problem without details.') }] })); });
   const remove = (name: string) => run(`remove:${name}`, async () => { await del(`${pluginsEndpoint(serverID)}/${encodeURIComponent(name)}`); notify(`Plugin ${name} removed.`); await load(); });
+  const handOver = () => run('handover', async () => { const result = await post<ClickHouseHandOver>(`${pluginsEndpoint(serverID)}/handover/clickhouse`, {}); setHanded(result.done || []); notify('ClickHouse handed to its plugin.'); await load(); });
   if (!view) return <Loading />;
   const plugins = view.plugins || [];
+  const builtIn = view.clickhouse_handover;
   return <Stack gap="page" data-server-plugins={serverID}>
     {error && <ErrorBanner onDismiss={() => setError('')}>{error}</ErrorBanner>}
     <Card><SectionHeader title="Installed plugins" description="A plugin is a separate, signed program that manages one piece of application-specific software on this server. The agent runs it with limits and knows nothing about what is behind it." actions={<Badge>{plugins.length} installed</Badge>} />
@@ -49,6 +54,16 @@ export function ServerPlugins({ serverID }: { serverID: string }) {
           {checks[plugin.name] && <ul className="plugin-checks" aria-label={`Checks of ${plugin.name}`}>{checks[plugin.name].map(item => <li key={item.id}><Badge tone={item.ok && !item.caution ? 'success' : item.ok || item.repairable ? 'warning' : 'danger'}>{item.ok && item.caution ? 'At risk' : item.ok ? 'OK' : item.repairable ? 'Repairable' : 'Problem'}</Badge> <strong>{item.title}</strong> <span>{item.detail}</span></li>)}</ul>}
         </div><span className="row-actions">{(plugin.hooks || []).includes('check') && <Button type="button" size="sm" disabled={busy !== ''} onClick={() => { void check(plugin.name); }}>{busy === `check:${plugin.name}` ? 'Checking…' : 'Check server'}</Button>}<ConfirmAction title={`Remove the ${plugin.name} plugin?`} description="Its program is removed from this server. What it manages, and its own data, stay as they are." confirmLabel="Remove plugin" destructive onConfirm={() => remove(plugin.name)}><Button type="button" size="sm" variant="danger" disabled={busy !== ''}>Remove</Button></ConfirmAction></span></div>)}</div>}
     </Card>
+    {(builtIn?.built_in || handed.length > 0) && <Card data-clickhouse-handover><SectionHeader title="ClickHouse run by the built-in support" description="This server's ClickHouse was installed by Līdza Deploy itself. Its plugin can take it over while it runs: nothing is installed, no configuration is written and nothing restarts, and each application keeps the connection it has." actions={builtIn?.built_in ? <Badge>{builtIn.version ? `ClickHouse ${builtIn.version}` : 'ClickHouse'}</Badge> : <Badge tone="success">Handed over</Badge>} />
+      {handed.length > 0 && <ul className="plain-list">{handed.map(line => <li key={line}>{line}</li>)}</ul>}
+      {builtIn?.built_in && <>
+        <div className="simple-list">{(builtIn.applications || []).map(app => <div key={app.app}><div><strong>{app.app}</strong><small>Database {app.database} · {app.backups || 0} backups kept</small></div></div>)}</div>
+        <p className="muted-copy">After the hand-over these databases are the plugin's service: backups, restores and moves go through the plugin, and a new application's ClickHouse on this server comes from it. Backups made before the hand-over stay downloadable but can no longer be restored in place, so each database gets a new backup right away. The hand-over cannot be undone from here.</p>
+        {builtIn.available
+          ? <div className="row-actions"><ConfirmAction title="Hand ClickHouse to its plugin?" description={<>The {builtIn.plugin} plugin {builtIn.plugin_version} takes over the ClickHouse of {(builtIn.applications || []).map(app => app.app).join(', ')}. Nothing restarts and no connection changes. Earlier backups can no longer be restored in place; a new backup of each database starts immediately. This cannot be undone from the console.</>} confirmLabel="Hand over" onConfirm={() => handOver()}><Button type="button" variant="primary" disabled={busy !== ''}>{busy === 'handover' ? 'Handing over…' : 'Hand over to the plugin'}</Button></ConfirmAction></div>
+          : <p className="muted-copy" data-handover-reason>{builtIn.reason}</p>}
+      </>}
+    </Card>}
     <ActionForm onSubmit={install}><Card className="form-card"><SectionHeader title="Install a plugin" description={`From release v<version> of a public GitHub repository. The server verifies the release's signature with the keys it trusts and the archive against the signed manifest; this server is ${view.arch || 'of unknown architecture'}.`} />
       <div className="form-grid two"><Field label="Repository" hint="owner/name"><Input name="repository" required placeholder="example/deploy-plugin-search" spellCheck={false} /></Field><Field label="Version"><Input name="version" required placeholder="1.0" spellCheck={false} /></Field></div>
       <div className="sticky-actions"><Button type="submit" variant="primary" disabled={busy !== ''}>{busy === 'install' ? 'Installing…' : 'Install plugin'}</Button></div>

@@ -191,14 +191,16 @@ application in mind, is in the server's readiness report; what it marks
 repairable is fixed by its `repair` hook when the server is repaired; its
 `maintain` hook runs hourly.
 
-### Taking over from the built-in ClickHouse code
+### Whose ClickHouse it is
 
-Where a plugin that provides `clickhouse` is installed and implements
-`check`, the agent asks it instead of using its own ClickHouse rules: an
-application's rehearsal shows the plugin's checks (given the series the
-application comes from and the size of its data), the server's readiness
-report leaves ClickHouse to the plugin, and a repair is the plugin's
-`repair`. Servers without the plugin behave as before.
+ClickHouse on a server is the plugin's to provide when a plugin that
+provides `clickhouse` and can provision it is installed, and the agent's
+built-in support runs no ClickHouse there (none was ever installed, or it
+was handed over). Then an application that asks for ClickHouse gets the
+plugin's service, its rehearsal shows the plugin's checks (given the series
+the application comes from and the size of its data), and moves treat the
+server as a plugin's. While the built-in support runs a ClickHouse on the
+server, everything about it stays built in, plugin installed or not.
 
 ### Backups and restores
 
@@ -242,6 +244,27 @@ then what the plugins kept stays, so a repeated final sync is incremental
 too. Without both hooks each phase copies a whole backup, and the review
 says so.
 
+### Handing over the built-in ClickHouse
+
+A server whose ClickHouse the agent's built-in support installed shows it in
+its **Plugins** tab, with the applications that use it. With a ClickHouse
+plugin installed that can run a server, **Hand over to the plugin** asks the
+plugin to take over each application's database, passing the server's ports
+and administrator password with the application's own (`provision` with
+`adopt` in the record). The agent changes its own records only when the
+plugin answered, for every application, exactly the connection the
+application already uses, and then in one write: each database becomes the
+plugin's service under the same protected resource, with its backup
+schedule and history. Nothing is installed, no configuration is written, no
+user is altered and nothing restarts.
+
+Afterwards ClickHouse on that server is the plugin's: a new application
+that asks for ClickHouse gets the plugin's service, and moves go through
+the plugin. Backups made before the hand-over stay downloadable but are not
+restorable in place, so each database gets a new backup at once. A move
+from a server still on the built-in support to one that was handed over is
+refused until the source is handed over too.
+
 ### Writing a plugin
 
 The `pluginapi` package is the kit: the request and answer types the agent
@@ -251,11 +274,9 @@ plugin (a notes directory per application) in about ninety lines; a test
 builds it from source and takes it through the agent: signed, installed,
 checked, provisioned for an application and released.
 
-Not built yet: tuning through hooks; naming a plugin in
-`deploy/lidza.stack.json`; handing a ClickHouse the agent installed to the
-plugin; and using the plugin instead of the built-in support when an
-application asks for ClickHouse. Until those exist the built-in ClickHouse
-code stays in the agent.
+Not built yet: tuning through hooks, and naming a plugin in
+`deploy/lidza.stack.json`. The built-in ClickHouse code stays in the agent
+until every server that uses it has been handed over.
 
 ## Open questions
 

@@ -144,7 +144,7 @@ func (m *Manager) nativePreflight(ctx context.Context, in NativePreflightRequest
 	// authority on its processor, server and disk rules; the built-in checks
 	// below are for servers that do not have it yet.
 	pluginKnowsClickHouse := false
-	if req.Data.ClickHouse && m.pluginChecks("clickhouse") {
+	if req.Data.ClickHouse && m.pluginChecks("clickhouse") && m.clickhouseViaPlugin() {
 		pluginKnowsClickHouse = true
 		options, _ := json.Marshal(map[string]string{"series": req.Data.ClickHouseVersion})
 		for _, check := range m.pluginServiceChecks(ctx, req.ID, []NativePluginService{{Service: "clickhouse", Options: options}}, map[string]int64{"clickhouse": in.ClickHouseBytes}) {

@@ -47,6 +47,10 @@ type PluginsView struct {
 	// full, so the list can be edited; public keys are not secrets.
 	OperatorKeys []string `json:"operator_keys"`
 	Arch         string   `json:"arch"`
+	// ClickHouseHandOver is set while the agent's built-in support runs a
+	// ClickHouse on this server: what handing it to the plugin would cover
+	// (plugin_handover.go).
+	ClickHouseHandOver *ClickHouseHandOver `json:"clickhouse_handover,omitempty"`
 }
 
 const maxPluginKeys = 8
@@ -100,6 +104,9 @@ func (m *Manager) pluginsView() PluginsView {
 	}
 	m.mu.Unlock()
 	slices.SortFunc(view.Plugins, func(a, b PluginRecord) int { return strings.Compare(a.Name, b.Name) })
+	if handOver := m.clickhouseHandOverPlan(); handOver.BuiltIn {
+		view.ClickHouseHandOver = &handOver
+	}
 	return view
 }
 
@@ -299,6 +306,7 @@ func (m *Manager) removePlugin(name string) error {
 
 func (m *Manager) pluginRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/plugins", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, m.pluginsView()) })
+	m.pluginHandOverRoutes(mux)
 	mux.HandleFunc("PUT /v1/plugins/keys", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Keys []string `json:"keys"`

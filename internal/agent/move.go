@@ -157,6 +157,10 @@ type MoveHost struct {
 	// prefix length ("10.30.0.5/16"), without container bridges and cloud
 	// anchor addresses, so the panel finds a network both hosts share.
 	PrivateNetworks []string `json:"private_networks,omitempty"`
+	// ClickHousePlugin says ClickHouse on this server is a plugin's to
+	// provide (plugin_handover.go): an application's ClickHouse arrives
+	// here as that plugin's service.
+	ClickHousePlugin bool `json:"clickhouse_plugin,omitempty"`
 	// Tunnel reports that this agent carries move replication through the
 	// control panel (move_replication_tunnel.go) and probes TCP reachability
 	// (POST /v1/move/reach).
@@ -248,7 +252,7 @@ func (m *Manager) moveRoutes(mux *http.ServeMux) {
 			}
 		}
 		JSON(w, 200, MoveHost{Problems: problems, Preflight: m.cfg.Native != nil, IPv4: addresses.IPv4, IPv6: addresses.IPv6, PrivateIPv4: addresses.PrivateIPv4, PrivateNetwork: addresses.PrivateNetwork, PrivateNetworks: addresses.PrivateNetworks, Tunnel: !m.cfg.IngressOnly, Subscribe: !m.cfg.IngressOnly,
-			Native: m.cfg.Native != nil, HostData: !m.cfg.IngressOnly, Files: true, ClickHouse: !m.cfg.IngressOnly, Resume: true, Probe: true, TableData: true, TableKey: true,
+			Native: m.cfg.Native != nil, HostData: !m.cfg.IngressOnly, Files: true, ClickHouse: !m.cfg.IngressOnly, ClickHousePlugin: m.clickhouseViaPlugin(), Resume: true, Probe: true, TableData: true, TableKey: true,
 			ClickHouseFormats: []string{clickhouseFormatDirectory, clickhouseFormatBackup, clickhouseFormatNative, clickhouseFormatIncremental}, Zstd: zstdAvailable(),
 			ListeningPorts: listening, HostFirewall: moveHostFirewall(r.Context()), HostMail: probeHostMail(r.Context(), listening), Gateway: m.gatewayCapability(r.Context())})
 	})

@@ -101,6 +101,16 @@ suite('servers', [
       await page.getByRole('button', { name: 'Save trusted keys' }).click();
       await page.getByText('Trusted plugin keys saved.').waitFor();
       assert.deepEqual(callsTo(state, 'control/servers/local/plugins/keys', 'PUT')[0].body, { keys: ['cd'.repeat(32)] });
+      // The built-in ClickHouse is handed to its plugin only after confirmation.
+      const builtIn = page.locator('[data-clickhouse-handover]');
+      await builtIn.getByText('Database app_metrics · 2 backups kept').waitFor();
+      await builtIn.getByRole('button', { name: 'Hand over to the plugin' }).click();
+      assert.equal(callsTo(state, 'control/servers/local/plugins/handover/clickhouse', 'POST').length, 0);
+      await page.getByRole('alertdialog').getByText('Nothing restarts and no connection changes.').waitFor();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Hand over' }).click();
+      await builtIn.getByText('a first backup through the plugin has started').waitFor();
+      await builtIn.getByText('Handed over').waitFor();
+      assert.equal(callsTo(state, 'control/servers/local/plugins/handover/clickhouse', 'POST').length, 1);
       // Removing asks first.
       await row.getByRole('button', { name: 'Remove' }).click();
       assert.equal(callsTo(state, 'control/servers/local/plugins/search', 'DELETE').length, 0);
