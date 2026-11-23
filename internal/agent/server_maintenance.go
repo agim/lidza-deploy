@@ -76,8 +76,10 @@ func (m *Manager) setMaintenancePolicy(p MaintenancePolicy) error {
 	return nil
 }
 func (m *Manager) cleanupBusyLocked() bool {
-	if len(m.data.StackTransitions) > 0 {
-		return true
+	for id := range m.data.StackTransitions {
+		if m.stackRecoveryFailed[id] == "" {
+			return true
+		}
 	}
 	if m.upgradePending() {
 		return true

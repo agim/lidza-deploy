@@ -10,8 +10,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -72,6 +74,13 @@ func (m *Manager) hostReadiness(ctx context.Context) HostReadiness {
 		} else {
 			add(HostReadinessCheck{ID: "docker", Title: "Docker", Detail: "Docker is installed but its daemon is not running; containers cannot start.", Repairable: true})
 		}
+	}
+	// An interrupted release switch that could not be completed at start.
+	m.mu.Lock()
+	unsettled := maps.Clone(m.stackRecoveryFailed)
+	m.mu.Unlock()
+	for _, id := range slices.Sorted(maps.Keys(unsettled)) {
+		add(HostReadinessCheck{ID: "release-switch-" + id, Title: "Release switch of " + id, Detail: "An interrupted release switch of " + id + " could not be completed when the agent started (" + unsettled[id] + "). The application is left as it is; deploy it again to settle the switch."})
 	}
 	// Services a plugin checks are that plugin's to report (above).
 	covered := func(id string) bool { return id == "clickhouse" && m.pluginChecks("clickhouse") }

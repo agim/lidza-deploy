@@ -113,34 +113,37 @@ type Manager struct {
 	hostFlights                singleflight.Group
 	hostSlots                  chan struct{}
 	lifecycle                  map[string]bool
-	cacheProvision             func(context.Context, CacheResource) error
-	reportMu                   sync.Mutex
-	reportWake                 chan struct{}
-	cpuTotal, cpuIdle          float64
-	ingressMu                  sync.Mutex
-	logAccessMu                sync.Mutex // serialises system log access reconciles (native_log_access.go)
-	logAccessBooted            bool
-	ingressDetected            *HostIngressStatus
-	caddyTLSMu                 sync.Mutex
-	caddyTLS                   *CaddyTLSReport           // latest TLS automation upkeep (caddy_tls_failover.go)
-	caddyCerts                 map[string]caddyCertState // certificate status of managed hostnames
-	domainWake                 chan struct{}
-	domains                    map[string]DomainStatus
-	mailProbes                 map[string]mailProbeResult // latest mail-port probe by application (mail_tls.go)
-	databaseSlots              chan struct{}
-	mu                         sync.Mutex
-	removing                   map[string]bool
-	moveFileOps                map[string]bool // file transfers of moves, by application
-	progress                   progressRegistry
-	build                      buildResources
-	key                        []byte
-	cfg                        Config
-	data                       diskState
-	runtime                    Runtime
-	queue                      chan job
-	ctx                        context.Context
-	cancel                     context.CancelFunc
-	wg                         sync.WaitGroup
+	// stackRecoveryFailed are applications whose interrupted release switch
+	// could not be completed at start, with the reason (stack_recovery.go).
+	stackRecoveryFailed map[string]string
+	cacheProvision      func(context.Context, CacheResource) error
+	reportMu            sync.Mutex
+	reportWake          chan struct{}
+	cpuTotal, cpuIdle   float64
+	ingressMu           sync.Mutex
+	logAccessMu         sync.Mutex // serialises system log access reconciles (native_log_access.go)
+	logAccessBooted     bool
+	ingressDetected     *HostIngressStatus
+	caddyTLSMu          sync.Mutex
+	caddyTLS            *CaddyTLSReport           // latest TLS automation upkeep (caddy_tls_failover.go)
+	caddyCerts          map[string]caddyCertState // certificate status of managed hostnames
+	domainWake          chan struct{}
+	domains             map[string]DomainStatus
+	mailProbes          map[string]mailProbeResult // latest mail-port probe by application (mail_tls.go)
+	databaseSlots       chan struct{}
+	mu                  sync.Mutex
+	removing            map[string]bool
+	moveFileOps         map[string]bool // file transfers of moves, by application
+	progress            progressRegistry
+	build               buildResources
+	key                 []byte
+	cfg                 Config
+	data                diskState
+	runtime             Runtime
+	queue               chan job
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
 	// linkMu guards linkCancel, the running agent link (control_link.go).
 	linkMu     sync.Mutex
 	linkCancel context.CancelFunc
@@ -641,7 +644,9 @@ func (m *Manager) Upsert(a App) error {
 	return nil
 }
 func (m *Manager) busy(id string) bool {
-	if _, pending := m.data.StackTransitions[id]; pending {
+	// A switch whose recovery failed is not work in progress: it waits for
+	// a new deployment, and must not block that or the agent's updates.
+	if _, pending := m.data.StackTransitions[id]; pending && m.stackRecoveryFailed[id] == "" {
 		return true
 	}
 	if m.lifecycle[id] {

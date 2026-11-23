@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"log"
 	"maps"
 	"time"
 )
@@ -45,7 +46,12 @@ func (m *Manager) recoverStackTransitions() error {
 		a := m.data.Apps[id]
 		m.mu.Unlock()
 		if t.Candidate == nil {
-			return errors.New("invalid pending stack transition")
+			// Unusable, and nothing to act on: forget it rather than refuse to start.
+			log.Printf("stack recovery: the recorded release switch of %s names no release; it is dropped", id)
+			if err := m.recordStackTransition(id, nil, nil, false); err != nil {
+				return err
+			}
+			continue
 		}
 		if a.Current != nil && a.Current.ID == t.Candidate.ID {
 			if err := m.recordStackTransition(id, nil, nil, false); err != nil {
@@ -81,7 +87,20 @@ func (m *Manager) recoverStackTransitions() error {
 		}
 		cancel()
 		if err != nil {
-			return errors.New("interrupted stack activation could not recover; pending recovery retained")
+			// One application's interrupted release switch must never keep
+			// the agent, and with it the host's gateway and every other
+			// application's management, from starting. The switch stays
+			// recorded, the reason is logged and shown in the server's
+			// readiness, and the application no longer counts as busy: a
+			// new deployment of it settles the switch.
+			log.Printf("stack recovery: the interrupted release switch of %s could not be completed and stays recorded: %v. Deploy the application again to settle it.", id, err)
+			m.mu.Lock()
+			if m.stackRecoveryFailed == nil {
+				m.stackRecoveryFailed = map[string]string{}
+			}
+			m.stackRecoveryFailed[id] = err.Error()
+			m.mu.Unlock()
+			continue
 		}
 		if err = m.recordStackTransition(id, nil, nil, false); err != nil {
 			return err
