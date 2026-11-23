@@ -2,8 +2,10 @@
 
 Status: stage 1 is implemented (the contract, signature check, installation
 and the read-only hooks; see [Stage 1 as built](#stage-1-as-built)). The
-ClickHouse plugin exists and takes over the server checks where it is
-installed; installing, backing up and moving ClickHouse are still built in.
+ClickHouse plugin exists (it installs the server, gives applications their
+databases, backs them up and restores them) and takes over the server checks
+where it is installed. The agent's built-in ClickHouse support is still what
+an application gets by default, and what moves a database between servers.
 
 ## Why
 
@@ -220,10 +222,11 @@ plugin (a notes directory per application) in about ninety lines; a test
 builds it from source and takes it through the agent: signed, installed,
 checked, provisioned for an application and released.
 
-Not built yet: moves and tuning through hooks; naming a
-plugin in `deploy/lidza.stack.json`; and the ClickHouse plugin's provision,
-backup and move hooks, so those parts of ClickHouse are still built into the
-agent.
+Not built yet: moves and tuning through hooks; naming a plugin in
+`deploy/lidza.stack.json`; handing a ClickHouse the agent installed to the
+plugin; and using the plugin instead of the built-in support when an
+application asks for ClickHouse. Until those exist the built-in ClickHouse
+code stays in the agent.
 
 ## Open questions
 
