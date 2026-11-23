@@ -1326,9 +1326,28 @@ func moveTargetAddresses(host agent.MoveHost, server Server, explicit []string) 
 	if len(out) == 0 {
 		if u, err := url.Parse(server.URL); err == nil {
 			add(u.Hostname())
+			// A server behind a router sees only its private address. The
+			// control panel reaches its agent by name, so the public addresses
+			// of that name are where DNS for its applications must point too.
+			if len(out) == 0 && net.ParseIP(u.Hostname()) == nil {
+				for _, address := range moveResolveHost(u.Hostname()) {
+					add(address)
+				}
+			}
 		}
 	}
 	return out
+}
+
+// moveResolveHost looks a server's hostname up; tests replace it.
+var moveResolveHost = func(host string) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return nil
+	}
+	return addresses
 }
 
 // createMove records a new job from a reviewed plan.
