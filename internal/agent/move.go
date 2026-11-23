@@ -135,6 +135,13 @@ type MoveEnvironment struct {
 }
 
 // MoveHost describes a possible destination.
+// MoveHostProblem is one failing readiness check of a destination.
+type MoveHostProblem struct {
+	ID         string `json:"id"`
+	Detail     string `json:"detail"`
+	Repairable bool   `json:"repairable,omitempty"`
+}
+
 type MoveHost struct {
 	IPv4 string `json:"ipv4,omitempty"`
 	IPv6 string `json:"ipv6,omitempty"`
@@ -156,6 +163,10 @@ type MoveHost struct {
 	Subscribe bool `json:"subscribe,omitempty"`
 	Native    bool `json:"native"`
 	HostData  bool `json:"host_data"`
+	// Problems are what the host's readiness report says would stop an
+	// application here (host_ready.go); Repairable ones the agent fixes
+	// itself when it prepares the application.
+	Problems []MoveHostProblem `json:"problems,omitempty"`
 	// Files reports that this agent restores transferred file sets.
 	Files bool `json:"files,omitempty"`
 	// ClickHouse reports that this agent copies managed ClickHouse data.
@@ -224,7 +235,14 @@ func (m *Manager) moveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/move/host", func(w http.ResponseWriter, r *http.Request) {
 		addresses := moveDetectAddresses()
 		listening := moveListeningPorts(r.Context())
-		JSON(w, 200, MoveHost{IPv4: addresses.IPv4, IPv6: addresses.IPv6, PrivateIPv4: addresses.PrivateIPv4, PrivateNetwork: addresses.PrivateNetwork, PrivateNetworks: addresses.PrivateNetworks, Tunnel: !m.cfg.IngressOnly, Subscribe: !m.cfg.IngressOnly,
+		problems := []MoveHostProblem{}
+		for _, check := range m.hostReadiness(r.Context()).Checks {
+			// Native setup has its own answer in Native below.
+			if !check.OK && check.ID != "native" {
+				problems = append(problems, MoveHostProblem{ID: check.ID, Detail: check.Detail, Repairable: check.Repairable})
+			}
+		}
+		JSON(w, 200, MoveHost{Problems: problems, IPv4: addresses.IPv4, IPv6: addresses.IPv6, PrivateIPv4: addresses.PrivateIPv4, PrivateNetwork: addresses.PrivateNetwork, PrivateNetworks: addresses.PrivateNetworks, Tunnel: !m.cfg.IngressOnly, Subscribe: !m.cfg.IngressOnly,
 			Native: m.cfg.Native != nil, HostData: !m.cfg.IngressOnly, Files: true, ClickHouse: !m.cfg.IngressOnly, Resume: true, Probe: true, TableData: true, TableKey: true,
 			ClickHouseFormats: []string{clickhouseFormatDirectory, clickhouseFormatBackup, clickhouseFormatNative, clickhouseFormatIncremental}, Zstd: zstdAvailable(),
 			ListeningPorts: listening, HostFirewall: moveHostFirewall(r.Context()), HostMail: probeHostMail(r.Context(), listening), Gateway: m.gatewayCapability(r.Context())})

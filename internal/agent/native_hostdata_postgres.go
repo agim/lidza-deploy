@@ -356,11 +356,23 @@ func (h nativeHostData) psql(ctx context.Context, port int, script string) (stri
 }
 
 // ensurePostgres returns the cluster to use, installing PostgreSQL first when
-// the host has none. Running clusters are never restarted.
+// the host has none. Running clusters are never restarted; a cluster whose
+// service failed is repaired first (native_hostdata_repair.go).
 func (h nativeHostData) ensurePostgres(ctx context.Context) (pgCluster, error) {
 	version, port := h.cfg.PostgresVersion, h.cfg.PostgresPort
 	clusters, _ := h.listClusters(ctx)
 	cluster, err := chooseNativePGCluster(clusters, version, port)
+	if err != nil && !errors.Is(err, errNativePGNoCluster) {
+		// A matching cluster exists but cannot be used: say exactly why, and
+		// repair a failed service; anything else is the operator's decision.
+		if problem := h.diagnosePostgres(ctx); problem != nil {
+			if _, err := h.repairPostgres(ctx, problem); err != nil {
+				return pgCluster{}, err
+			}
+			clusters, _ = h.listClusters(ctx)
+			cluster, err = chooseNativePGCluster(clusters, version, port)
+		}
+	}
 	if !errors.Is(err, errNativePGNoCluster) {
 		return cluster, err
 	}

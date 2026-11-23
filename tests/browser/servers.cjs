@@ -71,6 +71,20 @@ suite('servers', [
     },
   },
   {
+    name: 'overview: a service that cannot start is named and repaired from the page',
+    async run({ page, state, open }) {
+      await open('/console/servers/local');
+      const card = page.locator('[data-server-readiness]');
+      await card.getByText('cannot start: the postgres account cannot enter /mnt/data').waitFor();
+      assert.equal(await card.getAttribute('data-server-readiness'), 'attention');
+      await card.getByRole('button', { name: 'Repair now' }).click();
+      await card.getByText('is online.').waitFor();
+      assert.equal(await card.getAttribute('data-server-readiness'), 'ready');
+      assert.equal(callsTo(state, 'control/servers/local/host/readiness/repair', 'POST').length, 1);
+      assert.equal(await card.getByRole('button', { name: 'Repair now' }).count(), 0);
+    },
+  },
+  {
     name: 'agent tab: native applications are enabled after confirmation',
     async run({ page, state, open }) {
       await open('/console/servers/local/agent');

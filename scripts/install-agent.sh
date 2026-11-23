@@ -367,6 +367,17 @@ for attempt in {1..30}; do
 done
 # Keep the token out of command arguments and installer output.
 printf 'header = "Authorization: Bearer %s"\n' "$token" | curl --config - -fsS http://127.0.0.1:9090/v1/apps >/dev/null
+# Repair what would stop an application from running here (for example a
+# database service that cannot start) and say what still needs a person.
+printf 'header = "Authorization: Bearer %s"\n' "$token" | curl --config - -fsS --max-time 240 -X POST http://127.0.0.1:9090/v1/host/readiness/repair 2>/dev/null | python3 -c '
+import json, sys
+try: report = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for line in report.get("repaired") or []: print("Repaired: " + line + ".")
+for line in report.get("failed") or []: print("Could not repair: " + line)
+for check in report.get("checks") or []:
+    if not check.get("ok") and not (check.get("id") == "native" and check.get("repairable")): print("Needs attention - " + check.get("title", "") + ": " + check.get("detail", ""))
+' || true
 if $public_host; then
 systemctl is-active --quiet caddy
 printf '%s\n' 'Agent, Docker and Caddy are installed and running.' 'Private GUI connection details: /etc/lidza-agent/connection.json'

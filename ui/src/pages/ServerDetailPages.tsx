@@ -16,6 +16,7 @@ import { ResourceList, type Column } from '../components/ResourceList';
 import { ServerTuning } from '../components/ServerTuning';
 import { ServerEnrollment } from '../components/ServerEnrollment';
 import { ServerNativeApps } from '../components/ServerNativeApps';
+import { ServerReadiness } from '../components/ServerReadiness';
 import { ServerFirewall } from '../components/ServerFirewall';
 import { ServerIngress } from '../components/ServerIngress';
 import { ServerServiceControl } from '../components/ServerServiceControl';
@@ -108,6 +109,7 @@ function ServerOverview({ server }: { server: ServerType }) {
   const hosted = apps.filter(app => app.server_id === server.id);
   return <Stack gap="page" data-server-overview={server.id}>
     <Card className="server-health-card" data-server-health={server.id}><ServerResources health={metrics.health.find(row => row.server_id === server.id)} loading={metrics.busy} unavailable={metrics.error || (metrics.unavailable.includes(server.name) || metrics.unavailable.includes(server.id) ? 'Hosting agent unavailable.' : undefined)} /></Card>
+    <ServerReadiness serverID={server.id} />
     <Card><SectionHeader title="On this server" actions={<HostUpdateBadges serverID={server.id} />} /><SummaryList items={[{ label: 'Applications', value: <a href={withSticky(resourceHref('servers', server.id, 'applications'))}>{hosted.length ? hosted.map(app => app.id).join(', ') : 'None yet'}</a> }, { label: 'Agent', value: <code>{server.url}</code> }]} /></Card>
   </Stack>;
 }

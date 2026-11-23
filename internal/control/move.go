@@ -1171,6 +1171,19 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 	if plan.TargetRuntime == moveRuntimeNative && !host.Native {
 		plan.Blockers = append(plan.Blockers, "The destination server is not set up for native applications; enable them on its Agent tab, then review the move again.")
 	}
+	// What the destination's own readiness report says would stop the
+	// application there. The agent repairs what has one safe answer when it
+	// prepares the application; the rest must be resolved first.
+	for _, problem := range host.Problems {
+		switch {
+		case problem.ID == "postgres" && plan.TargetRuntime != moveRuntimeNative, problem.ID == "docker" && plan.TargetRuntime != moveRuntimeContainer:
+			// Containers bring their own database; native applications need no Docker.
+		case problem.Repairable:
+			plan.Notes = append(plan.Notes, "On the destination: "+problem.Detail+" The destination repairs this itself when the move prepares it.")
+		default:
+			plan.Blockers = append(plan.Blockers, "On the destination: "+problem.Detail)
+		}
+	}
 	planMoveGateway(&plan, appID, source, host, targetName)
 
 	// Databases.
