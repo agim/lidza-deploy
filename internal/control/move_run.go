@@ -409,14 +409,14 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 		c.moveLog(job.ID, moveStepPrepare, "The application already exists on %s from an earlier attempt.", job.TargetServer)
 	}
 	native := status.Application
-	if data := job.NativeSpec.Data; data.Postgres || data.Redis || data.ClickHouse {
+	if data := job.NativeSpec.Data; data.Postgres || data.Redis || data.ClickHouse || len(data.Plugins) > 0 {
 		var view agent.NativeHostDataView
 		if err := c.movePoll(ctx, 15*time.Minute, func() (bool, error) {
 			if err := c.agentCall(r, job.TargetServer, http.MethodGet, path+"/data", nil, &view); err != nil {
 				return false, nil
 			}
 			return (!data.Postgres || view.Postgres != nil && view.Postgres.Ready) && (!data.Redis || view.Redis != nil && view.Redis.Ready) &&
-				(!data.ClickHouse || view.ClickHouse != nil && view.ClickHouse.Ready), nil
+				(!data.ClickHouse || view.ClickHouse != nil && view.ClickHouse.Ready) && movePluginsReady(data.Plugins, view.Plugins), nil
 		}); err != nil {
 			return fmt.Errorf("the destination's data services are not ready: %w", err)
 		}
@@ -435,6 +435,13 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 			for i := range job.Databases {
 				if job.Databases[i].Copyable && view.Postgres != nil {
 					job.Databases[i].TargetID = view.Postgres.Resource
+				}
+			}
+			for i := range job.Plugins {
+				for _, provisioned := range view.Plugins {
+					if provisioned.Service == job.Plugins[i].Service {
+						job.Plugins[i].TargetID = provisioned.Resource
+					}
 				}
 			}
 			return nil
@@ -881,7 +888,7 @@ func (c *Control) moveCopyData(ctx context.Context, id, step string) error {
 	if step == moveStepFinalSync {
 		phase = movePhaseFinal
 	}
-	return c.runMoveEngines(ctx, id, step, phase, moveEnginePostgres, moveEngineClickHouse, moveEngineRedis)
+	return c.runMoveEngines(ctx, id, step, phase, moveEnginePostgres, moveEngineClickHouse, moveEnginePlugin, moveEngineRedis)
 }
 
 func moveSize(n int64) string {

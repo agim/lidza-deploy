@@ -217,6 +217,11 @@ func (c *Control) moveEngines(run moveRun, kinds ...string) []moveEngine {
 	if want(moveEngineClickHouse) && job.ClickHouse != nil {
 		out = append(out, &moveClickHouseEngine{run: run})
 	}
+	if want(moveEnginePlugin) {
+		for i := range job.Plugins {
+			out = append(out, &movePluginEngine{run: run, index: i})
+		}
+	}
 	if want(moveEngineFiles) {
 		shared := &moveFilesShared{}
 		for i, f := range job.Files {

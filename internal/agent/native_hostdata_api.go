@@ -16,6 +16,8 @@ type NativeHostDataView struct {
 	Postgres   *NativeHostPostgresView   `json:"postgres,omitempty"`
 	Redis      *NativeHostRedisView      `json:"redis,omitempty"`
 	ClickHouse *NativeHostClickHouseView `json:"clickhouse,omitempty"`
+	// Plugins are the services plugins provide for the application.
+	Plugins []NativeHostPluginView `json:"plugins,omitempty"`
 }
 
 type NativeHostPostgresView struct {
@@ -127,6 +129,9 @@ func (m *Manager) nativeHostDataView(ctx context.Context, id string) (NativeHost
 	}
 	if ch := record.ClickHouse; ch != nil {
 		view.ClickHouse = m.nativeHostClickHouseView(ctx, id, *ch)
+	}
+	if len(record.Plugins) > 0 {
+		view.Plugins = m.pluginServiceViews(record)
 	}
 	return view, nil
 }

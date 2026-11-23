@@ -658,6 +658,43 @@ esac
 	if raw, _ := os.ReadFile(filepath.Join(state, "index.txt")); string(raw) != "first" {
 		t.Fatalf("restored: %q", raw)
 	}
+	// A move lists the service as copyable, and the destination's route
+	// restores a relayed backup through the plugin after checking its digest.
+	record, _ = m.hostDataRecord("shop")
+	if services, blockers := m.moveSourcePlugins(record); len(services) != 1 || !services[0].Copyable || services[0].Resource != resource || len(blockers) != 0 {
+		t.Fatalf("move inventory: %+v %v", services, blockers)
+	}
+	if views := m.pluginServiceViews(record); len(views) != 1 || views[0].Resource != resource || !views[0].Ready {
+		t.Fatalf("data view: %+v", views)
+	}
+	archive, err := os.ReadFile(filepath.Join(m.backupDir(resource), backup.ID+".dump"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(state, "index.txt"), []byte("third"), 0o600)
+	m.cfg.APIKey = strings.Repeat("a", 32)
+	route := "/v1/move/plugin-services/" + resource + "/restore"
+	if w := moveRequest(t, Handler(m), "POST", route, bytes.NewReader(archive), map[string]string{MoveSHA256Header: strings.Repeat("0", 64)}); w.Code == 200 {
+		t.Fatalf("a relayed backup with the wrong digest was restored: %s", w.Body)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(state, "index.txt")); string(raw) != "third" {
+		t.Fatalf("a refused upload changed the service: %q", raw)
+	}
+	if w := moveRequest(t, Handler(m), "POST", route, bytes.NewReader(archive), map[string]string{MoveSHA256Header: backup.SHA256}); w.Code != 200 || w.Header().Get(MoveVerifiedHeader) != backup.SHA256 {
+		t.Fatalf("move restore: %d %s", w.Code, w.Body)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(state, "index.txt")); string(raw) != "first" {
+		t.Fatalf("after the move restore: %q", raw)
+	}
+	m.mu.Lock()
+	after := m.data.Databases[resource]
+	m.mu.Unlock()
+	if after.Operation != "" || after.Error != "" {
+		t.Fatalf("the resource stayed busy or failed: %+v", after)
+	}
+	if w := moveRequest(t, Handler(m), "POST", "/v1/move/plugin-services/shop-db00000000/restore", bytes.NewReader(archive), map[string]string{MoveSHA256Header: backup.SHA256}); w.Code != 409 {
+		t.Fatalf("a resource that is not a plugin service: %d", w.Code)
+	}
 	// A damaged backup is refused before the plugin sees it.
 	damaged := backup
 	damaged.SHA256 = strings.Repeat("0", 64)

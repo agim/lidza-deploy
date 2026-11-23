@@ -213,6 +213,20 @@ hook leaves there. A restore verifies the archive's digest, unpacks it into a
 fresh directory and runs `restore`, which replaces the service's data for the
 application in place.
 
+### Moves
+
+A plugin's service moves with its application. The review lists it among
+the databases and refuses a destination that could not restore it: every
+service needs a plugin on the destination that provides it and implements
+`backup` and `restore`, and a source whose plugin has no `backup` cannot be
+copied. The destination is asked for the same services with the options the
+application was created with. In the bulk copy, and again in the final sync
+with the source stopped, the source takes a backup through its plugin, the
+control panel relays it like a database dump (resumable, with the SHA-256
+compared on both ends) and the destination's plugin restores it. Both
+phases copy the whole service: there are no `export` and `import` hooks for
+an incremental final sync yet.
+
 ### Writing a plugin
 
 The `pluginapi` package is the kit: the request and answer types the agent
@@ -222,7 +236,7 @@ plugin (a notes directory per application) in about ninety lines; a test
 builds it from source and takes it through the agent: signed, installed,
 checked, provisioned for an application and released.
 
-Not built yet: moves and tuning through hooks; naming a plugin in
+Not built yet: an incremental final sync and tuning through hooks; naming a plugin in
 `deploy/lidza.stack.json`; handing a ClickHouse the agent installed to the
 plugin; and using the plugin instead of the built-in support when an
 application asks for ClickHouse. Until those exist the built-in ClickHouse

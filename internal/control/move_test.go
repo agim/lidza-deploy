@@ -115,6 +115,9 @@ type moveFake struct {
 	uploadSize   int64
 	uploadDigest string
 	excluded     []string
+	// plugins are the plugins installed on the server; nil is an agent
+	// from before plugins.
+	plugins []agent.PluginRecord
 }
 
 type moveFault struct {
@@ -486,8 +489,31 @@ func newMoveFake(t *testing.T) *moveFake {
 		f.targetEnv = agent.MoveEnvironment{AppID: spec.ID, Native: true, Values: map[string]string{"DATABASE_URL": "postgres://app_x:destination-db@127.0.0.1:5432/app_x", "REDIS_URL": "redis://:destination-redis@localhost/0", "PORT": "3101"}}
 		j(w, 201, agent.App{ID: spec.ID})
 	})
+	mux.HandleFunc("GET /v1/plugins", func(w http.ResponseWriter, r *http.Request) {
+		if f.plugins == nil {
+			j(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		j(w, 200, agent.PluginsView{Plugins: f.plugins})
+	})
+	mux.HandleFunc("POST /v1/move/plugin-services/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		sum := sha256.Sum256(body)
+		if err != nil || hex.EncodeToString(sum[:]) != r.Header.Get(agent.MoveSHA256Header) {
+			j(w, 422, map[string]string{"error": "checksum mismatch"})
+			return
+		}
+		f.restores["plugin:"+r.PathValue("id")] = append(f.restores["plugin:"+r.PathValue("id")], body)
+		w.Header().Set(agent.MoveVerifiedHeader, hex.EncodeToString(sum[:]))
+		j(w, 200, map[string]string{"status": "restored"})
+	})
 	mux.HandleFunc("GET /v1/native/apps/{id}/data", func(w http.ResponseWriter, r *http.Request) {
 		view := agent.NativeHostDataView{AppID: r.PathValue("id")}
+		if f.created != nil {
+			for _, service := range f.created.Data.Plugins {
+				view.Plugins = append(view.Plugins, agent.NativeHostPluginView{Service: service.Service, Plugin: "meili", Version: "1.1", Resource: "shop-pl0001", Ready: true})
+			}
+		}
 		if f.created != nil && f.created.Data.Postgres {
 			view.Postgres = &agent.NativeHostPostgresView{Resource: "shop-db0001", Ready: true, Version: 17}
 		}

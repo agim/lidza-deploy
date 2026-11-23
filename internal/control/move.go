@@ -101,10 +101,12 @@ type MoveJob struct {
 	Databases     []MoveDatabase             `json:"databases"`
 	Files         []MoveFileCopy             `json:"files,omitempty"`
 	ClickHouse    *MoveClickHouse            `json:"clickhouse,omitempty"`
-	Redis         bool                       `json:"redis"`
-	CacheLocal    bool                       `json:"cache_local,omitempty"`
-	Commit        string                     `json:"commit,omitempty"`
-	Hostnames     []string                   `json:"hostnames"`
+	// Plugins are the plugin services the move copies (move_plugin.go).
+	Plugins    []MovePluginService `json:"plugins,omitempty"`
+	Redis      bool                `json:"redis"`
+	CacheLocal bool                `json:"cache_local,omitempty"`
+	Commit     string              `json:"commit,omitempty"`
+	Hostnames  []string            `json:"hostnames"`
 	// RedirectHostnames are the application's redirect domains: recreated
 	// on the destination, and their DNS moves with the cutover.
 	RedirectHostnames []string        `json:"redirect_hostnames,omitempty"`
@@ -484,6 +486,7 @@ func cloneMoveJob(job MoveJob) MoveJob {
 		job.Steps[i].Log = slices.Clone(job.Steps[i].Log)
 	}
 	job.Databases = slices.Clone(job.Databases)
+	job.Plugins = slices.Clone(job.Plugins)
 	for i := range job.Databases {
 		if link := job.Databases[i].Link; link != nil {
 			copy := *link
@@ -746,7 +749,7 @@ func moveHasFiles(job MoveJob) bool {
 
 // moveCanFinalSync reports whether a final sync has anything to copy.
 func moveCanFinalSync(job MoveJob) bool {
-	return moveHasCopyableData(job) || moveHasFiles(job) || job.ClickHouse != nil
+	return moveHasCopyableData(job) || moveHasFiles(job) || job.ClickHouse != nil || len(job.Plugins) > 0
 }
 
 // ---- routes -------------------------------------------------------------------
@@ -1239,6 +1242,7 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 		plan.Blockers = append(plan.Blockers, "The destination agent cannot provision PostgreSQL or Redis.")
 	}
 	needed += planMoveClickHouse(&plan, source, host)
+	needed += c.planMovePlugins(r, &plan, source, target.ID)
 	files := c.planMoveFiles(&plan, source, host)
 	needed += files
 	if plan.TargetRuntime == moveRuntimeNative && host.Native && host.Preflight {
@@ -1449,6 +1453,7 @@ func (c *Control) createMove(r *http.Request, plan MovePlan) (MoveJob, error) {
 		job.Databases = append(job.Databases, entry)
 	}
 	job.ClickHouse = moveClickHouseFrom(source)
+	job.Plugins = movePluginsFrom(source)
 	for _, f := range plan.Files {
 		job.Files = append(job.Files, MoveFileCopy{ID: f.ID, Path: f.Path, Source: f.Source, Files: f.Files, Bytes: f.Bytes, Method: f.Method, Transfer: f.Action == "copy" || f.Action == "skip_empty"})
 	}
@@ -1571,6 +1576,22 @@ func (c *Control) moveNativeSpec(ctx context.Context, src Application, source ag
 	spec.ID, spec.Repository, spec.Branch, spec.Domain, spec.AdditionalDomains = src.ID, src.Repository, src.Branch, source.Domain, slices.Clone(source.AdditionalDomains)
 	spec.Env, spec.EnvKinds, spec.SourceDirectory, spec.AutoDeploy = nil, nil, "", false
 	spec.Data = agent.NativeDataRequest{Postgres: hasDatabase, Redis: source.Redis, BackupHours: backupHours, Offsite: offsite}
+	// Plugin services are asked for again with the options the application
+	// was created with; their backups keep the source's schedule.
+	for _, p := range source.Plugins {
+		service := agent.NativePluginService{Service: p.Service}
+		if source.CreateSpec != nil {
+			for _, asked := range source.CreateSpec.Data.Plugins {
+				if asked.Service == p.Service {
+					service.Options = asked.Options
+				}
+			}
+		}
+		spec.Data.Plugins = append(spec.Data.Plugins, service)
+		if !hasDatabase && p.Backup.Hours > 0 {
+			spec.Data.BackupHours, spec.Data.Offsite = p.Backup.Hours, p.Backup.Offsite
+		}
+	}
 	if ch := moveClickHouseFrom(source); ch != nil {
 		// The destination installs the source's release series when it has
 		// no ClickHouse yet, so the database moves as a native BACKUP.

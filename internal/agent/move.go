@@ -61,7 +61,10 @@ type MoveSource struct {
 	// ClickHouse is the application's managed ClickHouse database; its
 	// contents are copied (move_clickhouse.go).
 	ClickHouse *MoveSourceClickHouse `json:"clickhouse,omitempty"`
-	Volumes    []string              `json:"volumes"`
+	// Plugins are the application's plugin services; their data is copied
+	// through each plugin's backup and restore (plugin_move.go).
+	Plugins []MoveSourcePlugin `json:"plugins,omitempty"`
+	Volumes []string           `json:"volumes"`
 	// Files are the persistent file sets the agent transfers; nil from
 	// agents that cannot transfer files.
 	Files *MoveFiles `json:"files,omitempty"`
@@ -284,6 +287,7 @@ func (m *Manager) moveRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("GET /v1/move/databases/{id}/backups/{backup}", m.moveTransfer(m.moveBackupDownload))
 	mux.HandleFunc("POST /v1/move/databases/{id}/restore", m.moveTransfer(m.moveRestoreRoute))
+	m.pluginMoveRoutes(mux)
 	m.moveFileRoutes(mux)
 	m.moveClickHouseRoutes(mux)
 	m.moveUploadRoutes(mux)
@@ -553,11 +557,23 @@ func (m *Manager) nativeMoveSource(id string) (MoveSource, error) {
 	if s.Redis {
 		s.CacheMode = "host"
 	}
-	// A plugin's service is provisioned again on the destination, but a move
-	// does not copy its data yet: say so before anything starts, instead of
-	// arriving with an empty service.
-	for _, service := range slices.Sorted(maps.Keys(record.Plugins)) {
-		s.Blockers = append(s.Blockers, "The "+service+" service of the "+record.Plugins[service].Plugin+" plugin holds data a move does not copy yet. Move it by hand: back it up here and restore it on the destination.")
+	// A plugin's service is provisioned again on the destination and its
+	// data copied through the plugin's backup and restore (plugin_move.go).
+	var pluginBlockers []string
+	s.Plugins, pluginBlockers = m.moveSourcePlugins(record)
+	s.Blockers = append(s.Blockers, pluginBlockers...)
+	// The destination asks for exactly the services this application has,
+	// with the options it was created with.
+	requested := spec.Data.Plugins
+	spec.Data.Plugins = nil
+	for _, plugin := range s.Plugins {
+		service := NativePluginService{Service: plugin.Service}
+		for _, asked := range requested {
+			if asked.Service == plugin.Service {
+				service.Options = asked.Options
+			}
+		}
+		spec.Data.Plugins = append(spec.Data.Plugins, service)
 	}
 	if entries, err := os.ReadDir(filepath.Join(policy.Root, "shared", "storage")); err == nil && len(entries) > 0 {
 		s.Volumes = append(s.Volumes, "files in shared/storage")

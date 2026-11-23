@@ -234,13 +234,6 @@ func untarPluginDirectory(r io.Reader, dir string) error {
 // restore hook, which replaces the service's data for the application.
 func (m *Manager) restorePluginBackup(ctx context.Context, app, resource string, record BackupRecord) error {
 	progress := progressFrom(ctx)
-	m.mu.Lock()
-	service := m.data.NativeDatabases[resource].Policy.PluginService
-	m.mu.Unlock()
-	entry, input, err := m.pluginServiceInput(app, service, resource)
-	if err != nil {
-		return err
-	}
 	file, err := os.Open(filepath.Join(m.backupDir(resource), record.ID+".dump"))
 	if err != nil {
 		return errors.New("local backup unavailable")
@@ -253,6 +246,20 @@ func (m *Manager) restorePluginBackup(ctx context.Context, app, resource string,
 		return errors.New("backup integrity check failed; the service was left unchanged")
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	return m.restorePluginArchive(ctx, app, resource, file)
+}
+
+// restorePluginArchive unpacks a verified backup archive and runs the
+// plugin's restore hook on its files.
+func (m *Manager) restorePluginArchive(ctx context.Context, app, resource string, file io.Reader) error {
+	progress := progressFrom(ctx)
+	m.mu.Lock()
+	service := m.data.NativeDatabases[resource].Policy.PluginService
+	m.mu.Unlock()
+	entry, input, err := m.pluginServiceInput(app, service, resource)
+	if err != nil {
 		return err
 	}
 	work, err := os.MkdirTemp(m.backupDir(resource), ".plugin-*")
