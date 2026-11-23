@@ -72,14 +72,16 @@ set -eu
 name=${0##*/}
 printf '%s %s\n' "$name" "$*" >> "$INSTALL_HOST_LOG"
 case "$name" in
- ss) case "$*" in *':80 or sport = :443'*) printf 'LISTEN 0 128 *:80 *:*\n';; *':3000'*) if [ "${INSTALL_TEST_BUSY_CONTROL:-0}" = 1 ];then printf 'LISTEN 0 128 127.0.0.1:3000 *:*\n';fi;; esac;;
+ ss) case "$*" in *':80 or sport = :443'*) [ "${INSTALL_TEST_FREE_WEB:-0}" = 1 ] || printf 'LISTEN 0 128 *:80 *:*\n';; *':3000'*) if [ "${INSTALL_TEST_BUSY_CONTROL:-0}" = 1 ];then printf 'LISTEN 0 128 127.0.0.1:3000 *:*\n';fi;; esac;;
  dpkg) printf 'amd64\n';;
- caddy) echo 'Local installer called Caddy' >&2;exit 1;;
+ caddy) [ "${INSTALL_TEST_FREE_WEB:-0}" = 1 ] || { echo 'Local installer called Caddy' >&2;exit 1; };;
  curl) cat >/dev/null;;
+ ufw) case "$1" in status) printf 'Status: %s\n' "${INSTALL_TEST_UFW:-active}";; allow) [ "${INSTALL_TEST_UFW_FAIL:-0}" != 1 ] || exit 1;; esac;;
+ firewall-cmd) exit 252;;
 esac
 SH
 chmod +x "$scratch/host-bin/mock"
-for cmd in apt-get dpkg ss docker caddy getent id usermod chown systemctl runuser curl;do ln -s mock "$scratch/host-bin/$cmd";done
+for cmd in apt-get dpkg ss docker caddy getent id usermod chown systemctl runuser curl ufw firewall-cmd;do ln -s mock "$scratch/host-bin/$cmd";done
 export INSTALL_HOST_LOG="$scratch/host-actions"
 # Public mode must refuse the existing Caddy before package/service changes.
 if PATH="$scratch/host-bin:$PATH" bash "$scratch/live-installer" --bundle "$scratch/bundle" --fqdn deploy.example.com --with-control > "$scratch/public-conflict.log" 2>&1;then
@@ -110,6 +112,24 @@ rg -q '^systemctl restart lidza-control$' "$scratch/host-actions"
 rg -q '^swap-check$' "$scratch/host-actions"
 rg -q 'http://localhost:3000' "$scratch/local-live.log"
 rg -q 'Automatic HTTPS for hosted apps requires a public hosting agent' "$scratch/local-live.log"
+# Local mode never touches the host firewall, even when one is active.
+! rg -q '^ufw |^firewall-cmd ' "$scratch/host-actions"
+# A public agent opens 80/443 only in an already active host firewall.
+mv "$scratch/host/etc/caddy/Caddyfile" "$scratch/saved-caddy"
+: > "$scratch/host-actions"
+INSTALL_TEST_FREE_WEB=1 PATH="$scratch/host-bin:$PATH" bash "$scratch/live-installer" --bundle "$scratch/bundle" --fqdn agent.example.com > "$scratch/firewall-active.log"
+for rule in 80/tcp 443/tcp 443/udp;do rg -q "^ufw allow $rule\$" "$scratch/host-actions";done
+! rg -q '^ufw (enable|delete|reset|default)' "$scratch/host-actions"
+rg -q 'Opened ports 80/tcp, 443/tcp and 443/udp in UFW' "$scratch/firewall-active.log"
+: > "$scratch/host-actions"
+INSTALL_TEST_FREE_WEB=1 INSTALL_TEST_UFW=inactive PATH="$scratch/host-bin:$PATH" bash "$scratch/live-installer" --bundle "$scratch/bundle" --fqdn agent.example.com > "$scratch/firewall-inactive.log"
+! rg -q '^ufw (allow|enable)|^firewall-cmd .*--add' "$scratch/host-actions"
+rg -q 'none was changed' "$scratch/firewall-inactive.log"
+# A firewall error is reported with the manual command and does not abort a working installation.
+INSTALL_TEST_FREE_WEB=1 INSTALL_TEST_UFW_FAIL=1 PATH="$scratch/host-bin:$PATH" bash "$scratch/live-installer" --bundle "$scratch/bundle" --fqdn agent.example.com > "$scratch/firewall-failed.log" 2>&1
+rg -q 'Warning: could not open ports 80/443 in UFW' "$scratch/firewall-failed.log"
+rg -q 'still closed in the host firewall' "$scratch/firewall-failed.log"
+mv "$scratch/saved-caddy" "$scratch/host/etc/caddy/Caddyfile"
 # Local + public API hostname still generates full public hosting configuration.
 "$installer" --fqdn localhost --hostname agent.example.com --with-control --stage "$scratch/local-public" >/dev/null
 rg -q 'agent.example.com' "$scratch/local-public/etc/caddy/Caddyfile"
@@ -127,4 +147,4 @@ assert any('deploy.example.com' in p.get('subjects',[]) and not p.get('on_demand
 assert any(p.get('on_demand',False) for p in policies)
 PYJSON
 fi
-printf '%s\n' 'PASS: installer staging, private credentials, repeatability, checksum rejection, host validation, local coexistence with occupied web ports, and Caddy configuration'
+printf '%s\n' 'PASS: installer staging, private credentials, repeatability, checksum rejection, host validation, local coexistence with occupied web ports, host firewall opening, and Caddy configuration'

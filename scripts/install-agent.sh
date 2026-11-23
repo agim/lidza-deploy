@@ -73,6 +73,7 @@ if $plan; then
 3. Preserve an existing agent token; otherwise generate a random token.
 4. Install the agent, private configuration, and systemd service.
 5. Public mode only: install and validate Caddy routing for application FQDNs.
+   Also allow ports 80/443 in an already active UFW or firewalld host firewall.
 6. Start services; check the authenticated agent API.
 7. Save private GUI connection details in /etc/lidza-agent/connection.json.
 GUI setup address: $setup_origin
@@ -246,6 +247,16 @@ if $public_host; then
 systemctl restart caddy
 # Apply the installer routing even if Caddy has an older autosave (including its apt default).
 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+# Certificates and app traffic need 80/443 through an already active host firewall.
+# Only allow rules are added; an inactive firewall is never enabled and no rule is removed.
+firewall_opened=''
+if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
+ if ufw allow 80/tcp >/dev/null && ufw allow 443/tcp >/dev/null && ufw allow 443/udp >/dev/null; then firewall_opened=UFW
+ else firewall_opened=failed;echo 'Warning: could not open ports 80/443 in UFW; run: ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 443/udp' >&2;fi
+elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+ if firewall-cmd --quiet --permanent --add-service=http --add-service=https --add-port=443/udp && firewall-cmd --quiet --reload; then firewall_opened=firewalld
+ else firewall_opened=failed;echo 'Warning: could not open ports 80/443 in firewalld; run: firewall-cmd --permanent --add-service=http --add-service=https --add-port=443/udp && firewall-cmd --reload' >&2;fi
+fi
 fi
 for attempt in {1..30}; do
  if curl -fsS http://127.0.0.1:9090/health >/dev/null; then break;fi
@@ -256,7 +267,13 @@ done
 printf 'header = "Authorization: Bearer %s"\n' "$token" | curl --config - -fsS http://127.0.0.1:9090/v1/apps >/dev/null
 if $public_host; then
 systemctl is-active --quiet caddy
-printf '%s\n' 'Agent, Docker and Caddy are installed and running.' 'Private GUI connection details: /etc/lidza-agent/connection.json' 'For a remote GUI, the agent hostname must resolve to this host and ports 80/443 must be reachable.'
+printf '%s\n' 'Agent, Docker and Caddy are installed and running.' 'Private GUI connection details: /etc/lidza-agent/connection.json'
+case "$firewall_opened" in
+ '') echo 'No active UFW or firewalld host firewall was found; none was changed.';;
+ failed) echo 'Ports 80/443 are still closed in the host firewall; see the warning above.';;
+ *) echo "Opened ports 80/tcp, 443/tcp and 443/udp in $firewall_opened.";;
+esac
+printf '%s\n' 'For a remote GUI, the agent hostname must resolve to this host. Cloud security groups, routers and other external firewalls must also allow ports 80/443.'
 else
  printf '%s\n' 'Agent and Docker are installed and running in local mode. Existing Caddy and ports 80/443 were left untouched.' 'Private GUI connection details: /etc/lidza-agent/connection.json' 'Automatic HTTPS for hosted apps requires a public hosting agent; add one in the GUI.'
 fi
