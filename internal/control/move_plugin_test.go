@@ -107,3 +107,79 @@ func TestMovePlanRefusesADestinationWithoutThePlugin(t *testing.T) {
 		t.Fatalf("a service without backups: %v", got)
 	}
 }
+
+// With plugins that export and import on both servers, the bulk copy sends
+// everything and the final sync only what changed; when the increment
+// cannot be imported the whole service is sent again; and both servers are
+// told when the move ends.
+func TestMoveCopiesOnlyWhatChangedInTheFinalSyncWhenThePluginsCan(t *testing.T) {
+	hooks := []string{"describe", "provision", "release", "backup", "restore", "export", "import"}
+	start := func(t *testing.T) (*moveFixture, moveView) {
+		fx := newMoveFixture(t)
+		pluginMoveSource(fx)
+		fx.a.source.Plugins[0].Exports = true
+		fx.a.changes = []byte("rows written since the bulk copy")
+		fx.b.plugins = []agent.PluginRecord{{Name: "meili", Version: "1.0", Provides: "search", Hooks: hooks}}
+		status, view := startMove(t, fx.c, "shop", map[string]any{"target_server": "beta", "acknowledge_warnings": true})
+		if status != 202 {
+			t.Fatalf("start: %d %+v", status, view.MoveJob)
+		}
+		if slices.ContainsFunc(view.Plan.Notes, func(note string) bool { return strings.Contains(note, "copied whole twice") }) {
+			t.Fatalf("the plan says the service is copied twice: %v", view.Plan.Notes)
+		}
+		job := waitMove(t, fx.c, view.ID, moveStateCutover)
+		if !job.Plugins[0].Exports {
+			t.Fatalf("job: %+v", job.Plugins)
+		}
+		fx.b.with(func() {
+			if got := fx.b.restores["import:bulk:shop-pl0001"]; len(got) != 1 || string(got[0]) != "the search index, as its plugin backed it up" || len(fx.b.restores["plugin:shop-pl0001"]) != 0 {
+				t.Fatalf("bulk import: %q %q", got, fx.b.restores["plugin:shop-pl0001"])
+			}
+		})
+		if fx.a.called("POST /v1/databases/shop-plsource/backup") {
+			t.Fatal("the move used the backup pipeline although the plugins export")
+		}
+		return fx, view
+	}
+	t.Run("incremental", func(t *testing.T) {
+		fx, view := start(t)
+		if code := moveAction(t, fx.c, view.ID, "final-sync", nil); code != 202 {
+			t.Fatal(code)
+		}
+		waitMove(t, fx.c, view.ID, moveStateCutover)
+		fx.b.with(func() {
+			if got := fx.b.restores["import:final:incremental:shop-pl0001"]; len(got) != 1 || string(got[0]) != "rows written since the bulk copy" {
+				t.Fatalf("final import: %q", got)
+			}
+		})
+		// Neither server is told the move ended while it can still continue.
+		gone := "DELETE /v1/move/plugin-services/"
+		if fx.a.called(gone+"shop-plsource/moves/"+view.ID) || fx.b.called(gone+"shop-pl0001/moves/"+view.ID) {
+			t.Fatal("the move's files were removed before it ended")
+		}
+		if code := moveAction(t, fx.c, view.ID, "abort", nil); code != 202 {
+			t.Fatal(code)
+		}
+		waitMove(t, fx.c, view.ID, moveStateAborted)
+		if !fx.a.called(gone + "shop-plsource/moves/" + view.ID) {
+			t.Fatal("the source was not told the move ended")
+		}
+	})
+	t.Run("an increment that cannot be imported is copied in full", func(t *testing.T) {
+		fx, view := start(t)
+		fx.b.with(func() { fx.b.failIncremental = true })
+		fx.a.with(func() { fx.a.dumps["shop-plsource"] = []byte("the whole index after the last write") })
+		if code := moveAction(t, fx.c, view.ID, "final-sync", nil); code != 202 {
+			t.Fatal(code)
+		}
+		job := waitMove(t, fx.c, view.ID, moveStateCutover)
+		fx.b.with(func() {
+			if got := fx.b.restores["import:final:shop-pl0001"]; len(got) != 1 || string(got[0]) != "the whole index after the last write" || len(fx.b.restores["import:final:incremental:shop-pl0001"]) != 0 {
+				t.Fatalf("full import after a refused increment: %q", got)
+			}
+		})
+		if job.Plugins[0].Bytes != int64(len("the whole index after the last write")) {
+			t.Fatalf("job: %+v", job.Plugins)
+		}
+	})
+}

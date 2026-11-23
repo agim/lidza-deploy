@@ -118,6 +118,13 @@ type moveFake struct {
 	// plugins are the plugins installed on the server; nil is an agent
 	// from before plugins.
 	plugins []agent.PluginRecord
+	// exports are the exports a plugin made for a move, by resource and
+	// phase; changes is what an incremental final export holds, and
+	// failIncremental refuses an incremental import.
+	exports         map[string][]byte
+	exportFull      map[string]bool
+	changes         []byte
+	failIncremental bool
 }
 
 type moveFault struct {
@@ -496,11 +503,58 @@ func newMoveFake(t *testing.T) *moveFake {
 		}
 		j(w, 200, agent.PluginsView{Plugins: f.plugins})
 	})
+	mux.HandleFunc("POST /v1/move/plugin-services/{id}/exports/{move}/{phase}", func(w http.ResponseWriter, r *http.Request) {
+		key := r.PathValue("id") + "/" + r.PathValue("phase")
+		full := r.URL.Query().Get("full") == "1"
+		content := f.dumps[r.PathValue("id")]
+		if r.PathValue("phase") == "final" && !full {
+			content = f.changes
+		}
+		if f.exports == nil {
+			f.exports, f.exportFull = map[string][]byte{}, map[string]bool{}
+		}
+		f.exports[key], f.exportFull[key] = bytes.Clone(content), full || r.PathValue("phase") == "bulk"
+		j(w, 202, map[string]string{"status": "exporting"})
+	})
+	mux.HandleFunc("GET /v1/move/plugin-services/{id}/exports/{move}/{phase}", func(w http.ResponseWriter, r *http.Request) {
+		key := r.PathValue("id") + "/" + r.PathValue("phase")
+		content, ok := f.exports[key]
+		if !ok {
+			j(w, 200, agent.PluginExport{State: "missing"})
+			return
+		}
+		sum := sha256.Sum256(content)
+		j(w, 200, agent.PluginExport{State: "ready", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(content)), Incremental: !f.exportFull[key]})
+	})
+	mux.HandleFunc("GET /v1/move/plugin-services/{id}/exports/{move}/{phase}/archive", func(w http.ResponseWriter, r *http.Request) {
+		content := f.exports[r.PathValue("id")+"/"+r.PathValue("phase")]
+		sum := sha256.Sum256(content)
+		w.Header().Set(agent.MoveSHA256Header, hex.EncodeToString(sum[:]))
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+		w.Write(content)
+	})
+	mux.HandleFunc("DELETE /v1/move/plugin-services/{id}/moves/{move}", func(w http.ResponseWriter, r *http.Request) {
+		j(w, 200, map[string]string{"status": "removed"})
+	})
 	mux.HandleFunc("POST /v1/move/plugin-services/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		sum := sha256.Sum256(body)
 		if err != nil || hex.EncodeToString(sum[:]) != r.Header.Get(agent.MoveSHA256Header) {
 			j(w, 422, map[string]string{"error": "checksum mismatch"})
+			return
+		}
+		if query := r.URL.Query(); query.Get("move") != "" {
+			if query.Get("incremental") == "1" && f.failIncremental {
+				j(w, 409, map[string]string{"error": "the base of the increment is missing"})
+				return
+			}
+			kind := "import:" + query.Get("phase")
+			if query.Get("incremental") == "1" {
+				kind += ":incremental"
+			}
+			f.restores[kind+":"+r.PathValue("id")] = append(f.restores[kind+":"+r.PathValue("id")], body)
+			w.Header().Set(agent.MoveVerifiedHeader, hex.EncodeToString(sum[:]))
+			j(w, 200, map[string]string{"status": "restored"})
 			return
 		}
 		f.restores["plugin:"+r.PathValue("id")] = append(f.restores["plugin:"+r.PathValue("id")], body)

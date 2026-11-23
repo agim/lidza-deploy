@@ -116,6 +116,31 @@ type AppInput struct {
 	Secrets map[string]string `json:"secrets,omitempty"`
 	// Sizes are the bytes that will arrive, by kind, for check.
 	Sizes map[string]int64 `json:"sizes,omitempty"`
+	// Move is set for export and import: which move the call belongs to.
+	Move *Move `json:"move,omitempty"`
+}
+
+// Move is one call of a move's export or import. A move copies a service
+// twice: everything while the source keeps serving ("bulk"), then, with the
+// source stopped, what changed ("final"). "end" comes once on each server
+// when the move finished or was given up, with no directory: the plugin
+// removes whatever it kept for the move.
+type Move struct {
+	ID    string `json:"id"`
+	Phase string `json:"phase"` // bulk, final or end
+	// Full asks an export of the final phase for everything, not only for
+	// what changed since the bulk phase.
+	Full bool `json:"full,omitempty"`
+	// Incremental tells an import that the directory holds only what
+	// changed since the bulk phase it imported before.
+	Incremental bool `json:"incremental,omitempty"`
+}
+
+// Exported is the output of the export hook.
+type Exported struct {
+	// Incremental says the directory holds only what changed since the
+	// export of the bulk phase.
+	Incremental bool `json:"incremental,omitempty"`
 }
 
 // Provisioned is the output of the provision hook.

@@ -94,6 +94,11 @@ func (m *Manager) pluginResourceApp(resource string) (app, service string, ok bo
 
 // pluginServiceInput is the input of a hook for a provisioned service.
 func (m *Manager) pluginServiceInput(app, service, resource string) (NativeHostPlugin, json.RawMessage, error) {
+	return m.pluginMoveInput(app, service, resource, nil)
+}
+
+// pluginMoveInput is pluginServiceInput for a call that belongs to a move.
+func (m *Manager) pluginMoveInput(app, service, resource string, move *pluginMove) (NativeHostPlugin, json.RawMessage, error) {
 	record, _ := m.hostDataRecord(app)
 	entry, ok := record.Plugins[service]
 	if !ok || entry.Resource != resource {
@@ -103,7 +108,7 @@ func (m *Manager) pluginServiceInput(app, service, resource string) (NativeHostP
 	if err != nil {
 		return entry, nil, err
 	}
-	raw, err := json.Marshal(pluginAppInput{App: app, Record: entry.Record, Secrets: secrets})
+	raw, err := json.Marshal(pluginAppInput{App: app, Record: entry.Record, Secrets: secrets, Move: move})
 	return entry, raw, err
 }
 
@@ -253,12 +258,17 @@ func (m *Manager) restorePluginBackup(ctx context.Context, app, resource string,
 
 // restorePluginArchive unpacks a verified backup archive and runs the
 // plugin's restore hook on its files.
-func (m *Manager) restorePluginArchive(ctx context.Context, app, resource string, file io.Reader) error {
+func (m *Manager) restorePluginArchive(ctx context.Context, app, resource string, file io.Reader, move ...*pluginMove) error {
 	progress := progressFrom(ctx)
 	m.mu.Lock()
 	service := m.data.NativeDatabases[resource].Policy.PluginService
 	m.mu.Unlock()
-	entry, input, err := m.pluginServiceInput(app, service, resource)
+	// A move's archive goes to the import hook, with which move and phase.
+	hook, part := "restore", (*pluginMove)(nil)
+	if len(move) > 0 && move[0] != nil {
+		hook, part = "import", move[0]
+	}
+	entry, input, err := m.pluginMoveInput(app, service, resource, part)
 	if err != nil {
 		return err
 	}
@@ -280,7 +290,7 @@ func (m *Manager) restorePluginArchive(ctx context.Context, app, resource string
 		return err
 	}
 	progress.Stage("Restoring through the "+entry.Plugin+" plugin", 0, nil)
-	result, err := m.runPluginHookWork(ctx, entry.Plugin, "restore", input, work)
+	result, err := m.runPluginHookWork(ctx, entry.Plugin, hook, input, work)
 	if err != nil {
 		return err
 	}

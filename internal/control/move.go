@@ -343,7 +343,10 @@ type MovePlan struct {
 	AutoCutover bool     `json:"auto_cutover"`
 	Warnings    []string `json:"warnings"`
 	Notes       []string `json:"notes"`
-	Blockers    []string `json:"blockers"`
+	// PluginImports are the plugin services the destination's plugins can
+	// import for a move (move_plugin.go).
+	PluginImports []string `json:"plugin_imports,omitempty"`
+	Blockers      []string `json:"blockers"`
 	// Preflight is the destination's rehearsal of the application's setup,
 	// step by step (planMovePreflight); empty from agents without it.
 	Preflight []agent.HostReadinessCheck `json:"preflight,omitempty"`
@@ -1453,7 +1456,7 @@ func (c *Control) createMove(r *http.Request, plan MovePlan) (MoveJob, error) {
 		job.Databases = append(job.Databases, entry)
 	}
 	job.ClickHouse = moveClickHouseFrom(source)
-	job.Plugins = movePluginsFrom(source)
+	job.Plugins = movePluginsFrom(source, plan)
 	for _, f := range plan.Files {
 		job.Files = append(job.Files, MoveFileCopy{ID: f.ID, Path: f.Path, Source: f.Source, Files: f.Files, Bytes: f.Bytes, Method: f.Method, Transfer: f.Action == "copy" || f.Action == "skip_empty"})
 	}

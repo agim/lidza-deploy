@@ -729,3 +729,147 @@ esac
 		t.Fatal("a path outside the directory was unpacked")
 	}
 }
+
+// A move's export and import go through the plugin's own hooks: everything
+// in the bulk phase, only what changed in the final phase, and an end call
+// that lets the plugin drop what it kept.
+func TestAMoveExportsAndImportsAPluginServiceInPhases(t *testing.T) {
+	m, _ := newHostDataFixture(t)
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	if err := m.setPluginKeys([]string{hex.EncodeToString(public)}); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+request=$(cat)
+work=$(printf '%s' "$request" | sed -n 's/.*"work_dir":"\([^"]*\)".*/\1/p')
+phase=$(printf '%s' "$request" | sed -n 's/.*"phase":"\([a-z]*\)".*/\1/p')
+case "$1" in
+ describe|release) printf '{"ok":true}';;
+ provision) printf '{"ok":true,"output":{"env":{"SEARCH_URL":"http://127.0.0.1:7700/shop"},"record":{"index":"shop"}}}';;
+ backup) cp index.txt "$work/index.txt"; printf '{"ok":true}';;
+ export) case "$phase" in
+   end) rm -f base; echo "export end" >> calls; printf '{"ok":true}';;
+   bulk) cp index.txt "$work/index.txt"; cp index.txt base; printf '{"ok":true}';;
+   final) if [ -e base ] && ! printf '%s' "$request" | grep -q '"full":true'; then echo "since $(cat base)" > "$work/changes.txt"; printf '{"ok":true,"output":{"incremental":true}}'
+     else cp index.txt "$work/index.txt"; printf '{"ok":true}'; fi;;
+  esac;;
+ import) case "$phase" in
+   end) echo "import end" >> calls; printf '{"ok":true}';;
+   *) if printf '%s' "$request" | grep -q '"incremental":true'; then echo "$phase incremental $(cat "$work/changes.txt")" >> calls; else echo "$phase full $(cat "$work/index.txt")" >> calls; fi; printf '{"ok":true}';;
+  esac;;
+esac
+`
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	tw.WriteHeader(&tar.Header{Name: plugin.Program, Mode: 0o755, Size: int64(len(script)), Typeflag: tar.TypeReg})
+	tw.Write([]byte(script))
+	tw.Close()
+	gz.Close()
+	sum := sha256.Sum256(buf.Bytes())
+	raw, _ := json.Marshal(plugin.Manifest{Contract: plugin.Contract, Name: "meili", Version: "1.0", Provides: "search", Environment: []string{"SEARCH_URL"},
+		Hooks:    []string{"describe", "provision", "release", "backup", "export", "import"},
+		Archives: []plugin.Archive{{Arch: runtime.GOARCH, SHA256: hex.EncodeToString(sum[:]), Size: int64(buf.Len())}}})
+	signature, _ := json.Marshal(plugin.Sign(private, raw))
+	if _, err := m.stagePluginManifest(string(raw), signature); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := m.installPlugin(ctx, "meili", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	state := m.pluginState("meili")
+	os.WriteFile(filepath.Join(state, "index.txt"), []byte("monday"), 0o600)
+	grant, err := provisionNativeData(ctx, m, "shop", NativeAppAccount{User: "app-shop", UID: 1001, GID: 1001, Root: "/srv/apps/shop"}, NativeDataRequest{Plugins: []NativePluginService{{Service: "search"}}})
+	if err != nil || len(grant.Databases) != 1 {
+		t.Fatalf("provision: %v %+v", err, grant)
+	}
+	resource := grant.Databases[0]
+	record, _ := m.hostDataRecord("shop")
+	if services, _ := m.moveSourcePlugins(record); len(services) != 1 || !services[0].Exports {
+		t.Fatalf("the inventory does not say the plugin exports: %+v", services)
+	}
+	m.cfg.APIKey = strings.Repeat("a", 32)
+	h := Handler(m)
+	const move = "0123456789abcdef01234567"
+	base := "/v1/move/plugin-services/" + resource
+	export := func(phase, query string) (PluginExport, []byte) {
+		t.Helper()
+		if w := moveRequest(t, h, "POST", base+"/exports/"+move+"/"+phase+query, nil, nil); w.Code != 202 {
+			t.Fatalf("start the %s export: %d %s", phase, w.Code, w.Body)
+		}
+		var status PluginExport
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			status = PluginExport{}
+			json.Unmarshal(moveRequest(t, h, "GET", base+"/exports/"+move+"/"+phase, nil, nil).Body.Bytes(), &status)
+			if status.State != "running" {
+				break
+			}
+		}
+		if status.State != "ready" || len(status.SHA256) != 64 || status.Size == 0 {
+			t.Fatalf("the %s export: %+v", phase, status)
+		}
+		w := moveRequest(t, h, "GET", base+"/exports/"+move+"/"+phase+"/archive", nil, nil)
+		if w.Code != 200 || int64(w.Body.Len()) != status.Size || w.Header().Get(MoveSHA256Header) != status.SHA256 {
+			t.Fatalf("download of the %s export: %d %d bytes", phase, w.Code, w.Body.Len())
+		}
+		return status, w.Body.Bytes()
+	}
+	deliver := func(phase string, status PluginExport, archive []byte) {
+		t.Helper()
+		query := "?move=" + move + "&phase=" + phase
+		if status.Incremental {
+			query += "&incremental=1"
+		}
+		if w := moveRequest(t, h, "POST", base+"/restore"+query, bytes.NewReader(archive), map[string]string{MoveSHA256Header: status.SHA256}); w.Code != 200 {
+			t.Fatalf("import of the %s export: %d %s", phase, w.Code, w.Body)
+		}
+	}
+	calls := func() string {
+		raw, _ := os.ReadFile(filepath.Join(state, "calls"))
+		return string(raw)
+	}
+	bulk, archive := export("bulk", "")
+	if bulk.Incremental {
+		t.Fatal("a bulk export claims to be incremental")
+	}
+	deliver("bulk", bulk, archive)
+	os.WriteFile(filepath.Join(state, "index.txt"), []byte("tuesday"), 0o600)
+	final, archive := export("final", "")
+	if !final.Incremental {
+		t.Fatalf("the final export is not incremental: %+v", final)
+	}
+	deliver("final", final, archive)
+	// Asked for everything, the final export is a full one.
+	full, archive := export("final", "?full=1")
+	if full.Incremental {
+		t.Fatalf("a full final export claims to be incremental: %+v", full)
+	}
+	deliver("final", full, archive)
+	if got := calls(); got != "bulk full monday\nfinal incremental since monday\nfinal full tuesday\n" {
+		t.Fatalf("what the import hook saw:\n%s", got)
+	}
+	// The end of the move removes the archives and tells both hooks.
+	if w := moveRequest(t, h, "DELETE", base+"/moves/"+move, nil, nil); w.Code != 200 {
+		t.Fatalf("end of the move: %d %s", w.Code, w.Body)
+	}
+	if left, _ := filepath.Glob(filepath.Join(m.backupDir(resource), ".export-*")); len(left) != 0 {
+		t.Fatalf("export archives stayed: %v", left)
+	}
+	if _, err := os.Stat(filepath.Join(state, "base")); !os.IsNotExist(err) || !strings.HasSuffix(calls(), "export end\nimport end\n") {
+		t.Fatalf("the plugin was not told the move ended: %q", calls())
+	}
+	m.mu.Lock()
+	d := m.data.Databases[resource]
+	m.mu.Unlock()
+	if d.Operation != "" || d.Error != "" {
+		t.Fatalf("the resource stayed busy or failed: %+v", d)
+	}
+	// Invalid moves and phases are refused before anything runs.
+	if w := moveRequest(t, h, "POST", base+"/exports/Bad_Move/bulk", nil, nil); w.Code != 404 {
+		t.Fatalf("invalid move id: %d", w.Code)
+	}
+	if w := moveRequest(t, h, "POST", base+"/exports/"+move+"/later", nil, nil); w.Code != 404 {
+		t.Fatalf("invalid phase: %d", w.Code)
+	}
+}

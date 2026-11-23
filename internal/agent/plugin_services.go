@@ -61,6 +61,15 @@ type pluginAppInput struct {
 	Secrets map[string]string `json:"secrets,omitempty"`
 	// Sizes are the bytes that will arrive, for check.
 	Sizes map[string]int64 `json:"sizes,omitempty"`
+	// Move is set for export and import (plugin_move.go).
+	Move *pluginMove `json:"move,omitempty"`
+}
+
+type pluginMove struct {
+	ID          string `json:"id"`
+	Phase       string `json:"phase"`
+	Full        bool   `json:"full,omitempty"`
+	Incremental bool   `json:"incremental,omitempty"`
 }
 
 type pluginAppAccount struct {

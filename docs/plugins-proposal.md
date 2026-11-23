@@ -223,9 +223,24 @@ copied. The destination is asked for the same services with the options the
 application was created with. In the bulk copy, and again in the final sync
 with the source stopped, the source takes a backup through its plugin, the
 control panel relays it like a database dump (resumable, with the SHA-256
-compared on both ends) and the destination's plugin restores it. Both
-phases copy the whole service: there are no `export` and `import` hooks for
-an incremental final sync yet.
+compared on both ends) and the destination's plugin restores it.
+
+When the source's plugin implements `export` and the destination's
+`import`, the move uses those instead, so the final sync can copy only what
+changed. Both hooks get `move` in their input: the move's id and its phase.
+
+| Phase | `export` on the source | `import` on the destination |
+| --- | --- | --- |
+| `bulk` | leaves everything in the directory, and may keep what it needs to compute changes later | restores it, and may keep it as the base of a later increment |
+| `final` | leaves only what changed since `bulk` and answers `incremental: true`; or everything, when it cannot or when `full` is set | is told `incremental` when the directory holds only changes |
+| `end` | no directory: removes what it kept for the move | the same |
+
+An increment that cannot be imported is not the end of a move: the control
+panel asks for a full export of the final phase and imports that. `end` is
+sent to both servers once, when the move finished or was given up; until
+then what the plugins kept stays, so a repeated final sync is incremental
+too. Without both hooks each phase copies a whole backup, and the review
+says so.
 
 ### Writing a plugin
 
@@ -236,7 +251,7 @@ plugin (a notes directory per application) in about ninety lines; a test
 builds it from source and takes it through the agent: signed, installed,
 checked, provisioned for an application and released.
 
-Not built yet: an incremental final sync and tuning through hooks; naming a plugin in
+Not built yet: tuning through hooks; naming a plugin in
 `deploy/lidza.stack.json`; handing a ClickHouse the agent installed to the
 plugin; and using the plugin instead of the built-in support when an
 application asks for ClickHouse. Until those exist the built-in ClickHouse
