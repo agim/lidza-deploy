@@ -23,22 +23,34 @@ import (
 //   - existing system log tables, including the "<name>_N" tables ClickHouse
 //     leaves behind when a table's definition changes, get the same TTL with
 //     ALTER TABLE ... MODIFY TTL, which takes effect without a restart;
-//   - text_log records warnings and errors only.
+//   - text_log records warnings and errors only;
+//   - the profiling and metrics logs (sampled stack traces, per-processor and
+//     per-thread query profiles, periodic metric snapshots) are switched off.
+//     They exist to profile ClickHouse itself; on a small server they were
+//     measured at twice the size of the application's data and are a
+//     constant write load. The config.d file removes them, which ClickHouse
+//     applies at its next start; until then, and for tables left from
+//     before, the hourly reconciliation empties them.
+//
+// What stays is what explains a problem after the fact: queries, part
+// operations, warnings and errors, for a few days.
 //
 // The reconciliation is idempotent and runs on provisioning and hourly.
 
-// clickhouseLogTable is one system log table and how many days it keeps.
+// clickhouseLogTable is one system log table: how many days it keeps, or
+// Off when the server does not write it at all.
 type clickhouseLogTable struct {
 	Name string
 	Days int
+	Off  bool
 }
 
 // clickhouseSystemLogTables are the system log tables the policy bounds.
-// trace_log holds sampled stack traces for profiling and is kept briefly.
 var clickhouseSystemLogTables = []clickhouseLogTable{
-	{"query_log", 14}, {"query_thread_log", 14}, {"query_views_log", 14}, {"query_metric_log", 14},
-	{"part_log", 14}, {"text_log", 14}, {"metric_log", 14}, {"asynchronous_metric_log", 14},
-	{"processors_profile_log", 14}, {"latency_log", 14}, {"error_log", 14}, {"trace_log", 3},
+	{Name: "query_log", Days: 3}, {Name: "part_log", Days: 3}, {Name: "text_log", Days: 3}, {Name: "error_log", Days: 14},
+	{Name: "query_thread_log", Off: true}, {Name: "query_views_log", Off: true}, {Name: "query_metric_log", Off: true},
+	{Name: "metric_log", Off: true}, {Name: "asynchronous_metric_log", Off: true}, {Name: "processors_profile_log", Off: true},
+	{Name: "latency_log", Off: true}, {Name: "trace_log", Off: true},
 }
 
 const (
@@ -55,6 +67,10 @@ const (
 func renderClickHouseSystemLogs() string {
 	var b strings.Builder
 	for _, table := range clickhouseSystemLogTables {
+		if table.Off {
+			fmt.Fprintf(&b, "    <%s remove=\"1\"/>\n", table.Name)
+			continue
+		}
 		extra := ""
 		if table.Name == "text_log" {
 			extra = "<level>" + clickhouseTextLogLevel + "</level>"
@@ -97,8 +113,9 @@ func applyClickHouseLogTTL(ctx context.Context, c clickhouseClient) ([]string, e
 	type row struct {
 		Name   string `json:"name"`
 		Engine string `json:"engine_full"`
+		Rows   uint64 `json:"rows,string"`
 	}
-	rows, err := clickhouseRows[row](ctx, c, "SELECT name, engine_full FROM system.tables WHERE database = 'system' AND engine LIKE '%MergeTree'")
+	rows, err := clickhouseRows[row](ctx, c, "SELECT name, engine_full, toString(toUInt64(ifNull(total_rows, 0))) AS rows FROM system.tables WHERE database = 'system' AND engine LIKE '%MergeTree'")
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +123,22 @@ func applyClickHouseLogTTL(ctx context.Context, c clickhouseClient) ([]string, e
 	for _, r := range rows {
 		policy, ok := clickhouseLogPolicy(r.Name)
 		if !ok {
+			continue
+		}
+		if policy.Off {
+			// Switched off: what a running server still writes, and what was
+			// left from before, is emptied. An empty table costs nothing.
+			if r.Rows == 0 {
+				continue
+			}
+			ident, err := chIdent(r.Name)
+			if err != nil {
+				continue
+			}
+			if err := c.exec(ctx, "TRUNCATE TABLE IF EXISTS system."+ident); err != nil {
+				return changed, fmt.Errorf("system.%s: %w", r.Name, err)
+			}
+			changed = append(changed, r.Name)
 			continue
 		}
 		// ClickHouse stores the TTL normalised, for example

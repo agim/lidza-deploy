@@ -38,18 +38,18 @@ func TestNativeClickHouseConfigGolden(t *testing.T) {
         <size>100M</size>
         <count>5</count>
     </logger>
-    <query_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_log>
-    <query_thread_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_thread_log>
-    <query_views_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_views_log>
-    <query_metric_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_metric_log>
-    <part_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></part_log>
-    <text_log><level>warning</level><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></text_log>
-    <metric_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></metric_log>
-    <asynchronous_metric_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></asynchronous_metric_log>
-    <processors_profile_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></processors_profile_log>
-    <latency_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></latency_log>
+    <query_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></query_log>
+    <part_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></part_log>
+    <text_log><level>warning</level><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></text_log>
     <error_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></error_log>
-    <trace_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></trace_log>
+    <query_thread_log remove="1"/>
+    <query_views_log remove="1"/>
+    <query_metric_log remove="1"/>
+    <metric_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <latency_log remove="1"/>
+    <trace_log remove="1"/>
     <storage_configuration>
         <disks>
             <backups>

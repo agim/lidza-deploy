@@ -101,11 +101,16 @@ default 8123; native TCP `clickhouse_tcp_port`, default 9000; no MySQL,
 PostgreSQL or interserver ports). It caps its memory at
 `clickhouse_memory_ratio` of the host's RAM (default 0.25), its systemd unit has
 a hard memory limit above that and no outbound network beyond loopback, logs
-rotate at 100 MiB × 5 and system logs expire after 14 days (`trace_log` after 3 days;
-`text_log` records warnings and errors only). Managed ClickHouse containers get the same
-policy as `config.d/lidza-logs.xml`, and the agent applies the TTL to existing system log
-tables (including renamed `<name>_N` copies) with an idempotent `ALTER TABLE … MODIFY TTL`
-on provisioning and hourly, without restarting ClickHouse. Server health reports each
+rotate at 100 MiB × 5 and its system logs are kept small: `query_log`, `part_log` and `text_log` (warnings and
+errors only) for 3 days and `error_log` for 14, while the profiling and metrics logs
+(`trace_log`, `metric_log`, `asynchronous_metric_log`, `processors_profile_log`,
+`query_thread_log`, `query_views_log`, `query_metric_log`, `latency_log`) are switched
+off. Left on, those were measured at twice the size of the application's own data and
+are a constant write load. Managed ClickHouse containers get the same
+policy as `config.d/lidza-logs.xml`. On provisioning and hourly, without restarting
+ClickHouse, the agent applies the TTL to existing system log tables (including renamed
+`<name>_N` copies) with an idempotent `ALTER TABLE … MODIFY TTL` and empties the
+switched-off ones; the server stops writing those at its next start. Server health reports each
 server's system log size. The `default` user
 keeps loopback access only, with a random password sealed in agent state.
 

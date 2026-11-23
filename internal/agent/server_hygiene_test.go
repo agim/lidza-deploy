@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -231,7 +232,9 @@ func TestSweepRemovesStaleMoveTransferFiles(t *testing.T) {
 type fakeSystemLogs struct {
 	mu      sync.Mutex
 	tables  map[string]string // name -> engine_full
+	rows    map[string]uint64 // name -> total rows (0 when absent)
 	altered []string
+	emptied []string
 }
 
 func (f *fakeSystemLogs) serve(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +243,11 @@ func (f *fakeSystemLogs) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
-	case strings.HasPrefix(sql, "SELECT name, engine_full FROM system.tables"):
+	case strings.HasPrefix(sql, "TRUNCATE TABLE IF EXISTS system."):
+		name := strings.Trim(strings.TrimPrefix(sql, "TRUNCATE TABLE IF EXISTS system."), "`")
+		f.emptied = append(f.emptied, name)
+		f.rows[name] = 0
+	case strings.HasPrefix(sql, "SELECT name, engine_full, toString(toUInt64(ifNull(total_rows, 0))) AS rows FROM system.tables"):
 		for _, name := range slices.Sorted(func(yield func(string) bool) {
 			for name := range f.tables {
 				if !yield(name) {
@@ -248,7 +255,7 @@ func (f *fakeSystemLogs) serve(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}) {
-			raw, _ := json.Marshal(map[string]string{"name": name, "engine_full": f.tables[name]})
+			raw, _ := json.Marshal(map[string]string{"name": name, "engine_full": f.tables[name], "rows": strconv.FormatUint(f.rows[name], 10)})
 			fmt.Fprintf(w, "%s\n", raw)
 		}
 	case strings.HasPrefix(sql, "ALTER TABLE system."):
@@ -266,32 +273,44 @@ func (f *fakeSystemLogs) serve(w http.ResponseWriter, r *http.Request) {
 
 func TestClickHouseSystemLogRetention(t *testing.T) {
 	config := renderClickHouseLogsConfig()
-	for _, want := range []string{"<text_log><level>warning</level><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></text_log>", "<trace_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></trace_log>", "<query_views_log>", "<processors_profile_log>"} {
+	// Queries, part operations and warnings are kept a few days; the profiling
+	// and metrics logs are not written at all.
+	for _, want := range []string{"<text_log><level>warning</level><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></text_log>", "<query_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></query_log>",
+		`<trace_log remove="1"/>`, `<query_views_log remove="1"/>`, `<processors_profile_log remove="1"/>`, `<metric_log remove="1"/>`, `<asynchronous_metric_log remove="1"/>`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("container log policy lacks %s:\n%s", want, config)
 		}
 	}
 	fake := &fakeSystemLogs{tables: map[string]string{
-		"query_log":   "MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY event_time",
-		"query_log_0": "MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY event_time",
-		"trace_log":   "MergeTree ORDER BY event_time TTL event_date + toIntervalDay(30)",
-		"part_log":    "MergeTree ORDER BY event_time TTL event_date + toIntervalDay(14)",
-		"tables_seen": "MergeTree ORDER BY id", // not a system log
-	}}
+		"query_log":    "MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY event_time",
+		"query_log_0":  "MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY event_time",
+		"trace_log":    "MergeTree ORDER BY event_time TTL event_date + toIntervalDay(30)",
+		"metric_log_0": "MergeTree ORDER BY event_time TTL event_date + toIntervalDay(14)", // left from before a definition change
+		"latency_log":  "MergeTree ORDER BY event_time",                                    // switched off and already empty
+		"part_log":     "MergeTree ORDER BY event_time TTL event_date + toIntervalDay(3)",
+		"tables_seen":  "MergeTree ORDER BY id", // not a system log
+		"error_log":    "MergeTree ORDER BY event_time TTL event_date + toIntervalDay(14)",
+		"text_log":     "MergeTree ORDER BY event_time TTL event_date + toIntervalDay(14)",
+	}, rows: map[string]uint64{"query_log": 5000, "trace_log": 900000, "metric_log_0": 40000, "tables_seen": 7, "text_log": 12}}
 	server := httptest.NewServer(http.HandlerFunc(fake.serve))
 	defer server.Close()
 	client := clickhouseClient{base: server.URL, user: "lidza", password: "secret"}
 	changed, err := applyClickHouseLogTTL(context.Background(), client)
 	slices.Sort(changed)
-	if err != nil || !slices.Equal(changed, []string{"query_log", "query_log_0", "trace_log"}) {
+	if err != nil || !slices.Equal(changed, []string{"metric_log_0", "query_log", "query_log_0", "text_log", "trace_log"}) {
 		t.Fatal("changed", changed, err)
 	}
-	if !slices.Contains(fake.altered, "ALTER TABLE system.`trace_log` MODIFY TTL event_date + INTERVAL 3 DAY DELETE") {
-		t.Fatal("trace_log not shortened", fake.altered)
+	if !slices.Contains(fake.altered, "ALTER TABLE system.`text_log` MODIFY TTL event_date + INTERVAL 3 DAY DELETE") {
+		t.Fatal("text_log not shortened", fake.altered)
+	}
+	// Switched-off logs are emptied, never altered; an empty one and other tables are left alone.
+	slices.Sort(fake.emptied)
+	if !slices.Equal(fake.emptied, []string{"metric_log_0", "trace_log"}) || slices.ContainsFunc(fake.altered, func(sql string) bool { return strings.Contains(sql, "trace_log") }) {
+		t.Fatal("emptied", fake.emptied, fake.altered)
 	}
 	// Idempotent: a second run sends no ALTER.
-	fake.altered = nil
-	if changed, err := applyClickHouseLogTTL(context.Background(), client); err != nil || len(changed) != 0 || len(fake.altered) != 0 {
+	fake.altered, fake.emptied = nil, nil
+	if changed, err := applyClickHouseLogTTL(context.Background(), client); err != nil || len(changed) != 0 || len(fake.altered) != 0 || len(fake.emptied) != 0 {
 		t.Fatal("repeated reconciliation altered tables", changed, fake.altered, err)
 	}
 	if size, err := clickhouseLogBytes(context.Background(), client); err != nil || size != 3<<30 {
