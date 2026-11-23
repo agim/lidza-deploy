@@ -291,6 +291,15 @@ func (m *Manager) validateNativeCreateRequest(req *NativeCreateRequest) error {
 	if req.Data.ClickHouseVersion != "" && (!req.Data.ClickHouse || !clickhouseSeriesPattern.MatchString(req.Data.ClickHouseVersion)) {
 		return errors.New("the ClickHouse version must be a release series such as 26.8, requested with ClickHouse")
 	}
+	if err := validateNativePluginServices(req.Data.Plugins); err != nil {
+		return err
+	}
+	for _, service := range req.Data.Plugins {
+		// A service nothing on this server provides is refused before anything is created.
+		if _, _, err := m.pluginProviding(service.Service); err != nil {
+			return err
+		}
+	}
 	if len(req.Env) > 100 {
 		return errors.New("at most 100 environment variables")
 	}
@@ -482,7 +491,7 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	}
 
 	var grant NativeDataGrant
-	if req.Data.Postgres || req.Data.Redis || req.Data.ClickHouse {
+	if req.Data.Postgres || req.Data.Redis || req.Data.ClickHouse || len(req.Data.Plugins) > 0 {
 		// Registered before provisioning: a provision that fails part way
 		// (for example after enabling a Redis instance) is undone as well.
 		// Releasing is idempotent.

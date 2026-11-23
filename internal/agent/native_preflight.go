@@ -181,6 +181,11 @@ func (m *Manager) nativePreflight(ctx context.Context, in NativePreflightRequest
 		}
 	}
 
+	// Services of plugins: the plugin's own check answers for them.
+	for _, check := range m.pluginServiceChecks(ctx, req.ID, req.Data.Plugins, map[string]int64{"postgres": in.PostgresBytes, "clickhouse": in.ClickHouseBytes, "files": in.FilesBytes}) {
+		add(check)
+	}
+
 	// Files land under the application's root.
 	if check, ok := host.spaceCheck("files-disk", "Files disk", m.nativeAppsRoot(), in.FilesBytes, 1.1); ok {
 		add(check)

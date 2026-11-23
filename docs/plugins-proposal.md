@@ -151,8 +151,28 @@ working directory, one hook at a time per plugin, a time limit per hook
 after which the plugin and everything it started are killed, and bounded
 answers and logs. Hooks that change a server cannot be run on request.
 
-The plugin's secrets, its use by applications, the console pages and
-everything else in the stages above are not built yet.
+### Services for applications
+
+A native application asks for a plugin's service by its `provides` name in
+its create request (`data.plugins: [{"service": "search", "options": {…}}]`).
+The agent then:
+
+- refuses the request before anything is created when no installed plugin
+  provides the service;
+- includes the plugin's `check` answer in the rehearsal of the application
+  (a move's review), with the sizes of the data that will arrive;
+- runs `provision` with the application's id, account and options. The answer
+  carries `env` (only variables the signed manifest declares reach the
+  application, and none another service already set), `record` (the plugin's
+  own description, kept by the agent and handed back on later hooks) and
+  `secrets` (sealed in the agent's state like its own credentials, never
+  stored in the clear);
+- runs `release` with that record and those secrets when the application is
+  removed, or when its creation fails part way.
+
+Not built yet: backups, restores, moves, tuning and maintenance through
+hooks; the console pages; naming a plugin in `deploy/lidza.stack.json`; and
+the ClickHouse plugin itself, so ClickHouse is still built into the agent.
 
 ## Open questions
 

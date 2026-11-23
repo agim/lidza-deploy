@@ -60,6 +60,9 @@ type NativeDataRequest struct {
 	ClickHouseVersion string `json:"clickhouse_version,omitempty"`
 	BackupHours       int    `json:"backup_hours,omitempty"`
 	Offsite           bool   `json:"offsite,omitempty"`
+	// Plugins asks for services that plugins installed on the server
+	// provide (plugin_services.go).
+	Plugins []NativePluginService `json:"plugins,omitempty"`
 }
 
 // NativeDataGrant is what provisioning hands back: environment values to add

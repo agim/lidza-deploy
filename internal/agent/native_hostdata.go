@@ -91,7 +91,10 @@ type NativeHostDataRecord struct {
 	Postgres   *NativeHostPostgres   `json:"postgres,omitempty"`
 	Redis      *NativeHostRedis      `json:"redis,omitempty"`
 	ClickHouse *NativeHostClickHouse `json:"clickhouse,omitempty"`
-	Updated    time.Time             `json:"updated"`
+	// Plugins are the services plugins provide for the application, by
+	// service name.
+	Plugins map[string]NativeHostPlugin `json:"plugins,omitempty"`
+	Updated time.Time                   `json:"updated"`
 }
 
 type NativeHostPostgres struct {
@@ -268,7 +271,7 @@ func provisionNativeHostData(ctx context.Context, m *Manager, id string, account
 		}
 		grant.Env["DATABASE_URL"] = req.ExternalDatabaseURL
 	}
-	if !req.Postgres && !req.Redis && !req.ClickHouse {
+	if !req.Postgres && !req.Redis && !req.ClickHouse && len(req.Plugins) == 0 {
 		return grant, nil
 	}
 	if err := validateNativeAppAccount(account); err != nil {
@@ -313,6 +316,13 @@ func provisionNativeHostData(ctx context.Context, m *Manager, id string, account
 		maps.Copy(grant.Env, env)
 		grant.Databases = append(grant.Databases, resource)
 	}
+	for _, service := range req.Plugins {
+		env, err := m.provisionPluginService(ctx, id, account, service, grant.Env)
+		if err != nil {
+			return grant, err
+		}
+		maps.Copy(grant.Env, env)
+	}
 	return grant, nil
 }
 
@@ -335,12 +345,16 @@ func (m *Manager) updateHostDataRecord(id string, change func(*NativeHostDataRec
 		copy := *previous.ClickHouse
 		next.ClickHouse = &copy
 	}
+	next.Plugins = maps.Clone(previous.Plugins)
 	change(&next)
+	if len(next.Plugins) == 0 {
+		next.Plugins = nil
+	}
 	next.Updated = time.Now().UTC()
 	if m.data.NativeHostData == nil {
 		m.data.NativeHostData = map[string]NativeHostDataRecord{}
 	}
-	if next.Postgres == nil && next.Redis == nil && next.ClickHouse == nil {
+	if next.Postgres == nil && next.Redis == nil && next.ClickHouse == nil && len(next.Plugins) == 0 {
 		delete(m.data.NativeHostData, id)
 	} else {
 		m.data.NativeHostData[id] = next
@@ -584,6 +598,10 @@ func releaseNativeHostDataRecord(ctx context.Context, m *Manager, id string, fin
 		return nil
 	}
 	h := nativeHostDataHost(m)
+	// Plugin services first: what they hold may depend on the databases below.
+	if err := m.releasePluginServices(ctx, id, record); err != nil {
+		return err
+	}
 	if pg := record.Postgres; pg != nil {
 		m.mu.Lock()
 		d, exists := m.data.Databases[pg.Resource]
