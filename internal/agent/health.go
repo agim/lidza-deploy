@@ -61,6 +61,8 @@ type ServerHealth struct {
 	// host has systemd (host_runtime_health.go).
 	Docker *HostDockerHealth `json:"docker,omitempty"`
 	Native *HostNativeHealth `json:"native,omitempty"`
+	// Plugins is the last status each installed plugin reported.
+	Plugins []PluginHealth `json:"plugins,omitempty"`
 }
 
 // RetainedDatabase is a retained database's last backup, when it has one.

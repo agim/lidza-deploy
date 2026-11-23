@@ -132,6 +132,7 @@ func (m *Manager) maintenanceTick(now time.Time) {
 	m.resourceTuningTick(now)      // data service sizing at start and hourly (resource_tuning_apply.go)
 	m.moveReplicationSweep(now)    // publications and slots of moves that never tore them down (move_replication.go)
 	m.startClickHouseLogsTick(now) // system log retention (clickhouse_system_logs.go)
+	m.pluginTick(now)              // plugin status and hourly maintenance (plugin_host.go)
 	m.mu.Lock()
 	state := *m.data.Maintenance
 	request := CleanupRequest{Backups: !state.NextBackupCleanup.After(now)}

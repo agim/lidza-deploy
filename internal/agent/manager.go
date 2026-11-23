@@ -48,6 +48,10 @@ type Manager struct {
 	// install and one lock per plugin (plugins.go).
 	plugins    *pluginStaging
 	pluginOnce sync.Once
+	// pluginHostState is the last status and maintenance of each plugin
+	// (plugin_host.go).
+	pluginHostState *pluginHostState
+	pluginHostOnce  sync.Once
 
 	// releasedReservations mirrors State.ReleasedReservations for
 	// reservation checks made with or without m.mu held.

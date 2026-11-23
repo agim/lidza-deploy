@@ -84,6 +84,10 @@ func (m *Manager) hostReadiness(ctx context.Context) HostReadiness {
 		}
 		// Otherwise it was stopped on purpose, or runs per application: not this report's business.
 	}
+	// What plugins manage: each one's own check, with no application in mind.
+	for _, check := range m.pluginReadinessChecks(ctx) {
+		add(check)
+	}
 	// Half-configured packages stop every later installation and update.
 	if broken := host.brokenPackages(ctx); len(broken) > 0 {
 		add(HostReadinessCheck{ID: "packages", Title: "Package manager", Detail: "Packages are only half installed (" + strings.Join(broken, ", ") + "); nothing can be installed or updated on this server until that is resolved.", Repairable: m.ownsBrokenPackages(host, broken)})
@@ -204,6 +208,8 @@ func (m *Manager) repairHost(ctx context.Context) HostReadiness {
 				repaired = append(repaired, "started Docker")
 			}
 		}
+		pluginRepaired, pluginFailed := m.repairPlugins(ctx)
+		repaired, failed = append(repaired, pluginRepaired...), append(failed, pluginFailed...)
 		if broken := host.brokenPackages(ctx); m.ownsBrokenPackages(host, broken) {
 			if host.removeClickHousePackages(ctx) {
 				repaired = append(repaired, "removed the packages of a ClickHouse installation that did not complete ("+strings.Join(broken, ", ")+")")

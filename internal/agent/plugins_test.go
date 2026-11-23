@@ -17,8 +17,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agim/lidza-deploy/internal/plugin"
 )
@@ -344,5 +346,93 @@ func TestTheExamplePluginBuiltWithTheKitWorksThroughTheAgent(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatal("the released directory stayed")
+	}
+}
+
+// hostPlugin manages a pretend server: it is "down" until repaired, and
+// records its maintenance runs.
+const hostPlugin = `#!/bin/sh
+cat >/dev/null
+case "$1" in
+ describe) printf '{"ok":true}';;
+ status) if [ -f up ]; then printf '{"ok":true,"output":{"version":"7.1","running":true}}'; else printf '{"ok":false,"messages":["the queue server is stopped"]}'; fi;;
+ check) if [ -f up ]; then printf '{"ok":true,"checks":[{"id":"server","title":"Queue server","ok":true,"detail":"running"}]}'; else printf '{"ok":false,"checks":[{"id":"server","title":"Queue server","ok":false,"repairable":true,"detail":"its service failed"}]}'; fi;;
+ repair) [ ! -f broken ] || { printf '{"ok":false,"messages":["the data directory is missing"]}'; exit 0; }; : > up; printf '{"ok":true,"messages":["started the queue server"]}';;
+ maintain) echo run >> maintained; printf '{"ok":true,"messages":["dropped 3 old segments"]}';;
+esac
+`
+
+func TestPluginsReportStatusCheckAndRepairTheServerAndRunMaintenance(t *testing.T) {
+	m, _ := newHostDataFixture(t)
+	m.ctx = context.Background()
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	if err := m.setPluginKeys([]string{hex.EncodeToString(public)}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	tw.WriteHeader(&tar.Header{Name: plugin.Program, Mode: 0o755, Size: int64(len(hostPlugin)), Typeflag: tar.TypeReg})
+	tw.Write([]byte(hostPlugin))
+	tw.Close()
+	gz.Close()
+	sum := sha256.Sum256(buf.Bytes())
+	raw, _ := json.Marshal(plugin.Manifest{Contract: plugin.Contract, Name: "queue", Version: "1.0", Provides: "queue", Hooks: []string{"describe", "status", "check", "repair", "maintain"},
+		Archives: []plugin.Archive{{Arch: runtime.GOARCH, SHA256: hex.EncodeToString(sum[:]), Size: int64(buf.Len())}}})
+	signature, _ := json.Marshal(plugin.Sign(private, raw))
+	ctx := context.Background()
+	if _, err := m.stagePluginManifest(string(raw), signature); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.installPlugin(ctx, "queue", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	state := m.pluginState("queue")
+	find := func(checks []HostReadinessCheck, id string) *HostReadinessCheck {
+		for _, c := range checks {
+			if c.ID == id {
+				return &c
+			}
+		}
+		return nil
+	}
+	// The plugin's own check is part of the server's readiness.
+	report := m.hostReadiness(ctx)
+	if c := find(report.Checks, "plugin-queue-server"); c == nil || c.OK || !c.Repairable || c.Title != "Queue server" || c.Detail != "its service failed" || report.OK {
+		t.Fatalf("readiness: %+v", report.Checks)
+	}
+	// A repair that fails says why; nothing is claimed.
+	os.WriteFile(filepath.Join(state, "broken"), nil, 0o600)
+	if after := m.repairHost(ctx); !slices.ContainsFunc(after.Failed, func(s string) bool { return strings.Contains(s, "the data directory is missing") }) {
+		t.Fatalf("failed repair: %+v", after)
+	}
+	os.Remove(filepath.Join(state, "broken"))
+	after := m.repairHost(ctx)
+	if !slices.ContainsFunc(after.Repaired, func(s string) bool { return s == "queue: started the queue server" }) {
+		t.Fatalf("repair: %+v", after)
+	}
+	if c := find(after.Checks, "plugin-queue-server"); c == nil || !c.OK {
+		t.Fatalf("readiness after repair: %+v", after.Checks)
+	}
+	// Status and maintenance run in the background tick; health reports the last status.
+	now := time.Now()
+	m.pluginHousekeeping(now)
+	health := m.pluginHealth()
+	if len(health) != 1 || !health[0].OK || !strings.Contains(string(health[0].Status), `"version":"7.1"`) || health[0].Provides != "queue" {
+		t.Fatalf("health: %+v", health)
+	}
+	// Maintenance is hourly, however often status is refreshed.
+	m.pluginHousekeeping(now.Add(10 * time.Minute))
+	m.pluginHousekeeping(now.Add(61 * time.Minute))
+	if raw, _ := os.ReadFile(filepath.Join(state, "maintained")); string(raw) != "run\nrun\n" {
+		t.Fatalf("maintenance runs: %q", raw)
+	}
+	// A removed plugin leaves no status behind.
+	if err := m.removePlugin("queue"); err != nil {
+		t.Fatal(err)
+	}
+	m.pluginHousekeeping(now.Add(2 * time.Hour))
+	if len(m.pluginHealth()) != 0 {
+		t.Fatalf("health of a removed plugin: %+v", m.pluginHealth())
 	}
 }

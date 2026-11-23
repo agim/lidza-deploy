@@ -58,6 +58,7 @@ type NativeReleaseDisk struct {
 // runtimeHealth adds the Docker and native sections to a health report.
 func (m *Manager) runtimeHealth(ctx context.Context, out *ServerHealth) {
 	out.Docker = dockerHealth(ctx)
+	out.Plugins = m.pluginHealth()
 	if native, ok := m.nativeHealth(ctx); ok {
 		out.Native = &native
 	}
