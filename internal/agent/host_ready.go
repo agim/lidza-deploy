@@ -73,7 +73,12 @@ func (m *Manager) hostReadiness(ctx context.Context) HostReadiness {
 			add(HostReadinessCheck{ID: "docker", Title: "Docker", Detail: "Docker is installed but its daemon is not running; containers cannot start.", Repairable: true})
 		}
 	}
+	// Services a plugin checks are that plugin's to report (above).
+	covered := func(id string) bool { return id == "clickhouse" && m.pluginChecks("clickhouse") }
 	for _, service := range host.readinessServices() {
+		if covered(service.id) {
+			continue
+		}
 		switch state := host.unitState(ctx, service.unit); {
 		case state == "active":
 			add(HostReadinessCheck{ID: service.id, Title: service.title, OK: true, Detail: service.title + " is running."})
@@ -89,7 +94,7 @@ func (m *Manager) hostReadiness(ctx context.Context) HostReadiness {
 		add(check)
 	}
 	// Half-configured packages stop every later installation and update.
-	if broken := host.brokenPackages(ctx); len(broken) > 0 {
+	if broken := host.brokenPackages(ctx); len(broken) > 0 && !(m.ownsBrokenPackages(host, broken) && covered("clickhouse")) {
 		add(HostReadinessCheck{ID: "packages", Title: "Package manager", Detail: "Packages are only half installed (" + strings.Join(broken, ", ") + "); nothing can be installed or updated on this server until that is resolved.", Repairable: m.ownsBrokenPackages(host, broken)})
 	}
 	// A full disk stops deployments, databases and logs alike.
@@ -210,7 +215,9 @@ func (m *Manager) repairHost(ctx context.Context) HostReadiness {
 		}
 		pluginRepaired, pluginFailed := m.repairPlugins(ctx)
 		repaired, failed = append(repaired, pluginRepaired...), append(failed, pluginFailed...)
-		if broken := host.brokenPackages(ctx); m.ownsBrokenPackages(host, broken) {
+		// With the ClickHouse plugin installed, its repair (above) owns ClickHouse.
+		pluginOwnsClickHouse := m.pluginRepairs("clickhouse")
+		if broken := host.brokenPackages(ctx); !pluginOwnsClickHouse && m.ownsBrokenPackages(host, broken) {
 			if host.removeClickHousePackages(ctx) {
 				repaired = append(repaired, "removed the packages of a ClickHouse installation that did not complete ("+strings.Join(broken, ", ")+")")
 			} else {
@@ -218,6 +225,9 @@ func (m *Manager) repairHost(ctx context.Context) HostReadiness {
 			}
 		}
 		for _, service := range host.readinessServices() {
+			if service.id == "clickhouse" && pluginOwnsClickHouse {
+				continue
+			}
 			if state := host.unitState(ctx, service.unit); state == "failed" || service.always && state != "active" {
 				if did, err := host.startService(ctx, service); err != nil {
 					failed = append(failed, err.Error())

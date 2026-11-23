@@ -10,6 +10,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -139,8 +140,18 @@ func (m *Manager) nativePreflight(ctx context.Context, in NativePreflightRequest
 		}
 	}
 
-	// ClickHouse: running, or installable in the requested series, and room for the data.
-	if req.Data.ClickHouse {
+	// ClickHouse: where the ClickHouse plugin is installed it is the
+	// authority on its processor, server and disk rules; the built-in checks
+	// below are for servers that do not have it yet.
+	pluginKnowsClickHouse := false
+	if req.Data.ClickHouse && m.pluginChecks("clickhouse") {
+		pluginKnowsClickHouse = true
+		options, _ := json.Marshal(map[string]string{"series": req.Data.ClickHouseVersion})
+		for _, check := range m.pluginServiceChecks(ctx, req.ID, []NativePluginService{{Service: "clickhouse", Options: options}}, map[string]int64{"clickhouse": in.ClickHouseBytes}) {
+			add(check)
+		}
+	}
+	if req.Data.ClickHouse && !pluginKnowsClickHouse {
 		installed := host.fileExists(nativeCHServerBinary)
 		state := ""
 		if installed {

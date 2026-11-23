@@ -108,6 +108,20 @@ func (m *Manager) pluginProviding(service string) (PluginRecord, plugin.Manifest
 	return *found, manifest, err
 }
 
+// pluginChecks reports whether an installed plugin provides a service and
+// can check the server for it: that plugin, not the agent, then answers what
+// the service needs.
+func (m *Manager) pluginChecks(service string) bool {
+	_, manifest, err := m.pluginProviding(service)
+	return err == nil && manifest.Implements("check")
+}
+
+// pluginRepairs reports the same for repairs.
+func (m *Manager) pluginRepairs(service string) bool {
+	_, manifest, err := m.pluginProviding(service)
+	return err == nil && manifest.Implements("check") && manifest.Implements("repair")
+}
+
 func (m *Manager) pluginSecrets(sealed string) (map[string]string, error) {
 	if sealed == "" {
 		return nil, nil

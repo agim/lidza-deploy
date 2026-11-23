@@ -436,3 +436,112 @@ func TestPluginsReportStatusCheckAndRepairTheServerAndRunMaintenance(t *testing.
 		t.Fatalf("health of a removed plugin: %+v", m.pluginHealth())
 	}
 }
+
+// With the ClickHouse plugin installed, the agent asks it instead of using
+// its own ClickHouse rules: for an application's rehearsal and for the
+// server's readiness.
+func TestTheClickHousePluginReplacesTheBuiltInChecksWhereItIsInstalled(t *testing.T) {
+	m, f := newHostDataFixture(t)
+	m.cfg.Native = &NativeHostConfig{Root: t.TempDir(), User: "deploy", AppsRoot: filepath.Join(f.root, "srv/apps")}
+	savedEUID, savedDisk, savedForbidden, savedListen := hostNativeEUID, preflightDisk, nativeForbiddenAppsRoots, nativePortListenable
+	t.Cleanup(func() {
+		hostNativeEUID, preflightDisk, nativeForbiddenAppsRoots, nativePortListenable = savedEUID, savedDisk, savedForbidden, savedListen
+	})
+	hostNativeEUID = func() int { return 0 }
+	preflightDisk = func(string) (DiskHealth, error) {
+		return DiskHealth{Total: 100 << 30, Available: 90 << 30, UsedPercent: 10}, nil
+	}
+	nativeForbiddenAppsRoots = nil
+	nativePortListenable = func(int) bool { return true }
+	// A ClickHouse server is installed here and its service failed.
+	os.MkdirAll(filepath.Join(f.root, "usr/bin"), 0o755)
+	os.WriteFile(filepath.Join(f.root, "usr/bin/clickhouse-server"), nil, 0o755)
+	os.WriteFile(filepath.Join(f.root, "usr/bin/apt-get"), nil, 0o755)
+	previous := nativeHostDataHost
+	t.Cleanup(func() { nativeHostDataHost = previous })
+	nativeHostDataHost = func(*Manager) nativeHostData {
+		return nativeHostData{root: f.root, run: func(ctx context.Context, stdin, name string, args ...string) (string, error) {
+			if name == "/usr/bin/systemctl" && args[0] == "show" {
+				return "failed\n", nil
+			}
+			return f.run(ctx, stdin, name, args...)
+		}}
+	}
+	request := NativePreflightRequest{ClickHouseBytes: 5 << 30, Request: NativeCreateRequest{ID: "shop", Runtime: "go", Repository: "acme/shop", Branch: "main", Domain: "shop.example.com", HealthPath: "/readyz",
+		Processes: []NativeProcessSpec{{Name: "web", Command: "./shop", Web: true}}, Data: NativeDataRequest{ClickHouse: true, ClickHouseVersion: "26.8"}}}
+	ctx := context.Background()
+	ids := func(checks []HostReadinessCheck) string {
+		out := []string{}
+		for _, c := range checks {
+			out = append(out, c.ID)
+		}
+		return strings.Join(out, " ")
+	}
+	// Without the plugin the built-in checks answer.
+	if got := ids(m.nativePreflight(ctx, request).Checks); !strings.Contains(got, " clickhouse ") && !strings.HasSuffix(got, " clickhouse") || strings.Contains(got, "plugin-") {
+		t.Fatalf("built-in rehearsal: %s", got)
+	}
+	if got := ids(m.hostReadiness(ctx).Checks); !strings.Contains(got, "clickhouse") || strings.Contains(got, "plugin-") {
+		t.Fatalf("built-in readiness: %s", got)
+	}
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	if err := m.setPluginKeys([]string{hex.EncodeToString(public)}); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+request=$(cat)
+case "$1" in
+ describe) printf '{"ok":true}';;
+ check) series=$(printf '%s' "$request" | sed -n 's/.*"series":"\([^"]*\)".*/\1/p'); printf '{"ok":true,"checks":[{"id":"processor","title":"Processor","ok":true,"caution":true,"detail":"asked for %s"},{"id":"server","title":"ClickHouse server","ok":false,"repairable":true,"detail":"its service failed"}]}' "$series";;
+ repair) printf '{"ok":true,"messages":["started the ClickHouse server"]}';;
+esac
+`
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	tw.WriteHeader(&tar.Header{Name: plugin.Program, Mode: 0o755, Size: int64(len(script)), Typeflag: tar.TypeReg})
+	tw.Write([]byte(script))
+	tw.Close()
+	gz.Close()
+	sum := sha256.Sum256(buf.Bytes())
+	raw, _ := json.Marshal(plugin.Manifest{Contract: plugin.Contract, Name: "clickhouse", Version: "0.1", Provides: "clickhouse", Hooks: []string{"describe", "check", "repair"},
+		Archives: []plugin.Archive{{Arch: runtime.GOARCH, SHA256: hex.EncodeToString(sum[:]), Size: int64(buf.Len())}}})
+	signature, _ := json.Marshal(plugin.Sign(private, raw))
+	if _, err := m.stagePluginManifest(string(raw), signature); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.installPlugin(ctx, "clickhouse", bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	// The rehearsal asks the plugin, with the series the application comes from.
+	report := m.nativePreflight(ctx, request)
+	got := ids(report.Checks)
+	if !strings.Contains(got, "plugin-clickhouse-processor") || !strings.Contains(got, "plugin-clickhouse-server") || strings.Contains(got+" ", " clickhouse ") || strings.Contains(got, "clickhouse-disk") {
+		t.Fatalf("rehearsal with the plugin: %s", got)
+	}
+	for _, c := range report.Checks {
+		if c.ID == "plugin-clickhouse-processor" && (c.Detail != "asked for 26.8" || !c.Caution) {
+			t.Fatalf("the plugin was not given the series: %+v", c)
+		}
+	}
+	// Readiness and repair are the plugin's too: the built-in ClickHouse entries are gone.
+	readiness := m.hostReadiness(ctx)
+	got = ids(readiness.Checks)
+	if !strings.Contains(got, "plugin-clickhouse-server") || strings.Contains(" "+got+" ", " clickhouse ") {
+		t.Fatalf("readiness with the plugin: %s", got)
+	}
+	f.mu.Lock()
+	f.commands = nil
+	f.mu.Unlock()
+	repaired := m.repairHost(ctx)
+	if !slices.Contains(repaired.Repaired, "clickhouse: started the ClickHouse server") {
+		t.Fatalf("repair with the plugin: %+v", repaired)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, command := range f.commands {
+		if strings.Contains(command, "systemctl start clickhouse") || strings.Contains(command, "purge") {
+			t.Fatalf("the agent repaired ClickHouse itself although the plugin owns it: %s", command)
+		}
+	}
+}

@@ -1,8 +1,9 @@
 # Proposal: plugins for application-specific software
 
 Status: stage 1 is implemented (the contract, signature check, installation
-and the read-only hooks; see [Stage 1 as built](#stage-1-as-built)). Nothing in
-the agent uses a plugin yet, and ClickHouse is still built in.
+and the read-only hooks; see [Stage 1 as built](#stage-1-as-built)). The
+ClickHouse plugin exists and takes over the server checks where it is
+installed; installing, backing up and moving ClickHouse are still built in.
 
 ## Why
 
@@ -188,6 +189,15 @@ application in mind, is in the server's readiness report; what it marks
 repairable is fixed by its `repair` hook when the server is repaired; its
 `maintain` hook runs hourly.
 
+### Taking over from the built-in ClickHouse code
+
+Where a plugin that provides `clickhouse` is installed and implements
+`check`, the agent asks it instead of using its own ClickHouse rules: an
+application's rehearsal shows the plugin's checks (given the series the
+application comes from and the size of its data), the server's readiness
+report leaves ClickHouse to the plugin, and a repair is the plugin's
+`repair`. Servers without the plugin behave as before.
+
 ### Writing a plugin
 
 The `pluginapi` package is the kit: the request and answer types the agent
@@ -198,8 +208,9 @@ builds it from source and takes it through the agent: signed, installed,
 checked, provisioned for an application and released.
 
 Not built yet: backups, restores, moves and tuning through hooks; naming a
-plugin in `deploy/lidza.stack.json`; and the ClickHouse plugin itself, so
-ClickHouse is still built into the agent.
+plugin in `deploy/lidza.stack.json`; and the ClickHouse plugin's provision,
+backup and move hooks, so those parts of ClickHouse are still built into the
+agent.
 
 ## Open questions
 
