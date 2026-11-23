@@ -40,8 +40,15 @@ the tool is missing. Neither lets anyone list or read the directory.
 
 ## A server that cannot run a service at all
 
-Recent ClickHouse releases are built for processors newer than some servers
-have. On such a server the package's own setup stops with an illegal
+ClickHouse's published x86-64 builds need AVX2 (with BMI and FMA) from
+release 26.6 on. On a processor without it the agent installs the newest
+long-term release from before that (26.3 at the time of writing) instead of
+the one asked for. An application moving from a newer ClickHouse is then
+copied table by table, its whole database is copied again at the final sync
+with the application locked, and features only the newer release has do not
+work; the rehearsal marks that step *At risk* and says so.
+
+Should a release still not run: the package's own setup stops with an illegal
 instruction. The agent recognises that, **removes the packages again** so the
 server is as it was, says that this processor (with its name and the
 instruction sets it lacks) cannot run that release, and remembers it: the next

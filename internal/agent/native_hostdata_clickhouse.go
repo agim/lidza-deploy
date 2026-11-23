@@ -333,6 +333,19 @@ func renderNativeClickHouseReleaseSQL(name string) ([]string, error) {
 // `apt-cache madison clickhouse-server` output: the requested one, or the
 // newest LTS series (x.3 and x.8 releases), or the newest series at all.
 func chooseClickHouseSeries(madison, requested string) (string, error) {
+	return chooseClickHouseSeriesFor(madison, requested, false)
+}
+
+// clickhouseAVX2Series is the first release series whose published x86-64
+// build needs AVX2 (with BMI and FMA): ClickHouse's own installer says its
+// default build targets x86-64-v3 and falls back for processors without it.
+const clickhouseAVX2Series = "26.6"
+
+// chooseClickHouseSeriesFor is chooseClickHouseSeries for a given processor:
+// without AVX2 only series before clickhouseAVX2Series can run, so the
+// requested series is replaced by the newest long-term series that can
+// (a move from a newer server then copies table by table).
+func chooseClickHouseSeriesFor(madison, requested string, withoutAVX2 bool) (string, error) {
 	available := map[string]bool{}
 	for _, line := range strings.Split(madison, "\n") {
 		fields := strings.Split(line, "|")
@@ -340,7 +353,17 @@ func chooseClickHouseSeries(madison, requested string) (string, error) {
 			continue
 		}
 		if version := strings.TrimSpace(fields[1]); clickhouseVersionPattern.MatchString(version) {
-			available[clickhouseSeries(version)] = true
+			if series := clickhouseSeries(version); !withoutAVX2 || compareClickHouseSeries(series, clickhouseAVX2Series) < 0 {
+				available[series] = true
+			}
+		}
+	}
+	if withoutAVX2 {
+		if len(available) == 0 {
+			return "", errors.New("the ClickHouse repository has no release this server's processor can run: it lacks AVX2, which releases from " + clickhouseAVX2Series + " need")
+		}
+		if !available[requested] {
+			requested = "" // the newest series this processor can run instead
 		}
 	}
 	if requested != "" {
@@ -502,7 +525,7 @@ func (h nativeHostData) installClickHouse(ctx context.Context, series string, se
 	if err != nil {
 		return "", errors.New("the ClickHouse repository could not be read")
 	}
-	if series, err = chooseClickHouseSeries(madison, series); err != nil {
+	if series, err = chooseClickHouseSeriesFor(madison, series, h.cpuLacksAVX2()); err != nil {
 		return "", err
 	}
 	if _, err := h.writeIfChanged(nativeCHPreferences, []byte(renderNativeClickHousePreferences(series)), 0o644, 0, 0); err != nil {

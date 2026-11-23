@@ -154,7 +154,13 @@ func (m *Manager) nativePreflight(ctx context.Context, in NativePreflightRequest
 			// A release already proved unable to run on this processor.
 			add(HostReadinessCheck{ID: "clickhouse", Title: "ClickHouse", Detail: blocked.Reason})
 		case !installed && host.fileExists("/usr/bin/apt-get") && host.cpuLacksAVX2():
-			add(HostReadinessCheck{ID: "clickhouse", Title: "ClickHouse", OK: true, Caution: true, Detail: "ClickHouse is not installed. This server's processor (" + host.cpuSummary() + ") is older than recent ClickHouse releases are built for; the installation may stop with an illegal instruction. If it does, nothing is left behind and the move stops at its first step."})
+			detail := "ClickHouse is not installed. This server's processor (" + host.cpuSummary() + ") cannot run ClickHouse releases from " + clickhouseAVX2Series + " on, so the agent installs the newest long-term release before that."
+			wanted := req.Data.ClickHouseVersion
+			newer := wanted != "" && clickhouseSeriesPattern.MatchString(wanted) && compareClickHouseSeries(wanted, clickhouseAVX2Series) >= 0
+			if newer {
+				detail += " The application comes from ClickHouse " + wanted + ": its data is copied table by table into the older release, the whole database is copied again at the final sync with the application locked, and anything it uses that only " + wanted + " has will not work."
+			}
+			add(HostReadinessCheck{ID: "clickhouse", Title: "ClickHouse", OK: true, Caution: newer, Detail: detail})
 		case !installed && host.fileExists("/usr/bin/apt-get"):
 			series := req.Data.ClickHouseVersion
 			if series == "" {

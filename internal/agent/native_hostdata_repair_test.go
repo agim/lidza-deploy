@@ -273,3 +273,38 @@ func TestClickHouseOnATooOldProcessorIsNamedAndLeavesNothingBehind(t *testing.T)
 		t.Fatalf("purge command %v", commands)
 	}
 }
+
+// A processor without AVX2 gets the newest long-term series from before the
+// builds needed it, whatever was asked for; other processors are unaffected.
+func TestClickHouseSeriesFollowsWhatTheProcessorCanRun(t *testing.T) {
+	madison := strings.Join([]string{
+		"clickhouse-server | 26.8.44.3 | https://packages.clickhouse.com/deb stable/main amd64 Packages",
+		"clickhouse-server | 26.6.2.1 | https://packages.clickhouse.com/deb stable/main amd64 Packages",
+		"clickhouse-server | 26.5.9.2 | https://packages.clickhouse.com/deb stable/main amd64 Packages",
+		"clickhouse-server | 26.3.71.4 | https://packages.clickhouse.com/deb stable/main amd64 Packages",
+		"clickhouse-server | 25.8.33.1 | https://packages.clickhouse.com/deb stable/main amd64 Packages",
+	}, "\n")
+	for _, tc := range []struct {
+		requested   string
+		withoutAVX2 bool
+		want        string
+	}{
+		{"26.8", false, "26.8"},
+		{"", false, "26.8"},
+		{"26.8", true, "26.3"}, // asked for a series this processor cannot run
+		{"", true, "26.3"},
+		{"25.8", true, "25.8"}, // an older series that was asked for is kept
+		{"26.6", true, "26.3"},
+	} {
+		got, err := chooseClickHouseSeriesFor(madison, tc.requested, tc.withoutAVX2)
+		if err != nil || got != tc.want {
+			t.Fatalf("requested %q withoutAVX2=%v: %q %v, want %q", tc.requested, tc.withoutAVX2, got, err, tc.want)
+		}
+	}
+	if _, err := chooseClickHouseSeriesFor("clickhouse-server | 26.8.44.3 | repo", "26.8", true); err == nil || !strings.Contains(err.Error(), "lacks AVX2") {
+		t.Fatalf("a repository with nothing this processor can run: %v", err)
+	}
+	if _, err := chooseClickHouseSeriesFor(madison, "24.1", false); err == nil {
+		t.Fatal("an unavailable series was accepted")
+	}
+}
