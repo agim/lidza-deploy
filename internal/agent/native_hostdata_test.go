@@ -116,6 +116,7 @@ func TestNativePGReleaseSQLGolden(t *testing.T) {
 	want := `SELECT 'ALTER ROLE "app_shop_web" NOLOGIN' WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'app_shop_web')\gexec
 SELECT count(pg_catalog.pg_terminate_backend(pid)) FROM pg_catalog.pg_stat_activity WHERE datname = 'app_shop_web' OR usename = 'app_shop_web';
 DROP DATABASE IF EXISTS "app_shop_web" WITH (FORCE);
+SELECT 'DROP OWNED BY "app_shop_web"' WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'app_shop_web')\gexec
 DROP ROLE IF EXISTS "app_shop_web";
 `
 	if got != want {

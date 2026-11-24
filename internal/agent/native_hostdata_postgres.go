@@ -156,6 +156,11 @@ func renderNativePGProvisionSQL(name, verifier string) (string, error) {
 // renderNativePGReleaseSQL drops one application's database and role. Login
 // is disabled and sessions are terminated first; WITH (FORCE) covers late
 // connections. Every statement tolerates an already removed object.
+//
+// The role holds a grant outside its database (SET ON PARAMETER, given at
+// provisioning), and PostgreSQL refuses to drop a role that still holds
+// any. DROP OWNED BY revokes whatever the role was granted on shared
+// objects, so the role can be dropped whatever it was given.
 func renderNativePGReleaseSQL(name string) (string, error) {
 	ident, err := pgQuoteIdent(name)
 	if err != nil {
@@ -167,6 +172,8 @@ func renderNativePGReleaseSQL(name string) (string, error) {
 	fmt.Fprintf(&b, "SELECT %s WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = %s)\\gexec\n", nologin, literal)
 	fmt.Fprintf(&b, "SELECT count(pg_catalog.pg_terminate_backend(pid)) FROM pg_catalog.pg_stat_activity WHERE datname = %s OR usename = %s;\n", literal, literal)
 	fmt.Fprintf(&b, "DROP DATABASE IF EXISTS %s WITH (FORCE);\n", ident)
+	dropOwned, _ := pgQuoteLiteral("DROP OWNED BY " + ident)
+	fmt.Fprintf(&b, "SELECT %s WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = %s)\\gexec\n", dropOwned, literal)
 	fmt.Fprintf(&b, "DROP ROLE IF EXISTS %s;\n", ident)
 	return b.String(), nil
 }
