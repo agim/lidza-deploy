@@ -135,6 +135,16 @@ func Client(base http.RoundTripper) *http.Client {
 	}
 	transport.ForceAttemptHTTP2 = false
 	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	// A transport that already served HTTP/2 carries "h2" in the protocols
+	// its TLS handshake offers, and the copy inherits them. A web server in
+	// front of the agent then answers in HTTP/2, which an upgraded
+	// HTTP/1.1 stream cannot be: offer HTTP/1.1 only.
+	if transport.TLSClientConfig != nil {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	} else {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	transport.ResponseHeaderTimeout = 30 * time.Second
 	return &http.Client{Transport: transport, CheckRedirect: noRedirect}
 }

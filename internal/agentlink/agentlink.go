@@ -422,6 +422,8 @@ func (a Agent) dial(ctx context.Context, resolve bool) (net.Conn, error) {
 		if a.TLS != nil {
 			config = a.TLS.Clone()
 			config.ServerName = u.Hostname()
+			// The link is an upgraded HTTP/1.1 stream; never offer HTTP/2.
+			config.NextProtos = []string{"http/1.1"}
 		}
 		conn, err = (&tls.Dialer{NetDialer: dialer, Config: config}).DialContext(handshake, "tcp", address)
 	} else {
