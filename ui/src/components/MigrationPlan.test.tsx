@@ -468,7 +468,7 @@ it('offers to remove the retained data that stopped Prepare, with confirmation a
   const { container } = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} pollMs={1000} />);
   open(container);
   expect(await screen.findByText(/Needs your action \(retained_data\)/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Remove retained data of shop on Beta (last backup 2026-11-05 10:00 UTC)' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Remove retained data' }));
   const dialog = await screen.findByRole('alertdialog');
   expect(dialog).toHaveTextContent('Remove retained data of shop on Beta?');
   const backup = within(dialog).getByRole('checkbox');

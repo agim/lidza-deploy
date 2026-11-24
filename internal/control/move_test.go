@@ -484,6 +484,8 @@ func newMoveFake(t *testing.T) *moveFake {
 		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil || spec.Env != nil {
 			t.Error("the destination is created without environment values", err)
 		}
+		// Like the agent, the fake clears data services that hold nothing itself.
+		f.retained = slices.DeleteFunc(f.retained, func(row agent.RetainedResourceView) bool { return row.AppID == spec.ID && row.Empty })
 		for _, row := range f.retained {
 			if row.AppID == spec.ID {
 				j(w, 409, map[string]string{"error": "the data services of an earlier application " + spec.ID + " are retained on this server; remove them under the server's retained resources, or choose another id"})

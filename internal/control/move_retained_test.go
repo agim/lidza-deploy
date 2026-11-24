@@ -185,3 +185,32 @@ func stepLog(job MoveJob, key string) []string {
 	}
 	return out
 }
+
+// Retained data the destination reports as empty does not stop Prepare: the
+// destination's agent removes it itself when it creates the application,
+// and the operator is not asked to.
+func TestMovePrepareDoesNotStopForEmptyRetainedData(t *testing.T) {
+	fx := newMoveFixture(t)
+	fx.nativeMoveSource()
+	backup := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	fx.b.with(func() {
+		fx.b.retained = []agent.RetainedResourceView{{ID: "r-ghost", AppID: "shop", Kind: "application", Empty: true, FinalBackupRequired: true,
+			Databases: []agent.RetainedDatabaseView{{ID: "shop-db0001", LastLocal: &agent.BackupRecord{ID: "b1", Created: backup}}}}}
+	})
+	status, view := startMove(t, fx.c, "shop", map[string]any{"target_server": "beta", "acknowledge_warnings": true})
+	if status != 202 {
+		t.Fatalf("start: %d", status)
+	}
+	job := waitMove(t, fx.c, view.ID, moveStateCutover, moveStateFailed)
+	if job.State == moveStateFailed {
+		t.Fatalf("the move stopped: %+v", job.Failure)
+	}
+	if fx.b.called("DELETE /v1/retained-resources/r-ghost") {
+		t.Fatal("the panel removed the empty data itself; that is the destination agent's to do")
+	}
+	fx.b.with(func() {
+		if fx.b.created == nil {
+			t.Fatal("the application was not created on the destination")
+		}
+	})
+}

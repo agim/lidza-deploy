@@ -408,6 +408,7 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 	m.mu.Lock()
 	items := m.retainedItemsLocked()
 	out := make([]RetainedResourceView, 0, len(items))
+	native := map[int]string{} // view index → the application whose native data it holds
 	for _, it := range items {
 		view := RetainedResourceView{ID: it.id, AppID: it.appID, Created: it.created, Kind: it.kind, WritesStopped: it.writesStopped, Components: []RetainedComponent{}, AttachedTo: m.attachedLocked(it),
 			Origin: it.origin, Copy: it.copy}
@@ -457,9 +458,15 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 			view.Components = append(view.Components, RetainedComponent{Kind: o.role, Name: o.name})
 		}
 		view.Components = append(view.Components, it.host...)
+		if it.native != "" {
+			native[len(out)] = it.native
+		}
 		out = append(out, view)
 	}
 	m.mu.Unlock()
+	for i, id := range native {
+		out[i].Empty = !out[i].Copy && !m.nativeApplicationExists(id) && m.nativeDataEmpty(id)
+	}
 	rt.mu.Lock()
 	for i := range out {
 		out[i].Removing = rt.removing[out[i].ID]

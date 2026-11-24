@@ -110,6 +110,9 @@ func (c *Control) moveClearRetained(ctx context.Context, job MoveJob) error {
 				}
 				requested[row.ID] = row.Origin.MoveID
 				return false, nil
+			case row.Empty:
+				// Data services that hold nothing: the destination's agent
+				// removes them itself when it creates the application.
 			default:
 				return false, c.moveRetainedStop(job, row)
 			}

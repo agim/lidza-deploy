@@ -113,6 +113,10 @@ type RetainedResourceView struct {
 	// never-switched move's partial copy, which is removed without a backup.
 	Origin *RetainedOrigin `json:"origin,omitempty"`
 	Copy   bool            `json:"copy,omitempty"`
+	// Empty marks native data services that hold nothing (their database
+	// no longer exists or has no table): the agent removes them itself when
+	// an application with this id is created (leftoverNativeData).
+	Empty bool `json:"empty,omitempty"`
 	// FinalBackupRequired is set when a database has no verified backup
 	// taken after its application stopped writing (never for a Copy).
 	FinalBackupRequired bool `json:"final_backup_required"`

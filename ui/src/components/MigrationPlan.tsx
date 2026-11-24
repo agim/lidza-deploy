@@ -330,7 +330,7 @@ function RemoveRetainedAction({ retained, serverName, busy, onConfirm }: { retai
   };
   const lastBackup = retained.last_backup ? `${retained.offsite ? 'Off-site' : 'Local'} backup from ${new Date(retained.last_backup).toLocaleString()}.` : 'No backup of its databases is recorded.';
   return <AlertDialog.Root open={open} onOpenChange={value => { if (!pending) { setOpen(value); if (value) { setConfirm(''); setError(''); setFinalBackup(required); } } }}>
-    <AlertDialog.Trigger asChild><Button type="button" variant="danger" disabled={busy}>{retained.label}</Button></AlertDialog.Trigger>
+    <AlertDialog.Trigger asChild><Button type="button" variant="danger" disabled={busy} title={retained.label}>Remove retained data</Button></AlertDialog.Trigger>
     <AlertDialog.Portal><AlertDialog.Overlay className="dialog-overlay" /><AlertDialog.Content className="dialog">
       <ActionForm className="dialog-form" onSubmit={submit}>
         <AlertDialog.Title>Remove retained data of {retained.app_id} on {serverName}?</AlertDialog.Title>
