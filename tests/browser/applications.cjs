@@ -293,6 +293,37 @@ suite('applications', [
     },
   },
   {
+    name: 'move: a move stopped at Prepare keeps its actions readable on a phone',
+    widths: [390, 1440],
+    async run({ page, state, open }) {
+      const step = (key, status) => ({ key, title: key, status, log: [] });
+      state.move = {
+        id: 'm1', app_id: 'portal', source_server: 'local', target_server: 'local', target_runtime: 'native', runtime: 'go', state: 'failed', hostnames: ['portal.example.com'], addresses: ['203.0.113.9'],
+        dns: [], tls_ready: false, records: [], switched: false, actions: ['continue', 'remove-retained', 'abort'],
+        steps: [step('plan', 'done'), step('prepare', 'failed'), step('environment', 'pending'), step('data', 'pending'), step('deploy', 'pending'), step('cutover', 'pending'), step('final_sync', 'skipped'), step('finish', 'pending')],
+        failure: { step: 'prepare', server: 'local', class: 'operator', code: 'retained_data', message: 'Production keeps retained data of portal (r-old): an application with this id ran there before.', attempt: 1, max_attempts: 6, time: new Date().toISOString(),
+          remediation: 'Remove the retained data of portal on Production from this move, or remove it under the server\'s retained resources; the move then continues.',
+          retained: { id: 'r-old', server: 'local', app_id: 'portal', databases: 1, last_backup: '2026-11-05T10:00:00Z', offsite: true, final_backup_required: false, label: 'Remove retained data of portal on Production (last backup 2026-11-05 10:00 UTC, off-site)' } },
+      };
+      await open('/console/applications/portal/move');
+      const remove = page.getByRole('button', { name: 'Remove retained data', exact: true });
+      await remove.waitFor();
+      const width = page.viewportSize().width;
+      const heights = [];
+      for (const name of ['Remove retained data', 'Retry', 'Abort move']) {
+        const box = await page.getByRole('button', { name, exact: true }).boundingBox();
+        assert(box, `${name} is not shown`);
+        assert(box.x >= 0 && box.x + box.width <= width, `${name} runs past the viewport at ${width}px`);
+        heights.push(Math.round(box.height));
+      }
+      assert(heights.every(height => height === heights[0]), `a label wraps at ${width}px: the buttons are ${heights.join(', ')}px tall`);
+      if (process.env.TEST_SHOT_DIR) await page.locator('.move-actions').screenshot({ path: `${process.env.TEST_SHOT_DIR}/move-actions-${width}.png` });
+      // The details moved out of the label: they are in the confirmation.
+      await remove.click();
+      await page.getByRole('alertdialog').getByText('Remove retained data of portal on Production?').waitFor();
+    },
+  },
+  {
     name: 'settings: the access log shows its file and switches off at once',
     widths: [320, 1440],
     async run({ page, state, open }) {

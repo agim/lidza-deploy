@@ -123,7 +123,7 @@ async function mockConsole(page) {
     if (path === 'v1/auth/two-factor') return send({ enabled: false, backupCodesLeft: 8 });
     if (path === 'v1/auth/two-factor/setup') return send({ secret: 'FIXTUREONLY', otpauthUrl: 'otpauth://totp/Fixture?secret=FIXTUREONLY', qrCodeDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlJ9l8AAAAASUVORK5CYII=' });
     // No move recorded: the control answers 204 (not 404, which browsers log as a console error).
-    if (method === 'GET' && /^control\/apps\/[^/]+\/move$/.test(path)) return route.fulfill({ status: 204 });
+    if (method === 'GET' && /^control\/apps\/[^/]+\/move$/.test(path)) return state.move ? send(state.move) : route.fulfill({ status: 204 });
     if (method === 'GET' && /^control\/apps\/[^/]+\/processes$/.test(path)) return send({ processes: [] });
     // Control panel move: two paired servers; the plan review shows checks, the summary and the server table.
     if (path === 'control/panel-move') return send(panelView);

@@ -703,7 +703,9 @@ html { scroll-padding-top: 84px; }
   .server-actions > .button:first-child { flex-basis: 100%; }
   .wizard-actions { flex-wrap: wrap; }
   .wizard-actions > .button { flex: 1 1 calc(50% - var(--control-gap)); }
-  .wizard-done-actions > .button, .maintenance-actions > .button, .move-actions > .button { flex: 1 1 calc(50% - 5px); }
+  .wizard-done-actions > .button, .maintenance-actions > .button { flex: 1 1 calc(50% - 5px); }
+  /* A move's actions carry longer labels: one per row, so none wraps. */
+  .move-actions > .button { flex: 1 1 100%; }
 }
 
 /* Touch targets: at least 40px on coarse pointers, without changing desktop. */
