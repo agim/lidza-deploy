@@ -193,7 +193,8 @@ func (m *Manager) validateNativeCreateRequest(req *NativeCreateRequest) error {
 		// earlier attempt of this same application left (leftoverNativeData)
 		// is cleared when the application is created; only data a removed
 		// application really had is the operator's to decide about.
-		if kind, _ := m.leftoverNativeData(req.ID); kind == "" || kind == "unlisted" {
+		// Data services that hold nothing are cleared too, whatever their history.
+		if kind, _ := m.leftoverNativeData(req.ID); (kind == "" || kind == "unlisted") && !m.nativeDataEmpty(req.ID) {
 			return fmt.Errorf("the data services of an earlier application %s are retained on this server; remove them under the server's retained resources, or choose another id", req.ID)
 		}
 	}
@@ -783,7 +784,24 @@ func (m *Manager) leftoverNativeData(id string) (kind, item string) {
 // never has to be cleaned up by hand. Nothing is backed up first: neither
 // kind holds data that exists only here.
 func (m *Manager) clearLeftoverNativeData(ctx context.Context, id string) (note string, err error) {
-	switch kind, item := m.leftoverNativeData(id); kind {
+	kind, item := m.leftoverNativeData(id)
+	if _, exists := m.hostDataRecord(id); exists && (kind == "" || kind == "unlisted") && !m.nativeApplicationExists(id) && m.nativeDataEmpty(id) {
+		// Whatever their history, these services hold nothing: no table was
+		// ever created in the database. Removing them loses nothing.
+		log.Printf("native %s: removing the empty data services left on this server", id)
+		if retained := m.retainedNativeItem(id); retained != "" {
+			err = m.removeRetainedEmpty(ctx, retained)
+		} else {
+			kind = "unfinished"
+		}
+		if err != nil {
+			return "", fmt.Errorf("the empty data services left for %s could not be removed: %w", id, err)
+		}
+		if kind != "unfinished" {
+			return "Removed the data services left for " + id + " on this server; their database held no tables.", nil
+		}
+	}
+	switch kind {
 	case "unfinished":
 		log.Printf("native %s: removing the data services an earlier creation that did not complete left on this server", id)
 		if err := releaseNativeHostDataRecord(ctx, m, id, false); err != nil {
@@ -815,4 +833,51 @@ func (m *Manager) clearLeftoverNativeData(ctx context.Context, id string) (note 
 		note = "Removed the copy of the data an earlier move of " + id + " had left on this server; that move never switched, and the source still has the data."
 	}
 	return note, nil
+}
+
+// nativeApplicationExists reports an application under this id, however it
+// came to be managed.
+func (m *Manager) nativeApplicationExists(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, created := m.data.NativeCreated[id]
+	_, registered := m.data.NativeApps[id]
+	_, container := m.data.Apps[id]
+	return created || registered || container
+}
+
+// retainedNativeItem is the retained resource that holds the native data
+// services of id, when one is recorded and not part of an archive.
+func (m *Manager) retainedNativeItem(id string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.data.RetainedResources {
+		if r.AppID == id && r.NativeData && r.Archive == "" {
+			return r.ID
+		}
+	}
+	return ""
+}
+
+// nativeDataEmpty reports whether the data services recorded for id hold
+// nothing at all: only a PostgreSQL database, which either no longer exists
+// or has no table in it. It is deliberately narrow; anything it cannot
+// prove empty counts as data.
+func (m *Manager) nativeDataEmpty(id string) bool {
+	record, ok := m.hostDataRecord(id)
+	if !ok || record.Postgres == nil || record.Postgres.Resource == "" || record.Redis != nil || record.ClickHouse != nil || len(record.Plugins) > 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, 15*time.Second)
+	defer cancel()
+	// A database that no longer exists holds nothing either: the record
+	// outlived it.
+	if literal, err := pgQuoteLiteral(record.Postgres.Name); err == nil {
+		out, err := nativeHostDataHost(m).psql(ctx, record.Postgres.Port, "SELECT count(*) FROM pg_catalog.pg_database WHERE datname = "+literal+";\n")
+		if err == nil && strings.TrimSpace(out) == "0" {
+			return true
+		}
+	}
+	count, err := moveTableCount(ctx, m, record.Postgres.Resource)
+	return err == nil && count == 0
 }

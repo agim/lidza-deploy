@@ -61,6 +61,32 @@ func TestLeftoversOfAnEarlierAttemptAreClearedNotRefused(t *testing.T) {
 	}
 	set(func(d *diskState) { d.RetainedResources, d.Databases = nil, nil })
 
+	// Listed as retained or not, with a backup or not: a database that holds
+	// no table, or that no longer exists, is removed with its record.
+	savedCount := moveTableCount
+	t.Cleanup(func() { moveTableCount = savedCount })
+	for name, tables := range map[string]int{"no tables": 0, "has tables": 4} {
+		moveTableCount = func(context.Context, *Manager, string) (int, error) { return tables, nil }
+		set(func(d *diskState) {
+			d.NativeHostData["shop"] = NativeHostDataRecord{Postgres: &NativeHostPostgres{Name: "app_shop", Resource: "shop-db1", Port: 5432, Ready: true}}
+			d.Databases = map[string]Database{"shop-db1": {AppID: "shop-db1", Ready: true, Backups: []BackupRecord{{ID: "b1"}}}}
+			d.RetainedResources = map[string]RetainedResource{"kept": {ID: "kept", AppID: "shop", NativeData: true, Databases: []string{"shop-db1"}}}
+		})
+		if got, want := m.nativeDataEmpty("shop"), tables == 0; got != want {
+			t.Fatalf("%s: empty = %v", name, got)
+		}
+		note, err := m.clearLeftoverNativeData(ctx, "shop")
+		_, left := m.hostDataRecord("shop")
+		if tables == 0 && (err != nil || left || !strings.Contains(note, "held no tables")) {
+			t.Fatalf("%s: %q %v, record left: %v", name, note, err, left)
+		}
+		if tables != 0 && (err != nil || !left || note != "") {
+			t.Fatalf("%s: data was removed: %q %v, record left: %v", name, note, err, left)
+		}
+	}
+	set(func(d *diskState) { d.RetainedResources, d.Databases = nil, nil; delete(d.NativeHostData, "shop") })
+	moveTableCount = savedCount
+
 	// The data of an application that was removed stays the operator's.
 	set(func(d *diskState) {
 		d.NativeHostData["shop"] = record

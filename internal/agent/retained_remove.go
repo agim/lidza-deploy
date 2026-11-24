@@ -91,6 +91,9 @@ type RetainedRemoveRequest struct {
 	// without a covering backup: the panel sends it when the application
 	// the data was copied from is deleted.
 	MoveLeftover bool `json:"move_leftover,omitempty"`
+	// empty is set by the agent itself, never by a request: the data
+	// services were found to hold nothing, so no backup is required.
+	empty bool
 }
 
 type dockerObject struct {
@@ -619,6 +622,19 @@ func (m *Manager) removeRetainedCopy(ctx context.Context, id string) error {
 	return err
 }
 
+// removeRetainedEmpty removes, before it returns, a retained resource whose
+// data services the agent found to hold nothing (nativeDataEmpty): there is
+// nothing a backup could preserve.
+func (m *Manager) removeRetainedEmpty(ctx context.Context, id string) error {
+	it, job, target, err := m.beginRetainedRemoval(id, RetainedRemoveRequest{Confirm: id, empty: true}, "create")
+	if err != nil {
+		return err
+	}
+	output, err := m.runRetainedRemoval(ctx, it, false, target)
+	m.finishRetainedRemoval(it, job, output, err)
+	return err
+}
+
 // beginRetainedRemoval checks a removal and records its start: the item,
 // its host job and the off-site target for final backups. The refusals are
 // returned before anything changes.
@@ -649,6 +665,9 @@ func (m *Manager) beginRetainedRemoval(id string, req RetainedRemoveRequest, tri
 		if item.origin == nil || item.origin.MoveID == "" {
 			return retainedItem{}, HostJob{}, nil, errors.New("this data was not left by a move; it needs a covering backup")
 		}
+		item.copy = true
+	}
+	if req.empty {
 		item.copy = true
 	}
 	rt.mu.Lock()
