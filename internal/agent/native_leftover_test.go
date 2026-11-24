@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,8 +25,8 @@ func TestLeftoversOfAnEarlierAttemptAreClearedNotRefused(t *testing.T) {
 	if kind, _ := m.leftoverNativeData("shop"); kind != "unfinished" {
 		t.Fatalf("an unfinished creation: %q", kind)
 	}
-	if err := m.clearLeftoverNativeData(ctx, "shop"); err != nil {
-		t.Fatal(err)
+	if note, err := m.clearLeftoverNativeData(ctx, "shop"); err != nil || !strings.Contains(note, "never completed") {
+		t.Fatalf("clearing an unfinished creation: %q %v", note, err)
 	}
 	if _, left := m.hostDataRecord("shop"); left {
 		t.Fatal("the unfinished creation's record stayed")
@@ -43,8 +44,8 @@ func TestLeftoversOfAnEarlierAttemptAreClearedNotRefused(t *testing.T) {
 	if kind, _ := m.leftoverNativeData("shop"); kind != "unlisted" {
 		t.Fatalf("an unfinished creation with a backup: %q", kind)
 	}
-	if err := m.clearLeftoverNativeData(ctx, "shop"); err != nil {
-		t.Fatal(err)
+	if note, err := m.clearLeftoverNativeData(ctx, "shop"); err != nil || note != "" {
+		t.Fatalf("nothing may be removed here: %q %v", note, err)
 	}
 	m.mu.Lock()
 	listed := 0
@@ -68,8 +69,8 @@ func TestLeftoversOfAnEarlierAttemptAreClearedNotRefused(t *testing.T) {
 	if kind, _ := m.leftoverNativeData("shop"); kind != "" {
 		t.Fatalf("a removed application's data was classified as a leftover: %q", kind)
 	}
-	if err := m.clearLeftoverNativeData(ctx, "shop"); err != nil {
-		t.Fatal(err)
+	if note, err := m.clearLeftoverNativeData(ctx, "shop"); err != nil || note != "" {
+		t.Fatalf("nothing may be removed here: %q %v", note, err)
 	}
 	if _, left := m.hostDataRecord("shop"); !left {
 		t.Fatal("a removed application's data was cleared")

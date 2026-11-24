@@ -393,6 +393,7 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 		}
 		var created struct {
 			IngressNote string `json:"ingress_note"`
+			CleanupNote string `json:"cleanup_note"`
 		}
 		createErr := c.moveCall(ctx, 6*time.Minute, job.TargetServer, http.MethodPost, "/v1/native/apps", spec, &created)
 		if c.agentCall(r, job.TargetServer, http.MethodGet, path, nil, &status) != nil || status.Application.ID != job.AppID {
@@ -402,6 +403,9 @@ func (c *Control) movePrepareNative(ctx context.Context, job MoveJob) error {
 			return errors.New("the destination did not report the created application")
 		}
 		c.moveLog(job.ID, moveStepPrepare, "Created the application on %s.", job.TargetServer)
+		if created.CleanupNote != "" {
+			c.moveLog(job.ID, moveStepPrepare, "%s", created.CleanupNote)
+		}
 		if created.IngressNote != "" {
 			c.moveLog(job.ID, moveStepPrepare, "%s", created.IngressNote)
 		}

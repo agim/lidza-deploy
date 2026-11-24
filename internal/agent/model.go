@@ -52,13 +52,16 @@ type App struct {
 	Network            string            `json:"-"`
 	Retiring           bool              `json:"retiring,omitempty"`
 	IngressNote        string            `json:"ingress_note,omitempty"` // creation response only: how the hostnames were published
-	ID                 string            `json:"id"`
-	Repository         string            `json:"repository"` // github owner/name, never a credential-bearing URL
-	Branch             string            `json:"branch"`
-	Domain             string            `json:"domain"`
-	Env                map[string]string `json:"env,omitempty"`
-	Current            *Release          `json:"current,omitempty"`
-	Previous           *Release          `json:"previous,omitempty"`
+	// CleanupNote is in the creation response only: what an earlier attempt
+	// had left on the server and the creation removed first.
+	CleanupNote string            `json:"cleanup_note,omitempty"`
+	ID          string            `json:"id"`
+	Repository  string            `json:"repository"` // github owner/name, never a credential-bearing URL
+	Branch      string            `json:"branch"`
+	Domain      string            `json:"domain"`
+	Env         map[string]string `json:"env,omitempty"`
+	Current     *Release          `json:"current,omitempty"`
+	Previous    *Release          `json:"previous,omitempty"`
 	// Warnings are conditions of the current release that need the
 	// operator's attention (mail_tls.go); computed for the app view, never
 	// stored.

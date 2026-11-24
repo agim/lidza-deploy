@@ -457,7 +457,8 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	m.nativeOperations[req.ID] = true
 	m.mu.Unlock()
 	defer func() { m.mu.Lock(); delete(m.nativeOperations, req.ID); m.mu.Unlock() }()
-	if err := m.clearLeftoverNativeData(ctx, req.ID); err != nil {
+	cleanupNote, err := m.clearLeftoverNativeData(ctx, req.ID)
+	if err != nil {
 		return App{}, err
 	}
 	if _, left := m.hostDataRecord(req.ID); left {
@@ -627,11 +628,11 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	m.wakeAccessLogs()
 	for _, view := range m.nativeViews() {
 		if view.ID == req.ID {
-			view.IngressNote = ingressNote
+			view.IngressNote, view.CleanupNote = ingressNote, cleanupNote
 			return view, nil
 		}
 	}
-	return App{ID: req.ID, Native: &app, Runtime: req.Runtime, Repository: req.Repository, Branch: req.Branch, Domain: req.Domain, IngressNote: ingressNote}, nil
+	return App{ID: req.ID, Native: &app, Runtime: req.Runtime, Repository: req.Repository, Branch: req.Branch, Domain: req.Domain, IngressNote: ingressNote, CleanupNote: cleanupNote}, nil
 }
 
 // nativeCreatedSpec is the request as recorded for recreating the
@@ -781,12 +782,12 @@ func (m *Manager) leftoverNativeData(id string) (kind, item string) {
 // application is created again, so a failed creation or an aborted move
 // never has to be cleaned up by hand. Nothing is backed up first: neither
 // kind holds data that exists only here.
-func (m *Manager) clearLeftoverNativeData(ctx context.Context, id string) error {
+func (m *Manager) clearLeftoverNativeData(ctx context.Context, id string) (note string, err error) {
 	switch kind, item := m.leftoverNativeData(id); kind {
 	case "unfinished":
 		log.Printf("native %s: removing the data services an earlier creation that did not complete left on this server", id)
 		if err := releaseNativeHostDataRecord(ctx, m, id, false); err != nil {
-			return fmt.Errorf("the data services an earlier, unfinished creation of %s left could not be removed: %w", id, err)
+			return "", fmt.Errorf("the data services an earlier, unfinished creation of %s left could not be removed: %w", id, err)
 		}
 		// A record with nothing left in it is forgotten.
 		m.mu.Lock()
@@ -795,21 +796,23 @@ func (m *Manager) clearLeftoverNativeData(ctx context.Context, id string) error 
 			if err := m.save(); err != nil {
 				m.data.NativeHostData[id] = r
 				m.mu.Unlock()
-				return err
+				return "", err
 			}
 		}
 		m.mu.Unlock()
+		note = "Removed the data services an earlier creation of " + id + " had left on this server; it never completed, so no application had used them."
 	case "unlisted":
 		// Make it visible and removable; the creation is then refused with
 		// where to find it.
 		if _, err := retainNativeHostData(ctx, m, id, nil); err != nil {
-			return err
+			return "", err
 		}
 	case "move":
 		log.Printf("native %s: removing the copy an earlier move that never switched left on this server", id)
 		if err := m.removeRetainedCopy(ctx, item); err != nil {
-			return fmt.Errorf("the copy an earlier move of %s left could not be removed: %w", id, err)
+			return "", fmt.Errorf("the copy an earlier move of %s left could not be removed: %w", id, err)
 		}
+		note = "Removed the copy of the data an earlier move of " + id + " had left on this server; that move never switched, and the source still has the data."
 	}
-	return nil
+	return note, nil
 }

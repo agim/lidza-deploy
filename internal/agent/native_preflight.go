@@ -97,12 +97,6 @@ func (m *Manager) nativePreflight(ctx context.Context, in NativePreflightRequest
 		return out
 	}
 	add(HostReadinessCheck{ID: "application", Title: "Application", OK: true, Detail: "The application's account, directories, port and service units can be created."})
-	switch kind, _ := m.leftoverNativeData(req.ID); kind {
-	case "unfinished":
-		add(HostReadinessCheck{ID: "leftovers", Title: "Earlier attempt", OK: true, Caution: true, Detail: "An earlier creation of " + req.ID + " did not complete and left its data services on this server. No application ever used them; they are removed before the application is created."})
-	case "move":
-		add(HostReadinessCheck{ID: "leftovers", Title: "Earlier attempt", OK: true, Caution: true, Detail: "An earlier move of " + req.ID + " that never switched left its copy of the data on this server. It is removed before the application is created; the source still has the data."})
-	}
 	if hostNativeEUID() != 0 {
 		add(HostReadinessCheck{ID: "account", Title: "Account", Detail: "The agent does not run as root on this server, so it cannot create the application's own account and service units."})
 	}
