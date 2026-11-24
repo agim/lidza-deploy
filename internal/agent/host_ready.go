@@ -207,6 +207,21 @@ func (h nativeHostData) startService(ctx context.Context, service readinessServi
 func (m *Manager) repairHost(ctx context.Context) HostReadiness {
 	repaired, failed := []string{}, []string{}
 	if !m.cfg.IngressOnly {
+		// Data services that belong to no application and are not listed
+		// as retained can neither be used nor removed: record them, so they
+		// appear among the server's retained resources. Nothing is deleted.
+		m.mu.Lock()
+		ids := slices.Sorted(maps.Keys(m.data.NativeHostData))
+		m.mu.Unlock()
+		for _, id := range ids {
+			if kind, _ := m.leftoverNativeData(id); kind == "unlisted" {
+				if _, err := retainNativeHostData(ctx, m, id, nil); err != nil {
+					failed = append(failed, "the data services left for "+id+" could not be listed as retained: "+err.Error())
+				} else {
+					repaired = append(repaired, "listed the data services left for "+id+" among the retained resources")
+				}
+			}
+		}
 		host := nativeHostDataHost(m)
 		if problem := host.diagnosePostgres(ctx); problem != nil && problem.Fix != "" {
 			if did, err := host.repairPostgres(ctx, problem); err != nil {

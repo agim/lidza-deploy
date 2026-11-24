@@ -114,6 +114,7 @@ func TestNativeCreateRefusesIDWithRetainedData(t *testing.T) {
 	f := newNativeCreateFixture(t)
 	f.m.mu.Lock()
 	f.m.data.NativeHostData = map[string]NativeHostDataRecord{"shop": {Postgres: &NativeHostPostgres{Name: "app_shop", Resource: "shop-db1"}}}
+	f.m.data.RetainedResources = map[string]RetainedResource{"kept": {ID: "kept", AppID: "shop", NativeData: true, Databases: []string{"shop-db1"}}}
 	f.m.mu.Unlock()
 	w := f.do(t, "POST", "/v1/native/apps", `{"id":"shop","repository":"acme/shop","runtime":"go","domain":"shop.example.com","data":{}}`)
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "retained resources") {

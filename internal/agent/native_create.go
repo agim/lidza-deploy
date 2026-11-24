@@ -189,8 +189,13 @@ func (m *Manager) validateNativeCreateRequest(req *NativeCreateRequest) error {
 		return errors.New("a deleted application with this id can still be restored; restore it, delete it permanently, or choose another id")
 	}
 	if retained && !created {
-		// Database, role and Redis names derive from the id.
-		return fmt.Errorf("the data services of an earlier application %s are retained on this server; remove them under the server's retained resources, or choose another id", req.ID)
+		// Database, role and Redis names derive from the id. What an
+		// earlier attempt of this same application left (leftoverNativeData)
+		// is cleared when the application is created; only data a removed
+		// application really had is the operator's to decide about.
+		if kind, _ := m.leftoverNativeData(req.ID); kind == "" || kind == "unlisted" {
+			return fmt.Errorf("the data services of an earlier application %s are retained on this server; remove them under the server's retained resources, or choose another id", req.ID)
+		}
 	}
 	if err := validNativeAppsRoot(m.nativeAppsRoot()); err != nil {
 		return err
@@ -452,6 +457,12 @@ func (m *Manager) createNativeApp(ctx context.Context, req NativeCreateRequest) 
 	m.nativeOperations[req.ID] = true
 	m.mu.Unlock()
 	defer func() { m.mu.Lock(); delete(m.nativeOperations, req.ID); m.mu.Unlock() }()
+	if err := m.clearLeftoverNativeData(ctx, req.ID); err != nil {
+		return App{}, err
+	}
+	if _, left := m.hostDataRecord(req.ID); left {
+		return App{}, fmt.Errorf("the data services of an earlier application %s are retained on this server; remove them under the server's retained resources, or choose another id", req.ID)
+	}
 
 	root := filepath.Join(m.nativeAppsRoot(), req.ID)
 	_, rootErr := os.Lstat(root)
@@ -713,6 +724,92 @@ func (m *Manager) deleteNativeApp(ctx context.Context, id string, purge bool, re
 	}
 	if err := m.removeRetainedCopy(ctx, retained); err != nil {
 		return fmt.Errorf("the application was removed, but deleting the data copied by move %s failed: %w; it stays as a retained resource", req.Origin.MoveID, err)
+	}
+	return nil
+}
+
+// leftoverNativeData classifies data services that exist for an id with no
+// application: what an earlier attempt of the same application left behind,
+// which the agent clears by itself, as opposed to the data of an application
+// that was removed, which stays the operator's.
+//
+//   - "unfinished": a creation that did not complete (its data services
+//     were provisioned, the application never existed, and nothing was
+//     recorded as retained). No application ever wrote to them.
+//   - "move": the copy a move that never switched left. The source still
+//     has the data; item is the retained resource to remove.
+//   - "unlisted": like "unfinished", but a database has backups. It is not
+//     removed; it is recorded as retained, so it appears among the server's
+//     retained resources, where it can be removed with its safeguards.
+func (m *Manager) leftoverNativeData(id string) (kind, item string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.data.NativeHostData[id]; !exists {
+		return "", ""
+	}
+	if _, created := m.data.NativeCreated[id]; created {
+		return "", ""
+	}
+	// An application that exists under this id, however it came to be
+	// managed, owns its data.
+	if _, registered := m.data.NativeApps[id]; registered {
+		return "", ""
+	}
+	if _, container := m.data.Apps[id]; container {
+		return "", ""
+	}
+	for _, r := range m.data.RetainedResources {
+		if r.AppID != id || !r.NativeData {
+			continue
+		}
+		if r.Archive == "" && r.Origin.copied() {
+			return "move", r.ID
+		}
+		return "", ""
+	}
+	// Backups are the one sign that an application may have lived on these
+	// services after all: then nothing is removed unasked.
+	for _, resource := range m.data.NativeHostData[id].databaseResources() {
+		if len(m.data.Databases[resource].Backups) > 0 {
+			return "unlisted", ""
+		}
+	}
+	return "unfinished", ""
+}
+
+// clearLeftoverNativeData removes what leftoverNativeData found, before the
+// application is created again, so a failed creation or an aborted move
+// never has to be cleaned up by hand. Nothing is backed up first: neither
+// kind holds data that exists only here.
+func (m *Manager) clearLeftoverNativeData(ctx context.Context, id string) error {
+	switch kind, item := m.leftoverNativeData(id); kind {
+	case "unfinished":
+		log.Printf("native %s: removing the data services an earlier creation that did not complete left on this server", id)
+		if err := releaseNativeHostDataRecord(ctx, m, id, false); err != nil {
+			return fmt.Errorf("the data services an earlier, unfinished creation of %s left could not be removed: %w", id, err)
+		}
+		// A record with nothing left in it is forgotten.
+		m.mu.Lock()
+		if r, exists := m.data.NativeHostData[id]; exists && r.Postgres == nil && r.Redis == nil && r.ClickHouse == nil && len(r.Plugins) == 0 {
+			delete(m.data.NativeHostData, id)
+			if err := m.save(); err != nil {
+				m.data.NativeHostData[id] = r
+				m.mu.Unlock()
+				return err
+			}
+		}
+		m.mu.Unlock()
+	case "unlisted":
+		// Make it visible and removable; the creation is then refused with
+		// where to find it.
+		if _, err := retainNativeHostData(ctx, m, id, nil); err != nil {
+			return err
+		}
+	case "move":
+		log.Printf("native %s: removing the copy an earlier move that never switched left on this server", id)
+		if err := m.removeRetainedCopy(ctx, item); err != nil {
+			return fmt.Errorf("the copy an earlier move of %s left could not be removed: %w", id, err)
+		}
 	}
 	return nil
 }
