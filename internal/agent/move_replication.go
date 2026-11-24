@@ -329,7 +329,10 @@ func renderMoveUnpublishSQL(role, publication, slot string) (string, error) {
 	fmt.Fprintf(&b, "SELECT pg_catalog.pg_drop_replication_slot(slot_name) FROM pg_catalog.pg_replication_slots WHERE slot_name = %s AND NOT active;\n", slotLiteral)
 	fmt.Fprintf(&b, "DROP PUBLICATION IF EXISTS %s;\n", pubIdent)
 	fmt.Fprintf(&b, "SELECT count(pg_catalog.pg_terminate_backend(pid)) FROM pg_catalog.pg_stat_activity WHERE usename = %s AND pid <> pg_catalog.pg_backend_pid();\n", roleLiteral)
-	fmt.Fprintf(&b, "DROP OWNED BY %s;\n", roleIdent)
+	// DROP OWNED BY has no IF EXISTS: asked for a role that is already
+	// gone it fails, and this cleanup is repeated (an abort, a finish).
+	dropOwned, _ := pgQuoteLiteral("DROP OWNED BY " + roleIdent)
+	fmt.Fprintf(&b, "SELECT %s WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = %s)\\gexec\n", dropOwned, roleLiteral)
 	fmt.Fprintf(&b, "DROP ROLE IF EXISTS %s;\n", roleIdent)
 	return b.String(), nil
 }
@@ -424,7 +427,7 @@ func renderMoveSubscriptionStatusSQL(name string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "SELECT 'exists', count(*)::text FROM pg_catalog.pg_subscription WHERE subname = %s\n", literal)
 	fmt.Fprintf(&b, "UNION ALL SELECT 'enabled', subenabled::text FROM pg_catalog.pg_subscription WHERE subname = %s\n", literal)
-	fmt.Fprintf(&b, "UNION ALL SELECT 'rel:' || r.srsubstate, count(*)::text FROM pg_catalog.pg_subscription_rel r JOIN pg_catalog.pg_subscription s ON s.oid = r.srsubid WHERE s.subname = %s GROUP BY r.srsubstate\n", literal)
+	fmt.Fprintf(&b, "UNION ALL SELECT 'rel:' || r.srsubstate::text, count(*)::text FROM pg_catalog.pg_subscription_rel r JOIN pg_catalog.pg_subscription s ON s.oid = r.srsubid WHERE s.subname = %s GROUP BY r.srsubstate\n", literal)
 	fmt.Fprintf(&b, "UNION ALL SELECT 'received_lsn', coalesce(received_lsn::text, '') FROM pg_catalog.pg_stat_subscription WHERE subname = %s AND relid IS NULL\n", literal)
 	fmt.Fprintf(&b, "UNION ALL SELECT 'latest_end_lsn', coalesce(latest_end_lsn::text, '') FROM pg_catalog.pg_stat_subscription WHERE subname = %s AND relid IS NULL\n", literal)
 	fmt.Fprintf(&b, "UNION ALL SELECT 'workers', count(*)::text FROM pg_catalog.pg_stat_subscription WHERE subname = %s AND pid IS NOT NULL\n", literal)
