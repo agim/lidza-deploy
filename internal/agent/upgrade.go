@@ -8,11 +8,13 @@ import (
 	"github.com/agim/lidza-deploy/internal/platform/state"
 	"github.com/agim/lidza-deploy/internal/updates"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -132,9 +134,23 @@ func (m *Manager) upgradeRoutes(mux *http.ServeMux) {
 			Fail(w, 409, errors.New("upgrade already queued or running"))
 			return
 		}
-		for _, a := range m.data.Apps {
-			if a.Restoring || m.busy(a.ID) {
-				Fail(w, 409, errors.New("wait for deployments and restores before upgrading"))
+		// Name the application and what it is doing: "busy" alone leaves an
+		// operator with nothing to look at.
+		for _, id := range slices.Sorted(maps.Keys(m.data.Apps)) {
+			a := m.data.Apps[id]
+			doing := ""
+			switch _, switching := m.data.StackTransitions[id]; {
+			case a.Restoring:
+				doing = "is being restored"
+			case switching && m.stackRecoveryFailed[id] == "":
+				doing = "is switching releases"
+			case m.lifecycle[id]:
+				doing = "is being started, stopped or removed"
+			case m.busy(id):
+				doing = "has a deployment queued or building"
+			}
+			if doing != "" {
+				Fail(w, 409, fmt.Errorf("%s %s; the update waits until that finishes", id, doing))
 				return
 			}
 		}

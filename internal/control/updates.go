@@ -433,7 +433,7 @@ func (c *Control) updateTick(ctx context.Context) error {
 		}
 		if err := c.agentCall(r, t.ServerID, "POST", "/v1/upgrade", map[string]string{"version": v.Version}, nil); err != nil {
 			t.State = "waiting"
-			t.Message = "Server busy or unavailable; will retry"
+			t.Message = updateRefusal(err)
 			return c.saveUpdateSettings(v)
 		}
 		return nil // Check readiness on the next durable tick before the next server.
@@ -505,4 +505,18 @@ func (c *Control) serverByID(id string) Server {
 		}
 	}
 	return Server{}
+}
+
+// updateRefusal says why a server did not take the release yet: the agent's
+// own reason when it answered, so an operator knows what to look at.
+func updateRefusal(err error) string {
+	var refused *agentHTTPError
+	if errors.As(err, &refused) && refused.message != "" {
+		reason := refused.message
+		if len(reason) > 240 {
+			reason = reason[:240] + "…"
+		}
+		return "The server is not ready for the update: " + reason + ". Retrying every minute."
+	}
+	return "The server could not be reached; retrying every minute."
 }
