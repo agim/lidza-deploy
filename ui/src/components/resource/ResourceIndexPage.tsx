@@ -10,7 +10,7 @@ import { Card, Loading, PageHeader, Toolbar } from '../ui';
  * one. It holds no detail content: no per-item cards, logs or settings.
  * Phones show each row as a stacked block (ResourceList).
  */
-export function ResourceIndexPage<T>({ resource, title, description, count, primaryAction, actions, filters, notices, loading, rows, columns, rowKey, empty, children }: {
+export function ResourceIndexPage<T>({ resource, title, description, count, primaryAction, actions, filters, notices, loading, rows, columns, rowKey, empty, list, children }: {
   resource: CollectionKey;
   title: string;
   description: string;
@@ -26,6 +26,8 @@ export function ResourceIndexPage<T>({ resource, title, description, count, prim
   columns: Column<T>[];
   rowKey: (row: T) => string;
   empty: ReactNode;
+  /** Shown in place of the list, for a view the columns do not describe. */
+  list?: ReactNode;
   /** Further lists of the same resource (e.g. permanently deleted), each its own Section. */
   children?: ReactNode;
 }) {
@@ -33,9 +35,9 @@ export function ResourceIndexPage<T>({ resource, title, description, count, prim
     <PageHeader title={title} description={description} count={count} actions={actions || primaryAction ? <>{actions}{primaryAction}</> : undefined} />
     {notices}
     {filters && <Toolbar>{filters}</Toolbar>}
-    <Card className="resource-index-list" data-resource-list={resource}>
+    {list || <Card className="resource-index-list" data-resource-list={resource}>
       {loading ? <Loading label={`Loading ${title.toLowerCase()}…`} /> : <ResourceList rows={rows} columns={columns} rowKey={rowKey} empty={empty} />}
-    </Card>
+    </Card>}
     {children}
   </div>;
 }

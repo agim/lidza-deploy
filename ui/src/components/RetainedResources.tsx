@@ -144,7 +144,7 @@ function groups(items: RetainedResource[]) {
  * grouped by server, with a guarded removal. Without serverID it lists
  * every server's resources (optionally one application's).
  */
-export function RetainedResources({ serverID, appID }: { serverID?: string; appID?: string }) {
+export function RetainedResources({ serverID, appID, unused }: { serverID?: string; appID?: string; unused?: boolean }) {
   const [items, setItems] = useState<RetainedResource[]>();
   const [error, setError] = useState('');
   const [removing, setRemoving] = useState<RetainedResource>();
@@ -160,7 +160,7 @@ export function RetainedResources({ serverID, appID }: { serverID?: string; appI
         list = fleet.retained_resources || [];
         setUnanswered(fleet.retained_resources_unavailable_servers || []);
       }
-      setItems((list || []).filter(item => !appID || item.app_id === appID)); setError('');
+      setItems((list || []).filter(item => (!appID || item.app_id === appID) && (!unused || !item.attached_to?.length))); setError('');
     } catch (reason) { setError(message(reason)); }
   };
   const latest = useRef(load);
@@ -181,8 +181,8 @@ export function RetainedResources({ serverID, appID }: { serverID?: string; appI
     { id: 'backup', label: 'Last backup', render: row => { const backup = lastBackup(row); return <span className={backup.missing ? 'retained-backup-missing' : 'retained-backup'} title={backup.title}>{backup.text}</span>; } },
     { id: 'actions', label: 'Actions', className: 'retained-actions-col', render: row => row.removing ? <Badge tone="warning">Removing…</Badge> : row.attached_to?.length ? <span className="muted-copy">In use by {row.attached_to.join(', ')}</span> : <div className="retained-actions">{row.error && <small className="field-error">{row.error}</small>}<Button size="sm" variant="danger" className="retained-remove" onClick={() => setRemoving(row)}><Trash2 size={15} />Remove</Button></div> },
   ];
-  if (appID && !serverID && items && !items.length && !error) return null;
-  const header = <SectionHeader title="Retained resources" description="Data that moves and earlier removals left on servers, outside any deleted-app archive. Deleting an application now keeps its data under Deleted apps for 90 days instead. Removing an entry here frees its disk; it cannot be undone." actions={<Button size="sm" onClick={() => { void load(); }}><RefreshCw size={15} />Refresh</Button>} />;
+  if (appID && !serverID && !unused && items && !items.length && !error) return null;
+  const header = <SectionHeader title={unused ? 'Unused databases and data' : 'Retained resources'} description="Data that moves and earlier removals left on servers, outside any deleted-app archive. Deleting an application now keeps its data under Deleted apps for 90 days instead. Removing an entry here frees its disk; it cannot be undone." actions={<Button size="sm" onClick={() => { void load(); }}><RefreshCw size={15} />Refresh</Button>} />;
   return <Card data-retained-resources={serverID || appID || 'all'}>
     {header}
     {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -191,7 +191,7 @@ export function RetainedResources({ serverID, appID }: { serverID?: string; appI
     {!items && !error ? <Loading label="Loading retained resources…" /> : items && (items.length ? groups(items).map(group => <section key={group.server} className="retained-group" data-retained-server={group.server}>
       <h3 className="retained-server">{group.name}<span className="muted-copy"> · {group.rows.length} {group.rows.length === 1 ? 'entry' : 'entries'} · {formatBytes(group.rows.reduce((sum, row) => sum + (row.size_bytes || 0), 0))}</span></h3>
       <ResourceList rows={group.rows} columns={columns} rowKey={row => `${row.server_id}/${row.id}`} />
-    </section>) : <EmptyState icon={<Archive />} title="Nothing retained" description="No move or earlier removal left data here." />)}
+    </section>) : <EmptyState icon={<Archive />} title={unused ? 'No unused databases' : 'Nothing retained'} description={unused ? 'Every database on your servers is used by an application.' : 'No move or earlier removal left data here.'} />)}
     <RemoveDialog item={removing} onClose={() => setRemoving(undefined)} onRemoved={load} />
   </Card>;
 }

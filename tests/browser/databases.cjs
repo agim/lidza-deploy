@@ -19,6 +19,27 @@ suite('databases', [
     },
   },
   {
+    name: 'index: unused databases are listed apart and can be removed there',
+    widths: [390, 1440],
+    async run({ page, state, open }) {
+      await open('/console/databases');
+      await page.locator('#main-content').getByRole('link', { name: 'portal' }).first().waitFor();
+      await page.getByRole('combobox', { name: 'Show' }).selectOption('unused');
+      const card = page.locator('[data-retained-resources]');
+      await card.getByText('Unused databases and data').waitFor();
+      await card.getByText('legacy', { exact: true }).first().waitFor();
+      const width = page.viewportSize().width;
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      assert(overflow <= 0, `the unused list scrolls sideways by ${overflow}px at ${width}px`);
+      if (process.env.TEST_SHOT_DIR) await page.screenshot({ path: `${process.env.TEST_SHOT_DIR}/databases-unused-${width}.png`, fullPage: true });
+      await card.getByRole('button', { name: 'Remove' }).click();
+      const dialog = page.getByRole('alertdialog');
+      await dialog.getByText('Remove the data of legacy from Production?').waitFor();
+      await dialog.getByRole('button', { name: 'Remove data' }).click();
+      await until(() => callsTo(state, 'control/servers/local/retained-resources/lidza-db-legacy', 'DELETE').length === 1, 'the removal request');
+    },
+  },
+  {
     name: 'backups: back up now; restore goes into a new database after confirmation',
     async run({ page, state, open }) {
       await open('/console/databases/portal/backups');

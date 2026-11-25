@@ -10,6 +10,7 @@ import { MoveLockCard, MoveLockFieldset, useAppMoveLock } from '../components/Mo
 import { Badge, Button, Card, ConfirmAction, EmptyState, ErrorBanner, Field, Loading, Notice, PromptDialog, SearchField, SectionHeader, StatusBadge, Toolbar } from '../components/ui';
 import { ResourceDetailPage, ResourceIndexPage, ResourceName, visibleTabs } from '../components/resource';
 import { SummaryList } from '../components/SummaryList';
+import { RetainedResources } from '../components/RetainedResources';
 import { ResourceList, type Column } from '../components/ResourceList';
 import { LiveProgress, type OperationProgress } from '../components/LiveProgress';
 import { BackupRetentionCard, DatabaseRetentionCard, type RetentionPolicy } from '../components/BackupRetention';
@@ -132,6 +133,8 @@ function useDatabases() {
 export function DatabasesPage() {
   const { apps } = useWorkspace(); const { data, loading, error, load } = useDatabases();
   const [selected, setSelected] = usePreference<string>('deploy.databases.app', 'all');
+  // Unused: data no application uses any more (left by a removal or a move), removable here.
+  const [use, setUse] = useState<'all' | 'unused'>('all');
   const visible = useMemo(() => data.filter(item => selected === 'all' || item.app_id === selected || item.attachments?.some(attachment => attachment.app_id === selected)), [data, selected]);
   const columns: Column<DatabaseItem>[] = [
     { id: 'name', label: 'Name', render: row => <ResourceName href={withSticky(resourceHref('databases', row.app_id))} name={row.app_id} detail={row.attachments?.length ? `Used by ${row.attachments.map(item => item.app_id).join(', ')}` : undefined} /> },
@@ -144,7 +147,8 @@ export function DatabasesPage() {
   return <ResourceIndexPage resource="databases" title="Databases" description="Every database the panel backs up, with its schedule and latest backup." count={data.length} loading={loading}
     actions={<Button onClick={load}><RefreshCw size={16} />Refresh</Button>}
     notices={error ? <ErrorBanner>{error}</ErrorBanner> : undefined}
-    filters={<Field label="Application" className="toolbar-filter"><select aria-label="Application" value={selected} onChange={event => setSelected(event.target.value)}><option value="all">All applications</option>{apps.map(app => <option key={app.id}>{app.id}</option>)}</select></Field>}
+    list={use === 'unused' ? <RetainedResources appID={selected === 'all' ? undefined : selected} unused /> : undefined}
+    filters={<><Field label="Show" className="toolbar-filter"><select aria-label="Show" value={use} onChange={event => setUse(event.target.value as 'all' | 'unused')}><option value="all">All databases</option><option value="unused">Unused (no application uses them)</option></select></Field><Field label="Application" className="toolbar-filter"><select aria-label="Application" value={selected} onChange={event => setSelected(event.target.value)}><option value="all">All applications</option>{apps.map(app => <option key={app.id}>{app.id}</option>)}</select></Field></>}
     rows={visible} columns={columns} rowKey={row => `${row.server_id}-${row.app_id}`}
     empty={<EmptyState icon={<Database />} title="No databases found" description={selected === 'all' ? 'A database appears here once an application has one attached.' : `No database is attached to ${selected}.`} />} />;
 }
