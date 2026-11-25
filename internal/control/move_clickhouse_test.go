@@ -659,3 +659,100 @@ func TestMoveClickHouseIncrementalNeedsBothAgents(t *testing.T) {
 		t.Fatalf("an older destination agent gets full copies: keeps %v, bases %v/%v", source.keeps, source.bases, destination.bases)
 	}
 }
+
+// A move planned with the ClickHouse database left behind provisions the
+// destination's database, copies nothing of it at the bulk copy or the
+// final sync and still hands the application the destination's connection.
+func TestMoveLeavesClickHouseBehindWhenPlannedSo(t *testing.T) {
+	fx := newMoveFixture(t)
+	source, destination := fx.clickhouseSource()
+	req := httptest.NewRequest("GET", "/api/control/apps/shop/move-plan?target_server=beta&leave_clickhouse=1", nil)
+	plan, status, err := fx.c.computeMovePlan(req, "shop", moveStartInput{TargetServer: "beta", LeaveClickHouse: true})
+	if err != nil || status != 200 {
+		t.Fatal(status, err)
+	}
+	i := slices.IndexFunc(plan.Databases, func(d MovePlanDatabase) bool { return d.Engine == "clickhouse" })
+	if i < 0 || plan.Databases[i].Action != "leave" || !plan.LeaveClickHouse {
+		t.Fatalf("databases %+v", plan.Databases)
+	}
+	if !slices.ContainsFunc(plan.Notes, func(n string) bool { return strings.Contains(n, "is not copied") }) || slices.ContainsFunc(plan.Notes, func(n string) bool { return strings.Contains(n, "ClickHouse BACKUP") }) {
+		t.Fatalf("notes %v", plan.Notes)
+	}
+	if plan.Estimate != nil && slices.ContainsFunc(plan.Estimate.Engines, func(e MoveEngineEstimate) bool { return e.Kind == moveEngineClickHouse }) {
+		t.Fatalf("a database that is not copied has an estimate: %+v", plan.Estimate.Engines)
+	}
+	for _, key := range agent.ClickHouseEnvironmentKeys {
+		if !slices.Contains(plan.DestinationKeys, key) {
+			t.Fatalf("%s must come from the destination: %v", key, plan.DestinationKeys)
+		}
+	}
+	code, view := startMove(t, fx.c, "shop", map[string]any{"target_server": "beta", "leave_clickhouse": true})
+	if code != 202 {
+		t.Fatalf("start: %d %+v", code, view)
+	}
+	job := waitMove(t, fx.c, view.ID, moveStateCutover)
+	if !fx.b.called("POST /v1/move/apps/shop/clickhouse/prepare") {
+		t.Fatal("the destination's ClickHouse database was not provisioned")
+	}
+	if ch := job.ClickHouse; ch == nil || !ch.Leave || ch.Copied != "" || ch.Skipped != moveClickHouseLeft || ch.TargetDatabase != "telemetry" {
+		t.Fatalf("job %+v", ch)
+	}
+	if log := moveStepLog(job, moveStepData); !strings.Contains(log, "left on the source by choice") {
+		t.Fatalf("data log:\n%s", log)
+	}
+	if slices.Contains(moveActions(job), "leave-clickhouse") {
+		t.Fatal("the choice is offered again")
+	}
+	if code := moveAction(t, fx.c, view.ID, "final-sync", nil); code != 202 {
+		t.Fatal(code)
+	}
+	job = waitMove(t, fx.c, view.ID, moveStateCutover)
+	if !job.FinalSynced {
+		t.Fatalf("final sync %s", job.Error)
+	}
+	source.mu.Lock()
+	exports := len(source.frozenExports)
+	source.mu.Unlock()
+	destination.mu.Lock()
+	restores := len(destination.restores)
+	destination.mu.Unlock()
+	if exports != 0 || restores != 0 {
+		t.Fatalf("a database left behind was copied: %d exports, %d restores", exports, restores)
+	}
+}
+
+// A move stopped at a failed ClickHouse copy continues once the operator
+// leaves the database behind: nothing more of it is copied.
+func TestMoveStoppedAtClickHouseContinuesOnceLeftBehind(t *testing.T) {
+	fx := newMoveFixture(t)
+	source, destination := fx.clickhouseSource()
+	source.corrupt = true
+	_, view := startMove(t, fx.c, "shop", map[string]any{"target_server": "beta"})
+	job := waitMove(t, fx.c, view.ID, moveStateFailed)
+	if !slices.Contains(moveActions(job), "leave-clickhouse") {
+		t.Fatalf("actions %v", moveActions(job))
+	}
+	if code := moveAction(t, fx.c, view.ID, "leave-clickhouse", nil); code != 202 {
+		t.Fatal(code)
+	}
+	job = waitMove(t, fx.c, view.ID, moveStateCutover)
+	if ch := job.ClickHouse; !ch.Leave || ch.Copied != "" {
+		t.Fatalf("job %+v", ch)
+	}
+	if log := moveStepLog(job, moveStepData); !strings.Contains(log, "stays on the source by the operator's choice") {
+		t.Fatalf("data log:\n%s", log)
+	}
+	i := slices.IndexFunc(job.Plan.Databases, func(d MovePlanDatabase) bool { return d.Engine == "clickhouse" })
+	if i < 0 || job.Plan.Databases[i].Action != "leave" {
+		t.Fatalf("plan %+v", job.Plan.Databases)
+	}
+	destination.mu.Lock()
+	defer destination.mu.Unlock()
+	if len(destination.restores) != 0 {
+		t.Fatalf("restores %d", len(destination.restores))
+	}
+	// Once chosen, it cannot be chosen again.
+	if code := moveAction(t, fx.c, view.ID, "leave-clickhouse", nil); code != 409 {
+		t.Fatal(code)
+	}
+}

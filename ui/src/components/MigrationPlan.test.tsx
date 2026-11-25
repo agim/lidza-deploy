@@ -575,3 +575,47 @@ it('switches the automatic cutover while the move waits for DNS', async () => {
   expect(await screen.findByRole('switch', { name: /start automatically/ })).not.toBeChecked();
   expect(screen.getByText(/Off: run the final sync and finish the move yourself/)).toBeInTheDocument();
 });
+
+it('plans a move that leaves the ClickHouse data behind', async () => {
+  const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+  const clickhouse = { id: 'telemetry', engine: 'clickhouse', mode: 'host', tables: 9, size_bytes: 3 * 2 ** 30, action: 'copy', note: 'ClickHouse 26.8, 1000 rows' };
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+    const method = init.method || 'GET';
+    requests.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    if (url === '/api/control/apps/shop/move' && method === 'GET') return respond(204, {});
+    if (url.startsWith('/api/control/apps/shop/move-plan?')) {
+      const leave = url.includes('leave_clickhouse=1');
+      return respond(200, { ...plan, warnings: [], leave_clickhouse: leave, databases: [...plan.databases, leave ? { ...clickhouse, action: 'leave', note: "left on the source; the destination's database starts empty" } : clickhouse] });
+    }
+    return respond(202, job('running'));
+  }));
+  const { container } = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} pollMs={1000} />);
+  open(container);
+  fireEvent.click(await screen.findByRole('button', { name: 'Review move' }));
+  const box = await screen.findByRole('checkbox', { name: /Leave the ClickHouse data behind/ });
+  expect(box).not.toBeChecked();
+  fireEvent.click(box);
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: /Leave the ClickHouse data behind/ })).toBeChecked());
+  expect(requests.some(r => r.url.includes('leave_clickhouse=1'))).toBe(true);
+  expect(screen.getByText(/left on the source ·/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Start move' }));
+  await waitFor(() => expect(requests.find(r => r.method === 'POST')?.body).toMatchObject({ target_server: 'beta', leave_clickhouse: true }));
+});
+
+it('lets a move stopped at the ClickHouse copy leave that data behind and continue', async () => {
+  const posted: string[] = [];
+  const current = job('failed', { locked: false, phase: 'live', actions: ['continue', 'abort', 'leave-clickhouse'],
+    failure: { step: 'data', engine: 'ClickHouse telemetry', server: 'beta', class: 'capacity', code: 'memory', message: 'Copy data failed (ClickHouse telemetry) on Beta: memory limit exceeded', attempt: 1, max_attempts: 6, time: new Date().toISOString() },
+    steps: steps({ plan: 'done', prepare: 'done', environment: 'done', data: 'failed' }) });
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+    if (init.method === 'POST') { posted.push(url); return respond(202, current); }
+    return respond(200, current);
+  }));
+  const { container } = render(<MigrationPlan appID="shop" serverID="alpha" servers={servers} pollMs={1000} />);
+  open(container);
+  fireEvent.click(await screen.findByRole('button', { name: 'Leave ClickHouse behind' }));
+  const dialog = await screen.findByRole('alertdialog').catch(() => screen.findByRole('dialog'));
+  expect(dialog).toHaveTextContent('starts there with an empty ClickHouse database');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Leave it behind and continue' }));
+  await waitFor(() => expect(posted).toEqual(['/api/control/moves/m1/leave-clickhouse']));
+});

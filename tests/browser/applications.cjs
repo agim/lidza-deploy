@@ -324,6 +324,36 @@ suite('applications', [
     },
   },
   {
+    name: 'move: a move stopped at the ClickHouse copy can leave that data behind',
+    widths: [390, 1440],
+    async run({ page, state, open }) {
+      const step = (key, status) => ({ key, title: key, status, log: [] });
+      state.move = {
+        id: 'm1', app_id: 'portal', source_server: 'local', target_server: 'local', target_runtime: 'native', runtime: 'go', state: 'failed', hostnames: ['portal.example.com'], addresses: ['203.0.113.9'],
+        dns: [], tls_ready: false, records: [], switched: false, actions: ['continue', 'abort', 'leave-clickhouse'],
+        steps: [step('plan', 'done'), step('prepare', 'done'), step('environment', 'done'), step('data', 'failed'), step('deploy', 'pending'), step('cutover', 'pending'), step('final_sync', 'pending'), step('finish', 'pending')],
+        failure: { step: 'data', engine: 'ClickHouse telemetry', server: 'local', class: 'capacity', code: 'memory', message: 'Copy data failed (ClickHouse telemetry) on Production: memory limit exceeded.', attempt: 1, max_attempts: 6, time: new Date().toISOString() },
+      };
+      await open('/console/applications/portal/move');
+      const leave = page.getByRole('button', { name: 'Leave ClickHouse behind', exact: true });
+      await leave.waitFor();
+      const width = page.viewportSize().width;
+      const heights = [];
+      for (const name of ['Leave ClickHouse behind', 'Retry', 'Abort move']) {
+        const box = await page.getByRole('button', { name, exact: true }).boundingBox();
+        assert(box, `${name} is not shown`);
+        assert(box.x >= 0 && box.x + box.width <= width, `${name} runs past the viewport at ${width}px`);
+        heights.push(Math.round(box.height));
+      }
+      assert(heights.every(height => height === heights[0]), `a label wraps at ${width}px: the buttons are ${heights.join(', ')}px tall`);
+      if (process.env.TEST_SHOT_DIR) await page.locator('.move-actions').screenshot({ path: `${process.env.TEST_SHOT_DIR}/move-leave-clickhouse-${width}.png` });
+      await leave.click();
+      const dialog = page.getByRole('alertdialog');
+      await dialog.getByText('Leave the ClickHouse data behind?').waitFor();
+      await dialog.getByText(/starts there with an empty ClickHouse database/).waitFor();
+    },
+  },
+  {
     name: 'settings: the access log shows its file and switches off at once',
     widths: [320, 1440],
     async run({ page, state, open }) {

@@ -62,6 +62,7 @@ type MovePlan = {
   replication?: string;
   /** The final sync and the finish start by themselves once DNS points to the destination (default: every database replicates continuously). */
   auto_cutover?: boolean;
+  leave_clickhouse?: boolean;
   warnings: string[];
   notes: string[];
   blockers: string[];
@@ -91,7 +92,7 @@ export const environmentSources = (counts?: Record<string, number>) => {
   const parts = sourceLabels.filter(([source]) => (counts?.[source] || 0) > 0).map(([source, label]) => `${counts![source]} ${label}`);
   return parts.length && (counts?.['deploy defaults'] || counts?.image) ? ` (${parts.join(', ')})` : '';
 };
-const actionLabels: Record<string, string> = { copy: 'copied', skip_empty: 'skipped: no tables', external: 'external: connection kept', manual: 'moved manually' };
+const actionLabels: Record<string, string> = { copy: 'copied', skip_empty: 'skipped: no tables', external: 'external: connection kept', manual: 'moved manually', leave: 'left on the source' };
 /** How a PostgreSQL database is copied: "continuous replication", or "dump and restore" with the reason. */
 export function replicationLabel(db: { replication?: string; replication_reason?: string }) {
   if (!db.replication) return '';
@@ -218,13 +219,16 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
   const [left, setLeft] = useState<Record<string, Record<string, boolean>>>({});
   // The automatic cutover: the plan's default until the operator chooses.
   const [autoCutover, setAutoCutover] = useState<boolean>();
+  // The ClickHouse database stays on the source; the destination's starts empty.
+  const [leaveClickHouse, setLeaveClickHouse] = useState(false);
   const addressList = addresses.split(/[\s,]+/).filter(Boolean);
 
-  const review = async () => {
+  const review = async (leave = leaveClickHouse) => {
     setBusy(true); setError(''); setPlan(undefined); setAcknowledged(false); setAutoCutover(undefined);
     const query = new URLSearchParams({ target_server: target });
     if (runtime) query.set('runtime_override', runtime);
     if (replication !== 'auto') query.set('replication', replication);
+    if (leave) query.set('leave_clickhouse', '1');
     if (addressList.length) query.set('addresses', addressList.join(','));
     try { setPlan(await get<MovePlan>(`control/apps/${encodeURIComponent(appID)}/move-plan?${query}`)); }
     catch (reason) { setError(message(reason)); }
@@ -237,6 +241,7 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
       if (runtime) body.runtime_override = runtime;
       if (replication !== 'auto') body.replication = replication;
       if (autoCutover !== undefined) body.auto_cutover = autoCutover;
+      if (plan?.leave_clickhouse) body.leave_clickhouse = true;
       const choices: Record<string, Record<string, string>> = {};
       for (const db of plan?.databases || []) for (const table of db.excluded_tables || []) (choices[db.id] ||= {})[table.name] = left[db.id]?.[table.name] ? 'leave' : 'copy';
       if (Object.keys(choices).length) body.excluded_tables = choices;
@@ -283,6 +288,7 @@ function MovePlanner({ appID, serverID, servers, name, previous, onStarted }: { 
       ]} />
       <div className="move-caution" role="note"><strong>Don't change DNS until the move reaches Switch DNS.</strong> The destination serves the application only after it is deployed there; DNS pointing to it earlier takes the site down until the deploy finishes. The move shows the records to set when it is time.</div>
       {plan.databases.length > 0 && <><strong>Databases</strong><ul className="move-databases">{plan.databases.map(db => db.engine === 'clickhouse' ? <li key={`clickhouse-${db.id}`}>ClickHouse <code>{db.id}</code>: {[db.size_bytes ? mib(db.size_bytes) : '', db.tables >= 0 ? `${db.tables} tables` : ''].filter(Boolean).join(', ') || db.mode} · {actionLabels[db.action] || db.action}{db.note && db.action !== 'skip_empty' ? ` · ${db.note}` : ''}</li> : <li key={db.id}><code>{db.id}</code> {db.engine} ({db.mode}{db.tables >= 0 ? `, ${db.tables} tables` : ''}{db.size_bytes ? `, ${mib(db.size_bytes)}` : ''}) · {actionLabels[db.action] || db.action}{db.action === 'copy' && replicationLabel(db) ? <> · <strong>{replicationLabel(db)}</strong>{db.replication_restart ? ' · restarts the source once for wal_level=logical' : ''}</> : ''}{db.note && db.action !== 'skip_empty' ? ` · ${db.note}` : ''}{db.before_deploy ? ` · before deploys: ${db.before_deploy}` : ''}</li>)}</ul></>}
+      {plan.databases.some(db => db.engine === 'clickhouse' && (db.action === 'copy' || db.action === 'leave')) && <label className="check-row move-leave-clickhouse"><input type="checkbox" checked={!!plan.leave_clickhouse} disabled={busy} onChange={event => { setLeaveClickHouse(event.target.checked); void review(event.target.checked); }} /><span><strong>Leave the ClickHouse data behind</strong><small>Nothing of the ClickHouse database is copied. The application starts with an empty ClickHouse database on the destination; what it holds today stays on this server as retained data after the move.</small></span></label>}
       {plan.databases.some(db => db.excluded_tables?.length) && <section className="move-excluded" aria-label="Tables the backups skip">
         <strong>Tables the backups skip</strong>
         <p className="muted-copy">The source's backups skip the rows of these tables. Choose before starting: the move copies their data separately (the default), or leaves a table behind (schema only, empty on the destination).</p>
@@ -393,6 +399,7 @@ function MoveProgress({ job, name, onUpdate, onPlanAnother }: { job: MoveJob; na
     <div className="move-actions">
       {can('recheck-dns') && <Button type="button" disabled={!!busy} onClick={() => { void act('recheck-dns'); }}>I've switched DNS — check again</Button>}
       {can('final-sync') && <ConfirmAction title="Run the final sync?" description={`The application is locked and the source goes into maintenance, so writes stop. Changes made during the move are picked up: the environment is exported again, the databases and files are copied again and the destination is redeployed with the source's current commit. The source stays in maintenance until the move finishes or is aborted.${lockEstimate ? ` Expected lock: about ${moveDuration(lockEstimate.seconds)} (estimate from ${lockEstimate.basis}).` : ''}`} confirmLabel="Run final sync" onConfirm={() => act('final-sync', lockEstimate?.confirm ? { confirm_lock: true } : undefined)}><Button type="button" disabled={!!busy || (!!lockEstimate?.confirm && !acceptLock)} title={lockEstimate?.confirm && !acceptLock ? 'Confirm the expected lock duration first.' : undefined}>Final sync</Button></ConfirmAction>}
+      {can('leave-clickhouse') && <ConfirmAction title="Leave the ClickHouse data behind?" description={`Nothing of the ClickHouse database is copied to ${name(job.target_server)}: the application starts there with an empty ClickHouse database, and what it holds today stays on ${name(job.source_server)} as retained data after the move. Everything else moves as planned, and the move continues now. This cannot be changed later in this move.`} confirmLabel="Leave it behind and continue" onConfirm={() => act('leave-clickhouse')}><Button type="button" disabled={!!busy}>Leave ClickHouse behind</Button></ConfirmAction>}
       {can('retry-now') && <Button type="button" disabled={!!busy} onClick={() => { void act('retry-now'); }}>Retry now</Button>}
       {can('finish') && <Button type="button" variant="primary" disabled={!!busy || job.state !== 'ready'} title={job.state === 'ready' ? undefined : 'Available once every hostname resolves to the destination and HTTPS answers there.'} onClick={() => { void act('finish'); }}>Finish move</Button>}
       {can('remove-retained') && job.failure?.retained && <RemoveRetainedAction retained={job.failure.retained} serverName={name(job.failure.retained.server)} busy={!!busy} onConfirm={body => act('remove-retained', body)} />}

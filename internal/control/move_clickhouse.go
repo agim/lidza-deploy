@@ -64,9 +64,12 @@ func planMoveClickHouse(plan *MovePlan, source agent.MoveSource, host agent.Move
 		return 0
 	}
 	entry := MovePlanDatabase{ID: ch.Database, Engine: "clickhouse", Mode: ch.Mode, Tables: ch.Tables, SizeBytes: ch.SizeBytes, Note: ch.Reason}
+	leave := plan.LeaveClickHouse && ch.Copyable
 	switch {
 	case !ch.Copyable:
 		entry.Action = "manual"
+	case leave:
+		entry.Action, entry.Note = "leave", "left on the source; the destination's database starts empty"
 	case ch.Tables == 0:
 		entry.Action, entry.Note = "skip_empty", "no tables; nothing to copy"
 	default:
@@ -83,6 +86,10 @@ func planMoveClickHouse(plan *MovePlan, source agent.MoveSource, host agent.Move
 		plan.Blockers = append(plan.Blockers, "The destination agent cannot receive ClickHouse data; upgrade its agent.")
 	} else if plan.TargetRuntime == moveRuntimeNative && !host.HostData {
 		plan.Blockers = append(plan.Blockers, "The destination agent cannot provision ClickHouse.")
+	}
+	if leave {
+		plan.Notes = append(plan.Notes, fmt.Sprintf("ClickHouse %s is not copied: its contents stay on the source, as retained data once the move finishes, and the application starts with an empty ClickHouse database on the destination. Restoring them there later is a separate, manual step.", ch.Database))
+		return 0
 	}
 	if ch.Copyable {
 		plan.Notes = append(plan.Notes, fmt.Sprintf("ClickHouse %s is copied as a ClickHouse BACKUP when the destination runs release %s or newer, otherwise table by table; the destination restores into place only after the copy verified, and row counts are verified on both ends.", ch.Database, cmpOrUnknown(moveClickHouseSeries(ch.Version))))
@@ -175,6 +182,10 @@ func (c *Control) moveCopyClickHouse(ctx context.Context, run moveRun, cp moveCh
 	id, step := run.id, run.step
 	job := run.job()
 	ch := job.ClickHouse
+	if ch.Leave {
+		c.moveLog(id, step, "ClickHouse %s is left on the source by choice; the destination's database starts empty.", ch.SourceDatabase)
+		return nil
+	}
 	if ch.TargetDatabase == "" || ch.TargetVersion == "" {
 		return moveOperatorError("destination_unknown", "the destination ClickHouse database is unknown", "Retry the move from Prepare destination, or abort it.")
 	}
@@ -501,4 +512,73 @@ func (c *Control) moveCleanupClickHouse(ctx context.Context, job MoveJob, bases 
 	if job.TargetServer != "" {
 		_ = c.moveCall(ctx, 3*time.Minute, job.TargetServer, http.MethodDelete, path+"?base=1", nil, nil)
 	}
+}
+
+// moveClickHouseLeft is the Skipped reason of a database left on the source.
+const moveClickHouseLeft = "left on the source"
+
+// moveCanLeaveClickHouse reports why a move can no longer leave its
+// ClickHouse database behind: only while the move is stopped at a failed
+// step, before anything of it reached the destination and before the switch.
+func moveCanLeaveClickHouse(job MoveJob) error {
+	switch ch := job.ClickHouse; {
+	case ch == nil:
+		return errors.New("this application has no ClickHouse database to leave behind")
+	case ch.Leave:
+		return errors.New("the ClickHouse database is left behind already")
+	case job.State != moveStateFailed || job.Switched:
+		// A running copy is not interrupted: the choice is made in the
+		// plan, or once the move has stopped.
+		return errors.New("choose when planning the move, or once it has stopped at a failed step")
+	case ch.Copied != "":
+		return errors.New("the ClickHouse database is on the destination already; abort the move and start it again to leave it behind")
+	}
+	return nil
+}
+
+// moveLeaveClickHouse records the operator's choice to leave the ClickHouse
+// database's contents on the source, removes what the copy staged on both
+// servers and continues a move that had stopped.
+func (c *Control) moveLeaveClickHouse(ctx context.Context, id string) (MoveJob, error) {
+	failed := false
+	job, err := c.updateMove(id, func(job *MoveJob) error {
+		if err := moveCanLeaveClickHouse(*job); err != nil {
+			return err
+		}
+		ch := *job.ClickHouse
+		ch.Leave, ch.Skipped = true, moveClickHouseLeft
+		job.ClickHouse = &ch
+		for i := range job.Plan.Databases {
+			if p := &job.Plan.Databases[i]; p.Engine == moveEngineClickHouse && p.Action == "copy" {
+				p.Action, p.Note = "leave", "left on the source; the destination's database starts empty"
+			}
+		}
+		job.Plan.LeaveClickHouse = true
+		step := moveStepData
+		for _, s := range job.Steps {
+			if s.Status == "failed" || s.Status == "running" {
+				step = s.Key
+				break
+			}
+		}
+		job.logf(step, "ClickHouse %s stays on the source by the operator's choice: nothing of it is copied and the destination's database starts empty.", ch.SourceDatabase)
+		if failed = job.State == moveStateFailed; failed {
+			job.Error, job.Failure = "", nil
+			for i := range job.Steps {
+				if job.Steps[i].Status == "failed" && job.Steps[i].Key != moveStepFinalSync {
+					job.Steps[i].Status = "pending"
+				}
+			}
+			job.State = moveStateRunning
+		}
+		return nil
+	})
+	if err != nil {
+		return job, err
+	}
+	c.moveCleanupClickHouse(ctx, job, true)
+	if failed {
+		c.startMoveRunner(ctx, id)
+	}
+	return job, nil
 }

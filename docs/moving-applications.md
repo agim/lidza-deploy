@@ -363,6 +363,19 @@ BACKUP they understand. Scheduled ClickHouse backups use the same
 directory format as one local file and one off-site object; earlier
 `.zip` backups keep restoring (the format is read from the manifest).
 
+A move can leave the ClickHouse database's contents behind: tick **Leave
+the ClickHouse data behind** in the plan (`leave_clickhouse`), or, on a
+move that stopped at a failed step before anything of the database reached
+the destination, choose **Leave ClickHouse behind** (`POST
+/api/control/moves/{id}/leave-clickhouse`), which also continues the move.
+The destination still provisions the application's database and sets its
+`CLICKHOUSE_*` variables, but nothing is copied at the bulk copy or the
+final sync, so the application starts there with an empty database (one
+that creates its own tables at start needs nothing else). What the
+database holds stays on the source and becomes retained data when the move
+finishes. The choice cannot be undone within the move; abort and plan
+again to copy the data after all.
+
 **PostgreSQL.** Dumps stay `pg_dump -Fc -Z zstd:1`. A host database is
 restored into a fresh `<name>_lidza_staging` database (owned by the
 application's role, with its privileges) in one transaction with

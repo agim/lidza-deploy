@@ -174,6 +174,9 @@ func (c *Control) moveEstimateEngines(ctx context.Context, job MoveJob, rates mo
 	out := MoveEstimate{Engines: []MoveEngineEstimate{}, Basis: rates.basis}
 	for _, engine := range c.moveEnginesOf(run, job) {
 		info := engine.Info()
+		if info.Kind == moveEngineClickHouse && job.ClickHouse != nil && job.ClickHouse.Leave {
+			continue // left on the source: no copy to estimate
+		}
 		m, _ := engine.Measure(ctx)
 		entry := MoveEngineEstimate{Kind: info.Kind, Object: info.Object, Label: info.Label, Bytes: m.Bytes, Objects: m.Objects, ObjectLabel: m.ObjectLabel, Measured: m.Measured, Basis: rates.basis}
 		bytes := float64(max(m.Bytes, 0))
@@ -293,6 +296,9 @@ func moveSeconds(seconds float64) string {
 // movePlanEstimate estimates a planned move from its inventory.
 func (c *Control) movePlanEstimate(ctx context.Context, plan MovePlan, source agent.MoveSource, host agent.MoveHost) MoveEstimate {
 	job := MoveJob{Plan: plan, Redis: source.Redis, ClickHouse: moveClickHouseFrom(source)}
+	if job.ClickHouse != nil {
+		job.ClickHouse.Leave = plan.LeaveClickHouse
+	}
 	for _, d := range source.Databases {
 		if !d.Copyable {
 			continue

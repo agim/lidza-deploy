@@ -579,6 +579,10 @@ func (e *moveClickHouseEngine) Info() moveEngineInfo {
 
 func (e *moveClickHouseEngine) Measure(context.Context) (moveMeasurement, error) {
 	job := e.run.job()
+	if job.ClickHouse.Leave {
+		// Left on the source: nothing to copy.
+		return moveMeasurement{ObjectLabel: "tables", Measured: true}, nil
+	}
 	for _, p := range job.Plan.Databases {
 		if p.Engine == moveEngineClickHouse {
 			return moveMeasurement{Bytes: p.SizeBytes, Objects: int64(max(p.Tables, 0)), ObjectLabel: "tables", Measured: p.SizeBytes > 0}, nil

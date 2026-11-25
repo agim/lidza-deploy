@@ -261,6 +261,10 @@ type MoveClickHouse struct {
 	Tables         int    `json:"tables,omitempty"`
 	Rows           uint64 `json:"rows,omitempty"`
 	Skipped        string `json:"skipped,omitempty"`
+	// Leave: the operator chose to leave the database's contents on the
+	// source. The destination's database starts empty and nothing is
+	// copied, at the bulk copy or at the final sync.
+	Leave bool `json:"leave,omitempty"`
 }
 
 // MoveDNSStatus is the last observed resolution of one hostname.
@@ -337,6 +341,9 @@ type MovePlan struct {
 	// panel), panel, or public (the TLS relay on the source's public
 	// address, only on request).
 	ReplicationNetwork string `json:"replication_network,omitempty"`
+	// LeaveClickHouse: the contents of the application's ClickHouse
+	// database stay on the source; the destination's starts empty.
+	LeaveClickHouse bool `json:"leave_clickhouse,omitempty"`
 	// AutoCutover: the final sync and the finish start by themselves once
 	// DNS points to the destination (default when every database
 	// replicates continuously, move_auto.go).
@@ -438,6 +445,9 @@ type moveStartInput struct {
 	// ReplicationNetwork is "auto" (the default), "panel" or "public"; see
 	// MovePlan.ReplicationNetwork.
 	ReplicationNetwork string `json:"replication_network,omitempty"`
+	// LeaveClickHouse leaves the contents of the ClickHouse database on
+	// the source: the destination's database starts empty.
+	LeaveClickHouse bool `json:"leave_clickhouse,omitempty"`
 	// AutoCutover runs the final sync and the finish automatically once DNS
 	// points to the destination; absent, the plan's default applies.
 	AutoCutover *bool `json:"auto_cutover,omitempty"`
@@ -720,6 +730,9 @@ func moveActions(job MoveJob) []string {
 	if moveHasExcludedTables(job) && !terminalMoveState(job.State) && job.State != moveStateSyncing && job.State != moveStateFinishing && !job.Switched {
 		actions = append(actions, "excluded-tables")
 	}
+	if moveCanLeaveClickHouse(job) == nil {
+		actions = append(actions, "leave-clickhouse")
+	}
 	return actions
 }
 
@@ -752,7 +765,7 @@ func moveHasFiles(job MoveJob) bool {
 
 // moveCanFinalSync reports whether a final sync has anything to copy.
 func moveCanFinalSync(job MoveJob) bool {
-	return moveHasCopyableData(job) || moveHasFiles(job) || job.ClickHouse != nil || len(job.Plugins) > 0
+	return moveHasCopyableData(job) || moveHasFiles(job) || job.ClickHouse != nil && !job.ClickHouse.Leave || len(job.Plugins) > 0
 }
 
 // ---- routes -------------------------------------------------------------------
@@ -771,7 +784,7 @@ func (c *Control) movePlanRoute(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("addresses"); raw != "" {
 		addresses = strings.Split(raw, ",")
 	}
-	plan, status, err := c.computeMovePlan(r, r.PathValue("id"), moveStartInput{TargetServer: q.Get("target_server"), RuntimeOverride: q.Get("runtime_override"), Addresses: addresses, ReplicationNetwork: q.Get("replication_network")})
+	plan, status, err := c.computeMovePlan(r, r.PathValue("id"), moveStartInput{TargetServer: q.Get("target_server"), RuntimeOverride: q.Get("runtime_override"), Addresses: addresses, ReplicationNetwork: q.Get("replication_network"), LeaveClickHouse: q.Get("leave_clickhouse") == "1"})
 	if err != nil {
 		agent.Fail(w, status, err)
 		return
@@ -920,6 +933,8 @@ func (c *Control) moveActionRoute(w http.ResponseWriter, r *http.Request) {
 			}
 			return moveSetExcludedChoices(job, in.Database, in.Tables)
 		})
+	case "leave-clickhouse":
+		job, err = c.moveLeaveClickHouse(ctx, id)
 	case "auto-cutover":
 		if in.Enabled == nil {
 			err = errors.New("say whether the automatic cutover is enabled")
@@ -1042,6 +1057,7 @@ func (c *Control) computeMovePlan(r *http.Request, appID string, in moveStartInp
 		return plan, 400, errors.New("replication must be auto or dump")
 	}
 	plan.Replication = cmp.Or(in.Replication, moveReplicationAuto)
+	plan.LeaveClickHouse = in.LeaveClickHouse
 	if !slices.Contains([]string{"", moveReplicationNetworkAuto, moveReplicationPathPanel, moveReplicationPathPublic}, in.ReplicationNetwork) {
 		return plan, 400, errors.New("replication_network must be auto, panel or public")
 	}
@@ -1456,6 +1472,9 @@ func (c *Control) createMove(r *http.Request, plan MovePlan) (MoveJob, error) {
 		job.Databases = append(job.Databases, entry)
 	}
 	job.ClickHouse = moveClickHouseFrom(source)
+	if job.ClickHouse != nil && plan.LeaveClickHouse {
+		job.ClickHouse.Leave, job.ClickHouse.Skipped = true, moveClickHouseLeft
+	}
 	job.Plugins = movePluginsFrom(source, plan)
 	for _, f := range plan.Files {
 		job.Files = append(job.Files, MoveFileCopy{ID: f.ID, Path: f.Path, Source: f.Source, Files: f.Files, Bytes: f.Bytes, Method: f.Method, Transfer: f.Action == "copy" || f.Action == "skip_empty"})
