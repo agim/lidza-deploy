@@ -74,6 +74,10 @@ type moveFake struct {
 	holdDeploy bool
 	deleted    []string
 	unitCalls  []string
+	// stoppedUnits are the units a service action stopped: like a real
+	// release, a native deploy leaves them stopped and then fails its
+	// health check.
+	stoppedUnits map[string]bool
 	// removals are the bodies of DELETE /v1/apps/{id} and
 	// DELETE /v1/native/apps/{id}, by URL; retained lists the retained
 	// resources, which a removal without delete_data adds to, and
@@ -474,7 +478,16 @@ func newMoveFake(t *testing.T) *moveFake {
 		case f.nativeSource != nil && f.nativeSource.Application.ID == r.PathValue("id"):
 			j(w, 200, f.nativeSource)
 		case f.native != nil && f.native.Application.ID == r.PathValue("id"):
-			j(w, 200, f.native)
+			view := *f.native
+			view.Services = nil
+			for _, unit := range view.Application.Services {
+				active := "active"
+				if f.stoppedUnits[unit] {
+					active = "inactive"
+				}
+				view.Services = append(view.Services, agent.NativeService{Unit: unit, Active: active})
+			}
+			j(w, 200, view)
 		default:
 			j(w, 409, map[string]string{"error": "native application is not registered"})
 		}
@@ -587,9 +600,26 @@ func newMoveFake(t *testing.T) *moveFake {
 		f.patches = append(f.patches, p)
 		j(w, 200, map[string]string{"status": "saved"})
 	})
-	mux.HandleFunc("POST /v1/native/apps/{id}/deploy", deploy)
+	mux.HandleFunc("POST /v1/native/apps/{id}/deploy", func(w http.ResponseWriter, r *http.Request) {
+		for unit, stopped := range f.stoppedUnits {
+			if stopped {
+				var body map[string]any
+				json.NewDecoder(r.Body).Decode(&body)
+				f.deploys = append(f.deploys, body)
+				f.deployment = agent.Deployment{ID: "d" + strconv.Itoa(len(f.deploys)), AppID: r.PathValue("id"), Status: "failed", Commit: moveTestCommit,
+					Error: "release: health check failed: connection refused (" + unit + " was stopped and a release does not start it)"}
+				j(w, 202, f.deployment)
+				return
+			}
+		}
+		deploy(w, r)
+	})
 	mux.HandleFunc("POST /v1/native/apps/{id}/services/{unit}/{action}", func(w http.ResponseWriter, r *http.Request) {
 		f.unitCalls = append(f.unitCalls, r.PathValue("action")+" "+r.PathValue("unit"))
+		if f.stoppedUnits == nil {
+			f.stoppedUnits = map[string]bool{}
+		}
+		f.stoppedUnits[r.PathValue("unit")] = r.PathValue("action") == "stop"
 		j(w, 200, map[string]string{"status": "requested"})
 	})
 	mux.HandleFunc("DELETE /v1/native/apps/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -1176,6 +1206,20 @@ func TestMoveNativeApplicationEndToEnd(t *testing.T) {
 			t.Fatalf("source processes %v", fx.a.unitCalls)
 		}
 	})
+	// The destination's services are stopped while the data is replaced and
+	// started again before the redeploy: a release restarts running
+	// services only, so a stopped destination would fail its health check.
+	fx.b.with(func() {
+		if n := len(fx.b.unitCalls); n < 2 || !strings.HasPrefix(fx.b.unitCalls[0], "stop ") || !strings.HasPrefix(fx.b.unitCalls[n-1], "start ") {
+			t.Fatalf("destination processes %v", fx.b.unitCalls)
+		}
+		if last := fx.b.deployment; last.Status == "failed" {
+			t.Fatalf("the final redeploy failed: %s", last.Error)
+		}
+	})
+	if job, _ := fx.c.moveJob(view.ID); !job.FinalSynced {
+		t.Fatalf("final sync: %s", job.Error)
+	}
 	fx.resolver.set("shop.example.com", moveTestTargetIP)
 	fx.probe.set(true)
 	if code := moveAction(t, fx.c, view.ID, "recheck-dns", nil); code != 202 {

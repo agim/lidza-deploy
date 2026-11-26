@@ -278,6 +278,7 @@ func Handler(m *Manager) http.Handler {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		m.notePublicHost(r.Host)
 		private.ServeHTTP(w, r)
 	}))
 	return mux

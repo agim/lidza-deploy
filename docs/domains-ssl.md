@@ -17,3 +17,15 @@ When the host's web ports belong to an existing Caddy configured through its adm
 Each created application published to that Caddy also gets an error route for its hostnames (`@id` `lidza-errors-<app>`): a 503 is answered with `maintenance.html`, any other error with `<status>.html` when present, else `error.html`. Created applications whose processes do not answer get the same error page from the agent proxy.
 
 If existing error routes serve pages from another directory (for example one that no longer exists), **Web ingress** reports how many hostnames are affected and offers **Use Līdza error pages**. It rewrites only those error-page roots to `/etc/lidza/pages`, loads the modified configuration through the admin API (`POST /load`) and verifies the result.
+
+## Servers behind a router
+
+A server behind a router has only a private address, and many routers do not
+loop a connection from inside back to their own public address. The check
+above then can never succeed from the server itself, although the hostname
+works from everywhere else. The agent therefore remembers the name the
+control panel reaches it by (the Host of an authenticated API request, kept
+in `public-host` in its data directory): a hostname that resolves to an
+address of that name leads to this server, and passes when the probe from
+inside cannot prove it. The certificate authority still validates every
+certificate from outside.

@@ -40,6 +40,14 @@ func (m *Manager) domainProof(domain string) string {
 // Resolve each address, then prove it serves this agent. This also works with
 // public NAT addresses that are not present on the server's network interfaces.
 func checkDomainRoute(ctx context.Context, domain, proof string, lookup func(context.Context, string, string) ([]net.IP, error), port string) error {
+	return checkDomainRouteVia(ctx, domain, proof, lookup, port, nil)
+}
+
+// checkDomainRouteVia is checkDomainRoute for a server that may not reach
+// its own public address: an address the probe from here cannot prove still
+// passes when own reports it as this server's public address
+// (public_host.go).
+func checkDomainRouteVia(ctx context.Context, domain, proof string, lookup func(context.Context, string, string) ([]net.IP, error), port string, own func(context.Context, net.IP) bool) error {
 	resolve, stop := context.WithTimeout(ctx, 5*time.Second)
 	ips, err := lookup(resolve, "ip", domain)
 	stop()
@@ -64,7 +72,30 @@ func checkDomainRoute(ctx context.Context, domain, proof string, lookup func(con
 			continue
 		}
 		unique[ip.String()] = true
-		checks.Go(func() error { return checkDomainAddress(probeContext, domain, ip, port, nonce, expected) })
+		checks.Go(func() error {
+			if own == nil {
+				return checkDomainAddress(probeContext, domain, ip, port, nonce, expected)
+			}
+			// Both run at once, so a probe that can only time out (no
+			// loopback through the router) does not hold the answer back.
+			probe, cancel := context.WithCancel(probeContext)
+			defer cancel()
+			probed, owned := make(chan error, 1), make(chan bool, 1)
+			go func() { probed <- checkDomainAddress(probe, domain, ip, port, nonce, expected) }()
+			go func() { owned <- own(ctx, ip) }()
+			select {
+			case err := <-probed:
+				if err != nil && <-owned {
+					return nil
+				}
+				return err
+			case mine := <-owned:
+				if mine {
+					return nil
+				}
+				return <-probed
+			}
+		})
 	}
 	if err := checks.Wait(); err != nil {
 		return err
@@ -229,7 +260,7 @@ func (m *Manager) checkAppDomainContext(parent context.Context, a App, port stri
 	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
 	status := DomainStatus{Domain: a.Domain, State: "waiting_dns", Checked: time.Now().UTC(), RecheckSeconds: int(domainPendingInterval / time.Second)}
-	if err := checkDomainRoute(ctx, a.Domain, m.domainProof(a.Domain), lookup, port); err != nil {
+	if err := checkDomainRouteVia(ctx, a.Domain, m.domainProof(a.Domain), lookup, port, m.ownPublicAddress); err != nil {
 		status.Message = err.Error()
 	} else {
 		status.State = "requesting_ssl"
@@ -307,7 +338,7 @@ func (m *Manager) domainAllowed(ctx context.Context, domain string) bool {
 		}
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		return checkDomainRoute(ctx, strings.ToLower(domain), m.domainProof(strings.ToLower(domain)), net.DefaultResolver.LookupIP, "80") == nil
+		return checkDomainRouteVia(ctx, strings.ToLower(domain), m.domainProof(strings.ToLower(domain)), net.DefaultResolver.LookupIP, "80", m.ownPublicAddress) == nil
 	}
 	for _, a := range m.Apps() {
 		if a.HasDomain(strings.ToLower(domain)) && !a.Retiring {
@@ -316,7 +347,7 @@ func (m *Manager) domainAllowed(ctx context.Context, domain string) bool {
 			} // Isolated agents without a TLS terminator.
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			return checkDomainRoute(ctx, strings.ToLower(domain), m.domainProof(strings.ToLower(domain)), net.DefaultResolver.LookupIP, "80") == nil
+			return checkDomainRouteVia(ctx, strings.ToLower(domain), m.domainProof(strings.ToLower(domain)), net.DefaultResolver.LookupIP, "80", m.ownPublicAddress) == nil
 		}
 	}
 	a, ok := m.hostApplication(ctx, domain)

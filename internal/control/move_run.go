@@ -1219,11 +1219,20 @@ func (c *Control) runFinalSync(ctx context.Context, id string) {
 		if err := c.moveCopyFiles(ctx, id, moveStepFinalSync); err != nil {
 			return err
 		}
+		// A release restarts the services that are running and leaves stopped
+		// ones as they are, so a native destination is started again before
+		// its redeploy: the source's final data is in place and nothing more
+		// arrives. A container destination stays flagged for maintenance
+		// until its redeploy is through.
+		if job.TargetRuntime != moveRuntimeContainer {
+			if err := c.moveFreezeTarget(ctx, job, false); err != nil {
+				return moveOn(job.TargetServer, fmt.Errorf("the destination could not start its services again: %w", err))
+			}
+			c.moveAwaitNativeServices(ctx, job)
+		}
 		if err := c.moveDeploy(ctx, id, moveStepFinalSync, true); err != nil {
 			return err
 		}
-		// The redeploy starts a native destination; a container one is
-		// still flagged for maintenance.
 		if err := c.moveFreezeTarget(ctx, job, false); err != nil {
 			return moveOn(job.TargetServer, fmt.Errorf("the destination could not leave maintenance: %w", err))
 		}
@@ -1320,6 +1329,35 @@ func (c *Control) moveFreezeOn(ctx context.Context, job MoveJob, server, runtime
 		}
 	}
 	return nil
+}
+
+// moveAwaitNativeServices waits, for up to a minute, until the destination's
+// services run again after the final sync started them, so the redeploy
+// finds them running and restarts them with the new release. It reads the
+// service manager's state only.
+func (c *Control) moveAwaitNativeServices(ctx context.Context, job MoveJob) {
+	path := "/v1/native/apps/" + url.PathEscape(job.AppID)
+	err := c.movePoll(ctx, time.Minute, func() (bool, error) {
+		var status agent.NativeStatus
+		if err := c.agentCall(moveRequestFor(ctx), job.TargetServer, http.MethodGet, path, nil, &status); err != nil {
+			return false, nil
+		}
+		for _, unit := range status.Application.Services {
+			running := false
+			for _, service := range status.Services {
+				if service.Unit == unit && service.Active == "active" {
+					running = true
+				}
+			}
+			if !running {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+	if err != nil && ctx.Err() == nil {
+		c.moveLog(job.ID, moveStepFinalSync, "The destination's services were started but are not reported as running yet; redeploying.")
+	}
 }
 
 // ---- finish ---------------------------------------------------------------------

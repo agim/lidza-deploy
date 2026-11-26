@@ -56,6 +56,9 @@ type Manager struct {
 	// releasedReservations mirrors State.ReleasedReservations for
 	// reservation checks made with or without m.mu held.
 	releasedReservations atomic.Pointer[map[string]string]
+	// publicHost is the name the control panel reaches this agent by
+	// (public_host.go).
+	publicHost atomic.Pointer[string]
 
 	// moveTransfers counts running move exports, downloads and restores; an
 	// agent upgrade waits for them because it restarts the agent.

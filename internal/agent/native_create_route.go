@@ -59,7 +59,7 @@ func (m *Manager) nativeCreatedDomainAllowed(ctx context.Context, domain string)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return checkDomainRoute(ctx, domain, m.domainProof(domain), net.DefaultResolver.LookupIP, "80") == nil, true
+	return checkDomainRouteVia(ctx, domain, m.domainProof(domain), net.DefaultResolver.LookupIP, "80", m.ownPublicAddress) == nil, true
 }
 
 // serveNativeCreated serves a request for a created application's host and
