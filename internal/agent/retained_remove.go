@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,7 +62,8 @@ type RetainedComponent struct {
 	Measured  bool   `json:"measured"`
 	// Host marks a data service on the host itself (a native application's
 	// PostgreSQL database, Redis instance or ClickHouse database) rather
-	// than a Docker volume; it is not measured as a volume.
+	// than a Docker volume; PostgreSQL and ClickHouse databases are
+	// measured by asking their server (retainedHostSize).
 	Host bool `json:"host,omitempty"`
 }
 
@@ -472,10 +474,14 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 		out[i].Removing = rt.removing[out[i].ID]
 		for j := range out[i].Components {
 			c := &out[i].Components[j]
+			key := c.Name
 			if c.Host {
-				continue
+				if !retainedHostMeasured(c.Kind) {
+					continue
+				}
+				key = retainedHostSizeKey(out[i].AppID, *c)
 			}
-			size, measured := rt.sizes[c.Name]
+			size, measured := rt.sizes[key]
 			switch {
 			case !measured:
 				out[i].SizePending = true
@@ -486,8 +492,18 @@ func (m *Manager) retainedViews() []RetainedResourceView {
 			if !size.created.IsZero() && (out[i].DataSince.IsZero() || size.created.Before(out[i].DataSince)) {
 				out[i].DataSince = size.created
 			}
+			if c.Host && c.Measured {
+				// A host database's size goes on its database row: the
+				// ClickHouse one for ClickHouse, otherwise PostgreSQL's.
+				for j := range out[i].Databases {
+					if (out[i].Databases[j].Engine == "clickhouse") == (c.Kind == "clickhouse") && out[i].Databases[j].Volume == "" {
+						out[i].Databases[j].SizeBytes = c.SizeBytes
+						break
+					}
+				}
+			}
 			for j := range out[i].Databases {
-				if out[i].Databases[j].Volume == c.Name {
+				if !c.Host && out[i].Databases[j].Volume == c.Name {
 					out[i].Databases[j].SizeBytes = c.SizeBytes
 				}
 			}
@@ -545,10 +561,25 @@ var dockerVolumeCreated = func(ctx context.Context, name string) time.Time {
 func (m *Manager) measureRetainedSizes(ctx context.Context, force bool) {
 	rt := m.retainedState()
 	var names []string
+	type hostService struct {
+		key, app  string
+		component RetainedComponent
+	}
+	var services []hostService
 	now := time.Now()
 	for _, view := range m.retainedViews() {
 		for _, c := range view.Components {
 			if c.Host {
+				if !retainedHostMeasured(c.Kind) {
+					continue
+				}
+				key := retainedHostSizeKey(view.AppID, c)
+				rt.mu.Lock()
+				size, ok := rt.sizes[key]
+				rt.mu.Unlock()
+				if force || !ok || now.Sub(size.at) > retainedSizeTTL {
+					services = append(services, hostService{key: key, app: view.AppID, component: c})
+				}
 				continue
 			}
 			rt.mu.Lock()
@@ -571,6 +602,59 @@ func (m *Manager) measureRetainedSizes(ctx context.Context, force bool) {
 		rt.sizes[name] = retainedSize{bytes: bytes, at: time.Now(), ok: err == nil, created: created}
 		rt.mu.Unlock()
 	}
+	for _, service := range services {
+		if ctx.Err() != nil {
+			return
+		}
+		bounded, cancel := context.WithTimeout(ctx, 15*time.Second)
+		bytes, err := retainedHostSize(bounded, m, service.app, service.component)
+		cancel()
+		rt.mu.Lock()
+		rt.sizes[service.key] = retainedSize{bytes: bytes, at: time.Now(), ok: err == nil}
+		rt.mu.Unlock()
+	}
+}
+
+// retainedHostMeasured reports the host data services whose size their
+// server reports: PostgreSQL and ClickHouse databases. A Redis instance is
+// not measured.
+func retainedHostMeasured(kind string) bool { return kind == "database" || kind == "clickhouse" }
+
+// retainedHostSizeKey keys a host data service's size apart from volumes.
+func retainedHostSizeKey(app string, c RetainedComponent) string {
+	return "host/" + app + "/" + c.Kind + "/" + c.Name
+}
+
+// retainedHostSize asks the host's database server for the size of a
+// retained application's database; tests replace it.
+var retainedHostSize = func(ctx context.Context, m *Manager, app string, c RetainedComponent) (int64, error) {
+	record, ok := m.hostDataRecord(app)
+	if !ok {
+		return 0, errors.New("no data services are recorded")
+	}
+	switch c.Kind {
+	case "database":
+		if record.Postgres == nil {
+			return 0, errors.New("no PostgreSQL database is recorded")
+		}
+		literal, err := pgQuoteLiteral(record.Postgres.Name)
+		if err != nil {
+			return 0, err
+		}
+		out, err := nativeHostDataHost(m).psql(ctx, record.Postgres.Port, "SELECT pg_catalog.pg_database_size(oid) FROM pg_catalog.pg_database WHERE datname = "+literal+";\n")
+		if err != nil {
+			return 0, err
+		}
+		return strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	case "clickhouse":
+		service, _, err := m.hostClickHouseService(app)
+		if err != nil {
+			return 0, err
+		}
+		summary, err := service.summary(ctx)
+		return summary.SizeBytes, err
+	}
+	return 0, errors.New("not measured")
 }
 
 // refreshRetainedSizes measures stale sizes in the background.

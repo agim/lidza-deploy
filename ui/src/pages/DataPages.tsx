@@ -131,15 +131,17 @@ function useDatabases() {
 
 /** DatabasesPage: the index of databases with their backup state. */
 export function DatabasesPage() {
-  const { apps } = useWorkspace(); const { data, loading, error, load } = useDatabases();
+  const { apps, servers = [] } = useWorkspace(); const { data, loading, error, load } = useDatabases();
   const [selected, setSelected] = usePreference<string>('deploy.databases.app', 'all');
+  const [server, setServer] = usePreference<string>('deploy.databases.server', 'all');
+  const serverName = (id: string) => servers.find(item => item.id === id)?.name || id;
   // Unused: data no application uses any more (left by a removal or a move), removable here.
   const [use, setUse] = useState<'all' | 'unused'>('all');
-  const visible = useMemo(() => data.filter(item => selected === 'all' || item.app_id === selected || item.attachments?.some(attachment => attachment.app_id === selected)), [data, selected]);
+  const visible = useMemo(() => data.filter(item => (server === 'all' || item.server_id === server) && (selected === 'all' || item.app_id === selected || item.attachments?.some(attachment => attachment.app_id === selected))), [data, selected, server]);
   const columns: Column<DatabaseItem>[] = [
     { id: 'name', label: 'Name', render: row => <ResourceName href={withSticky(resourceHref('databases', row.app_id))} name={row.app_id} detail={row.attachments?.length ? `Used by ${row.attachments.map(item => item.app_id).join(', ')}` : undefined} /> },
     { id: 'status', label: 'Status', render: row => <><StatusBadge status={databaseStatus(row)} /><DatabaseOperation database={row} /></> },
-    { id: 'engine', label: 'Engine', render: row => `${databaseLabel(row)} · ${row.server_id}` },
+    { id: 'engine', label: 'Engine', render: row => `${databaseLabel(row)} · ${serverName(row.server_id)}` },
     { id: 'schedule', label: 'Schedule', render: row => <span className="resource-fact"><span>{backupScheduleLabel(row.backup)}</span>{row.backup?.offsite && <small className="muted-copy">off-site copy</small>}</span> },
     { id: 'backups', label: 'Backups', render: row => { const last = lastBackup(row); return <span className="resource-fact"><span>{row.backups?.length || 0}</span>{last && <small className="muted-copy">latest {relativeTime(last.created)}</small>}</span>; } },
     { id: 'size', label: 'Size', render: row => row.size_bytes ? formatBytes(row.size_bytes) : '—' },
@@ -147,10 +149,10 @@ export function DatabasesPage() {
   return <ResourceIndexPage resource="databases" title="Databases" description="Every database the panel backs up, with its schedule and latest backup." count={data.length} loading={loading}
     actions={<Button onClick={load}><RefreshCw size={16} />Refresh</Button>}
     notices={error ? <ErrorBanner>{error}</ErrorBanner> : undefined}
-    list={use === 'unused' ? <RetainedResources appID={selected === 'all' ? undefined : selected} unused /> : undefined}
-    filters={<><Field label="Show" className="toolbar-filter"><select aria-label="Show" value={use} onChange={event => setUse(event.target.value as 'all' | 'unused')}><option value="all">All databases</option><option value="unused">Unused (no application uses them)</option></select></Field><Field label="Application" className="toolbar-filter"><select aria-label="Application" value={selected} onChange={event => setSelected(event.target.value)}><option value="all">All applications</option>{apps.map(app => <option key={app.id}>{app.id}</option>)}</select></Field></>}
+    list={use === 'unused' ? <RetainedResources serverID={server === 'all' ? undefined : server} appID={selected === 'all' ? undefined : selected} unused /> : undefined}
+    filters={<><Field label="Show" className="toolbar-filter"><select aria-label="Show" value={use} onChange={event => setUse(event.target.value as 'all' | 'unused')}><option value="all">All databases</option><option value="unused">Unused (no application uses them)</option></select></Field><Field label="Server" className="toolbar-filter"><select aria-label="Server" value={server} onChange={event => setServer(event.target.value)}><option value="all">All servers</option>{servers.map(item => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}</select></Field><Field label="Application" className="toolbar-filter"><select aria-label="Application" value={selected} onChange={event => setSelected(event.target.value)}><option value="all">All applications</option>{apps.map(app => <option key={app.id}>{app.id}</option>)}</select></Field></>}
     rows={visible} columns={columns} rowKey={row => `${row.server_id}-${row.app_id}`}
-    empty={<EmptyState icon={<Database />} title="No databases found" description={selected === 'all' ? 'A database appears here once an application has one attached.' : `No database is attached to ${selected}.`} />} />;
+    empty={<EmptyState icon={<Database />} title="No databases found" description={selected === 'all' && server === 'all' ? 'A database appears here once an application has one attached.' : 'No database matches these filters.'} />} />;
 }
 
 /** DatabaseDetailPage: one database. Tabs: Overview, Backups, Schedule, Excluded tables, Settings. The id is the database's, or an application's it is attached to. */

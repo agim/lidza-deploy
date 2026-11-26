@@ -157,6 +157,11 @@ func TestAnApplicationsDatabaseCanBeCreatedRemovedAndCreatedAgainOnARealServer(t
 
 			// Created, then removed with its application: nothing stays.
 			provision()
+			// A retained entry reports the real size of the host database,
+			// asked from PostgreSQL itself, not 0 B.
+			if size, err := retainedHostSize(ctx, m, "shop", RetainedComponent{Kind: "database", Name: "app_shop", Host: true}); err != nil || size < 1<<20 {
+				t.Fatalf("size of the host database: %d bytes, %v", size, err)
+			}
 			// (No final backup: the application never released, as when a
 			// creation is undone. Backups have their own tests.)
 			if err := releaseNativeHostDataRecord(ctx, m, "shop", false); err != nil {

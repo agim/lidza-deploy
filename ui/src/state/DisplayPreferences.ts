@@ -11,6 +11,7 @@ const rules = {
   'deploy.apps.server': text,
   'deploy.deployments.app': text,
   'deploy.databases.app': text,
+  'deploy.databases.server': text,
   'deploy.backups.query': text,
   'deploy.team.query': text,
   'deploy.audit.query': text,

@@ -61,9 +61,26 @@ func TestNativeDataIsRetainedAndRemovedAsRetainedResource(t *testing.T) {
 	if !inUse || records != 1 {
 		t.Fatalf("the retained database keeps its backups: in use %v, records %d", inUse, records)
 	}
+	// The host database's size is asked from its server: pending until
+	// measured, then part of the total and shown on the database row.
+	previousSize := retainedHostSize
+	t.Cleanup(func() { retainedHostSize = previousSize })
+	retainedHostSize = func(_ context.Context, _ *Manager, app string, c RetainedComponent) (int64, error) {
+		if app != "shop" || c.Kind != "database" {
+			t.Errorf("measured %s %+v", app, c)
+		}
+		return 45 << 30, nil
+	}
+	if pending := m.retainedViews(); len(pending) != 1 || !pending[0].SizePending || pending[0].SizeBytes != 0 {
+		t.Fatalf("before measuring: %+v", pending)
+	}
+	m.measureRetainedSizes(context.Background(), false)
 	views := m.retainedViews()
 	if len(views) != 1 || views[0].AppID != "shop" || len(views[0].Databases) != 1 || views[0].Databases[0].ID != resource || !views[0].FinalBackupRequired || views[0].SizePending {
 		t.Fatalf("view = %+v", views)
+	}
+	if views[0].SizeBytes != 45<<30 || views[0].Databases[0].SizeBytes != 45<<30 {
+		t.Fatalf("a retained host database reports its size: total %d, database %d", views[0].SizeBytes, views[0].Databases[0].SizeBytes)
 	}
 	kinds := []string{}
 	for _, c := range views[0].Components {
