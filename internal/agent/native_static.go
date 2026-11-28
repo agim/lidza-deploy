@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -256,7 +257,8 @@ func (m *Manager) prepareNativeStatic(ctx context.Context, a NativeApplication, 
 	}); err != nil {
 		return NativeReleaseRef{}, err
 	}
-	if err := preserveNativeRuntimePins(basePath, candidate, true, uid, gid); err != nil {
+	pins, err := prepareNativeRuntimePins(basePath, candidate, filepath.Join(account.HomeDir, ".asdf", "installs", "nodejs"), uid, gid)
+	if err != nil {
 		return NativeReleaseRef{}, err
 	}
 	if err := m.buildNativeStatic(ctx, a, candidate, id); err != nil {
@@ -265,7 +267,7 @@ func (m *Manager) prepareNativeStatic(ctx context.Context, a NativeApplication, 
 	if err := validateNativeAstroSource(candidate); err != nil {
 		return NativeReleaseRef{}, err
 	}
-	if err := preserveNativeRuntimePins(basePath, candidate, false, uid, gid); err != nil {
+	if err := verifyNativeRuntimePins(candidate, pins); err != nil {
 		return NativeReleaseRef{}, err
 	}
 	output := filepath.Join(candidate, p.OutputDirectory)
@@ -600,9 +602,19 @@ func validateNativeStaticArtifact(root string) error {
 	})
 }
 
-// A host-generated pin is inherited only when the repository omits it. Explicit
-// changes, symlinks, new pins and build-time mutations still require review.
-func preserveNativeRuntimePins(base, candidate string, inherit bool, uid, gid int) error {
+// A host-generated pin is inherited when the repository omits it, so the
+// site keeps the version it was built with. A repository that pins Node.js
+// by major or major.minor version (".node-version: 26") follows the host
+// instead: each deploy resolves the pin to the highest matching version
+// installed for the deployment account and records that exact version in
+// the release, so installing a newer Node.js on the host is all a site
+// needs to move to it. Any other change (another exact version, a symlink,
+// a new .tool-versions) is refused, as is a pin the build itself changes.
+//
+// prepareNativeRuntimePins applies this to a new checkout before its build
+// and returns the pin files' contents the release must still have after it.
+func prepareNativeRuntimePins(base, candidate, installs string, uid, gid int) (map[string][]byte, error) {
+	want := map[string][]byte{}
 	for _, name := range []string{".node-version", ".tool-versions"} {
 		beforePath, afterPath := filepath.Join(base, name), filepath.Join(candidate, name)
 		before, beforeErr := os.ReadFile(beforePath)
@@ -610,23 +622,59 @@ func preserveNativeRuntimePins(base, candidate string, inherit bool, uid, gid in
 		if os.IsNotExist(beforeErr) && os.IsNotExist(afterErr) {
 			continue
 		}
-		if beforeErr != nil || regularFile(beforePath, false) != nil {
-			return errors.New("existing runtime pin is unavailable; review the runtime first")
+		if afterErr == nil && name == ".node-version" && regularFile(afterPath, false) == nil {
+			requested, err := os.ReadFile(afterPath)
+			if err != nil {
+				return nil, err
+			}
+			if pin := strings.TrimSpace(string(requested)); nativeToolchainPartial.MatchString(pin) && len(requested) <= 256 {
+				version, _, err := resolveNativeToolchain(installs, pin)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", name, err)
+				}
+				exact := []byte(version + "\n")
+				if err := os.WriteFile(afterPath, exact, 0644); err != nil {
+					return nil, err
+				}
+				if err := os.Chown(afterPath, uid, gid); err != nil {
+					return nil, err
+				}
+				want[name] = exact
+				continue
+			}
 		}
-		if os.IsNotExist(afterErr) && inherit {
+		if beforeErr != nil || regularFile(beforePath, false) != nil {
+			return nil, errors.New("existing runtime pin is unavailable; review the runtime first")
+		}
+		if os.IsNotExist(afterErr) {
 			if err := os.WriteFile(afterPath, before, 0644); err != nil {
-				return err
+				return nil, err
 			}
 			if err := os.Chown(afterPath, uid, gid); err != nil {
-				return err
+				return nil, err
 			}
 		}
-		if regularFile(afterPath, false) != nil {
+		want[name] = before
+	}
+	return want, verifyNativeRuntimePins(candidate, want)
+}
+
+// verifyNativeRuntimePins checks that the release's pin files are regular
+// files with exactly the contents prepareNativeRuntimePins settled on, and
+// that no other pin file appeared.
+func verifyNativeRuntimePins(candidate string, want map[string][]byte) error {
+	for _, name := range []string{".node-version", ".tool-versions"} {
+		path := filepath.Join(candidate, name)
+		expected, pinned := want[name]
+		if _, err := os.Lstat(path); os.IsNotExist(err) && !pinned {
+			continue
+		}
+		if !pinned || regularFile(path, false) != nil {
 			return errors.New("requested runtime pin requires review")
 		}
-		after, err := os.ReadFile(afterPath)
-		if err != nil || string(before) != string(after) {
-			return errors.New("the requested runtime version differs from the existing release; review the runtime change first")
+		after, err := os.ReadFile(path)
+		if err != nil || string(expected) != string(after) {
+			return errors.New("the requested runtime version differs from the existing release; pin Node.js by major version (for example 26) to follow the versions installed on the server, or review the runtime change first")
 		}
 	}
 	return nil

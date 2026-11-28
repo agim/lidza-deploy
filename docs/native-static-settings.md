@@ -21,3 +21,16 @@ host-generated pins. Explicit different or new pins, symlinked pins and build-ti
 pin mutations refuse publication. Static publication retains the previous release
 and hashed assets and atomically swaps current without reloading Caddy or any app
 service. Settings cannot change while a native deployment is active.
+
+## Node.js version
+
+A static site's release records the Node.js version it is built with in
+`.node-version`. A repository without the file keeps the version of the
+serving release. A repository that pins by major (or major.minor) version,
+for example `26`, follows the server: each deploy resolves the pin to the
+highest matching version installed for the deployment account and records
+that exact version in the release, so installing a newer Node.js on the
+server is all a site needs to move to it. A version that is not installed
+fails the deploy with the installed versions listed. Another exact version,
+a new `.tool-versions`, a symbolic link or a pin the build itself changes is
+refused.
